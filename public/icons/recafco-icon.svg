@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="RECAFCO MMS icon">
+  <rect width="512" height="512" rx="64" fill="#111827"/>
+  <rect x="72" y="80" width="368" height="352" rx="28" fill="#ffffff"/>
+  <text x="256" y="218" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="900" fill="#ED1C24">REC</text>
+  <text x="256" y="284" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="900" fill="#ED1C24">AFCO</text>
+  <path d="M112 324h288l-138 26v72h-28v-72z" fill="#2B2B2B"/>
+  <path d="M112 358l176 28v34h-26l-6-22-144-22zM400 358l-176 28v34h26l6-22 144-22z" fill="#ED1C24"/>
+</svg>
