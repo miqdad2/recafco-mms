@@ -24,13 +24,32 @@ export async function signInAction(formData: FormData) {
   }
 
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.auth.signInWithPassword({
+  const { data, error } = await supabase.auth.signInWithPassword({
     email: parsed.data.email,
     password: parsed.data.password
   });
 
   if (error) {
     redirect("/login?error=invalid-credentials");
+  }
+
+  const userId = data.user?.id;
+
+  if (!userId) {
+    await supabase.auth.signOut();
+    redirect("/login?error=session");
+  }
+
+  const { data: profile } = await supabase.from("profiles").select("id, is_active").eq("id", userId).maybeSingle();
+
+  if (!profile) {
+    await supabase.auth.signOut();
+    redirect("/login?error=missing-profile");
+  }
+
+  if (!profile.is_active) {
+    await supabase.auth.signOut();
+    redirect("/login?error=inactive-profile");
   }
 
   redirect(parsed.data.next || "/dashboard");

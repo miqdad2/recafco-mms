@@ -12,8 +12,17 @@ type LoginPageProps = {
   }>;
 };
 
+const errorMessages: Record<string, string> = {
+  "invalid-input": "Enter a valid email address and password.",
+  "invalid-credentials": "Supabase Auth rejected this email or password. Check the Auth user, password, and email confirmation status.",
+  "missing-profile": "This Auth user does not have an active application profile. Create a matching row in public.profiles using the Auth user UUID.",
+  "inactive-profile": "This application profile is inactive. Set public.profiles.is_active to true for this user.",
+  session: "A login session could not be created. Check the Supabase URL and anon key configured in Vercel."
+};
+
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const params = await searchParams;
+  const errorMessage = params?.error ? errorMessages[params.error] ?? "Sign in failed. Check your Supabase Auth user and active app profile." : null;
 
   return (
     <div className="w-full max-w-[440px] rounded-md border border-[#D9DDE3] bg-white p-6 shadow-md shadow-black/5">
@@ -35,9 +44,9 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           <p className="mt-1 text-sm leading-5 text-[#4B5563]">Use your RECAFCO account to continue.</p>
         </div>
       </div>
-      {params?.error ? (
+      {errorMessage ? (
         <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          Sign in failed. Check your email, password, and active profile status.
+          {errorMessage}
         </div>
       ) : null}
       <form action={signInAction} className="space-y-4">
