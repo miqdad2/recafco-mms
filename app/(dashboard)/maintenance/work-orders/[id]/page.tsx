@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
+import { respondToClarificationAction } from "@/app/actions/workflow";
 import { uploadWorkOrderFileAction } from "@/app/actions/files";
 import { PrivateFilePanel } from "@/components/files/private-file-panel";
 import { SignedFileList } from "@/components/files/signed-file-list";
@@ -33,7 +34,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { WorkflowActions } from "@/components/work-orders/workflow-actions";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
-import { getWorkflowInstanceForWorkOrder, type WorkflowTrackingData } from "@/lib/backend/workflows/queries";
+import { getWorkflowInstanceForWorkOrder, getPendingClarificationForWorkOrder, type WorkflowTrackingData } from "@/lib/backend/workflows/queries";
 import { createSignedFileUrl } from "@/lib/files/signed-url";
 import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/security/permissions";
 import { canViewEntityFile } from "@/lib/security/file-access";
@@ -118,8 +119,9 @@ export default async function WorkOrderDetailPage({
   const [{ id }, resolvedSearch] = await Promise.all([params, searchParams]);
   const errorMessage = resolvedSearch.error;
   const warningMessage = resolvedSearch.warning;
+  const successMessage = resolvedSearch.success;
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
-  const [wo, parts, auditLogs, workflowTracking] = await Promise.all([
+  const [wo, parts, auditLogs, workflowTracking, pendingClarification] = await Promise.all([
     prisma.work_orders.findFirst({
       where: { AND: [{ id }, { deleted_at: null }, visibilityFilter] },
       include: workOrderControlInclude
@@ -134,7 +136,8 @@ export default async function WorkOrderDetailPage({
       orderBy: { created_at: "desc" },
       take: 30
     }),
-    getWorkflowInstanceForWorkOrder(id)
+    getWorkflowInstanceForWorkOrder(id),
+    getPendingClarificationForWorkOrder(id)
   ]);
 
   if (!wo) notFound();
@@ -149,7 +152,8 @@ export default async function WorkOrderDetailPage({
     ...wo.work_order_attachments.map((item) => item.uploaded_by),
     ...wo.inventory_movements.map((item) => item.created_by),
     ...auditLogs.map((item) => item.actor_id),
-    ...(workflowTracking?.step_instances.map((si) => si.actor_id) ?? [])
+    ...(workflowTracking?.step_instances.map((si) => si.actor_id) ?? []),
+    pendingClarification?.requested_by
   ].filter((value): value is string => Boolean(value));
   const actors = actorIds.length
     ? await prisma.profiles.findMany({ where: { id: { in: [...new Set(actorIds)] } }, include: { roles: true, departments: true } })
@@ -165,6 +169,10 @@ export default async function WorkOrderDetailPage({
   const canViewCosts = canViewCostsForContext(context);
   const canManage = hasPermission(context, "work_orders.manage");
   const canPrint = hasPermission(context, "work_orders.print");
+  const isCreator = wo.created_by === context.userId;
+  const canRespondToClarification =
+    pendingClarification !== null &&
+    (isCreator || canManage || context.role?.slug === "super_admin");
   const canCreatePartsRequest = hasPermission(context, "parts_requests.create");
   const canUploadFiles = hasPermission(context, "files.upload");
   const signedAttachments = await Promise.all(wo.work_order_attachments.map(async (attachment) => ({
@@ -211,6 +219,22 @@ export default async function WorkOrderDetailPage({
             </p>
           </div>
         ) : null}
+        {successMessage === "clarification-responded" ? (
+          <div className="rounded-md border border-[#16A34A] bg-green-50 p-4">
+            <p className="text-sm font-black text-[#16A34A]">Response submitted</p>
+            <p className="mt-1 text-sm leading-5 text-[#4B5563]">
+              Your clarification response has been recorded. The Maintenance Manager has been notified and can now approve or reject this work order.
+            </p>
+          </div>
+        ) : null}
+        {successMessage === "clarification-sent" ? (
+          <div className="rounded-md border border-[#16A34A] bg-green-50 p-4">
+            <p className="text-sm font-black text-[#16A34A]">Clarification request sent</p>
+            <p className="mt-1 text-sm leading-5 text-[#4B5563]">
+              The work order creator has been notified. The work order status remains Pending Approval until you approve or reject.
+            </p>
+          </div>
+        ) : null}
         {wo.status === "Rejected" ? (
           <div className="rounded-md border border-[#ED1C24] bg-red-50 p-4">
             <p className="font-black text-[#ED1C24]">This work order was rejected</p>
@@ -218,6 +242,33 @@ export default async function WorkOrderDetailPage({
               {latestRejection?.comments ? `Rejection reason: "${latestRejection.comments}". ` : "No rejection reason was provided. "}
               {canManage ? "Use the Return to Draft & Edit button on the right to revise and resubmit." : "Contact your manager for next steps."}
             </p>
+          </div>
+        ) : null}
+        {pendingClarification ? (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-4">
+            <p className="font-black text-amber-800">Clarification requested by Maintenance Manager</p>
+            <p className="mt-1 text-sm font-semibold leading-5 text-[#111827]">{pendingClarification.question}</p>
+            <p className="mt-1 text-xs text-[#4B5563]">
+              Requested by {actorName(pendingClarification.requested_by)} on {formatDateTimeValue(pendingClarification.requested_at)}
+            </p>
+            {canRespondToClarification ? (
+              <form action={respondToClarificationAction} className="mt-4 space-y-2">
+                <input type="hidden" name="work_order_id" value={wo.id} />
+                <textarea
+                  className="focus-ring min-h-24 w-full rounded-md border border-amber-200 bg-white px-3 py-2 text-sm"
+                  name="response"
+                  placeholder="Provide the requested information (required, min 10 characters)"
+                  required
+                  minLength={10}
+                />
+                <div className="flex items-center gap-3">
+                  <Button type="submit">Submit Clarification Response</Button>
+                  <p className="text-xs text-[#4B5563]">Responding sends this back to Maintenance Manager review. Work order status remains Pending Approval.</p>
+                </div>
+              </form>
+            ) : (
+              <p className="mt-3 text-xs text-[#4B5563]">Only the work order creator or an authorized manager can respond to this clarification request.</p>
+            )}
           </div>
         ) : null}
         <section className="rounded-md border border-[#DDE2EA] bg-white p-4 shadow-sm">
@@ -857,7 +908,9 @@ function humanizeError(code: string) {
     "not-found": "This work order could not be found.",
     "invalid-input": "Some required fields are missing or invalid. Please check the form and try again.",
     "save-failed": "Changes could not be saved. Please try again.",
-    "invalid-status": "The requested status change is not allowed by the workflow rules."
+    "invalid-status": "The requested status change is not allowed by the workflow rules.",
+    "clarification-question-too-short": "The clarification question must be at least 10 characters.",
+    "clarification-response-too-short": "The clarification response must be at least 10 characters."
   };
   return map[code] ?? code;
 }

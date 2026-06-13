@@ -72,6 +72,86 @@ export async function requestMaintenanceManagerClarification(
 }
 
 /**
+ * Records the creator's response to a pending clarification request on the
+ * maintenance_manager_review step (Phase 5-D3-C).
+ *
+ * Marks the clarification_requests row as "responded" and resets the step
+ * instance back to "pending" so the Maintenance Manager can approve or reject
+ * normally. The work_orders.status is NOT changed — it stays "Pending Approval".
+ *
+ * Returns the clarification_requests.id that was updated, or null when no
+ * pending clarification exists (old WOs or already responded — safe skip).
+ */
+export async function respondToMaintenanceManagerClarification(
+  tx: BackendTransaction,
+  workOrderId: string,
+  response: string,
+  actorUserId: string
+): Promise<string | null> {
+  const instance = await tx.workflowInstance.findFirst({
+    where: { entity_type: "work_order", entity_id: workOrderId },
+    select: { id: true, workflow_def_id: true }
+  });
+  if (!instance) return null; // pre-Phase 5-D1 work order — safe skip
+
+  const reviewStep = await tx.workflowStep.findFirst({
+    where: { workflow_def_id: instance.workflow_def_id, code: "maintenance_manager_review" },
+    select: { id: true }
+  });
+  if (!reviewStep) return null;
+
+  const stepInst = await tx.workflowStepInstance.findFirst({
+    where: {
+      workflow_inst_id: instance.id,
+      step_id: reviewStep.id,
+      status: "clarification_requested"
+    },
+    select: { id: true }
+  });
+  if (!stepInst) return null; // step is not in clarification_requested state — safe skip
+
+  const clarification = await tx.clarificationRequest.findFirst({
+    where: { workflow_step_inst_id: stepInst.id, status: "pending" },
+    select: { id: true },
+    orderBy: { created_at: "desc" }
+  });
+  if (!clarification) return null; // no pending clarification row — safe skip
+
+  const now = new Date();
+
+  await tx.clarificationRequest.update({
+    where: { id: clarification.id },
+    data: {
+      status: "responded",
+      response,
+      responded_by: actorUserId,
+      responded_at: now
+    }
+  });
+
+  // Reset the review step to "pending" so the manager can approve/reject normally.
+  // actor_id and decision are cleared; comments records that a response was received.
+  await tx.workflowStepInstance.update({
+    where: { id: stepInst.id },
+    data: {
+      status: "pending",
+      actor_id: null,
+      decision: null,
+      comments: `Responded: ${response}`,
+      completed_at: null
+    }
+  });
+
+  // Ensure current_step_id points back to the review step.
+  await tx.workflowInstance.update({
+    where: { id: instance.id },
+    data: { current_step_id: reviewStep.id }
+  });
+
+  return clarification.id;
+}
+
+/**
  * Advances the maintenance_manager_review step when the Maintenance Manager
  * approves or rejects a work order (Phase 5-D2).
  *

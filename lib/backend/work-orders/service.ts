@@ -4,7 +4,7 @@ import type { CurrentUserContext } from "@/lib/auth/context";
 import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
 import { assertActiveUser, assertBackendPermission } from "@/lib/backend/security/guards";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
-import { advanceMaintenanceManagerReview, requestMaintenanceManagerClarification } from "@/lib/backend/workflows/engine";
+import { advanceMaintenanceManagerReview, requestMaintenanceManagerClarification, respondToMaintenanceManagerClarification } from "@/lib/backend/workflows/engine";
 import {
   findWorkflowWorkOrder,
   getActiveUserIdsByRoleSlugs,
@@ -186,6 +186,64 @@ export async function requestWorkOrderClarification(context: CurrentUserContext,
       actionLabel: "View work order"
     }),
     auditWorkflow(context, "work_order.clarification_requested", result, `Requested clarification on ${result.workOrderNumber ?? "work order"}`, { question: question.trim() })
+  ]);
+
+  return result;
+}
+
+export async function respondToWorkOrderClarification(context: CurrentUserContext, workOrderId: string, response: string) {
+  assertActiveUser(context);
+
+  if (response.trim().length < 10) {
+    throw new AppError("Response must be at least 10 characters.", { code: "VALIDATION_ERROR" });
+  }
+
+  const result = await withBackendTransaction(context.userId, async (tx) => {
+    const existing = await findWorkflowWorkOrder(tx, workOrderId);
+    if (!existing) {
+      throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
+    }
+    if (!["Submitted", "Pending Approval"].includes(existing.status)) {
+      throw new AppError(
+        `Clarification response can only be submitted on a Submitted or Pending Approval work order. Current status: "${existing.status}".`,
+        { code: "WORKFLOW_ERROR" }
+      );
+    }
+
+    const canRespond =
+      context.role?.slug === "super_admin" ||
+      context.permissions.includes("work_orders.manage") ||
+      existing.created_by === context.userId;
+    if (!canRespond) {
+      throw new AppError("You are not authorized to respond to this clarification request.", { code: "FORBIDDEN" });
+    }
+
+    await respondToMaintenanceManagerClarification(tx, workOrderId, response.trim(), context.userId);
+
+    return {
+      workOrderId: existing.id,
+      workOrderNumber: existing.work_order_number,
+      status: existing.status,
+      createdBy: existing.created_by
+    };
+  });
+
+  const approverIds = await withBackendTransaction(context.userId, (tx) =>
+    getActiveUserIdsByRoleSlugs(tx, ["super_admin", "maintenance_manager"])
+  );
+
+  await Promise.all([
+    notifyWorkflowEvent({
+      eventKey: "work_order.clarification_responded",
+      entityType: "work_order",
+      entityId: result.workOrderId,
+      actorId: context.userId,
+      recipientUserIds: approverIds,
+      metadata: { work_order_number: result.workOrderNumber ?? "Work order", response: response.trim() },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
+      actionLabel: "Review clarification response"
+    }),
+    auditWorkflow(context, "work_order.clarification_responded", result, `Responded to clarification on ${result.workOrderNumber ?? "work order"}`, { response: response.trim() })
   ]);
 
   return result;

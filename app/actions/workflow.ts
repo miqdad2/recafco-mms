@@ -11,6 +11,7 @@ import {
   completeTechnicianJob,
   rejectWorkOrder,
   requestWorkOrderClarification,
+  respondToWorkOrderClarification,
   returnWorkOrderToDraft,
   startTechnicianJob,
   submitWorkOrder,
@@ -103,6 +104,27 @@ export async function requestClarificationAction(formData: FormData) {
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/approvals");
     targetPath = `/maintenance/work-orders/${result.workOrderId}?success=clarification-sent`;
+  } catch (error) {
+    redirect(workflowErrorPath(id, error));
+  }
+  redirect(targetPath);
+}
+
+export async function respondToClarificationAction(formData: FormData) {
+  const context = await requirePermission("work_orders.view");
+  const id = idFrom(formData);
+  const response = String(formData.get("response") ?? "").trim();
+  let targetPath = `/maintenance/work-orders/${id}`;
+
+  if (response.length < 10) {
+    redirect(`${targetPath}?error=clarification-response-too-short`);
+  }
+
+  try {
+    const result = await respondToWorkOrderClarification(context, id, response);
+    revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/maintenance/approvals");
+    targetPath = `/maintenance/work-orders/${result.workOrderId}?success=clarification-responded`;
   } catch (error) {
     redirect(workflowErrorPath(id, error));
   }
