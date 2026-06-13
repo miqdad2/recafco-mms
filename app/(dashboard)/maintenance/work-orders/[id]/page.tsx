@@ -33,6 +33,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { WorkflowActions } from "@/components/work-orders/workflow-actions";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { getWorkflowInstanceForWorkOrder, type WorkflowTrackingData } from "@/lib/backend/workflows/queries";
 import { createSignedFileUrl } from "@/lib/files/signed-url";
 import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/security/permissions";
 import { canViewEntityFile } from "@/lib/security/file-access";
@@ -118,7 +119,7 @@ export default async function WorkOrderDetailPage({
   const errorMessage = resolvedSearch.error;
   const warningMessage = resolvedSearch.warning;
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
-  const [wo, parts, auditLogs] = await Promise.all([
+  const [wo, parts, auditLogs, workflowTracking] = await Promise.all([
     prisma.work_orders.findFirst({
       where: { AND: [{ id }, { deleted_at: null }, visibilityFilter] },
       include: workOrderControlInclude
@@ -132,7 +133,8 @@ export default async function WorkOrderDetailPage({
       where: { entity_type: "work_order", entity_id: id },
       orderBy: { created_at: "desc" },
       take: 30
-    })
+    }),
+    getWorkflowInstanceForWorkOrder(id)
   ]);
 
   if (!wo) notFound();
@@ -146,7 +148,8 @@ export default async function WorkOrderDetailPage({
     ...wo.work_order_assignments.map((item) => item.assigned_by),
     ...wo.work_order_attachments.map((item) => item.uploaded_by),
     ...wo.inventory_movements.map((item) => item.created_by),
-    ...auditLogs.map((item) => item.actor_id)
+    ...auditLogs.map((item) => item.actor_id),
+    ...(workflowTracking?.step_instances.map((si) => si.actor_id) ?? [])
   ].filter((value): value is string => Boolean(value));
   const actors = actorIds.length
     ? await prisma.profiles.findMany({ where: { id: { in: [...new Set(actorIds)] } }, include: { roles: true, departments: true } })
@@ -275,6 +278,8 @@ export default async function WorkOrderDetailPage({
             })}
           </div>
         </section>
+
+        <WorkflowTrackingSection tracking={workflowTracking} actorName={actorName} />
 
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_24rem]">
           <main className="space-y-5">
@@ -478,6 +483,96 @@ export default async function WorkOrderDetailPage({
         {canCreatePartsRequest ? <PartsRequestForm workOrderId={wo.id} parts={parts.map((part) => ({ ...part, unit_price: Number(part.unit_price) }))} /> : null}
       </div>
     </>
+  );
+}
+
+function stepInstanceTone(status: string): BadgeTone {
+  if (status === "completed") return "green";
+  if (status === "pending") return "amber";
+  if (status === "active") return "blue";
+  return "gray";
+}
+
+function WorkflowTrackingSection({
+  tracking,
+  actorName
+}: {
+  tracking: WorkflowTrackingData | null;
+  actorName: (id?: string | null) => string;
+}) {
+  if (!tracking) {
+    return (
+      <p className="rounded-md border border-[#E5E7EB] bg-[#F8FAFC] px-4 py-3 text-xs text-[#4B5563]">
+        No workflow tracking record exists for this work order. Workflow tracking is created for newly submitted work orders.
+      </p>
+    );
+  }
+
+  return (
+    <section className="rounded-md border border-blue-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="rounded-md bg-blue-600 p-2 text-white">
+            <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </div>
+          <div>
+            <p className="text-xs font-black uppercase tracking-wide text-blue-600">Workflow engine</p>
+            <h2 className="mt-1 text-lg font-black text-[#111827]">Workflow Tracking</h2>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <StatusBadge label={tracking.workflow_definition.name} tone="blue" />
+          <StatusBadge label={tracking.status} tone={tracking.status === "active" ? "blue" : tracking.status === "completed" ? "green" : "gray"} />
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-md border border-blue-100 bg-blue-50 px-4 py-2">
+        <p className="text-xs font-semibold text-blue-800">
+          Workflow tracking is active. Approval behavior is still using the current stable approval flow.
+        </p>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="rounded-md border border-[#E5E7EB] bg-[#F8FAFC] p-3">
+          <p className="text-xs font-black uppercase text-[#4B5563]">Definition</p>
+          <p className="mt-1 font-mono text-sm font-bold text-[#111827]">{tracking.workflow_definition.code}</p>
+        </div>
+        <div className="rounded-md border border-[#E5E7EB] bg-[#F8FAFC] p-3">
+          <p className="text-xs font-black uppercase text-[#4B5563]">Current step</p>
+          <p className="mt-1 font-mono text-sm font-bold text-[#111827]">{tracking.current_step?.code ?? "—"}</p>
+          <p className="text-xs text-[#4B5563]">{tracking.current_step?.name ?? ""}</p>
+        </div>
+        <div className="rounded-md border border-[#E5E7EB] bg-[#F8FAFC] p-3">
+          <p className="text-xs font-black uppercase text-[#4B5563]">Tracking started</p>
+          <p className="mt-1 text-sm font-bold text-[#111827]">{tracking.started_at.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</p>
+        </div>
+      </div>
+
+      {tracking.step_instances.length > 0 ? (
+        <div className="mt-4">
+          <p className="text-xs font-black uppercase text-[#4B5563]">Step timeline</p>
+          <div className="mt-2 space-y-2">
+            {tracking.step_instances.map((si) => (
+              <div key={si.id} className="grid gap-3 rounded-md border border-[#E5E7EB] bg-[#F8FAFC] p-3 md:grid-cols-[8rem_minmax(0,1fr)]">
+                <div className="flex flex-col gap-1">
+                  <StatusBadge label={si.status} tone={stepInstanceTone(si.status)} />
+                  {si.completed_at ? (
+                    <p className="text-xs text-[#4B5563]">{si.completed_at.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>
+                  ) : null}
+                </div>
+                <div>
+                  <p className="font-mono text-xs font-black text-[#ED1C24]">{si.workflow_step.code}</p>
+                  <p className="mt-0.5 text-sm font-bold text-[#111827]">{si.workflow_step.name}</p>
+                  {si.actor_id ? <p className="mt-1 text-xs text-[#4B5563]">Actor: {actorName(si.actor_id)}</p> : null}
+                  {si.decision ? <p className="mt-0.5 text-xs text-[#4B5563]">Decision: <span className="font-semibold">{si.decision}</span></p> : null}
+                  {si.comments ? <p className="mt-0.5 text-xs text-[#4B5563]">Comment: {si.comments}</p> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
