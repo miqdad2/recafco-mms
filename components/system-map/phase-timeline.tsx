@@ -16,7 +16,7 @@ export function PhaseTimeline({ phases }: { phases: SystemPhase[] }) {
           <h2 className="mt-1 text-2xl font-black text-[#111827]">Phase Timeline</h2>
           <p className="mt-2 text-sm text-[#4B5563]">Completed phases are shown in green. Upcoming work remains gray until implemented.</p>
         </div>
-        <StatusBadge label="Phase 5 next" tone="gray" />
+        <StatusBadge label="Phase 6 active" tone="amber" />
       </div>
       <div className="mt-6 grid gap-4 lg:grid-cols-5">
         {phases.map((phase, index) => (

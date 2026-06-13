@@ -11,12 +11,12 @@ export function RoadmapSection({ items }: { items: RoadmapItem[] }) {
         <div>
           <p className="text-xs font-black uppercase text-red-200">Roadmap</p>
           <h2 className="mt-1 text-2xl font-black">Phase Timeline and Roadmap</h2>
-          <p className="mt-2 text-sm text-gray-300">The next work focuses on reports, exports, private files, mobility, and deeper management intelligence.</p>
+          <p className="mt-2 text-sm text-gray-300">Phase 6 activates the workflow engine. Future phases cover integrations, mobile depth, and ERP connectivity.</p>
         </div>
-        <StatusBadge label="Future ready" tone="gray" />
+        <StatusBadge label="Phase 6 active" tone="gray" />
       </div>
       <div className="mt-6 grid gap-5 lg:grid-cols-2">
-        <RoadmapGroup title="Phase 5 Upcoming" items={upcoming} />
+        <RoadmapGroup title="Phase 6 — Upcoming" items={upcoming} />
         <RoadmapGroup title="Future Enhancements" items={future} />
       </div>
     </section>
