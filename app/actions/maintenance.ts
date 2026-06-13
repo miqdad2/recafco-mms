@@ -6,6 +6,8 @@ import { z } from "zod";
 
 import { requirePermission } from "@/lib/auth/context";
 import { writeAuditLog } from "@/lib/audit/log";
+import { withBackendTransaction } from "@/lib/backend/shared/transaction";
+import { createMaintenanceWorkflowInstanceForWorkOrder } from "@/lib/backend/workflows/engine";
 import { notifyByEvent } from "@/lib/notifications/service";
 import { emitRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { prisma } from "@/lib/db/prisma";
@@ -326,9 +328,23 @@ export async function upsertWorkOrderAction(formData: FormData) {
 
   let data: { id: string; work_order_number: string | null } | null = null;
   try {
-    data = id
-      ? await prisma.work_orders.update({ where: { id }, data: updatePayload, select: { id: true, work_order_number: true } })
-      : await prisma.work_orders.create({ data: insertPayload, select: { id: true, work_order_number: true } });
+    if (!id && createStatus === "Pending Approval") {
+      // New WO submitted for approval: create WO + workflow tracking rows atomically.
+      // If workflow rows cannot be created, the entire transaction rolls back so submitted
+      // work orders are never left without a tracking record.
+      data = await withBackendTransaction(context.userId, async (tx) => {
+        const wo = await tx.work_orders.create({
+          data: insertPayload,
+          select: { id: true, work_order_number: true }
+        });
+        await createMaintenanceWorkflowInstanceForWorkOrder(tx, wo.id, context.userId);
+        return wo;
+      });
+    } else {
+      data = id
+        ? await prisma.work_orders.update({ where: { id }, data: updatePayload, select: { id: true, work_order_number: true } })
+        : await prisma.work_orders.create({ data: insertPayload, select: { id: true, work_order_number: true } });
+    }
   } catch (saveError) {
     console.error("[maintenance.upsertWorkOrderAction] Save failed:", {
       source: "maintenance.upsertWorkOrderAction",
