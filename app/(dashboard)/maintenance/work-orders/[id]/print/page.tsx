@@ -1,23 +1,86 @@
-import Image from "next/image";
+import { notFound } from "next/navigation";
 
+import { FormDocumentHeader } from "@/components/forms/form-document-header";
+import { writeAuditLog } from "@/lib/audit/log";
 import { requirePermission } from "@/lib/auth/context";
+import { prisma } from "@/lib/db/prisma";
 import { createQrSvg, internalQrTarget } from "@/lib/qr/svg";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { formatDateTime } from "@/lib/utils";
+import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 
 export default async function PrintWorkOrderPage({ params }: { params: Promise<{ id: string }> }) {
-  await requirePermission("work_orders.print");
+  const context = await requirePermission("work_orders.print");
   const { id } = await params;
-  const supabase = await createSupabaseServerClient();
-  const [{ data: wo }, { data: labor }, { data: materials }, { data: history }, { data: approvals }] = await Promise.all([
-    supabase.from("work_orders").select("*, assets(asset_code, asset_name), departments(name)").eq("id", id).single(),
-    supabase.from("work_order_labor").select("*").eq("work_order_id", id),
-    supabase.from("work_order_materials").select("*").eq("work_order_id", id),
-    supabase.from("work_order_status_history").select("*").eq("work_order_id", id).order("changed_at", { ascending: true }),
-    supabase.from("approvals").select("*").eq("work_order_id", id).order("created_at", { ascending: true })
+
+  // Enforce visibility before handing off to Supabase queries.
+  // Uses the same role-scoped filter as the list and detail pages so access
+  // is consistent regardless of which page the user reaches first.
+  const visibilityFilter = getWorkOrderVisibilityFilter(context);
+  const accessible = await prisma.work_orders.findFirst({
+    where: { AND: [{ id }, { deleted_at: null }, visibilityFilter] },
+    select: { id: true },
+  });
+  if (!accessible) notFound();
+
+  const [rawWo, rawLabor, rawMaterials, rawHistory, rawApprovals] = await Promise.all([
+    prisma.work_orders.findUnique({
+      where: { id },
+      include: {
+        assets: { select: { asset_code: true, asset_name: true } },
+        departments: { select: { name: true } }
+      }
+    }),
+    prisma.work_order_labor.findMany({ where: { work_order_id: id } }),
+    prisma.work_order_materials.findMany({ where: { work_order_id: id } }),
+    prisma.work_order_status_history.findMany({
+      where: { work_order_id: id },
+      orderBy: { changed_at: "asc" }
+    }),
+    prisma.approvals.findMany({
+      where: { work_order_id: id },
+      orderBy: { created_at: "asc" }
+    })
   ]);
 
-  if (!wo) return <div className="p-8">Work order not found.</div>;
+  if (!rawWo) return <div className="p-8">Work order not found.</div>;
+  const wo = {
+    ...rawWo,
+    date_of_order: rawWo.date_of_order.toISOString(),
+    starting_datetime: rawWo.starting_datetime?.toISOString() ?? null,
+    ending_datetime: rawWo.ending_datetime?.toISOString() ?? null,
+    running_hours: rawWo.running_hours?.toFixed(2) ?? null,
+    kilometers: rawWo.kilometers?.toFixed(2) ?? null,
+    next_service_date: rawWo.next_service_date?.toISOString() ?? null,
+    next_service_kilometer: rawWo.next_service_kilometer?.toFixed(2) ?? null,
+    next_service_running_hours: rawWo.next_service_running_hours?.toFixed(2) ?? null,
+  };
+  const labor = rawLabor.map((row) => ({
+    ...row,
+    hours: row.hours.toFixed(2),
+    rate: row.rate.toFixed(3),
+    amount: row.amount?.toFixed(3) ?? null
+  }));
+  const materials = rawMaterials.map((row) => ({
+    ...row,
+    quantity: row.quantity.toFixed(2),
+    unit_price: row.unit_price.toFixed(3),
+    amount: row.amount?.toFixed(3) ?? null
+  }));
+  const history = rawHistory.map((row) => ({
+    ...row,
+    changed_at: row.changed_at.toISOString()
+  }));
+  const approvals = rawApprovals.map((row) => ({
+    ...row,
+    decided_at: row.decided_at.toISOString()
+  }));
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "work_order.print",
+    entityType: "work_order",
+    entityId: id,
+    summary: `Opened print view for work order ${wo.work_order_number}`
+  });
   const asset = Array.isArray(wo.assets) ? wo.assets[0] : wo.assets;
   const department = Array.isArray(wo.departments) ? wo.departments[0] : wo.departments;
   const qrPath = `/maintenance/work-orders/${wo.id}`;
@@ -31,22 +94,15 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
         Use browser print or Ctrl+P
       </button>
       <article className="print-sheet mx-auto max-w-5xl border border-[#E5E7EB] p-8 shadow-sm">
-        <div className="flex items-start justify-between border-b-4 border-[#ED1C24] pb-5">
-          <div className="flex items-center gap-4">
-            <div className="relative h-20 w-24 rounded-md border border-[#E5E7EB] bg-white">
-              <Image src="/recafco-logo.png" alt="RECAFCO logo" fill className="object-contain p-1" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-black">RECAFCO Maintenance Work Order</h1>
-              <p className="text-sm text-[#4B5563]">Generated: {formatDateTime(new Date().toISOString())}</p>
-            </div>
-          </div>
-          <div className="text-right">
-            <p className="text-sm text-[#4B5563]">Work order number</p>
-            <p className="text-xl font-black text-[#ED1C24]">{wo.work_order_number}</p>
-            <p className="mt-2 text-sm font-bold">{wo.status}</p>
-          </div>
-        </div>
+        <FormDocumentHeader
+          variant="print"
+          title="Maintenance Work Order"
+          departmentName="Maintenance Department"
+          subtitle={`Generated: ${formatDateTime(new Date().toISOString())}`}
+          referenceLabel="Work order number"
+          referenceNumber={wo.work_order_number}
+          status={wo.status}
+        />
 
         <PrintGrid
           title="Work Order Details"

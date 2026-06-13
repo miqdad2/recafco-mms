@@ -13,6 +13,7 @@ import { SystemProgressOverview } from "@/components/system-map/system-progress-
 import { WorkflowDiagram } from "@/components/system-map/workflow-diagram";
 import { writeAuditLog } from "@/lib/audit/log";
 import { requireUser } from "@/lib/auth/context";
+import { notifyByEvent } from "@/lib/notifications/service";
 import { executiveWorkflowSteps, managementMonitorCards, roadmapItems, roleSwimlanes, systemModules, systemPhases, workflowEdges, workflowNodes } from "@/lib/system-map/config";
 import { getSystemMapStats } from "@/lib/system-map/stats";
 
@@ -23,6 +24,7 @@ type SystemMapPageProps = {
 export default async function SystemMapPage({ searchParams }: SystemMapPageProps) {
   const context = await requireUser();
   const canView = context.role?.slug === "super_admin" || context.permissions.includes("system_map.view");
+  const canEdit = context.role?.slug === "super_admin";
 
   if (!canView) {
     redirect("/dashboard?error=permission-denied");
@@ -35,6 +37,15 @@ export default async function SystemMapPage({ searchParams }: SystemMapPageProps
       entityType: "system_map",
       summary: `${context.profile.full_name} viewed the system map`,
       metadata: { role: context.role?.slug ?? "none" }
+    });
+    await notifyByEvent({
+      eventKey: "system_map.viewed",
+      entityType: "system_map",
+      actorId: context.userId,
+      recipientUserIds: [context.userId],
+      metadata: { user_name: context.profile.full_name },
+      actionUrl: "/admin/system-map",
+      actionLabel: "Open system map"
     });
   } catch {
     // The system map should remain available even if audit logging is temporarily unavailable.
@@ -50,7 +61,7 @@ export default async function SystemMapPage({ searchParams }: SystemMapPageProps
 
   const content = (
     <div className="space-y-6 p-4 lg:p-6">
-      <SystemMapHero presentation={false} />
+      <SystemMapHero presentation={false} editable={canEdit} />
       <ExecutiveWorkflowStrip steps={executiveWorkflowSteps} />
       <SystemProgressOverview stats={stats} />
       <WorkflowDiagram nodes={workflowNodes} edges={workflowEdges} presentation={presentation} />

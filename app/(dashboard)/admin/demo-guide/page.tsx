@@ -8,6 +8,7 @@ import { requireUser } from "@/lib/auth/context";
 
 const demoSteps = [
   { title: "System Map", href: "/admin/system-map", description: "Start with the management workflow map to show the full maintenance lifecycle and completed phases." },
+  { title: "Architecture", href: "/admin/architecture", description: "Use the technical architecture page to explain layers, RBAC/RLS, Supabase, notifications, storage, deployment, and scalability to the IT Manager." },
   { title: "Dashboard", href: "/dashboard", description: "Show operational KPIs, pending work, cost visibility, and management monitoring." },
   { title: "Assets", href: "/assets", description: "Open an asset to show master data, expiry alerts, service information, documents, history, and QR code." },
   { title: "Work Orders", href: "/maintenance/work-orders", description: "Review the digital work order register, statuses, paper-form fields, attachments, print layout, and QR code." },
@@ -17,6 +18,7 @@ const demoSteps = [
   { title: "Store Issue", href: "/store/parts-requests", description: "Demonstrate full issue, partial issue, unavailable marking, and inventory movement creation." },
   { title: "Purchase", href: "/purchase/requests", description: "Show unavailable-part purchase requests, supplier details, order status, and receiving foundation." },
   { title: "Finance", href: "/finance/approvals", description: "Show finance approval, cost governance, and CEO threshold visibility for high-value requests." },
+  { title: "Notifications", href: "/notifications", description: "Show the notification bell, notification center, preferences, admin settings, and workflow-triggered in-app alerts." },
   { title: "Reports", href: "/reports/work-orders", description: "Finish with reports and native Excel exports for work orders, assets, inventory, costs, and preventive maintenance." }
 ];
 

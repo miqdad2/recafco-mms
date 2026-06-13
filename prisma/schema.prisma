@@ -1,0 +1,789 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model app_settings {
+  id                                 String   @id @default(dbgenerated("'00000000-0000-0000-0000-000000000001'::uuid")) @db.Uuid
+  company_name                       String   @default("RECAFCO")
+  default_currency                   String   @default("KWD")
+  work_order_number_format           String   @default("REC/MD/{TYPE}/JOB/{0000}")
+  parts_request_number_format        String   @default("REC/STORE/PR/{0000}")
+  purchase_request_number_format     String   @default("REC/PUR/{0000}")
+  ceo_approval_threshold             Decimal  @default(1000) @db.Decimal(12, 3)
+  requester_confirmation_enabled     Boolean  @default(true)
+  finance_approval_enabled           Boolean  @default(true)
+  ceo_approval_enabled               Boolean  @default(true)
+  logo_path                          String?
+  updated_at                         DateTime @default(now()) @db.Timestamptz(6)
+  updated_by                         String?  @db.Uuid
+  asset_number_format                String   @default("REC/ASSET/{0000}")
+  notification_retention_days        Int      @default(180)
+  notification_poll_interval_seconds Int      @default(45)
+  force_critical_notifications       Boolean  @default(true)
+  max_upload_size_mb                 Int      @default(10)
+  signed_url_expiry_seconds          Int      @default(300)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model approvals {
+  id                  String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id       String?            @db.Uuid
+  parts_request_id    String?            @db.Uuid
+  purchase_request_id String?            @db.Uuid
+  approval_type       String             @default("Work Order")
+  status              String
+  decided_by          String?            @db.Uuid
+  decided_at          DateTime           @default(now()) @db.Timestamptz(6)
+  comments            String?
+  created_at          DateTime           @default(now()) @db.Timestamptz(6)
+  work_orders         work_orders?       @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  parts_requests      parts_requests?    @relation(fields: [parts_request_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  purchase_requests   purchase_requests? @relation(fields: [purchase_request_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([work_order_id], map: "idx_approvals_work_order_id")
+  @@index([parts_request_id], map: "idx_approvals_parts_request_id")
+  @@index([purchase_request_id], map: "idx_approvals_purchase_request_id")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model asset_documents {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  asset_id      String   @db.Uuid
+  document_type String
+  file_name     String
+  file_path     String
+  content_type  String?
+  file_size     Int?
+  uploaded_by   String?  @db.Uuid
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+  assets        assets   @relation(fields: [asset_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model assets {
+  id                         String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  asset_code                 String            @unique
+  asset_name                 String
+  category                   String
+  department_id              String?           @db.Uuid
+  location                   String?
+  brand                      String?
+  model                      String?
+  serial_number              String?
+  plate_number               String?
+  chassis_number             String?
+  engine_number              String?
+  purchase_date              DateTime?         @db.Date
+  warranty_expiry_date       DateTime?         @db.Date
+  registration_expiry_date   DateTime?         @db.Date
+  insurance_expiry_date      DateTime?         @db.Date
+  current_kilometer_reading  Decimal?          @db.Decimal(12, 2)
+  current_running_hours      Decimal?          @db.Decimal(12, 2)
+  assigned_operator_driver   String?
+  status                     String            @default("Active")
+  next_service_date          DateTime?         @db.Date
+  next_service_kilometer     Decimal?          @db.Decimal(12, 2)
+  next_service_running_hours Decimal?          @db.Decimal(12, 2)
+  notes                      String?
+  created_at                 DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at                 DateTime          @default(now()) @db.Timestamptz(6)
+  created_by                 String?           @db.Uuid
+  updated_by                 String?           @db.Uuid
+  deleted_at                 DateTime?         @db.Timestamptz(6)
+  asset_documents            asset_documents[]
+  departments                departments?      @relation(fields: [department_id], references: [id], onUpdate: NoAction)
+  parts_requests             parts_requests[]
+  work_orders                work_orders[]
+
+  @@index([category], map: "idx_assets_category")
+  @@index([deleted_at], map: "idx_assets_deleted_at")
+  @@index([department_id], map: "idx_assets_department_id")
+  @@index([registration_expiry_date, insurance_expiry_date, warranty_expiry_date], map: "idx_assets_expiry_dates")
+  @@index([next_service_date, status], map: "idx_assets_service_due")
+  @@index([status], map: "idx_assets_status")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model audit_logs {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actor_id    String?  @db.Uuid
+  action      String
+  entity_type String
+  entity_id   String?  @db.Uuid
+  summary     String
+  metadata    Json     @default("{}")
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([action], map: "idx_audit_logs_action")
+  @@index([actor_id], map: "idx_audit_logs_actor_id")
+  @@index([created_at(sort: Desc)], map: "idx_audit_logs_created_at")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model system_error_logs {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  severity         String    @default("error")
+  source           String
+  message          String
+  stack            String?
+  metadata         Json      @default("{}")
+  user_id          String?   @db.Uuid
+  route            String?
+  entity_type      String?
+  entity_id        String?   @db.Uuid
+  status           String    @default("open")
+  resolution_notes String?
+  resolved_by      String?   @db.Uuid
+  resolved_at      DateTime? @db.Timestamptz(6)
+  created_at       DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([created_at(sort: Desc)], map: "idx_system_error_logs_created_at")
+  @@index([entity_type, entity_id], map: "idx_system_error_logs_entity")
+  @@index([severity, created_at(sort: Desc)], map: "idx_system_error_logs_severity_created")
+  @@index([source, created_at(sort: Desc)], map: "idx_system_error_logs_source_created")
+  @@index([status, created_at(sort: Desc)], map: "idx_system_error_logs_status_created")
+  @@index([user_id, created_at(sort: Desc)], map: "idx_system_error_logs_user_created")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model departments {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String           @unique
+  code           String           @unique
+  description    String?
+  manager_name   String?
+  is_active      Boolean          @default(true)
+  created_at     DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime         @default(now()) @db.Timestamptz(6)
+  assets         assets[]
+  notifications  notifications[]
+  parts_requests parts_requests[]
+  profiles       profiles[]
+  work_orders    work_orders[]
+
+  @@index([is_active], map: "idx_departments_is_active")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model inventory_movements {
+  id                  String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  part_id             String             @db.Uuid
+  movement_type       String
+  quantity            Decimal            @db.Decimal(12, 2)
+  unit_price          Decimal            @default(0) @db.Decimal(12, 3)
+  work_order_id       String?            @db.Uuid
+  parts_request_id    String?            @db.Uuid
+  purchase_request_id String?            @db.Uuid
+  reference           String?
+  comments            String?
+  created_by          String?            @db.Uuid
+  created_at          DateTime           @default(now()) @db.Timestamptz(6)
+  parts               parts              @relation(fields: [part_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  parts_requests      parts_requests?    @relation(fields: [parts_request_id], references: [id], onUpdate: NoAction)
+  purchase_requests   purchase_requests? @relation(fields: [purchase_request_id], references: [id], onUpdate: NoAction, map: "inventory_movements_purchase_request_fk")
+  work_orders         work_orders?       @relation(fields: [work_order_id], references: [id], onUpdate: NoAction)
+
+  @@index([part_id, created_at(sort: Desc)], map: "idx_inventory_movements_part")
+  @@index([created_at, movement_type], map: "idx_inventory_movements_report_filters")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model notification_delivery_logs {
+  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  notification_id   String?        @db.Uuid
+  event_key         String?
+  recipient_user_id String?        @db.Uuid
+  channel           String         @default("in_app")
+  status            String         @default("queued")
+  provider          String?
+  error_message     String?
+  metadata          Json           @default("{}")
+  attempted_at      DateTime       @default(now()) @db.Timestamptz(6)
+  delivered_at      DateTime?      @db.Timestamptz(6)
+  notifications     notifications? @relation(fields: [notification_id], references: [id], onUpdate: NoAction)
+
+  @@index([event_key, attempted_at(sort: Desc)], map: "idx_notification_delivery_logs_event")
+  @@index([recipient_user_id, attempted_at(sort: Desc)], map: "idx_notification_delivery_logs_recipient")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model notification_events {
+  event_key                String                     @id
+  category                 String
+  priority                 String                     @default("normal")
+  description              String                     @default("")
+  is_critical              Boolean                    @default(false)
+  is_enabled               Boolean                    @default(true)
+  supports_in_app          Boolean                    @default(true)
+  supports_email           Boolean                    @default(false)
+  supports_whatsapp        Boolean                    @default(false)
+  supports_sms             Boolean                    @default(false)
+  supports_push            Boolean                    @default(false)
+  created_at               DateTime                   @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime                   @default(now()) @db.Timestamptz(6)
+  notification_preferences notification_preferences[]
+  notification_templates   notification_templates[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model notification_preferences {
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String              @db.Uuid
+  event_key           String
+  in_app_enabled      Boolean             @default(true)
+  email_enabled       Boolean             @default(false)
+  whatsapp_enabled    Boolean             @default(false)
+  sms_enabled         Boolean             @default(false)
+  push_enabled        Boolean             @default(false)
+  created_at          DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime            @default(now()) @db.Timestamptz(6)
+  notification_events notification_events @relation(fields: [event_key], references: [event_key], onDelete: Cascade, onUpdate: NoAction)
+  profiles            profiles            @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, event_key])
+  @@index([user_id], map: "idx_notification_preferences_user")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model notification_templates {
+  id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  event_key             String
+  channel               String              @default("in_app")
+  title_template        String
+  message_template      String
+  action_label_template String?
+  action_url_template   String?
+  is_active             Boolean             @default(true)
+  created_at            DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime            @default(now()) @db.Timestamptz(6)
+  notification_events   notification_events @relation(fields: [event_key], references: [event_key], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([event_key, channel])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model notifications {
+  id                         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  recipient_id               String?                      @db.Uuid
+  title                      String
+  message                    String
+  entity_type                String
+  entity_id                  String?                      @db.Uuid
+  notification_type          String
+  is_read                    Boolean                      @default(false)
+  created_at                 DateTime                     @default(now()) @db.Timestamptz(6)
+  recipient_user_id          String?                      @db.Uuid
+  recipient_role             String?
+  recipient_department_id    String?                      @db.Uuid
+  event_key                  String?
+  category                   String                       @default("System")
+  priority                   String                       @default("normal")
+  action_url                 String?
+  action_label               String?
+  metadata                   Json                         @default("{}")
+  read_at                    DateTime?                    @db.Timestamptz(6)
+  archived_at                DateTime?                    @db.Timestamptz(6)
+  created_by                 String?                      @db.Uuid
+  notification_delivery_logs notification_delivery_logs[]
+  departments                departments?                 @relation(fields: [recipient_department_id], references: [id], onUpdate: NoAction)
+
+  @@index([category], map: "idx_notifications_category")
+  @@index([created_at(sort: Desc)], map: "idx_notifications_created_at")
+  @@index([entity_type, entity_id], map: "idx_notifications_entity")
+  @@index([event_key], map: "idx_notifications_event_key")
+  @@index([is_read], map: "idx_notifications_is_read")
+  @@index([priority], map: "idx_notifications_priority")
+  @@index([read_at], map: "idx_notifications_read_at")
+  @@index([recipient_id, created_at(sort: Desc)], map: "idx_notifications_recipient_created")
+  @@index([recipient_user_id], map: "idx_notifications_recipient_user_id")
+  @@index([recipient_user_id, archived_at, created_at(sort: Desc)], map: "idx_notifications_unarchived_recipient")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model numbering_sequences {
+  key           String   @id
+  current_value Int      @default(0)
+  updated_at    DateTime @default(now()) @db.Timestamptz(6)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model parts {
+  id                          String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  part_code                   String                   @unique
+  part_name                   String
+  description                 String?
+  category                    String?
+  part_number                 String?
+  ss_rec_code                 String?
+  unit_of_measure             String                   @default("PCS")
+  current_stock               Decimal                  @default(0) @db.Decimal(12, 2)
+  minimum_stock               Decimal                  @default(0) @db.Decimal(12, 2)
+  unit_price                  Decimal                  @default(0) @db.Decimal(12, 3)
+  supplier                    String?
+  store_location_bin          String?
+  compatible_asset_categories String[]                 @default([])
+  status                      String                   @default("Active")
+  notes                       String?
+  created_at                  DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at                  DateTime                 @default(now()) @db.Timestamptz(6)
+  created_by                  String?                  @db.Uuid
+  updated_by                  String?                  @db.Uuid
+  deleted_at                  DateTime?                @db.Timestamptz(6)
+  inventory_movements         inventory_movements[]
+  parts_request_items         parts_request_items[]
+  purchase_request_items      purchase_request_items[]
+  work_order_materials        work_order_materials[]
+
+  @@index([current_stock], map: "idx_parts_current_stock")
+  @@index([deleted_at], map: "idx_parts_deleted_at")
+  @@index([current_stock, minimum_stock], map: "idx_parts_low_stock")
+  @@index([status], map: "idx_parts_status")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model parts_request_items {
+  id                     String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parts_request_id       String                   @db.Uuid
+  part_id                String?                  @db.Uuid
+  description            String
+  part_number            String?
+  ss_rec_code            String?
+  quantity_requested     Decimal                  @default(0) @db.Decimal(12, 2)
+  unit_price             Decimal                  @default(0) @db.Decimal(12, 3)
+  total_price            Decimal?                 @default(dbgenerated("(COALESCE(quantity_requested, (0)::numeric) * COALESCE(unit_price, (0)::numeric))")) @db.Decimal(12, 3)
+  remarks                String?
+  stock_availability     String                   @default("Unchecked")
+  issued_quantity        Decimal                  @default(0) @db.Decimal(12, 2)
+  created_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  parts                  parts?                   @relation(fields: [part_id], references: [id], onUpdate: NoAction)
+  parts_requests         parts_requests           @relation(fields: [parts_request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  purchase_request_items purchase_request_items[]
+
+  @@index([parts_request_id], map: "idx_parts_request_items_request")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model parts_requests {
+  id                                             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parts_request_number                           String?               @unique
+  department_id                                  String?               @db.Uuid
+  work_order_id                                  String                @db.Uuid
+  asset_id                                       String?               @db.Uuid
+  remarks                                        String?
+  request_date                                   DateTime              @default(dbgenerated("CURRENT_DATE")) @db.Date
+  request_time                                   DateTime              @default(dbgenerated("CURRENT_TIME")) @db.Time(6)
+  serial_number                                  String?
+  requested_by                                   String?               @db.Uuid
+  prepared_by                                    String?               @db.Uuid
+  approved_by                                    String?               @db.Uuid
+  status                                         String                @default("Submitted")
+  approval_comments                              String?
+  store_issue_comments                           String?
+  total_price                                    Decimal               @default(0) @db.Decimal(12, 3)
+  created_at                                     DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at                                     DateTime              @default(now()) @db.Timestamptz(6)
+  created_by                                     String?               @db.Uuid
+  updated_by                                     String?               @db.Uuid
+  inventory_movements                            inventory_movements[]
+  parts_request_items                            parts_request_items[]
+  profiles_parts_requests_approved_byToprofiles  profiles?             @relation("parts_requests_approved_byToprofiles", fields: [approved_by], references: [id], onUpdate: NoAction)
+  assets                                         assets?               @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
+  departments                                    departments?          @relation(fields: [department_id], references: [id], onUpdate: NoAction)
+  profiles_parts_requests_prepared_byToprofiles  profiles?             @relation("parts_requests_prepared_byToprofiles", fields: [prepared_by], references: [id], onUpdate: NoAction)
+  profiles_parts_requests_requested_byToprofiles profiles?             @relation("parts_requests_requested_byToprofiles", fields: [requested_by], references: [id], onUpdate: NoAction)
+  work_orders                                    work_orders           @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  purchase_requests                              purchase_requests[]
+  approvals                                      approvals[]
+
+  @@index([request_date, status, department_id], map: "idx_parts_requests_report_filters")
+  @@index([status], map: "idx_parts_requests_status")
+  @@index([work_order_id], map: "idx_parts_requests_work_order")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model permissions {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key              String             @unique
+  description      String
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  role_permissions role_permissions[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model profiles {
+  id                                                                String                        @id @db.Uuid
+  full_name                                                         String
+  employee_number                                                   String?
+  phone                                                             String?
+  job_title                                                         String?
+  department_id                                                     String?                       @db.Uuid
+  role_id                                                           String?                       @db.Uuid
+  is_active                                                         Boolean                       @default(true)
+  can_view_costs                                                    Boolean                       @default(false)
+  deleted_at                                                        DateTime?                     @db.Timestamptz(6)
+  created_at                                                        DateTime                      @default(now()) @db.Timestamptz(6)
+  updated_at                                                        DateTime                      @default(now()) @db.Timestamptz(6)
+  auth_sessions                                                     auth_sessions[]
+  auth_users                                                        auth_users?
+  notification_preferences                                          notification_preferences[]
+  parts_requests_parts_requests_approved_byToprofiles               parts_requests[]              @relation("parts_requests_approved_byToprofiles")
+  parts_requests_parts_requests_prepared_byToprofiles               parts_requests[]              @relation("parts_requests_prepared_byToprofiles")
+  parts_requests_parts_requests_requested_byToprofiles              parts_requests[]              @relation("parts_requests_requested_byToprofiles")
+  departments                                                       departments?                  @relation(fields: [department_id], references: [id], onUpdate: NoAction)
+  roles                                                             roles?                        @relation(fields: [role_id], references: [id], onUpdate: NoAction)
+  purchase_requests_purchase_requests_ceo_approved_byToprofiles     purchase_requests[]           @relation("purchase_requests_ceo_approved_byToprofiles")
+  purchase_requests_purchase_requests_finance_approved_byToprofiles purchase_requests[]           @relation("purchase_requests_finance_approved_byToprofiles")
+  work_order_assignments                                            work_order_assignments[]
+  work_order_labor                                                  work_order_labor[]
+  work_order_technician_notes                                       work_order_technician_notes[]
+  work_orders                                                       work_orders[]
+  user_permission_overrides                                         user_permission_overrides[]   @relation("upo_profile")
+  user_permission_overrides_created                                 user_permission_overrides[]   @relation("upo_created_by")
+
+  @@index([department_id], map: "idx_profiles_department_id")
+  @@index([is_active], map: "idx_profiles_is_active")
+  @@index([role_id], map: "idx_profiles_role_id")
+}
+
+model user_permission_overrides {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  profile_id     String   @db.Uuid
+  permission_key String
+  override_type  String
+  reason         String?
+  created_by     String?  @db.Uuid
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  profiles       profiles @relation("upo_profile", fields: [profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  creator        profiles? @relation("upo_created_by", fields: [created_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([profile_id, permission_key, override_type], map: "upo_unique")
+  @@index([profile_id], map: "idx_upo_profile")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model purchase_request_items {
+  id                    String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchase_request_id   String               @db.Uuid
+  parts_request_item_id String?              @db.Uuid
+  part_id               String?              @db.Uuid
+  description           String
+  quantity              Decimal              @default(0) @db.Decimal(12, 2)
+  estimated_unit_price  Decimal              @default(0) @db.Decimal(12, 3)
+  estimated_total       Decimal?             @default(dbgenerated("(COALESCE(quantity, (0)::numeric) * COALESCE(estimated_unit_price, (0)::numeric))")) @db.Decimal(12, 3)
+  supplier              String?
+  created_at            DateTime             @default(now()) @db.Timestamptz(6)
+  parts                 parts?               @relation(fields: [part_id], references: [id], onUpdate: NoAction)
+  parts_request_items   parts_request_items? @relation(fields: [parts_request_item_id], references: [id], onUpdate: NoAction)
+  purchase_requests     purchase_requests    @relation(fields: [purchase_request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([purchase_request_id], map: "idx_purchase_request_items_request")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model purchase_requests {
+  id                                                       String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchase_request_number                                  String?                  @unique
+  work_order_id                                            String?                  @db.Uuid
+  parts_request_id                                         String?                  @db.Uuid
+  supplier                                                 String?
+  status                                                   String                   @default("Draft")
+  purchase_officer_notes                                   String?
+  finance_comments                                         String?
+  ceo_comments                                             String?
+  estimated_total                                          Decimal                  @default(0) @db.Decimal(12, 3)
+  finance_approved_by                                      String?                  @db.Uuid
+  finance_approved_at                                      DateTime?                @db.Timestamptz(6)
+  ceo_approved_by                                          String?                  @db.Uuid
+  ceo_approved_at                                          DateTime?                @db.Timestamptz(6)
+  quotation_file_name                                      String?
+  quotation_file_path                                      String?
+  invoice_file_name                                        String?
+  invoice_file_path                                        String?
+  delivery_note_file_name                                  String?
+  delivery_note_file_path                                  String?
+  created_at                                               DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at                                               DateTime                 @default(now()) @db.Timestamptz(6)
+  created_by                                               String?                  @db.Uuid
+  updated_by                                               String?                  @db.Uuid
+  inventory_movements                                      inventory_movements[]
+  purchase_request_items                                   purchase_request_items[]
+  profiles_purchase_requests_ceo_approved_byToprofiles     profiles?                @relation("purchase_requests_ceo_approved_byToprofiles", fields: [ceo_approved_by], references: [id], onUpdate: NoAction)
+  profiles_purchase_requests_finance_approved_byToprofiles profiles?                @relation("purchase_requests_finance_approved_byToprofiles", fields: [finance_approved_by], references: [id], onUpdate: NoAction)
+  parts_requests                                           parts_requests?          @relation(fields: [parts_request_id], references: [id], onUpdate: NoAction)
+  work_orders                                              work_orders?             @relation(fields: [work_order_id], references: [id], onUpdate: NoAction)
+  approvals                                                approvals[]
+
+  @@index([parts_request_id], map: "idx_purchase_requests_parts_request")
+  @@index([created_at, status], map: "idx_purchase_requests_report_filters")
+  @@index([status], map: "idx_purchase_requests_status")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model role_permissions {
+  role_id       String      @db.Uuid
+  permission_id String      @db.Uuid
+  created_at    DateTime    @default(now()) @db.Timestamptz(6)
+  permissions   permissions @relation(fields: [permission_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  roles         roles       @relation(fields: [role_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([role_id, permission_id])
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model roles {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String             @unique
+  slug             String             @unique
+  description      String?
+  is_system        Boolean            @default(true)
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  profiles         profiles[]
+  role_permissions role_permissions[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model work_order_assignments {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id String      @db.Uuid
+  technician_id String?     @db.Uuid
+  assigned_by   String?     @db.Uuid
+  assigned_at   DateTime    @default(now()) @db.Timestamptz(6)
+  notes         String?
+  profiles      profiles?   @relation(fields: [technician_id], references: [id], onUpdate: NoAction)
+  work_orders   work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([technician_id], map: "idx_work_order_assignments_technician")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model work_order_attachments {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id   String      @db.Uuid
+  attachment_type String
+  file_name       String
+  file_path       String
+  content_type    String?
+  file_size       Int?
+  uploaded_by     String?     @db.Uuid
+  created_at      DateTime    @default(now()) @db.Timestamptz(6)
+  work_orders     work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model work_order_labor {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id   String      @db.Uuid
+  technician_id   String?     @db.Uuid
+  labor_name      String
+  employee_number String?
+  hours           Decimal     @default(0) @db.Decimal(10, 2)
+  rate            Decimal     @default(0) @db.Decimal(12, 3)
+  amount          Decimal?    @default(dbgenerated("(COALESCE(hours, (0)::numeric) * COALESCE(rate, (0)::numeric))")) @db.Decimal(12, 3)
+  created_at      DateTime    @default(now()) @db.Timestamptz(6)
+  profiles        profiles?   @relation(fields: [technician_id], references: [id], onUpdate: NoAction)
+  work_orders     work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model work_order_materials {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id String      @db.Uuid
+  part_id       String?     @db.Uuid
+  material_name String
+  part_number   String?
+  ss_rec_code   String?
+  quantity      Decimal     @default(0) @db.Decimal(12, 2)
+  unit_price    Decimal     @default(0) @db.Decimal(12, 3)
+  amount        Decimal?    @default(dbgenerated("(COALESCE(quantity, (0)::numeric) * COALESCE(unit_price, (0)::numeric))")) @db.Decimal(12, 3)
+  created_at    DateTime    @default(now()) @db.Timestamptz(6)
+  parts         parts?      @relation(fields: [part_id], references: [id], onUpdate: NoAction)
+  work_orders   work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model work_order_status_history {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id String      @db.Uuid
+  from_status   String?
+  to_status     String
+  changed_by    String?     @db.Uuid
+  changed_at    DateTime    @default(now()) @db.Timestamptz(6)
+  notes         String?
+  work_orders   work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([work_order_id, changed_at(sort: Desc)], map: "idx_work_order_status_history_work_order")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model work_order_technician_notes {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id   String      @db.Uuid
+  technician_id   String      @db.Uuid
+  note            String
+  labor_hours     Decimal     @default(0) @db.Decimal(10, 2)
+  photo_file_name String?
+  photo_file_path String?
+  created_at      DateTime    @default(now()) @db.Timestamptz(6)
+  profiles        profiles    @relation(fields: [technician_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  work_orders     work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([technician_id], map: "idx_work_order_technician_notes_technician")
+  @@index([work_order_id, created_at(sort: Desc)], map: "idx_work_order_technician_notes_work_order")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model work_orders {
+  id                              String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_number               String?                       @unique
+  company_reference_format        String?
+  ordered_by                      String
+  requested_by_department_id      String?                       @db.Uuid
+  asset_id                        String?                       @db.Uuid
+  asset_category                  String?
+  serial_number                   String?
+  plate_number                    String?
+  date_of_order                   DateTime                      @default(dbgenerated("CURRENT_DATE")) @db.Date
+  job_location                    String?
+  starting_datetime               DateTime?                     @db.Timestamptz(6)
+  ending_datetime                 DateTime?                     @db.Timestamptz(6)
+  maintenance_type                String
+  worker_type                     String
+  running_hours                   Decimal?                      @db.Decimal(12, 2)
+  kilometers                      Decimal?                      @db.Decimal(12, 2)
+  operator_complaint              String?
+  description_of_work             String?
+  priority                        String                        @default("Normal")
+  status                          String                        @default("Draft")
+  assigned_supervisor_id          String?                       @db.Uuid
+  operator_requester_confirmation String?
+  supervisor_verification         String?
+  maintenance_manager_closure     String?
+  next_service_date               DateTime?                     @db.Date
+  next_service_kilometer          Decimal?                      @db.Decimal(12, 2)
+  next_service_running_hours      Decimal?                      @db.Decimal(12, 2)
+  total_labor_cost                Decimal                       @default(0) @db.Decimal(12, 3)
+  total_material_cost             Decimal                       @default(0) @db.Decimal(12, 3)
+  total_work_order_cost           Decimal?                      @default(dbgenerated("(COALESCE(total_labor_cost, (0)::numeric) + COALESCE(total_material_cost, (0)::numeric))")) @db.Decimal(12, 3)
+  notes                           String?
+  created_at                      DateTime                      @default(now()) @db.Timestamptz(6)
+  updated_at                      DateTime                      @default(now()) @db.Timestamptz(6)
+  created_by                      String?                       @db.Uuid
+  updated_by                      String?                       @db.Uuid
+  deleted_at                      DateTime?                     @db.Timestamptz(6)
+  approvals                       approvals[]
+  inventory_movements             inventory_movements[]
+  parts_requests                  parts_requests[]
+  purchase_requests               purchase_requests[]
+  work_order_assignments          work_order_assignments[]
+  work_order_attachments          work_order_attachments[]
+  work_order_labor                work_order_labor[]
+  work_order_materials            work_order_materials[]
+  work_order_status_history       work_order_status_history[]
+  work_order_technician_notes     work_order_technician_notes[]
+  assets                          assets?                       @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
+  profiles                        profiles?                     @relation(fields: [assigned_supervisor_id], references: [id], onUpdate: NoAction)
+  departments                     departments?                  @relation(fields: [requested_by_department_id], references: [id], onUpdate: NoAction)
+
+  @@index([asset_id], map: "idx_work_orders_asset_id")
+  @@index([created_at], map: "idx_work_orders_created_at")
+  @@index([deleted_at], map: "idx_work_orders_deleted_at")
+  @@index([requested_by_department_id], map: "idx_work_orders_department_id")
+  @@index([work_order_number], map: "idx_work_orders_number")
+  @@index([date_of_order, status, maintenance_type, worker_type, priority], map: "idx_work_orders_report_filters")
+  @@index([status], map: "idx_work_orders_status")
+}
+
+model auth_sessions {
+  id                 String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String     @db.Uuid
+  profile_id         String     @db.Uuid
+  session_token_hash String     @unique
+  user_agent         String?
+  ip_address         String?
+  expires_at         DateTime   @db.Timestamptz(6)
+  revoked_at         DateTime?  @db.Timestamptz(6)
+  created_at         DateTime   @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime   @default(now()) @db.Timestamptz(6)
+  profiles           profiles   @relation(fields: [profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  auth_users         auth_users @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([profile_id, expires_at], map: "auth_sessions_profile_expiry_idx")
+  @@index([user_id, expires_at], map: "auth_sessions_user_expiry_idx")
+}
+
+model auth_users {
+  id                        String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  profile_id                String          @unique @db.Uuid
+  email                     String          @unique @db.VarChar(320)
+  password_hash             String
+  is_active                 Boolean         @default(true)
+  deleted_at                DateTime?       @db.Timestamptz(6)
+  password_set_at           DateTime?       @db.Timestamptz(6)
+  password_changed_at       DateTime?       @db.Timestamptz(6)
+  temporary_password_set_at DateTime?       @db.Timestamptz(6)
+  must_reset_password       Boolean         @default(false)
+  last_login_at             DateTime?       @db.Timestamptz(6)
+  failed_login_count        Int             @default(0)
+  locked_until              DateTime?       @db.Timestamptz(6)
+  created_at                DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at                DateTime        @default(now()) @db.Timestamptz(6)
+  auth_sessions             auth_sessions[]
+  profiles                  profiles        @relation(fields: [profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model backup_logs {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  backup_type      String    @default("database")
+  status           String
+  file_path        String?
+  file_size_bytes  BigInt?
+  started_at       DateTime  @default(now()) @db.Timestamptz(6)
+  completed_at     DateTime? @db.Timestamptz(6)
+  error_message    String?
+  created_at       DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([created_at(sort: Desc)], map: "idx_backup_logs_created_at")
+  @@index([status, created_at(sort: Desc)], map: "idx_backup_logs_status")
+}
+
+/// Append-only log of business events for future realtime broadcast.
+/// No FK constraints so inserts never fail due to cascade deletes.
+/// Phase 2 will add Socket.IO consumers that tail this table.
+model realtime_events {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  event_type        String
+  entity_type       String
+  entity_id         String?  @db.Uuid
+  actor_profile_id  String?  @db.Uuid
+  target_profile_id String?  @db.Uuid
+  department_id     String?  @db.Uuid
+  scope             String?
+  payload           Json     @default("{}")
+  created_at        DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([created_at(sort: Desc)], map: "idx_realtime_events_created_at")
+  @@index([event_type], map: "idx_realtime_events_event_type")
+  @@index([entity_type, entity_id], map: "idx_realtime_events_entity")
+  @@index([target_profile_id], map: "idx_realtime_events_target_profile")
+  @@index([department_id], map: "idx_realtime_events_department")
+}

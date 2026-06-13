@@ -5,23 +5,39 @@ import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/db/prisma";
 
 export default async function AssignmentsPage() {
   await requirePermission("work_orders.assign");
-  const supabase = await createSupabaseServerClient();
-  const [{ data: workOrders }, { data: technicians }] = await Promise.all([
-    supabase
-      .from("work_orders")
-      .select("id, work_order_number, status, priority, operator_complaint, assets(asset_code, asset_name), work_order_assignments(technician_id)")
-      .in("status", ["Approved", "Assigned", "Completed by Technician"])
-      .order("created_at", { ascending: false }),
-    supabase.from("profiles").select("id, full_name, roles(slug)").eq("is_active", true).order("full_name")
+
+  const [rawWorkOrders, technicianOptions] = await Promise.all([
+    prisma.work_orders.findMany({
+      select: {
+        id: true,
+        work_order_number: true,
+        status: true,
+        priority: true,
+        operator_complaint: true,
+        assets: { select: { asset_code: true, asset_name: true } },
+        work_order_assignments: { select: { technician_id: true } }
+      },
+      where: { status: { in: ["Approved", "Assigned", "Completed by Technician"] } },
+      orderBy: { created_at: "desc" },
+      take: 100
+    }),
+    prisma.profiles.findMany({
+      where: { is_active: true, roles: { slug: "technician" } },
+      select: { id: true, full_name: true },
+      orderBy: { full_name: "asc" }
+    })
   ]);
-  const technicianOptions = (technicians ?? []).filter((profile) => {
-    const role = Array.isArray(profile.roles) ? profile.roles[0] : profile.roles;
-    return role?.slug === "technician";
-  });
+
+  const workOrders = rawWorkOrders.map((wo) => ({
+    ...wo,
+    work_order_assignments: wo.work_order_assignments.filter(
+      (a): a is { technician_id: string } => a.technician_id !== null
+    )
+  }));
 
   return (
     <>
@@ -29,7 +45,7 @@ export default async function AssignmentsPage() {
       <div className="grid gap-4 p-4 lg:p-6">
         {workOrders?.map((wo) => {
           const asset = Array.isArray(wo.assets) ? wo.assets[0] : wo.assets;
-          const assignments = Array.isArray(wo.work_order_assignments) ? wo.work_order_assignments : [];
+          const assignments: Array<{ technician_id: string }> = Array.isArray(wo.work_order_assignments) ? wo.work_order_assignments : [];
           return (
             <section key={wo.id} className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">

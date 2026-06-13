@@ -12,41 +12,73 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { PartsRequestForm } from "@/components/store/parts-request-form";
 import { requirePermission } from "@/lib/auth/context";
 import { createSignedFileUrl } from "@/lib/files/signed-url";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { canViewEntityFile } from "@/lib/security/file-access";
+import { prisma } from "@/lib/db/prisma";
 import { formatDateTime } from "@/lib/utils";
 
 export default async function TechnicianJobDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const context = await requirePermission("technician.jobs.view");
   const { id } = await params;
-  const supabase = await createSupabaseServerClient();
-  const [{ data: assignment }, { data: notes }, { data: labor }, { data: attachments }, { data: parts }] = await Promise.all([
-    supabase
-      .from("work_order_assignments")
-      .select("work_orders(*, assets(asset_code, asset_name), departments(name))")
-      .eq("work_order_id", id)
-      .eq("technician_id", context.userId)
-      .maybeSingle(),
-    supabase.from("work_order_technician_notes").select("*").eq("work_order_id", id).order("created_at", { ascending: false }),
-    supabase.from("work_order_labor").select("*").eq("work_order_id", id),
-    supabase.from("work_order_attachments").select("*").eq("work_order_id", id),
-    supabase.from("parts").select("id, part_code, part_name, part_number, ss_rec_code, unit_price").is("deleted_at", null).order("part_code")
+  const [rawAssignment, rawNotes, rawLabor, rawAttachments, rawParts] = await Promise.all([
+    prisma.work_order_assignments.findFirst({
+      where: { work_order_id: id, technician_id: context.userId },
+      include: {
+        work_orders: {
+          include: {
+            assets: { select: { asset_code: true, asset_name: true } },
+            departments: { select: { name: true } }
+          }
+        }
+      }
+    }),
+    prisma.work_order_technician_notes.findMany({
+      where: { work_order_id: id },
+      orderBy: { created_at: "desc" }
+    }),
+    prisma.work_order_labor.findMany({ where: { work_order_id: id } }),
+    prisma.work_order_attachments.findMany({ where: { work_order_id: id } }),
+    prisma.parts.findMany({
+      where: { deleted_at: null },
+      select: { id: true, part_code: true, part_name: true, part_number: true, ss_rec_code: true, unit_price: true },
+      orderBy: { part_code: "asc" }
+    })
   ]);
 
-  const wo = assignment ? (Array.isArray(assignment.work_orders) ? assignment.work_orders[0] : assignment.work_orders) : null;
+  const rawWo = rawAssignment?.work_orders ?? null;
+  const wo = rawWo ? {
+    ...rawWo,
+    running_hours: rawWo.running_hours?.toFixed(2) ?? null,
+    kilometers: rawWo.kilometers?.toFixed(2) ?? null,
+  } : null;
   if (!wo) return <PageHeader title="Job not found" description="This job is not assigned to your technician account." />;
   const asset = Array.isArray(wo.assets) ? wo.assets[0] : wo.assets;
   const department = Array.isArray(wo.departments) ? wo.departments[0] : wo.departments;
-  const signedAttachments = await Promise.all((attachments ?? []).map(async (attachment) => ({
+  const notes = rawNotes.map((note) => ({
+    ...note,
+    created_at: note.created_at.toISOString(),
+    labor_hours: note.labor_hours.toFixed(2)
+  }));
+  const labor = rawLabor.map((row) => ({
+    ...row,
+    hours: row.hours.toFixed(2),
+    rate: row.rate.toFixed(3),
+    amount: row.amount?.toFixed(3) ?? null
+  }));
+  const parts = rawParts.map((part) => ({
+    ...part,
+    unit_price: part.unit_price.toFixed(3)
+  }));
+  const signedAttachments = await Promise.all(rawAttachments.map(async (attachment) => ({
     id: attachment.id,
     label: attachment.attachment_type,
     fileName: attachment.file_name,
-    signedUrl: await createSignedFileUrl("work-order-files", attachment.file_path),
-    createdAt: attachment.created_at
+    signedUrl: await canViewEntityFile(context, "work-order-files", wo.id) ? await createSignedFileUrl("work-order-files", attachment.file_path) : null,
+    createdAt: attachment.created_at.toISOString()
   })));
 
   return (
     <>
-      <PageHeader title={wo.work_order_number} description="Technician mobile job detail and quick actions." actions={<StatusBadge label={wo.status} tone={wo.status === "In Progress" ? "blue" : wo.status === "Completed by Technician" ? "green" : "amber"} />} />
+      <PageHeader title={wo.work_order_number ?? ""} description="Technician mobile job detail and quick actions." actions={<StatusBadge label={wo.status} tone={wo.status === "In Progress" ? "blue" : wo.status === "Completed by Technician" ? "green" : "amber"} />} />
       <div className="grid gap-4 p-4 lg:grid-cols-[1fr_0.85fr] lg:p-6">
         <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
           <h2 className="text-lg font-black text-[#111827]">Job Details</h2>

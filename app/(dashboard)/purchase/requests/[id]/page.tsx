@@ -8,19 +8,28 @@ import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
+import { prisma } from "@/lib/db/prisma";
 import { createSignedFileUrl } from "@/lib/files/signed-url";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { canViewEntityFile } from "@/lib/security/file-access";
 import Link from "next/link";
 
 export default async function PurchaseRequestDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const context = await requirePermission("purchase_requests.view");
   const { id } = await params;
-  const supabase = await createSupabaseServerClient();
-  const [{ data: purchase }, { data: items }] = await Promise.all([
-    supabase.from("purchase_requests").select("*").eq("id", id).single(),
-    supabase.from("purchase_request_items").select("*, parts(part_code, part_name)").eq("purchase_request_id", id)
+  const [purchase, rawItems] = await Promise.all([
+    prisma.purchase_requests.findUnique({ where: { id } }),
+    prisma.purchase_request_items.findMany({
+      include: { parts: { select: { part_code: true, part_name: true } } },
+      where: { purchase_request_id: id }
+    })
   ]);
   if (!purchase) return <PageHeader title="Purchase request not found" />;
+  const items = rawItems.map((item) => ({
+    ...item,
+    quantity: item.quantity.toFixed(2),
+    estimated_unit_price: item.estimated_unit_price.toFixed(3),
+    estimated_total: item.estimated_total?.toFixed(3) ?? null
+  }));
   const canUploadFiles = context.role?.slug === "super_admin" || (context.permissions.includes("purchase_requests.manage") && context.permissions.includes("files.upload"));
   const signedFiles = await Promise.all([
     { id: "quotation", label: "Quotation", fileName: purchase.quotation_file_name, filePath: purchase.quotation_file_path },
@@ -30,17 +39,17 @@ export default async function PurchaseRequestDetailPage({ params }: { params: Pr
     id: file.id,
     label: file.label,
     fileName: file.fileName as string,
-    signedUrl: await createSignedFileUrl("purchase-files", file.filePath)
+    signedUrl: await canViewEntityFile(context, "purchase-files", purchase.id) ? await createSignedFileUrl("purchase-files", file.filePath) : null
   })));
   return (
     <>
-      <PageHeader title={purchase.purchase_request_number} description="Purchase request details, supplier metadata, finance approval, CEO threshold approval, and receiving." actions={<><Link href={`/purchase/requests/${purchase.id}/print`}><Button variant="secondary">Print</Button></Link><StatusBadge label={purchase.status} tone="blue" /></>} />
+      <PageHeader title={purchase.purchase_request_number ?? ""} description="Purchase request details, supplier metadata, finance approval, CEO threshold approval, and receiving." actions={<><Link href={`/purchase/requests/${purchase.id}/print`}><Button variant="secondary">Print</Button></Link><StatusBadge label={purchase.status} tone="blue" /></>} />
       <div className="grid gap-5 p-4 lg:grid-cols-[1fr_0.85fr] lg:p-6">
         <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
           <h2 className="text-lg font-bold">Purchase Summary</h2>
           <dl className="mt-4 grid gap-3 sm:grid-cols-2">
             <Info label="Supplier" value={purchase.supplier ?? "Not recorded"} />
-            <Info label="Estimate" value={<CostVisibilityGuard context={context}>{purchase.estimated_total}</CostVisibilityGuard>} />
+            <Info label="Estimate" value={<CostVisibilityGuard context={context}>{purchase.estimated_total.toFixed(3)}</CostVisibilityGuard>} />
             <Info label="Quotation" value={purchase.quotation_file_name ?? "Not recorded"} />
             <Info label="Notes" value={purchase.purchase_officer_notes ?? "Not recorded"} />
           </dl>

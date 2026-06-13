@@ -1,20 +1,45 @@
-import Image from "next/image";
-
+import { FormDocumentHeader } from "@/components/forms/form-document-header";
+import { writeAuditLog } from "@/lib/audit/log";
 import { requirePermission } from "@/lib/auth/context";
 import { createQrSvg, internalQrTarget } from "@/lib/qr/svg";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/db/prisma";
 import { formatDateTime } from "@/lib/utils";
 
 export default async function PrintAssetHistoryPage({ params }: { params: Promise<{ id: string }> }) {
-  await requirePermission("assets.view");
+  const context = await requirePermission("assets.view");
   const { id } = await params;
-  const supabase = await createSupabaseServerClient();
-  const [{ data: asset }, { data: workOrders }, { data: materials }] = await Promise.all([
-    supabase.from("assets").select("*, departments(name)").eq("id", id).single(),
-    supabase.from("work_orders").select("*").eq("asset_id", id).order("date_of_order", { ascending: false }),
-    supabase.from("work_order_materials").select("*, work_orders!inner(asset_id, work_order_number)").eq("work_orders.asset_id", id)
+  const [asset, rawWorkOrders, rawMaterials] = await Promise.all([
+    prisma.assets.findUnique({
+      where: { id },
+      include: { departments: { select: { name: true } } }
+    }),
+    prisma.work_orders.findMany({
+      where: { asset_id: id },
+      orderBy: { date_of_order: "desc" }
+    }),
+    prisma.work_order_materials.findMany({
+      where: { work_orders: { asset_id: id } }
+    })
   ]);
   if (!asset) return <div className="p-8">Asset not found.</div>;
+  const workOrders = rawWorkOrders.map((wo) => ({
+    ...wo,
+    date_of_order: wo.date_of_order?.toISOString() ?? null,
+    total_work_order_cost: wo.total_work_order_cost?.toFixed(3) ?? null
+  }));
+  const materials = rawMaterials.map((m) => ({
+    ...m,
+    quantity: m.quantity.toFixed(2),
+    unit_price: m.unit_price.toFixed(3),
+    amount: m.amount?.toFixed(3) ?? null
+  }));
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "asset_history.print",
+    entityType: "asset",
+    entityId: id,
+    summary: `Opened print view for asset history ${asset.asset_code}`
+  });
   const department = Array.isArray(asset.departments) ? asset.departments[0] : asset.departments;
   const qrPath = `/assets/${asset.id}`;
   const qrTarget = internalQrTarget(qrPath);
@@ -25,13 +50,15 @@ export default async function PrintAssetHistoryPage({ params }: { params: Promis
       <style>{`@media print { aside, .lg\\:pl-72 > header { display: none !important; } .print-hide { display:none!important; } }`}</style>
       <button className="print-hide mb-4 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white">Use browser print or Ctrl+P</button>
       <article className="mx-auto max-w-5xl border border-[#E5E7EB] p-8 shadow-sm">
-        <div className="flex items-start justify-between border-b-4 border-[#ED1C24] pb-5">
-          <div className="flex items-center gap-4">
-            <div className="relative h-20 w-24 rounded-md border border-[#E5E7EB] bg-white"><Image src="/recafco-logo.png" alt="RECAFCO logo" fill className="object-contain p-1" /></div>
-            <div><h1 className="text-2xl font-black">Asset Maintenance History</h1><p className="text-sm text-[#4B5563]">Generated: {formatDateTime(new Date().toISOString())}</p></div>
-          </div>
-          <div className="text-right"><p className="text-sm text-[#4B5563]">Asset</p><p className="text-xl font-black text-[#ED1C24]">{asset.asset_code}</p><p className="mt-2 text-sm font-bold">{asset.status}</p></div>
-        </div>
+        <FormDocumentHeader
+          variant="print"
+          title="Asset Maintenance History"
+          departmentName="Maintenance Department"
+          subtitle={`Generated: ${formatDateTime(new Date().toISOString())}`}
+          referenceLabel="Asset"
+          referenceNumber={asset.asset_code}
+          status={asset.status}
+        />
         <Grid rows={[
           ["Asset name", asset.asset_name],
           ["Category", asset.category],
@@ -39,11 +66,11 @@ export default async function PrintAssetHistoryPage({ params }: { params: Promis
           ["Location", asset.location],
           ["Serial number", asset.serial_number],
           ["Plate number", asset.plate_number],
-          ["Current KM", asset.current_kilometer_reading],
-          ["Running hours", asset.current_running_hours],
-          ["Next service date", asset.next_service_date],
-          ["Next service KM", asset.next_service_kilometer],
-          ["Next service hours", asset.next_service_running_hours],
+          ["Current KM", asset.current_kilometer_reading?.toFixed(2) ?? null],
+          ["Running hours", asset.current_running_hours?.toFixed(2) ?? null],
+          ["Next service date", asset.next_service_date?.toISOString() ?? null],
+          ["Next service KM", asset.next_service_kilometer?.toFixed(2) ?? null],
+          ["Next service hours", asset.next_service_running_hours?.toFixed(2) ?? null],
           ["Internal route", `/assets/${asset.id}`]
         ]} />
         <section className="mt-6 grid grid-cols-[140px_1fr] gap-4 border border-[#E5E7EB] p-4">

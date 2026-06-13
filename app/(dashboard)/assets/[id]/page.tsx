@@ -9,26 +9,64 @@ import { QrLinkCard } from "@/components/ui/qr-link-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { createSignedFileUrl } from "@/lib/files/signed-url";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { canViewEntityFile } from "@/lib/security/file-access";
+import { prisma } from "@/lib/db/prisma";
 
 export default async function AssetDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const context = await requirePermission("assets.view");
   const { id } = await params;
-  const supabase = await createSupabaseServerClient();
-  const [{ data: asset }, { data: workOrders }, { data: documents }] = await Promise.all([
-    supabase.from("assets").select("*, departments(name)").eq("id", id).single(),
-    supabase.from("work_orders").select("id, work_order_number, status, maintenance_type, worker_type, priority, date_of_order, total_work_order_cost").eq("asset_id", id).order("date_of_order", { ascending: false }).limit(20),
-    supabase.from("asset_documents").select("*").eq("asset_id", id).order("created_at", { ascending: false })
+  const [rawAsset, rawWorkOrders, rawDocuments] = await Promise.all([
+    prisma.assets.findUnique({
+      where: { id },
+      include: { departments: { select: { name: true } } }
+    }),
+    prisma.work_orders.findMany({
+      select: {
+        id: true,
+        work_order_number: true,
+        status: true,
+        maintenance_type: true,
+        worker_type: true,
+        priority: true,
+        date_of_order: true,
+        total_work_order_cost: true
+      },
+      where: { asset_id: id },
+      orderBy: { date_of_order: "desc" },
+      take: 20
+    }),
+    prisma.asset_documents.findMany({
+      where: { asset_id: id },
+      orderBy: { created_at: "desc" }
+    })
   ]);
 
-  if (!asset) return <PageHeader title="Asset not found" />;
+  if (!rawAsset) return <PageHeader title="Asset not found" />;
+  const asset = {
+    ...rawAsset,
+    purchase_date: rawAsset.purchase_date?.toISOString() ?? null,
+    warranty_expiry_date: rawAsset.warranty_expiry_date?.toISOString() ?? null,
+    registration_expiry_date: rawAsset.registration_expiry_date?.toISOString() ?? null,
+    insurance_expiry_date: rawAsset.insurance_expiry_date?.toISOString() ?? null,
+    current_kilometer_reading: rawAsset.current_kilometer_reading?.toFixed(2) ?? null,
+    current_running_hours: rawAsset.current_running_hours?.toFixed(2) ?? null,
+    next_service_date: rawAsset.next_service_date?.toISOString() ?? null,
+    next_service_kilometer: rawAsset.next_service_kilometer?.toFixed(2) ?? null,
+    next_service_running_hours: rawAsset.next_service_running_hours?.toFixed(2) ?? null,
+  };
+  const workOrders = rawWorkOrders.map((wo) => ({
+    ...wo,
+    date_of_order: wo.date_of_order.toISOString(),
+    total_work_order_cost: wo.total_work_order_cost?.toFixed(3) ?? null
+  }));
   const canUploadFiles = context.role?.slug === "super_admin" || (context.permissions.includes("assets.manage") && context.permissions.includes("files.upload"));
-  const signedDocuments = await Promise.all((documents ?? []).map(async (document) => ({
+  const canViewCosts = context.role?.slug === "super_admin" || context.permissions.includes("costs.view");
+  const signedDocuments = await Promise.all(rawDocuments.map(async (document) => ({
     id: document.id,
     label: document.document_type,
     fileName: document.file_name,
-    signedUrl: await createSignedFileUrl("asset-files", document.file_path),
-    createdAt: document.created_at
+    signedUrl: await canViewEntityFile(context, "asset-files", asset.id) ? await createSignedFileUrl("asset-files", document.file_path) : null,
+    createdAt: document.created_at.toISOString()
   })));
 
   return (
@@ -107,7 +145,7 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
               <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]"><tr><th className="px-3 py-2">WO</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Worker</th><th className="px-3 py-2">Priority</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Cost</th></tr></thead>
               <tbody className="divide-y divide-[#E5E7EB]">
                 {workOrders?.map((wo) => (
-                  <tr key={wo.id}><td className="px-3 py-2"><Link className="font-bold text-[#ED1C24]" href={`/maintenance/work-orders/${wo.id}`}>{wo.work_order_number}</Link></td><td className="px-3 py-2">{wo.date_of_order}</td><td className="px-3 py-2">{wo.maintenance_type}</td><td className="px-3 py-2">{wo.worker_type}</td><td className="px-3 py-2">{wo.priority}</td><td className="px-3 py-2">{wo.status}</td><td className="px-3 py-2">{wo.total_work_order_cost}</td></tr>
+                  <tr key={wo.id}><td className="px-3 py-2"><Link className="font-bold text-[#ED1C24]" href={`/maintenance/work-orders/${wo.id}`}>{wo.work_order_number}</Link></td><td className="px-3 py-2">{wo.date_of_order}</td><td className="px-3 py-2">{wo.maintenance_type}</td><td className="px-3 py-2">{wo.worker_type}</td><td className="px-3 py-2">{wo.priority}</td><td className="px-3 py-2">{wo.status}</td><td className="px-3 py-2">{canViewCosts ? wo.total_work_order_cost : "Restricted"}</td></tr>
                 ))}
               </tbody>
             </table>

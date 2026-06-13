@@ -1,7 +1,15 @@
 import "server-only";
 
 import type { CurrentUserContext } from "@/lib/auth/context";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { prisma } from "@/lib/db/prisma";
+
+export type ReportMode =
+  | "pending-approvals"
+  | "overdue"
+  | "waiting-parts"
+  | "asset-history"
+  | "monthly-summary"
+  | "technician-workload";
 
 export type ReportFilters = {
   dateFrom?: string;
@@ -9,6 +17,8 @@ export type ReportFilters = {
   departmentId?: string;
   assetId?: string;
   status?: string;
+  statusIn?: string[];
+  overdueOnly?: boolean;
   maintenanceType?: string;
   workerType?: string;
   technicianId?: string;
@@ -46,53 +56,108 @@ export function parseReportFilters(searchParams: Record<string, string | string[
 }
 
 export function canViewCosts(context: CurrentUserContext) {
-  return context.role?.slug === "super_admin" || context.permissions.includes("costs.view") || context.permissions.includes("finance.reports.view");
+  return (
+    context.role?.slug === "super_admin" ||
+    context.permissions.includes("costs.view") ||
+    context.permissions.includes("finance.reports.view") ||
+    context.permissions.includes("cost.reports.view")
+  );
 }
 
 export async function getFilterOptions(): Promise<FilterOptions> {
-  const supabase = createSupabaseAdminClient();
-  const [{ data: departments }, { data: assets }, { data: technicians }] = await Promise.all([
-    supabase.from("departments").select("id, name").eq("is_active", true).order("name"),
-    supabase.from("assets").select("id, asset_code, asset_name").is("deleted_at", null).order("asset_code"),
-    supabase.from("profiles").select("id, full_name, roles(slug)").eq("is_active", true).order("full_name")
+  const [departments, assets, profiles] = await Promise.all([
+    prisma.departments.findMany({ where: { is_active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    prisma.assets.findMany({ where: { deleted_at: null }, select: { id: true, asset_code: true, asset_name: true }, orderBy: { asset_code: "asc" } }),
+    prisma.profiles.findMany({ where: { is_active: true }, select: { id: true, full_name: true, roles: { select: { slug: true } } }, orderBy: { full_name: "asc" } })
   ]);
-
   return {
-    departments: departments ?? [],
-    assets: assets ?? [],
-    technicians: (technicians ?? [])
-      .filter((profile) => {
-        const role = Array.isArray(profile.roles) ? profile.roles[0] : profile.roles;
-        return role?.slug === "technician";
-      })
-      .map((profile) => ({ id: profile.id, full_name: profile.full_name }))
+    departments,
+    assets,
+    technicians: profiles
+      .filter((p) => p.roles?.slug === "technician")
+      .map((p) => ({ id: p.id, full_name: p.full_name }))
+  };
+}
+
+export function parseReportMode(raw: string | string[] | undefined): ReportMode {
+  const v = Array.isArray(raw) ? raw[0] : (raw ?? "");
+  const modes: ReportMode[] = ["pending-approvals", "overdue", "waiting-parts", "asset-history", "monthly-summary", "technician-workload"];
+  return modes.includes(v as ReportMode) ? (v as ReportMode) : "pending-approvals";
+}
+
+export async function getMgrFilterOptions(deptId: string): Promise<FilterOptions> {
+  const [depts, assets, profiles] = await Promise.all([
+    prisma.departments.findMany({ where: { id: deptId, is_active: true }, select: { id: true, name: true } }),
+    prisma.assets.findMany({ where: { deleted_at: null, department_id: deptId }, select: { id: true, asset_code: true, asset_name: true }, orderBy: { asset_code: "asc" } }),
+    prisma.profiles.findMany({ where: { is_active: true }, select: { id: true, full_name: true, roles: { select: { slug: true } } }, orderBy: { full_name: "asc" } })
+  ]);
+  return {
+    departments: depts,
+    assets,
+    technicians: profiles
+      .filter((p) => p.roles?.slug === "technician")
+      .map((p) => ({ id: p.id, full_name: p.full_name }))
   };
 }
 
 export async function getWorkOrderReport(filters: ReportFilters) {
-  const supabase = createSupabaseAdminClient();
-  let query = supabase
-    .from("work_orders")
-    .select("*, departments(name), assets(asset_code, asset_name), work_order_assignments(technician_id, profiles(full_name))")
-    .is("deleted_at", null)
-    .order("date_of_order", { ascending: false });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const where: any = { deleted_at: null };
+  if (filters.dateFrom || filters.dateTo) {
+    where.date_of_order = {};
+    if (filters.dateFrom) where.date_of_order.gte = new Date(filters.dateFrom);
+    if (filters.dateTo) where.date_of_order.lte = new Date(filters.dateTo);
+  }
+  if (filters.departmentId) where.requested_by_department_id = filters.departmentId;
+  if (filters.assetId) where.asset_id = filters.assetId;
+  if (filters.statusIn?.length) {
+    where.status = { in: filters.statusIn };
+  } else if (filters.overdueOnly) {
+    where.starting_datetime = { lt: new Date() };
+    where.status = { in: ["Approved", "Assigned", "In Progress", "Waiting for Parts", "Waiting for Purchase"] };
+  } else if (filters.status) {
+    where.status = filters.status;
+  }
+  if (filters.maintenanceType) where.maintenance_type = filters.maintenanceType;
+  if (filters.workerType) where.worker_type = filters.workerType;
+  if (filters.priority) where.priority = filters.priority;
+  if (filters.costMin !== undefined || filters.costMax !== undefined) {
+    where.total_work_order_cost = {};
+    if (filters.costMin !== undefined) where.total_work_order_cost.gte = filters.costMin;
+    if (filters.costMax !== undefined) where.total_work_order_cost.lte = filters.costMax;
+  }
 
-  if (filters.dateFrom) query = query.gte("date_of_order", filters.dateFrom);
-  if (filters.dateTo) query = query.lte("date_of_order", filters.dateTo);
-  if (filters.departmentId) query = query.eq("requested_by_department_id", filters.departmentId);
-  if (filters.assetId) query = query.eq("asset_id", filters.assetId);
-  if (filters.status) query = query.eq("status", filters.status);
-  if (filters.maintenanceType) query = query.eq("maintenance_type", filters.maintenanceType);
-  if (filters.workerType) query = query.eq("worker_type", filters.workerType);
-  if (filters.priority) query = query.eq("priority", filters.priority);
-  if (filters.costMin !== undefined) query = query.gte("total_work_order_cost", filters.costMin);
-  if (filters.costMax !== undefined) query = query.lte("total_work_order_cost", filters.costMax);
+  const rawRows = await prisma.work_orders.findMany({
+    where,
+    include: {
+      departments: { select: { name: true } },
+      assets: { select: { asset_code: true, asset_name: true } },
+      work_order_assignments: { select: { technician_id: true, profiles: { select: { full_name: true } } } }
+    },
+    orderBy: { date_of_order: "desc" }
+  }).then((rows) =>
+    rows.map((row) => ({
+      ...row,
+      date_of_order: row.date_of_order.toISOString(),
+      starting_datetime: row.starting_datetime?.toISOString() ?? null,
+      ending_datetime: row.ending_datetime?.toISOString() ?? null,
+      next_service_date: row.next_service_date?.toISOString() ?? null,
+      created_at: row.created_at.toISOString(),
+      updated_at: row.updated_at.toISOString(),
+      deleted_at: row.deleted_at?.toISOString() ?? null,
+      running_hours: row.running_hours?.toFixed(2) ?? null,
+      kilometers: row.kilometers?.toFixed(2) ?? null,
+      total_labor_cost: row.total_labor_cost.toFixed(3),
+      total_material_cost: row.total_material_cost.toFixed(3),
+      total_work_order_cost: row.total_work_order_cost?.toFixed(3) ?? null,
+      next_service_kilometer: row.next_service_kilometer?.toFixed(2) ?? null,
+      next_service_running_hours: row.next_service_running_hours?.toFixed(2) ?? null
+    }))
+  ).catch(() => []);
 
-  const { data } = await query;
-  const rows = (data ?? []).filter((row) => {
+  const rows = rawRows.filter((row) => {
     if (!filters.technicianId) return true;
-    const assignments = row.work_order_assignments as Array<{ technician_id: string | null }> | null;
-    return assignments?.some((assignment) => assignment.technician_id === filters.technicianId);
+    return row.work_order_assignments?.some((a) => a.technician_id === filters.technicianId);
   });
 
   return {
@@ -116,13 +181,35 @@ export async function getWorkOrderReport(filters: ReportFilters) {
 }
 
 export async function getAssetReport(filters: ReportFilters) {
-  const supabase = createSupabaseAdminClient();
-  let query = supabase.from("assets").select("*, departments(name), work_orders(id, status, maintenance_type, total_work_order_cost)").is("deleted_at", null).order("asset_code");
-  if (filters.departmentId) query = query.eq("department_id", filters.departmentId);
-  if (filters.assetId) query = query.eq("id", filters.assetId);
-  if (filters.status) query = query.eq("status", filters.status);
-  const { data } = await query;
-  const rows = data ?? [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const where: any = { deleted_at: null };
+  if (filters.departmentId) where.department_id = filters.departmentId;
+  if (filters.assetId) where.id = filters.assetId;
+  if (filters.status) where.status = filters.status;
+
+  const rows = await prisma.assets.findMany({
+    where,
+    include: {
+      departments: { select: { name: true } },
+      work_orders: { select: { id: true, status: true, maintenance_type: true, total_work_order_cost: true } }
+    },
+    orderBy: { asset_code: "asc" }
+  }).then((rawRows) => rawRows.map((row) => ({
+    ...row,
+    purchase_date: row.purchase_date?.toISOString() ?? null,
+    warranty_expiry_date: row.warranty_expiry_date?.toISOString() ?? null,
+    registration_expiry_date: row.registration_expiry_date?.toISOString() ?? null,
+    insurance_expiry_date: row.insurance_expiry_date?.toISOString() ?? null,
+    next_service_date: row.next_service_date?.toISOString() ?? null,
+    current_kilometer_reading: row.current_kilometer_reading?.toFixed(2) ?? null,
+    current_running_hours: row.current_running_hours?.toFixed(2) ?? null,
+    next_service_kilometer: row.next_service_kilometer?.toFixed(2) ?? null,
+    next_service_running_hours: row.next_service_running_hours?.toFixed(2) ?? null,
+    created_at: row.created_at.toISOString(),
+    updated_at: row.updated_at.toISOString(),
+    deleted_at: row.deleted_at?.toISOString() ?? null
+  }))).catch(() => []);
+
   const today = new Date();
   const in30 = new Date(today);
   in30.setDate(today.getDate() + 30);
@@ -139,7 +226,7 @@ export async function getAssetReport(filters: ReportFilters) {
       warrantyExpiry: rows.filter((row) => isDateBetween(row.warranty_expiry_date, today, in30)).length
     },
     topBreakdownAssets: rows
-      .map((row) => ({ ...row, breakdownCount: ((row.work_orders as Array<{ maintenance_type: string }> | null) ?? []).filter((wo) => wo.maintenance_type === "Breakdown").length }))
+      .map((row) => ({ ...row, breakdownCount: row.work_orders.filter((wo) => wo.maintenance_type === "Breakdown").length }))
       .sort((a, b) => b.breakdownCount - a.breakdownCount)
       .slice(0, 10)
   };
@@ -173,12 +260,31 @@ export async function getCostReport(filters: ReportFilters) {
 }
 
 export async function getPreventiveReport(filters: ReportFilters) {
-  const supabase = createSupabaseAdminClient();
-  let query = supabase.from("assets").select("*, departments(name)").is("deleted_at", null).order("next_service_date");
-  if (filters.departmentId) query = query.eq("department_id", filters.departmentId);
-  if (filters.assetId) query = query.eq("id", filters.assetId);
-  const { data } = await query;
-  const rows = data ?? [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const where: any = { deleted_at: null };
+  if (filters.departmentId) where.department_id = filters.departmentId;
+  if (filters.assetId) where.id = filters.assetId;
+
+  const rows = await prisma.assets.findMany({
+    where,
+    include: { departments: { select: { name: true } } },
+    orderBy: { next_service_date: "asc" }
+  }).then((rawRows) => rawRows.map((row) => ({
+    ...row,
+    purchase_date: row.purchase_date?.toISOString() ?? null,
+    warranty_expiry_date: row.warranty_expiry_date?.toISOString() ?? null,
+    registration_expiry_date: row.registration_expiry_date?.toISOString() ?? null,
+    insurance_expiry_date: row.insurance_expiry_date?.toISOString() ?? null,
+    next_service_date: row.next_service_date?.toISOString() ?? null,
+    current_kilometer_reading: row.current_kilometer_reading?.toFixed(2) ?? null,
+    current_running_hours: row.current_running_hours?.toFixed(2) ?? null,
+    next_service_kilometer: row.next_service_kilometer?.toFixed(2) ?? null,
+    next_service_running_hours: row.next_service_running_hours?.toFixed(2) ?? null,
+    created_at: row.created_at.toISOString(),
+    updated_at: row.updated_at.toISOString(),
+    deleted_at: row.deleted_at?.toISOString() ?? null
+  }))).catch(() => []);
+
   const today = new Date();
   const in7 = addDays(today, 7);
   const in15 = addDays(today, 15);
@@ -197,27 +303,48 @@ export async function getPreventiveReport(filters: ReportFilters) {
 }
 
 export async function getPartsInventoryRows() {
-  const supabase = createSupabaseAdminClient();
-  const { data } = await supabase.from("parts").select("*").is("deleted_at", null).order("part_code");
-  return data ?? [];
+  return prisma.parts.findMany({ where: { deleted_at: null }, orderBy: { part_code: "asc" } })
+    .then((rows) => rows.map((row) => ({
+      ...row,
+      created_at: row.created_at.toISOString(),
+      updated_at: row.updated_at.toISOString(),
+      deleted_at: row.deleted_at?.toISOString() ?? null
+    }))).catch(() => []);
 }
 
 export async function getPartsRequestRows() {
-  const supabase = createSupabaseAdminClient();
-  const { data } = await supabase.from("parts_requests").select("*, departments(name), work_orders(work_order_number), assets(asset_code, asset_name)").order("created_at", { ascending: false });
-  return data ?? [];
+  return prisma.parts_requests.findMany({
+    include: {
+      departments: { select: { name: true } },
+      work_orders: { select: { work_order_number: true } },
+      assets: { select: { asset_code: true, asset_name: true } }
+    },
+    orderBy: { created_at: "desc" }
+  }).then((rows) => rows.map((row) => ({
+    ...row,
+    request_date: row.request_date.toISOString(),
+    request_time: row.request_time.toISOString().slice(11, 19),
+    created_at: row.created_at.toISOString(),
+    updated_at: row.updated_at.toISOString()
+  }))).catch(() => []);
 }
 
 export async function getPurchaseRows() {
-  const supabase = createSupabaseAdminClient();
-  const { data } = await supabase.from("purchase_requests").select("*").order("created_at", { ascending: false });
-  return data ?? [];
+  return prisma.purchase_requests.findMany({ orderBy: { created_at: "desc" } })
+    .then((rows) => rows.map((row) => ({
+      ...row,
+      created_at: row.created_at.toISOString(),
+      updated_at: row.updated_at.toISOString(),
+      finance_approved_at: row.finance_approved_at?.toISOString() ?? null,
+      ceo_approved_at: row.ceo_approved_at?.toISOString() ?? null
+    }))).catch(() => []);
 }
 
 export async function getInventoryMovementRows() {
-  const supabase = createSupabaseAdminClient();
-  const { data } = await supabase.from("inventory_movements").select("*, parts(part_code, part_name)").order("created_at", { ascending: false });
-  return data ?? [];
+  return prisma.inventory_movements.findMany({
+    include: { parts: { select: { part_code: true, part_name: true } } },
+    orderBy: { created_at: "desc" }
+  }).then((rows) => rows.map((row) => ({ ...row, created_at: row.created_at.toISOString() }))).catch(() => []);
 }
 
 function relationName(value: unknown) {
@@ -253,8 +380,123 @@ function addDays(value: Date, days: number) {
   return next;
 }
 
-function isDateBetween(value: string | null | undefined, start: Date, end: Date) {
+function isDateBetween(value: Date | string | null | undefined, start: Date, end: Date) {
   if (!value) return false;
-  const date = new Date(value);
+  const date = value instanceof Date ? value : new Date(value);
   return date >= start && date <= end;
+}
+
+// ─── CEO Report ──────────────────────────────────────────────────────────────
+
+export type CeoReportMode =
+  | "executive-summary"
+  | "ceo-approvals"
+  | "cost-exposure"
+  | "blocked-operations"
+  | "department-performance"
+  | "asset-risk";
+
+export function parseCeoReportMode(raw: string | string[] | undefined): CeoReportMode {
+  const v = Array.isArray(raw) ? raw[0] : (raw ?? "");
+  const modes: CeoReportMode[] = [
+    "executive-summary",
+    "ceo-approvals",
+    "cost-exposure",
+    "blocked-operations",
+    "department-performance",
+    "asset-risk"
+  ];
+  return modes.includes(v as CeoReportMode) ? (v as CeoReportMode) : "executive-summary";
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getCeoPurchaseApprovals(filters: Pick<ReportFilters, "dateFrom" | "dateTo" | "priority">): Promise<any[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const where: any = { status: "Pending CEO Approval" };
+  if (filters.dateFrom || filters.dateTo) {
+    where.created_at = {};
+    if (filters.dateFrom) where.created_at.gte = new Date(filters.dateFrom);
+    if (filters.dateTo) where.created_at.lte = new Date(filters.dateTo);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data: any[] = await prisma.purchase_requests.findMany({
+    where,
+    select: {
+      id: true,
+      purchase_request_number: true,
+      supplier: true,
+      status: true,
+      estimated_total: true,
+      created_at: true,
+      work_orders: {
+        select: {
+          work_order_number: true,
+          priority: true,
+          departments: { select: { name: true } }
+        }
+      }
+    },
+    orderBy: { created_at: "asc" }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }).then((rows) => rows.map((row) => ({ ...row, created_at: row.created_at.toISOString() }))).catch((): any[] => []);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let rows: any[] = data;
+  if (filters.priority) {
+    rows = rows.filter((row) => {
+      const wo = Array.isArray(row.work_orders) ? row.work_orders[0] : row.work_orders;
+      return wo?.priority === filters.priority;
+    });
+  }
+  return rows;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getCeoAllPurchaseRows(filters: Pick<ReportFilters, "dateFrom" | "dateTo" | "departmentId" | "costMin" | "costMax">): Promise<any[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const where: any = {};
+  if (filters.dateFrom || filters.dateTo) {
+    where.created_at = {};
+    if (filters.dateFrom) where.created_at.gte = new Date(filters.dateFrom);
+    if (filters.dateTo) where.created_at.lte = new Date(filters.dateTo);
+  }
+  if (filters.costMin !== undefined || filters.costMax !== undefined) {
+    where.estimated_total = {};
+    if (filters.costMin !== undefined) where.estimated_total.gte = filters.costMin;
+    if (filters.costMax !== undefined) where.estimated_total.lte = filters.costMax;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data: any[] = await prisma.purchase_requests.findMany({
+    where,
+    select: {
+      id: true,
+      purchase_request_number: true,
+      supplier: true,
+      status: true,
+      estimated_total: true,
+      created_at: true,
+      work_orders: {
+        select: {
+          work_order_number: true,
+          priority: true,
+          requested_by_department_id: true,
+          departments: { select: { name: true } }
+        }
+      }
+    },
+    orderBy: { created_at: "desc" }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }).then((rows) => rows.map((row) => ({ ...row, created_at: row.created_at.toISOString() }))).catch((): any[] => []);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let rows: any[] = data.filter((row: any) => !["Cancelled", "Rejected"].includes(row.status as string));
+  if (filters.departmentId) {
+    rows = rows.filter((row) => {
+      const wo = Array.isArray(row.work_orders) ? row.work_orders[0] : row.work_orders;
+      return wo?.requested_by_department_id === filters.departmentId;
+    });
+  }
+  return rows;
 }

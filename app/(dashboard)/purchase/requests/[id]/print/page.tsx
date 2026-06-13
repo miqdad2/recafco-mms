@@ -1,18 +1,38 @@
-import Image from "next/image";
-
+import { FormDocumentHeader } from "@/components/forms/form-document-header";
+import { writeAuditLog } from "@/lib/audit/log";
 import { requirePermission } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/db/prisma";
 import { formatDateTime } from "@/lib/utils";
 
 export default async function PrintPurchaseRequestPage({ params }: { params: Promise<{ id: string }> }) {
-  await requirePermission("purchase_requests.view");
+  const context = await requirePermission("purchase_requests.view");
   const { id } = await params;
-  const supabase = await createSupabaseServerClient();
-  const [{ data: purchase }, { data: items }] = await Promise.all([
-    supabase.from("purchase_requests").select("*, work_orders(work_order_number), parts_requests(parts_request_number)").eq("id", id).single(),
-    supabase.from("purchase_request_items").select("*").eq("purchase_request_id", id)
+  const [purchase, rawItems] = await Promise.all([
+    prisma.purchase_requests.findUnique({
+      where: { id },
+      include: {
+        work_orders: { select: { work_order_number: true } },
+        parts_requests: { select: { parts_request_number: true } }
+      }
+    }),
+    prisma.purchase_request_items.findMany({
+      where: { purchase_request_id: id }
+    })
   ]);
   if (!purchase) return <div className="p-8">Purchase request not found.</div>;
+  const items = rawItems.map((item) => ({
+    ...item,
+    quantity: item.quantity.toFixed(2),
+    estimated_unit_price: item.estimated_unit_price.toFixed(3),
+    estimated_total: item.estimated_total?.toFixed(3) ?? null
+  }));
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "purchase_request.print",
+    entityType: "purchase_request",
+    entityId: id,
+    summary: `Opened print view for purchase request ${purchase.purchase_request_number}`
+  });
   const workOrder = Array.isArray(purchase.work_orders) ? purchase.work_orders[0] : purchase.work_orders;
   const partsRequest = Array.isArray(purchase.parts_requests) ? purchase.parts_requests[0] : purchase.parts_requests;
 
@@ -21,18 +41,20 @@ export default async function PrintPurchaseRequestPage({ params }: { params: Pro
       <style>{`@media print { aside, .lg\\:pl-72 > header { display: none !important; } .print-hide { display:none!important; } }`}</style>
       <button className="print-hide mb-4 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white">Use browser print or Ctrl+P</button>
       <article className="mx-auto max-w-5xl border border-[#E5E7EB] p-8 shadow-sm">
-        <div className="flex items-start justify-between border-b-4 border-[#ED1C24] pb-5">
-          <div className="flex items-center gap-4">
-            <div className="relative h-20 w-24 rounded-md border border-[#E5E7EB] bg-white"><Image src="/recafco-logo.png" alt="RECAFCO logo" fill className="object-contain p-1" /></div>
-            <div><h1 className="text-2xl font-black">RECAFCO Purchase Request</h1><p className="text-sm text-[#4B5563]">Generated: {formatDateTime(new Date().toISOString())}</p></div>
-          </div>
-          <div className="text-right"><p className="text-sm text-[#4B5563]">Number</p><p className="text-xl font-black text-[#ED1C24]">{purchase.purchase_request_number}</p><p className="mt-2 text-sm font-bold">{purchase.status}</p></div>
-        </div>
+        <FormDocumentHeader
+          variant="print"
+          title="Purchase Request"
+          departmentName="Purchase Department"
+          subtitle={`Generated: ${formatDateTime(new Date().toISOString())}`}
+          referenceLabel="Number"
+          referenceNumber={purchase.purchase_request_number}
+          status={purchase.status}
+        />
         <Grid rows={[
           ["Work order", workOrder?.work_order_number],
           ["Parts request", partsRequest?.parts_request_number],
           ["Supplier", purchase.supplier],
-          ["Estimated total", purchase.estimated_total],
+          ["Estimated total", purchase.estimated_total.toFixed(3)],
           ["Finance comments", purchase.finance_comments],
           ["CEO comments", purchase.ceo_comments],
           ["Quotation", purchase.quotation_file_name],
