@@ -1,21 +1,30 @@
 import Link from "next/link";
 
-import { approveWorkOrderAction, rejectWorkOrderAction } from "@/app/actions/workflow";
+import { approveWorkOrderAction, rejectWorkOrderAction, requestClarificationAction } from "@/app/actions/workflow";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/db/prisma";
 
 export default async function ApprovalsPage() {
   await requirePermission("work_orders.approve");
-  const supabase = await createSupabaseServerClient();
-  const { data: workOrders } = await supabase
-    .from("work_orders")
-    .select("id, work_order_number, ordered_by, priority, status, date_of_order, operator_complaint, assets(asset_code, asset_name), departments(name)")
-    .in("status", ["Submitted", "Pending Approval"])
-    .order("created_at", { ascending: true });
+  const workOrders = await prisma.work_orders.findMany({
+    select: {
+      id: true,
+      work_order_number: true,
+      ordered_by: true,
+      priority: true,
+      status: true,
+      date_of_order: true,
+      operator_complaint: true,
+      assets: { select: { asset_code: true, asset_name: true } },
+      departments: { select: { name: true } }
+    },
+    where: { status: { in: ["Submitted", "Pending Approval"] } },
+    orderBy: { created_at: "asc" }
+  });
 
   return (
     <>
@@ -37,7 +46,7 @@ export default async function ApprovalsPage() {
                   <StatusBadge label={wo.status} tone="amber" />
                 </div>
               </div>
-              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              <div className="mt-4 grid gap-3 lg:grid-cols-3">
                 <form action={approveWorkOrderAction} className="space-y-2">
                   <input type="hidden" name="work_order_id" value={wo.id} />
                   <textarea className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm" name="comments" placeholder="Approval comments" />
@@ -47,6 +56,11 @@ export default async function ApprovalsPage() {
                   <input type="hidden" name="work_order_id" value={wo.id} />
                   <textarea className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm" name="comments" placeholder="Rejection reason" required />
                   <Button type="submit" variant="danger" className="w-full">Reject</Button>
+                </form>
+                <form action={requestClarificationAction} className="space-y-2">
+                  <input type="hidden" name="work_order_id" value={wo.id} />
+                  <textarea className="focus-ring min-h-20 w-full rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm" name="question" placeholder="What information is needed? (min 10 characters)" required minLength={10} />
+                  <Button type="submit" variant="secondary" className="w-full">Request Clarification</Button>
                 </form>
               </div>
             </section>

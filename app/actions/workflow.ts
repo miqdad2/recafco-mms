@@ -10,6 +10,7 @@ import {
   closeWorkOrder,
   completeTechnicianJob,
   rejectWorkOrder,
+  requestWorkOrderClarification,
   returnWorkOrderToDraft,
   startTechnicianJob,
   submitWorkOrder,
@@ -81,6 +82,27 @@ export async function rejectWorkOrderAction(formData: FormData) {
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/approvals");
     targetPath = `/maintenance/work-orders/${result.workOrderId}`;
+  } catch (error) {
+    redirect(workflowErrorPath(id, error));
+  }
+  redirect(targetPath);
+}
+
+export async function requestClarificationAction(formData: FormData) {
+  const context = await requirePermission("work_orders.approve");
+  const id = idFrom(formData);
+  const question = String(formData.get("question") ?? "").trim();
+  let targetPath = `/maintenance/work-orders/${id}`;
+
+  if (question.length < 10) {
+    redirect(`${targetPath}?error=clarification-question-too-short`);
+  }
+
+  try {
+    const result = await requestWorkOrderClarification(context, id, question);
+    revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/maintenance/approvals");
+    targetPath = `/maintenance/work-orders/${result.workOrderId}?success=clarification-sent`;
   } catch (error) {
     redirect(workflowErrorPath(id, error));
   }

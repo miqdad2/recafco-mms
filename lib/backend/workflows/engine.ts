@@ -3,6 +3,75 @@ import "server-only";
 import type { BackendTransaction } from "@/lib/backend/shared/transaction";
 
 /**
+ * Records a clarification request from the Maintenance Manager on the
+ * maintenance_manager_review step (Phase 5-D3-B).
+ *
+ * Marks the step instance as "clarification_requested" and inserts a row
+ * in clarification_requests. The work_orders.status is NOT changed — it
+ * stays "Pending Approval". The Manager can still approve or reject after
+ * the creator responds.
+ *
+ * Returns the clarification_requests.id, or null when no workflow instance
+ * exists for this work order (old WOs — safe skip, no orphan rows created).
+ *
+ * Accepts step instances in "pending" or "clarification_requested" status so
+ * follow-up clarification requests on the same step do not silently fail.
+ */
+export async function requestMaintenanceManagerClarification(
+  tx: BackendTransaction,
+  workOrderId: string,
+  question: string,
+  actorUserId: string
+): Promise<string | null> {
+  const instance = await tx.workflowInstance.findFirst({
+    where: { entity_type: "work_order", entity_id: workOrderId },
+    select: { id: true, workflow_def_id: true }
+  });
+  if (!instance) return null; // pre-Phase 5-D1 work order — safe skip
+
+  const reviewStep = await tx.workflowStep.findFirst({
+    where: { workflow_def_id: instance.workflow_def_id, code: "maintenance_manager_review" },
+    select: { id: true }
+  });
+  if (!reviewStep) return null;
+
+  const stepInst = await tx.workflowStepInstance.findFirst({
+    where: {
+      workflow_inst_id: instance.id,
+      step_id: reviewStep.id,
+      status: { in: ["pending", "clarification_requested"] }
+    },
+    select: { id: true }
+  });
+  if (!stepInst) return null; // step already completed/rejected
+
+  const now = new Date();
+
+  await tx.workflowStepInstance.update({
+    where: { id: stepInst.id },
+    data: {
+      status: "clarification_requested",
+      actor_id: actorUserId,
+      decision: "clarification_requested",
+      comments: question,
+      completed_at: now
+    }
+  });
+
+  const clarification = await tx.clarificationRequest.create({
+    data: {
+      workflow_step_inst_id: stepInst.id,
+      question,
+      requested_by: actorUserId,
+      status: "pending"
+    },
+    select: { id: true }
+  });
+
+  return clarification.id;
+}
+
+/**
  * Advances the maintenance_manager_review step when the Maintenance Manager
  * approves or rejects a work order (Phase 5-D2).
  *

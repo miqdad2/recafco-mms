@@ -4,7 +4,7 @@ import type { CurrentUserContext } from "@/lib/auth/context";
 import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
 import { assertActiveUser, assertBackendPermission } from "@/lib/backend/security/guards";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
-import { advanceMaintenanceManagerReview } from "@/lib/backend/workflows/engine";
+import { advanceMaintenanceManagerReview, requestMaintenanceManagerClarification } from "@/lib/backend/workflows/engine";
 import {
   findWorkflowWorkOrder,
   getActiveUserIdsByRoleSlugs,
@@ -140,6 +140,52 @@ export async function rejectWorkOrder(context: CurrentUserContext, workOrderId: 
       actionLabel: "Open work order"
     }),
     auditWorkflow(context, "work_order.reject", result, `Rejected ${result.workOrderNumber ?? "work order"}`, { comments })
+  ]);
+
+  return result;
+}
+
+export async function requestWorkOrderClarification(context: CurrentUserContext, workOrderId: string, question: string) {
+  assertBackendPermission(context, "work_orders.approve");
+
+  if (question.trim().length < 10) {
+    throw new AppError("Clarification question must be at least 10 characters.", { code: "VALIDATION_ERROR" });
+  }
+
+  const result = await withBackendTransaction(context.userId, async (tx) => {
+    const existing = await findWorkflowWorkOrder(tx, workOrderId);
+    if (!existing) {
+      throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
+    }
+    if (!["Submitted", "Pending Approval"].includes(existing.status)) {
+      throw new AppError(
+        `Clarification can only be requested on a Submitted or Pending Approval work order. Current status: "${existing.status}".`,
+        { code: "WORKFLOW_ERROR" }
+      );
+    }
+
+    await requestMaintenanceManagerClarification(tx, workOrderId, question.trim(), context.userId);
+
+    return {
+      workOrderId: existing.id,
+      workOrderNumber: existing.work_order_number,
+      status: existing.status,
+      createdBy: existing.created_by
+    };
+  });
+
+  await Promise.all([
+    notifyWorkflowEvent({
+      eventKey: "work_order.clarification_requested",
+      entityType: "work_order",
+      entityId: result.workOrderId,
+      actorId: context.userId,
+      recipientUserIds: [result.createdBy].filter((id): id is string => Boolean(id)),
+      metadata: { work_order_number: result.workOrderNumber ?? "Work order", question: question.trim() },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
+      actionLabel: "View work order"
+    }),
+    auditWorkflow(context, "work_order.clarification_requested", result, `Requested clarification on ${result.workOrderNumber ?? "work order"}`, { question: question.trim() })
   ]);
 
   return result;
