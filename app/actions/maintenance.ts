@@ -96,7 +96,6 @@ const workOrderSchema = z.object({
   operator_complaint: optionalString,
   description_of_work: optionalString,
   priority: z.string().trim().min(2),
-  status: z.string().trim().min(2).optional(),
   assigned_supervisor_id: optionalUuid,
   operator_requester_confirmation: optionalString,
   supervisor_verification: optionalString,
@@ -250,6 +249,15 @@ export async function upsertWorkOrderAction(formData: FormData) {
     ? `/maintenance/work-orders/${rawId}/edit`
     : "/maintenance/work-orders/new";
 
+  // Read the intent flag — the form submits "save_draft" or "submit_for_approval",
+  // never a raw status string. createStatus is derived here; any status field in
+  // formData is ignored completely, so injecting status=Closed has no effect.
+  const rawIntent = String(formData.get("intent") ?? "").trim();
+  if (!isEdit && rawIntent !== "save_draft" && rawIntent !== "submit_for_approval") {
+    redirect(`${formBackHref}?error=invalid-status`);
+  }
+  const createStatus = rawIntent === "submit_for_approval" ? "Pending Approval" : "Draft";
+
   const parsed = workOrderSchema.safeParse(Object.fromEntries(formData));
 
   if (!parsed.success) {
@@ -260,17 +268,10 @@ export async function upsertWorkOrderAction(formData: FormData) {
 
   // Status transitions must happen through dedicated workflow actions only.
   // This action only handles draft creation and metadata edits on Draft/Rejected WOs.
-  const ALLOWED_CREATE_STATUSES = ["Draft", "Pending Approval"];
   const EDITABLE_STATUSES = ["Draft", "Rejected"];
-  const { id, status, ...values } = parsed.data;
-  // Hoist createStatus so recovery draft logic can reference it outside the if block.
-  const createStatus = !id ? (status ?? "Draft") : "Draft";
+  const { id, ...values } = parsed.data;
 
   if (!id) {
-    // New work order: only allow safe initial statuses from the submit buttons.
-    if (!ALLOWED_CREATE_STATUSES.includes(createStatus)) {
-      redirect(`${formBackHref}?error=invalid-status`);
-    }
     // Submit-specific validation: department, complaint, and description are required
     // when the user clicks "Submit for Approval" (not required for Save Draft).
     if (createStatus === "Pending Approval") {
@@ -403,7 +404,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
 
   const auditStatus = id
     ? (existingStatus === "Rejected" ? "Rejected→Draft" : "(preserved)")
-    : (status ?? "Draft");
+    : createStatus;
 
   await writeAuditLog({
     actorId: context.userId,
@@ -414,7 +415,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
     metadata: { status: auditStatus, worker_type: parsed.data.worker_type }
   });
 
-  if (!id && status && ["Submitted", "Pending Approval"].includes(status)) {
+  if (!id && createStatus === "Pending Approval") {
     await notifyByEvent({
       eventKey: "work_order.submitted",
       entityType: "work_order",
