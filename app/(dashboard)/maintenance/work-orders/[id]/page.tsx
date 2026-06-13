@@ -541,6 +541,7 @@ function stepInstanceTone(status: string): BadgeTone {
   if (status === "completed") return "green";
   if (status === "pending") return "amber";
   if (status === "active") return "blue";
+  if (status === "clarification_requested") return "blue";
   return "gray";
 }
 
@@ -579,7 +580,7 @@ function WorkflowTrackingSection({
 
       <div className="mt-3 rounded-md border border-blue-100 bg-blue-50 px-4 py-2">
         <p className="text-xs font-semibold text-blue-800">
-          Workflow tracking is active. Approval behavior is still using the current stable approval flow.
+          Workflow tracking is active. Approval behavior is still using the current stable approval flow. Pending steps after Maintenance Manager review, such as <span className="font-mono">inventory_check</span>, are tracking-only placeholders — no store or inventory action is required until the inventory workflow is activated in Phase 5-E.
         </p>
       </div>
 

@@ -73,6 +73,18 @@ const fallbackTemplates: Record<string, { title: string; message: string; action
     message: "Purchase request {purchase_request_number} requires CEO approval.",
     actionLabel: "Review request",
     actionUrl: "/purchase/requests/{entity_id}"
+  },
+  "work_order.clarification_requested": {
+    title: "Clarification requested for work order {work_order_number}",
+    message: "Maintenance Manager requested more information: {question}",
+    actionLabel: "View work order",
+    actionUrl: "/maintenance/work-orders/{entity_id}"
+  },
+  "work_order.clarification_responded": {
+    title: "Clarification response received for {work_order_number}",
+    message: "The requester responded: {response}",
+    actionLabel: "Review and decide",
+    actionUrl: "/maintenance/work-orders/{entity_id}"
   }
 };
 
