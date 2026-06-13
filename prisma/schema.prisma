@@ -460,6 +460,8 @@ model profiles {
   user_permission_overrides                                         user_permission_overrides[]   @relation("upo_profile")
   user_permission_overrides_created                                 user_permission_overrides[]   @relation("upo_created_by")
   maintenance_team_members                                          MaintenanceTeamMember[]
+  workflow_map_versions_workflow_map_versions_created_byToprofiles  WorkflowMapVersion[]    @relation("workflow_map_versions_created_byToprofiles")
+  workflow_map_versions_workflow_map_versions_updated_byToprofiles  WorkflowMapVersion[]    @relation("workflow_map_versions_updated_byToprofiles")
 
   @@index([department_id], map: "idx_profiles_department_id")
   @@index([is_active], map: "idx_profiles_is_active")
@@ -996,4 +998,28 @@ model PurchaseOrderItem {
   @@map("purchase_order_items")
   @@index([purchase_order_id], map: "idx_purchase_order_items_po")
   @@index([part_id], map: "idx_purchase_order_items_part")
+}
+
+// ─── Phase 5-C1: Schema hygiene — reconcile workflow_map_versions drift ───────
+// Table was created in supabase/migrations/20260606140000_workflow_map_versions.sql
+// but was missing from prisma/schema.prisma. Adding model only — no migration needed.
+
+model WorkflowMapVersion {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title          String    @default("RECAFCO Maintenance Workflow Workshop Map")
+  version_number Int
+  status         String    @default("draft")
+  diagram        Json      @default("{}")
+  notes          String?
+  created_by     String?   @db.Uuid
+  updated_by     String?   @db.Uuid
+  published_at   DateTime? @db.Timestamptz(6)
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime  @default(now()) @db.Timestamptz(6)
+  profiles_workflow_map_versions_created_byToprofiles profiles? @relation("workflow_map_versions_created_byToprofiles", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_workflow_map_versions_updated_byToprofiles profiles? @relation("workflow_map_versions_updated_byToprofiles", fields: [updated_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("workflow_map_versions")
+  @@index([status, created_at(sort: Desc)], map: "idx_workflow_map_versions_status_created")
+  @@index([version_number(sort: Desc)], map: "idx_workflow_map_versions_version")
 }
