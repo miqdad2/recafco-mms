@@ -349,6 +349,8 @@ model parts {
   parts_request_items         parts_request_items[]
   purchase_request_items      purchase_request_items[]
   work_order_materials        work_order_materials[]
+  work_order_required_parts   WorkOrderRequiredPart[]
+  purchase_order_items        PurchaseOrderItem[]
 
   @@index([current_stock], map: "idx_parts_current_stock")
   @@index([deleted_at], map: "idx_parts_deleted_at")
@@ -457,6 +459,7 @@ model profiles {
   work_orders                                                       work_orders[]
   user_permission_overrides                                         user_permission_overrides[]   @relation("upo_profile")
   user_permission_overrides_created                                 user_permission_overrides[]   @relation("upo_created_by")
+  maintenance_team_members                                          MaintenanceTeamMember[]
 
   @@index([department_id], map: "idx_profiles_department_id")
   @@index([is_active], map: "idx_profiles_is_active")
@@ -531,6 +534,7 @@ model purchase_requests {
   parts_requests                                           parts_requests?          @relation(fields: [parts_request_id], references: [id], onUpdate: NoAction)
   work_orders                                              work_orders?             @relation(fields: [work_order_id], references: [id], onUpdate: NoAction)
   approvals                                                approvals[]
+  purchase_orders                                          PurchaseOrder[]
 
   @@index([parts_request_id], map: "idx_purchase_requests_parts_request")
   @@index([created_at, status], map: "idx_purchase_requests_report_filters")
@@ -700,6 +704,7 @@ model work_orders {
   work_order_materials            work_order_materials[]
   work_order_status_history       work_order_status_history[]
   work_order_technician_notes     work_order_technician_notes[]
+  work_order_required_parts       WorkOrderRequiredPart[]
   assets                          assets?                       @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
   profiles                        profiles?                     @relation(fields: [assigned_supervisor_id], references: [id], onUpdate: NoAction)
   departments                     departments?                  @relation(fields: [requested_by_department_id], references: [id], onUpdate: NoAction)
@@ -786,4 +791,209 @@ model realtime_events {
   @@index([entity_type, entity_id], map: "idx_realtime_events_entity")
   @@index([target_profile_id], map: "idx_realtime_events_target_profile")
   @@index([department_id], map: "idx_realtime_events_department")
+}
+
+// ─── Phase 5-C: Workflow Engine ───────────────────────────────────────────────
+
+model WorkflowDefinition {
+  id          String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String
+  code        String             @unique
+  entity_type String
+  description String?
+  version     Int                @default(1)
+  is_active   Boolean            @default(true)
+  created_at  DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime           @default(now()) @db.Timestamptz(6)
+  steps       WorkflowStep[]
+  instances   WorkflowInstance[]
+
+  @@map("workflow_definitions")
+  @@index([code], map: "idx_workflow_definitions_code")
+  @@index([entity_type, is_active], map: "idx_workflow_definitions_entity_active")
+}
+
+model WorkflowStep {
+  id                  String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflow_def_id     String                 @db.Uuid
+  step_order          Int
+  code                String
+  name                String
+  description         String?
+  required_role       String?
+  required_permission String?
+  is_approval_step    Boolean                @default(false)
+  is_final_step       Boolean                @default(false)
+  metadata            Json?
+  created_at          DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime               @default(now()) @db.Timestamptz(6)
+  workflow_definition WorkflowDefinition     @relation(fields: [workflow_def_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  current_instances   WorkflowInstance[]
+  step_instances      WorkflowStepInstance[]
+
+  @@unique([workflow_def_id, step_order], map: "uq_workflow_steps_def_order")
+  @@unique([workflow_def_id, code], map: "uq_workflow_steps_def_code")
+  @@map("workflow_steps")
+  @@index([workflow_def_id], map: "idx_workflow_steps_def_id")
+}
+
+model WorkflowInstance {
+  id              String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflow_def_id String                 @db.Uuid
+  entity_type     String
+  entity_id       String                 @db.Uuid
+  current_step_id String?                @db.Uuid
+  status          String                 @default("active")
+  started_at      DateTime               @default(now()) @db.Timestamptz(6)
+  completed_at    DateTime?              @db.Timestamptz(6)
+  cancelled_at    DateTime?              @db.Timestamptz(6)
+  created_by      String?                @db.Uuid
+  created_at      DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime               @default(now()) @db.Timestamptz(6)
+  workflow_definition WorkflowDefinition     @relation(fields: [workflow_def_id], references: [id], onUpdate: NoAction)
+  current_step        WorkflowStep?          @relation(fields: [current_step_id], references: [id], onUpdate: NoAction)
+  step_instances      WorkflowStepInstance[]
+
+  @@unique([entity_type, entity_id], map: "uq_workflow_instances_entity")
+  @@map("workflow_instances")
+  @@index([entity_type, entity_id], map: "idx_workflow_instances_entity")
+  @@index([workflow_def_id, status], map: "idx_workflow_instances_def_status")
+}
+
+model WorkflowStepInstance {
+  id               String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflow_inst_id String                 @db.Uuid
+  step_id          String                 @db.Uuid
+  status           String                 @default("pending")
+  actor_id         String?                @db.Uuid
+  decision         String?
+  comments         String?
+  started_at       DateTime?              @db.Timestamptz(6)
+  completed_at     DateTime?              @db.Timestamptz(6)
+  due_at           DateTime?              @db.Timestamptz(6)
+  created_at       DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime               @default(now()) @db.Timestamptz(6)
+  workflow_instance      WorkflowInstance       @relation(fields: [workflow_inst_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  workflow_step          WorkflowStep           @relation(fields: [step_id], references: [id], onUpdate: NoAction)
+  clarification_requests ClarificationRequest[]
+
+  @@map("workflow_step_instances")
+  @@index([workflow_inst_id], map: "idx_workflow_step_instances_instance")
+  @@index([step_id], map: "idx_workflow_step_instances_step")
+  @@index([actor_id, status], map: "idx_workflow_step_instances_actor_status")
+}
+
+model ClarificationRequest {
+  id                    String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflow_step_inst_id String               @db.Uuid
+  question              String
+  requested_by          String?              @db.Uuid
+  responded_by          String?              @db.Uuid
+  response              String?
+  status                String               @default("pending")
+  requested_at          DateTime             @default(now()) @db.Timestamptz(6)
+  responded_at          DateTime?            @db.Timestamptz(6)
+  created_at            DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime             @default(now()) @db.Timestamptz(6)
+  workflow_step_instance WorkflowStepInstance @relation(fields: [workflow_step_inst_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("clarification_requests")
+  @@index([workflow_step_inst_id], map: "idx_clarification_requests_step_inst")
+  @@index([status], map: "idx_clarification_requests_status")
+}
+
+model WorkOrderRequiredPart {
+  id                String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id     String      @db.Uuid
+  part_id           String?     @db.Uuid
+  description       String
+  part_number       String?
+  quantity_required Decimal     @default(0) @db.Decimal(12, 2)
+  unit_of_measure   String      @default("PCS")
+  status            String      @default("pending")
+  notes             String?
+  created_at        DateTime    @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime    @default(now()) @db.Timestamptz(6)
+  created_by        String?     @db.Uuid
+  work_orders       work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  parts             parts?      @relation(fields: [part_id], references: [id], onUpdate: NoAction)
+
+  @@map("work_order_required_parts")
+  @@index([work_order_id], map: "idx_work_order_required_parts_wo")
+  @@index([part_id], map: "idx_work_order_required_parts_part")
+}
+
+model MaintenanceTeam {
+  id          String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  team_name   String
+  team_code   String                  @unique
+  description String?
+  is_active   Boolean                 @default(true)
+  created_at  DateTime                @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime                @default(now()) @db.Timestamptz(6)
+  created_by  String?                 @db.Uuid
+  members     MaintenanceTeamMember[]
+
+  @@map("maintenance_teams")
+  @@index([is_active], map: "idx_maintenance_teams_active")
+}
+
+model MaintenanceTeamMember {
+  id         String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  team_id    String          @db.Uuid
+  profile_id String          @db.Uuid
+  role       String?
+  joined_at  DateTime        @default(now()) @db.Timestamptz(6)
+  left_at    DateTime?       @db.Timestamptz(6)
+  team       MaintenanceTeam @relation(fields: [team_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  profiles   profiles        @relation(fields: [profile_id], references: [id], onUpdate: NoAction)
+
+  @@unique([team_id, profile_id], map: "uq_maintenance_team_members")
+  @@map("maintenance_team_members")
+  @@index([team_id], map: "idx_maintenance_team_members_team")
+  @@index([profile_id], map: "idx_maintenance_team_members_profile")
+}
+
+model PurchaseOrder {
+  id                  String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  po_number           String             @unique
+  purchase_request_id String?            @db.Uuid
+  work_order_id       String?            @db.Uuid
+  supplier            String?
+  status              String             @default("Draft")
+  total_amount        Decimal            @default(0) @db.Decimal(12, 3)
+  currency            String             @default("KWD")
+  approved_by         String?            @db.Uuid
+  approved_at         DateTime?          @db.Timestamptz(6)
+  ordered_at          DateTime?          @db.Timestamptz(6)
+  received_at         DateTime?          @db.Timestamptz(6)
+  notes               String?
+  created_at          DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime           @default(now()) @db.Timestamptz(6)
+  created_by          String?            @db.Uuid
+  purchase_requests   purchase_requests? @relation(fields: [purchase_request_id], references: [id], onUpdate: NoAction)
+  items               PurchaseOrderItem[]
+
+  @@map("purchase_orders")
+  @@index([purchase_request_id], map: "idx_purchase_orders_pr")
+  @@index([status], map: "idx_purchase_orders_status")
+  @@index([created_at], map: "idx_purchase_orders_created_at")
+}
+
+model PurchaseOrderItem {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchase_order_id String        @db.Uuid
+  part_id           String?       @db.Uuid
+  description       String
+  quantity          Decimal       @default(0) @db.Decimal(12, 2)
+  unit_price        Decimal       @default(0) @db.Decimal(12, 3)
+  total_price       Decimal       @default(0) @db.Decimal(12, 3)
+  received_qty      Decimal       @default(0) @db.Decimal(12, 2)
+  created_at        DateTime      @default(now()) @db.Timestamptz(6)
+  purchase_order    PurchaseOrder @relation(fields: [purchase_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  parts             parts?        @relation(fields: [part_id], references: [id], onUpdate: NoAction)
+
+  @@map("purchase_order_items")
+  @@index([purchase_order_id], map: "idx_purchase_order_items_po")
+  @@index([part_id], map: "idx_purchase_order_items_part")
 }
