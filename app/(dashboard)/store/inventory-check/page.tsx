@@ -202,7 +202,7 @@ export default async function InventoryCheckPage({
                               </label>
                               <select
                                 name="availability_status"
-                                defaultValue="available"
+                                defaultValue={part.availability_status === "unchecked" ? "available" : part.availability_status}
                                 className="w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#ED1C24]/30"
                               >
                                 <option value="available">Available</option>
