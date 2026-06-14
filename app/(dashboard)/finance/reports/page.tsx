@@ -1,14 +1,17 @@
 import { CostVisibilityGuard } from "@/components/ui/cost-visibility-guard";
 import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/db/prisma";
 
 export default async function FinanceReportsPage() {
   const context = await requirePermission("finance.reports.view");
-  const supabase = await createSupabaseServerClient();
-  const [{ data: purchases }, { data: workOrders }] = await Promise.all([
-    supabase.from("purchase_requests").select("estimated_total, status"),
-    supabase.from("work_orders").select("total_work_order_cost, status")
+  const [purchases, workOrders] = await Promise.all([
+    prisma.purchase_requests.findMany({
+      select: { estimated_total: true, status: true }
+    }),
+    prisma.work_orders.findMany({
+      select: { total_work_order_cost: true, status: true }
+    })
   ]);
   const purchaseTotal = (purchases ?? []).reduce((sum, row) => sum + Number(row.estimated_total ?? 0), 0);
   const maintenanceTotal = (workOrders ?? []).reduce((sum, row) => sum + Number(row.total_work_order_cost ?? 0), 0);

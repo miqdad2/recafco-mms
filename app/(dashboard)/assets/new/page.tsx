@@ -1,12 +1,15 @@
 import { AssetForm } from "@/components/assets/asset-form";
 import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/db/prisma";
 
 export default async function NewAssetPage() {
   await requirePermission("assets.manage");
-  const supabase = await createSupabaseServerClient();
-  const { data: departments } = await supabase.from("departments").select("id, name").eq("is_active", true).order("name");
+  const departments = await prisma.departments.findMany({
+    where: { is_active: true },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" }
+  });
 
   return (
     <>

@@ -12,7 +12,7 @@ export function PurchaseWorkflowPanel({ purchase, context }: { purchase: Record<
         <input type="hidden" name="purchase_request_id" value={String(purchase.id)} />
         <input className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2" name="supplier" defaultValue={String(purchase.supplier ?? "")} placeholder="Supplier" />
         <select className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2" name="status" defaultValue={String(purchase.status)}>
-          {["Submitted","Pending Purchase","Pending Finance Approval","Pending CEO Approval","Approved","Ordered","Received","Rejected","Cancelled"].map((status) => <option key={status}>{status}</option>)}
+          {["Submitted","Pending Purchase","Pending Finance Approval","Pending CEO Approval","Approved","Ordered","Rejected","Cancelled"].map((status) => <option key={status}>{status}</option>)}
         </select>
         <input className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2" name="quotation_file_name" defaultValue={String(purchase.quotation_file_name ?? "")} placeholder="Quotation file name" />
         <input className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2" name="quotation_file_path" defaultValue={String(purchase.quotation_file_path ?? "")} placeholder="Private quotation path" />

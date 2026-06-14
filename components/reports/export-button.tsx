@@ -3,7 +3,7 @@ import { Download } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-export function ExportButton({ kind, searchParams, className }: { kind: string; searchParams?: URLSearchParams; className?: string }) {
+export function ExportButton({ kind, searchParams, className, label }: { kind: string; searchParams?: URLSearchParams; className?: string; label?: string }) {
   const query = searchParams?.toString();
   return (
     <Link
@@ -11,7 +11,7 @@ export function ExportButton({ kind, searchParams, className }: { kind: string; 
       href={`/api/exports/${kind}${query ? `?${query}` : ""}`}
     >
       <Download className="h-4 w-4" aria-hidden="true" />
-      Export Excel
+      {label ?? "Export Excel"}
     </Link>
   );
 }

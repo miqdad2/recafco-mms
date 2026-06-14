@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { writeAuditLog } from "@/lib/audit/log";
 import { getCurrentUserContext } from "@/lib/auth/context";
 import { createExcelWorkbookBuffer } from "@/lib/exports/excel";
+import { notifyByEvent } from "@/lib/notifications/service";
 import {
   canViewCosts,
   getAssetReport,
@@ -40,6 +41,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ kind
 
   const url = new URL(request.url);
   const filters = parseReportFilters(Object.fromEntries(url.searchParams.entries()));
+  // Enforce department scope for maintenance managers — cannot be bypassed via URL params.
+  if (context.role?.slug === "maintenance_manager" && context.department?.id) {
+    filters.departmentId = context.department.id;
+  }
   const rows = await rowsForKind(kind, filters, canViewCosts(context));
 
   await writeAuditLog({
@@ -49,6 +54,15 @@ export async function GET(request: Request, { params }: { params: Promise<{ kind
     entityId: null,
     summary: `Exported ${kind} report`,
     metadata: { kind, rowCount: rows.length }
+  });
+  await notifyByEvent({
+    eventKey: "report.exported",
+    entityType: "report",
+    actorId: context.userId,
+    recipientUserIds: [context.userId],
+    metadata: { report_name: sheetNames[kind] ?? kind, kind, row_count: rows.length },
+    actionUrl: kind === "costs" ? "/reports/costs" : "/reports/work-orders",
+    actionLabel: "Open reports"
   });
 
   const workbookBuffer = await createExcelWorkbookBuffer({

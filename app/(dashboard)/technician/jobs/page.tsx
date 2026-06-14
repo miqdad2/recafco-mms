@@ -5,16 +5,29 @@ import { PageHeader } from "@/components/ui/page-header";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/db/prisma";
 
 export default async function TechnicianJobsPage() {
   const context = await requirePermission("technician.jobs.view");
-  const supabase = await createSupabaseServerClient();
-  const { data: assignments } = await supabase
-    .from("work_order_assignments")
-    .select("work_orders(id, work_order_number, status, priority, job_location, operator_complaint, maintenance_type, worker_type, assets(asset_code, asset_name))")
-    .eq("technician_id", context.userId)
-    .order("assigned_at", { ascending: false });
+  const assignments = await prisma.work_order_assignments.findMany({
+    select: {
+      work_orders: {
+        select: {
+          id: true,
+          work_order_number: true,
+          status: true,
+          priority: true,
+          job_location: true,
+          operator_complaint: true,
+          maintenance_type: true,
+          worker_type: true,
+          assets: { select: { asset_code: true, asset_name: true } }
+        }
+      }
+    },
+    where: { technician_id: context.userId },
+    orderBy: { assigned_at: "desc" }
+  });
 
   const jobs = (assignments ?? []).map((assignment) => Array.isArray(assignment.work_orders) ? assignment.work_orders[0] : assignment.work_orders).filter(Boolean);
 

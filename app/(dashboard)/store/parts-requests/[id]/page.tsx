@@ -6,22 +6,37 @@ import { CostVisibilityGuard } from "@/components/ui/cost-visibility-guard";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/db/prisma";
 import Link from "next/link";
 
 export default async function PartsRequestDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const context = await requirePermission("parts_requests.view");
   const { id } = await params;
-  const supabase = await createSupabaseServerClient();
-  const [{ data: request }, { data: items }] = await Promise.all([
-    supabase.from("parts_requests").select("*, work_orders(work_order_number), assets(asset_code, asset_name), departments(name), profiles(full_name)").eq("id", id).single(),
-    supabase.from("parts_request_items").select("*").eq("parts_request_id", id)
+  const [request, rawItems] = await Promise.all([
+    prisma.parts_requests.findUnique({
+      where: { id },
+      include: {
+        work_orders: { select: { work_order_number: true } },
+        assets: { select: { asset_code: true, asset_name: true } },
+        departments: { select: { name: true } }
+      }
+    }),
+    prisma.parts_request_items.findMany({
+      where: { parts_request_id: id }
+    })
   ]);
   if (!request) return <PageHeader title="Parts request not found" />;
+  const items = rawItems.map((item) => ({
+    ...item,
+    quantity_requested: item.quantity_requested.toFixed(2),
+    unit_price: item.unit_price.toFixed(3),
+    total_price: item.total_price?.toFixed(3) ?? null,
+    issued_quantity: item.issued_quantity.toFixed(2)
+  }));
   const canApprove = context.role?.slug === "super_admin" || context.permissions.includes("parts_requests.approve");
   return (
     <>
-      <PageHeader title={request.parts_request_number} description="Parts request detail, approval, store issue, unavailable items, and purchase creation." actions={<><Link href={`/store/parts-requests/${request.id}/print`}><Button variant="secondary">Print</Button></Link><StatusBadge label={request.status} tone="blue" /></>} />
+      <PageHeader title={request.parts_request_number ?? ""} description="Parts request detail, approval, store issue, unavailable items, and purchase creation." actions={<><Link href={`/store/parts-requests/${request.id}/print`}><Button variant="secondary">Print</Button></Link><StatusBadge label={request.status} tone="blue" /></>} />
       <div className="grid gap-5 p-4 lg:grid-cols-[1fr_0.8fr] lg:p-6">
         <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
           <h2 className="text-lg font-bold">Request Summary</h2>
@@ -29,7 +44,7 @@ export default async function PartsRequestDetailPage({ params }: { params: Promi
             <Info label="Work order" value={(Array.isArray(request.work_orders) ? request.work_orders[0]?.work_order_number : request.work_orders?.work_order_number) ?? "-"} />
             <Info label="Asset" value={(Array.isArray(request.assets) ? request.assets[0]?.asset_code : request.assets?.asset_code) ?? "-"} />
             <Info label="Department" value={(Array.isArray(request.departments) ? request.departments[0]?.name : request.departments?.name) ?? "-"} />
-            <Info label="Total" value={<CostVisibilityGuard context={context}>{request.total_price}</CostVisibilityGuard>} />
+            <Info label="Total" value={<CostVisibilityGuard context={context}>{request.total_price.toFixed(3)}</CostVisibilityGuard>} />
           </dl>
         </section>
         <section className="space-y-5">
