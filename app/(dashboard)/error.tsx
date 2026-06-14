@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 
+import { logClientModuleErrorAction } from "@/app/actions/system-health";
 import { ErrorState } from "@/components/ui/error-state";
 
 type DashboardErrorProps = {
@@ -12,6 +13,11 @@ type DashboardErrorProps = {
 export default function DashboardError({ error, reset }: DashboardErrorProps) {
   useEffect(() => {
     console.error("Dashboard error", { message: error.message, digest: error.digest });
+    void logClientModuleErrorAction({
+      message: error.message,
+      digest: error.digest,
+      route: window.location.pathname
+    });
   }, [error]);
 
   return (

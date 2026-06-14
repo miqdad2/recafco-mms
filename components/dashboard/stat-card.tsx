@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 
 type StatCardProps = {
   label: string;
+  mobileLabel?: string;
   value: string | number;
   detail: string;
   icon: LucideIcon;
@@ -38,22 +39,31 @@ const toneStyles = {
   }
 };
 
-export function StatCard({ label, value, detail, icon: Icon, tone = "red" }: StatCardProps) {
+export function StatCard({ label, mobileLabel, value, detail, icon: Icon, tone = "red" }: StatCardProps) {
   const styles = toneStyles[tone];
 
   return (
-    <div className="group relative min-h-36 overflow-hidden rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-[#C9D0DA] hover:shadow-md">
+    <div className="group relative min-h-28 overflow-hidden rounded-md border border-[#DDE2EA] bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-[#C9D0DA] hover:shadow-md sm:min-h-32">
       <div className={cn("absolute inset-x-0 top-0 h-1", styles.accent)} />
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-[#334155]">{label}</p>
-          <p className={cn("mt-3 text-3xl font-black tracking-tight", styles.value)}>{value}</p>
+          <p className="truncate text-xs font-semibold text-[#334155] sm:text-sm">
+            {mobileLabel ? (
+              <>
+                <span className="sm:hidden">{mobileLabel}</span>
+                <span className="hidden sm:inline">{label}</span>
+              </>
+            ) : (
+              label
+            )}
+          </p>
+          <p className={cn("mt-2 text-2xl font-black tracking-tight sm:text-3xl", styles.value)}>{value}</p>
         </div>
-        <div className={cn("rounded-md p-2.5", styles.icon)}>
-          <Icon className="h-5 w-5" aria-hidden="true" />
+        <div className={cn("rounded-md p-2 sm:p-2.5", styles.icon)}>
+          <Icon className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
         </div>
       </div>
-      <p className="mt-4 line-clamp-2 text-xs font-medium leading-5 text-[#64748B]">{detail}</p>
+      <p className="mt-2 line-clamp-2 text-[11px] font-medium leading-4 text-[#64748B] sm:mt-3 sm:text-xs sm:leading-5">{detail}</p>
     </div>
   );
 }
