@@ -22,6 +22,7 @@ export const notificationEvents: NotificationEventDefinition[] = [
   { eventKey: "work_order.reopened", category: "Work Orders", priority: "high", critical: true },
   { eventKey: "work_order.cancelled", category: "Work Orders", priority: "high", critical: true },
   { eventKey: "work_order.overdue", category: "Work Orders", priority: "urgent", critical: true },
+  { eventKey: "work_order.inventory_check_completed", category: "Work Orders", priority: "high", critical: true },
   { eventKey: "technician.assigned", category: "Technician Jobs", priority: "high", critical: true },
   { eventKey: "technician.job_started", category: "Technician Jobs", priority: "normal", critical: false },
   { eventKey: "technician.job_completed", category: "Technician Jobs", priority: "high", critical: true },
