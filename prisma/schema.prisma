@@ -20,6 +20,7 @@ model app_settings {
   requester_confirmation_enabled     Boolean  @default(true)
   finance_approval_enabled           Boolean  @default(true)
   ceo_approval_enabled               Boolean  @default(true)
+  inventory_check_enabled            Boolean  @default(false)
   logo_path                          String?
   updated_at                         DateTime @default(now()) @db.Timestamptz(6)
   updated_by                         String?  @db.Uuid
@@ -462,6 +463,7 @@ model profiles {
   maintenance_team_members                                          MaintenanceTeamMember[]
   workflow_map_versions_workflow_map_versions_created_byToprofiles  WorkflowMapVersion[]    @relation("workflow_map_versions_created_byToprofiles")
   workflow_map_versions_workflow_map_versions_updated_byToprofiles  WorkflowMapVersion[]    @relation("workflow_map_versions_updated_byToprofiles")
+  work_order_required_parts_confirmed                               WorkOrderRequiredPart[]
 
   @@index([department_id], map: "idx_profiles_department_id")
   @@index([is_active], map: "idx_profiles_is_active")
@@ -914,15 +916,21 @@ model WorkOrderRequiredPart {
   unit_of_measure   String      @default("PCS")
   status            String      @default("pending")
   notes             String?
-  created_at        DateTime    @default(now()) @db.Timestamptz(6)
-  updated_at        DateTime    @default(now()) @db.Timestamptz(6)
-  created_by        String?     @db.Uuid
-  work_orders       work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  parts             parts?      @relation(fields: [part_id], references: [id], onUpdate: NoAction)
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime  @default(now()) @db.Timestamptz(6)
+  created_by           String?   @db.Uuid
+  availability_status  String    @default("unchecked")
+  confirmed_by         String?   @db.Uuid
+  confirmed_at         DateTime? @db.Timestamptz(6)
+  work_orders          work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  parts                parts?      @relation(fields: [part_id], references: [id], onUpdate: NoAction)
+  confirmed_by_profile profiles?   @relation(fields: [confirmed_by], references: [id], onUpdate: NoAction)
 
   @@map("work_order_required_parts")
   @@index([work_order_id], map: "idx_work_order_required_parts_wo")
   @@index([part_id], map: "idx_work_order_required_parts_part")
+  @@index([availability_status], map: "idx_work_order_required_parts_availability")
+  @@index([confirmed_by], map: "idx_work_order_required_parts_confirmed_by")
 }
 
 model MaintenanceTeam {
