@@ -45,7 +45,7 @@ export async function confirmRequiredPartAvailability(
     throw new AppError("Inventory check workflow is not active.", { code: "WORKFLOW_ERROR" });
   }
 
-  const { workOrderId, workOrderNumber, description, allPartsChecked } =
+  const { workOrderId, workOrderNumber, description, allPartsChecked, wasUnchecked, supervisorId } =
     await withBackendTransaction(context.userId, async (tx) => {
       const reqPart = await tx.workOrderRequiredPart.findUnique({
         where: { id: requiredPartId },
@@ -53,7 +53,8 @@ export async function confirmRequiredPartAvailability(
           id: true,
           work_order_id: true,
           description: true,
-          work_orders: { select: { status: true, work_order_number: true } }
+          availability_status: true,
+          work_orders: { select: { status: true, work_order_number: true, assigned_supervisor_id: true } }
         }
       });
 
@@ -64,6 +65,9 @@ export async function confirmRequiredPartAvailability(
           { code: "WORKFLOW_ERROR" }
         );
       }
+
+      // Capture "before" state for duplicate-notification prevention in E4-D.
+      const wasUnchecked = reqPart.availability_status === "unchecked";
 
       await tx.workOrderRequiredPart.update({
         where: { id: requiredPartId },
@@ -87,7 +91,9 @@ export async function confirmRequiredPartAvailability(
         workOrderId: reqPart.work_order_id,
         workOrderNumber: reqPart.work_orders.work_order_number,
         description: reqPart.description,
-        allPartsChecked: uncheckedCount === 0
+        allPartsChecked: uncheckedCount === 0,
+        wasUnchecked,
+        supervisorId: reqPart.work_orders.assigned_supervisor_id ?? null
       };
     });
 
@@ -99,6 +105,26 @@ export async function confirmRequiredPartAvailability(
     summary: `Store Keeper confirmed availability of "${description}": ${availabilityStatus}`,
     metadata: { workOrderId, workOrderNumber, availabilityStatus, allPartsChecked }
   });
+
+  // E4-D: notify assigners when ALL required parts are confirmed for the first time
+  // (i.e. this confirmation cleared the last "unchecked" row).
+  // wasUnchecked guards against repeat notifications when the user later edits a
+  // partial/unavailable part — that change cannot trigger a second "ready" alert.
+  if (allPartsChecked && wasUnchecked) {
+    await notifyWorkflowEvent({
+      eventKey: "work_order.inventory_check_completed",
+      entityType: "work_order",
+      entityId: workOrderId,
+      actorId: context.userId,
+      recipientUserIds: supervisorId ? [supervisorId] : [],
+      recipientRoles: ["maintenance_manager", "maintenance_supervisor"],
+      title: `Inventory check complete — ${workOrderNumber ?? "work order"}`,
+      message: "All required parts have been confirmed. The work order is ready for technician assignment.",
+      actionUrl: "/maintenance/assignments",
+      actionLabel: "Open assignments",
+      metadata: { work_order_number: workOrderNumber ?? "" }
+    });
+  }
 
   return { workOrderId };
 }

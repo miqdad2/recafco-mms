@@ -32,6 +32,7 @@ export type NotificationEventKey =
   | "work_order.reopened"
   | "work_order.cancelled"
   | "work_order.overdue"
+  | "work_order.inventory_check_completed"
   | "technician.assigned"
   | "technician.job_started"
   | "technician.job_completed"

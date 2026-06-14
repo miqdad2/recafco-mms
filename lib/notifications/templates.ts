@@ -85,6 +85,12 @@ const fallbackTemplates: Record<string, { title: string; message: string; action
     message: "The requester responded: {response}",
     actionLabel: "Review and decide",
     actionUrl: "/maintenance/work-orders/{entity_id}"
+  },
+  "work_order.inventory_check_completed": {
+    title: "Inventory check complete — {work_order_number}",
+    message: "All required parts have been confirmed by Store Keeper. Work order {work_order_number} is ready for technician assignment.",
+    actionLabel: "Open assignments",
+    actionUrl: "/maintenance/assignments"
   }
 };
 
