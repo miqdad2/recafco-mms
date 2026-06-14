@@ -236,6 +236,53 @@ export async function advanceMaintenanceManagerReview(
 }
 
 /**
+ * Marks the inventory_check workflow step as completed (tracking-only — Phase 5-E3).
+ *
+ * Called after ALL required parts for a work order have been confirmed by
+ * Store Keeper. Does NOT change work_orders.status, does NOT advance the
+ * workflow to an assignment gate — those are Phase 5-E4 concerns.
+ *
+ * Safe-skips when no workflow instance exists (old WOs that predate Phase 5-D1),
+ * when the inventory_check step definition is missing, or when the step instance
+ * is not in "pending" status (already completed or not yet created).
+ */
+export async function advanceInventoryCheckStep(
+  tx: BackendTransaction,
+  workOrderId: string,
+  actorUserId: string
+): Promise<void> {
+  const instance = await tx.workflowInstance.findFirst({
+    where: { entity_type: "work_order", entity_id: workOrderId },
+    select: { id: true, workflow_def_id: true }
+  });
+  if (!instance) return; // pre-Phase 5-D1 work order — safe skip
+
+  const checkStep = await tx.workflowStep.findFirst({
+    where: { workflow_def_id: instance.workflow_def_id, code: "inventory_check" },
+    select: { id: true }
+  });
+  if (!checkStep) return; // step definition not found — safe skip
+
+  const stepInst = await tx.workflowStepInstance.findFirst({
+    where: { workflow_inst_id: instance.id, step_id: checkStep.id, status: "pending" },
+    select: { id: true }
+  });
+  if (!stepInst) return; // already completed or not yet pending — safe skip
+
+  await tx.workflowStepInstance.update({
+    where: { id: stepInst.id },
+    data: {
+      status: "completed",
+      actor_id: actorUserId,
+      decision: "completed",
+      completed_at: new Date()
+    }
+  });
+  // NOTE: current_step_id on workflow_instance is intentionally NOT advanced here.
+  // Phase 5-E4 will advance it to create the assignment gate when that feature is enabled.
+}
+
+/**
  * Creates workflow_instances and workflow_step_instances rows when a new
  * maintenance work order is submitted for approval (Phase 5-D1).
  *
