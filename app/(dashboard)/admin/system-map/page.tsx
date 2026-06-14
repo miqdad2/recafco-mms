@@ -4,7 +4,6 @@ import { EnterpriseSystemMap } from "@/components/system-map/enterprise-system-m
 import { PresentationModeView } from "@/components/system-map/presentation-mode-view";
 import { writeAuditLog } from "@/lib/audit/log";
 import { requireUser } from "@/lib/auth/context";
-import { notifyByEvent } from "@/lib/notifications/service";
 import { executiveWorkflowSteps, workflowEdges, workflowNodes } from "@/lib/system-map/config";
 
 type SystemMapPageProps = {
@@ -28,17 +27,8 @@ export default async function SystemMapPage({ searchParams }: SystemMapPageProps
       summary: `${context.profile.full_name} viewed the system map`,
       metadata: { role: context.role?.slug ?? "none" }
     });
-    await notifyByEvent({
-      eventKey: "system_map.viewed",
-      entityType: "system_map",
-      actorId: context.userId,
-      recipientUserIds: [context.userId],
-      metadata: { user_name: context.profile.full_name },
-      actionUrl: "/admin/system-map",
-      actionLabel: "Open system map"
-    });
   } catch {
-    // The system map should remain available even if audit logging or notification logging is temporarily unavailable.
+    // The system map should remain available even if audit logging is temporarily unavailable.
   }
 
   const params = await searchParams;
