@@ -1,9 +1,5 @@
 "use client";
 
-import { createBrowserClient } from "@supabase/ssr";
-
-import { getSupabaseAnonKey, getSupabaseUrl } from "@/lib/env";
-
-export function createSupabaseBrowserClient() {
-  return createBrowserClient(getSupabaseUrl(), getSupabaseAnonKey());
+export function createSupabaseBrowserClient(): never {
+  throw new Error("Supabase browser client has been removed. Use server actions with local PostgreSQL polling.");
 }

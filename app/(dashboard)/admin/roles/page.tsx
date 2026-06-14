@@ -1,6 +1,6 @@
 import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/db/prisma";
 
 type RolePermission = {
   permissions:
@@ -37,8 +37,22 @@ type PermissionDisplay = {
 
 export default async function RolesPage() {
   await requirePermission("admin.roles.view");
-  const supabase = await createSupabaseServerClient();
-  const { data: roles } = await supabase.from("roles").select("id, name, slug, description, role_permissions(permissions(key, description))").order("name");
+  const roles = await prisma.roles.findMany({
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      description: true,
+      role_permissions: {
+        select: {
+          permissions: {
+            select: { key: true, description: true }
+          }
+        }
+      }
+    },
+    orderBy: { name: "asc" }
+  });
 
   return (
     <>

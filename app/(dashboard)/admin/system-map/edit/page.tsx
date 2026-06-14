@@ -37,11 +37,11 @@ export default async function WorkflowMapEditPage({ searchParams }: WorkflowMapE
   return (
     <>
       <div className="mx-4 mt-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 lg:mx-6">
-        <p className="text-sm font-black text-blue-900">Map Editor — Visualization &amp; Planning Mode</p>
+        <p className="text-sm font-black text-blue-900">Map Editor - Visualization and Planning Mode</p>
         <p className="mt-1 text-xs text-blue-700">
-          This editor is used for management visualization and workflow planning workshops.
-          Saving a map version here does <strong>not</strong> modify live approval routing or workflow engine behavior.
-          Live workflow templates will be connected after the workflow engine is activated in a future phase.
+          This frontend editor is used for management visualization and workflow planning workshops.
+          It does not modify live approval routing or workflow engine behavior.
+          Live workflow templates will be connected after the NestJS workflow engine is activated in a future phase.
         </p>
       </div>
       {params?.saved ? (

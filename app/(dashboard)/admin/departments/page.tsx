@@ -5,13 +5,14 @@ import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/db/prisma";
 import { formatDateTime } from "@/lib/utils";
 
 export default async function DepartmentsPage() {
   await requirePermission("admin.departments.manage");
-  const supabase = await createSupabaseServerClient();
-  const { data: departments } = await supabase.from("departments").select("*").order("name");
+  const departments = await prisma.departments.findMany({
+    orderBy: { name: "asc" }
+  });
 
   return (
     <>
@@ -70,7 +71,7 @@ export default async function DepartmentsPage() {
                     <td className="px-4 py-3">
                       <StatusBadge label={department.is_active ? "Active" : "Inactive"} tone={department.is_active ? "green" : "gray"} />
                     </td>
-                    <td className="px-4 py-3 text-[#4B5563]">{formatDateTime(department.updated_at)}</td>
+                    <td className="px-4 py-3 text-[#4B5563]">{formatDateTime(department.updated_at.toISOString())}</td>
                   </tr>
                 ))}
               </tbody>

@@ -24,9 +24,9 @@ export function LiveDataSnapshot({ stats }: { stats: SystemMapStats }) {
     <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm system-map-fade-up">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="text-xs font-black uppercase text-[#ED1C24]">Live Supabase data</p>
+          <p className="text-xs font-black uppercase text-[#ED1C24]">Live local database data</p>
           <h2 className="mt-1 text-2xl font-black text-[#111827]">Live System Snapshot</h2>
-          <p className="mt-2 text-sm text-[#4B5563]">All-time operational counts from Supabase. Missing data falls back safely to zero.</p>
+          <p className="mt-2 text-sm text-[#4B5563]">All-time operational counts from the local database. Missing data falls back safely to zero.</p>
         </div>
         <div className="flex gap-2">
           <StatusBadge label="All Time" tone="blue" />

@@ -1,25 +1,7 @@
-import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
+import "server-only";
 
-import { getSupabaseAnonKey, getSupabaseUrl } from "@/lib/env";
+import { createLocalQueryClient } from "@/lib/db/local-query-client";
 
 export async function createSupabaseServerClient() {
-  const cookieStore = await cookies();
-
-  return createServerClient(getSupabaseUrl(), getSupabaseAnonKey(), {
-    cookies: {
-      getAll() {
-        return cookieStore.getAll();
-      },
-      setAll(cookiesToSet) {
-        try {
-          cookiesToSet.forEach(({ name, value, options }) => {
-            cookieStore.set(name, value, options);
-          });
-        } catch {
-          // Server components cannot always set cookies; middleware refreshes sessions.
-        }
-      }
-    }
-  });
+  return createLocalQueryClient();
 }

@@ -1,10 +1,10 @@
 import Link from "next/link";
-import { Database, LayoutDashboard, Printer, RotateCw, ShieldCheck } from "lucide-react";
+import { Database, LayoutDashboard, PencilRuler, Printer, RotateCw, ShieldCheck } from "lucide-react";
 
 import { PresentationModeToggle } from "@/components/system-map/presentation-mode-toggle";
 import { Button } from "@/components/ui/button";
 
-export function SystemMapHero({ presentation }: { presentation: boolean }) {
+export function SystemMapHero({ presentation, editable = false }: { presentation: boolean; editable?: boolean }) {
   return (
     <section className="relative overflow-hidden rounded-md border border-[#1F2937] bg-[#111827] text-white shadow-sm system-map-fade-up">
       <div className="absolute inset-x-0 top-0 h-1 bg-[#ED1C24]" />
@@ -20,7 +20,7 @@ export function SystemMapHero({ presentation }: { presentation: boolean }) {
               A live visual overview of work orders, approvals, technician execution, spare parts, purchase, finance, CEO approval, and asset history.
             </p>
             <div className="mt-6 flex flex-wrap gap-2">
-              {["4 Phases Completed", "Enterprise Workflow Active", "Super Admin View", "Live Supabase Data"].map((badge) => (
+              {["5 Phases Completed", "Enterprise Workflow Active", "Super Admin View", "Live Database Data"].map((badge) => (
                 <span key={badge} className="rounded-md border border-white/15 bg-white/10 px-3 py-2 text-xs font-black uppercase text-white">{badge}</span>
               ))}
             </div>
@@ -35,11 +35,12 @@ export function SystemMapHero({ presentation }: { presentation: boolean }) {
             </div>
             <div className="mt-5 grid gap-2">
               <Link href="/admin/system-map"><Button variant="secondary" className="w-full"><RotateCw className="h-4 w-4" aria-hidden="true" />Refresh Data</Button></Link>
+              {editable ? <Link href="/admin/system-map/edit"><Button variant="secondary" className="w-full"><PencilRuler className="h-4 w-4" aria-hidden="true" />Editable Workshop Map</Button></Link> : null}
               <Link href="/dashboard"><Button variant="secondary" className="w-full"><LayoutDashboard className="h-4 w-4" aria-hidden="true" />Dashboard</Button></Link>
               <div className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white"><Printer className="h-4 w-4" aria-hidden="true" />Print Ready</div>
               <PresentationModeToggle enabled={presentation} />
             </div>
-            <div className="mt-5 flex items-center gap-2 text-xs font-semibold text-gray-300"><Database className="h-4 w-4" aria-hidden="true" />Supabase-backed operational snapshot</div>
+            <div className="mt-5 flex items-center gap-2 text-xs font-semibold text-gray-300"><Database className="h-4 w-4" aria-hidden="true" />Local database-backed operational snapshot</div>
           </div>
         </div>
       </div>

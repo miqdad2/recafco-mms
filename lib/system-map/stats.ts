@@ -1,4 +1,4 @@
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/db/prisma";
 
 export type SystemMapStats = {
   assets: number;
@@ -18,23 +18,15 @@ export type SystemMapStats = {
   roles: number;
 };
 
-type CountQuery = {
-  count: number | null;
-  error: unknown;
-};
-
-async function safeCount(query: PromiseLike<CountQuery>) {
+async function safeCount(query: Promise<number>): Promise<number> {
   try {
-    const result = await query;
-    return result.error ? 0 : result.count ?? 0;
+    return await query;
   } catch {
     return 0;
   }
 }
 
 export async function getSystemMapStats(userId: string): Promise<SystemMapStats> {
-  const supabase = await createSupabaseServerClient();
-
   const [
     assets,
     parts,
@@ -51,26 +43,38 @@ export async function getSystemMapStats(userId: string): Promise<SystemMapStats>
     profiles,
     roles
   ] = await Promise.all([
-    safeCount(supabase.from("assets").select("id", { count: "exact", head: true }).is("deleted_at", null)),
-    safeCount(supabase.from("parts").select("id", { count: "exact", head: true }).is("deleted_at", null)),
-    safeCount(supabase.from("work_orders").select("id", { count: "exact", head: true })),
-    safeCount(supabase.from("work_orders").select("id", { count: "exact", head: true }).not("status", "in", "(Closed,Cancelled,Rejected)")),
-    safeCount(supabase.from("work_orders").select("id", { count: "exact", head: true }).in("status", ["Submitted", "Pending Approval"])),
-    safeCount(supabase.from("work_orders").select("id", { count: "exact", head: true }).in("status", ["Waiting for Parts", "Waiting for Purchase"])),
-    safeCount(supabase.from("parts_requests").select("id", { count: "exact", head: true })),
-    safeCount(supabase.from("purchase_requests").select("id", { count: "exact", head: true })),
-    safeCount(supabase.from("purchase_requests").select("id", { count: "exact", head: true }).in("status", ["Pending Finance Approval", "Pending CEO Approval"])),
-    safeCount(supabase.from("notifications").select("id", { count: "exact", head: true }).eq("recipient_id", userId).eq("is_read", false)),
-    safeCount(supabase.from("work_orders").select("id", { count: "exact", head: true }).eq("status", "Closed")),
-    safeCount(supabase.from("departments").select("id", { count: "exact", head: true }).eq("is_active", true)),
-    safeCount(supabase.from("profiles").select("id", { count: "exact", head: true }).eq("is_active", true)),
-    safeCount(supabase.from("roles").select("id", { count: "exact", head: true }))
+    safeCount(prisma.assets.count({ where: { deleted_at: null } })),
+    safeCount(prisma.parts.count({ where: { deleted_at: null } })),
+    safeCount(prisma.work_orders.count()),
+    safeCount(prisma.work_orders.count({ where: { NOT: { status: { in: ["Closed", "Cancelled", "Rejected"] } } } })),
+    safeCount(prisma.work_orders.count({ where: { status: { in: ["Submitted", "Pending Approval"] } } })),
+    safeCount(prisma.work_orders.count({ where: { status: { in: ["Waiting for Parts", "Waiting for Purchase"] } } })),
+    safeCount(prisma.parts_requests.count()),
+    safeCount(prisma.purchase_requests.count()),
+    safeCount(prisma.purchase_requests.count({ where: { status: { in: ["Pending Finance Approval", "Pending CEO Approval"] } } })),
+    safeCount(
+      prisma.notifications.count({
+        where: {
+          OR: [{ recipient_user_id: userId }, { recipient_id: userId }],
+          archived_at: null,
+          read_at: null,
+          is_read: false
+        }
+      })
+    ),
+    safeCount(prisma.work_orders.count({ where: { status: "Closed" } })),
+    safeCount(prisma.departments.count({ where: { is_active: true } })),
+    safeCount(prisma.profiles.count({ where: { is_active: true } })),
+    safeCount(prisma.roles.count())
   ]);
 
   let lowStockItems = 0;
   try {
-    const { data, error } = await supabase.from("parts").select("current_stock, minimum_stock").is("deleted_at", null);
-    lowStockItems = error ? 0 : (data ?? []).filter((part) => Number(part.current_stock) <= Number(part.minimum_stock)).length;
+    const partsData = await prisma.parts.findMany({
+      where: { deleted_at: null },
+      select: { current_stock: true, minimum_stock: true }
+    });
+    lowStockItems = partsData.filter((part) => part.current_stock.toNumber() <= part.minimum_stock.toNumber()).length;
   } catch {
     lowStockItems = 0;
   }
