@@ -1,6 +1,8 @@
 import "server-only";
 
 import type { CurrentUserContext } from "@/lib/auth/context";
+
+const SETTINGS_ID = "00000000-0000-0000-0000-000000000001";
 import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
 import { assertActiveUser, assertBackendPermission } from "@/lib/backend/security/guards";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
@@ -257,6 +259,26 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
     if (!existing) throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
     if (!canTransition("work_order", existing.status, "Assigned")) {
       throw new AppError(transitionError("work_order", existing.status, "Assigned"), { code: "WORKFLOW_ERROR" });
+    }
+
+    // E4 inventory gate: only on first assignment (Approved → Assigned), not re-assignment.
+    // WOs with no required parts rows always pass. partial/unavailable do not block — only "unchecked".
+    if (existing.status === "Approved") {
+      const sett = await tx.app_settings.findUnique({
+        where: { id: SETTINGS_ID },
+        select: { inventory_check_enabled: true }
+      });
+      if (sett?.inventory_check_enabled) {
+        const uncheckedCount = await tx.workOrderRequiredPart.count({
+          where: { work_order_id: input.workOrderId, availability_status: "unchecked" }
+        });
+        if (uncheckedCount > 0) {
+          throw new AppError(
+            "Inventory check is pending — Store Keeper must confirm all required parts before assignment.",
+            { code: "WORKFLOW_ERROR" }
+          );
+        }
+      }
     }
 
     const technicians = await tx.profiles.findMany({
