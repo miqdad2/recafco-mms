@@ -8,3 +8,6 @@ dist
 *.tsbuildinfo
 coverage
 vercel
+
+# Private uploaded files — stored on local disk, must not be committed
+uploads/

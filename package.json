@@ -3,19 +3,25 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "powershell -ExecutionPolicy Bypass -File scripts/ensure-postgres.ps1",
     "dev": "next dev",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "build": "next build"
+    "build": "next build",
+    "prisma:pull": "prisma db pull",
+    "prisma:generate": "prisma generate",
+    "auth:set-password": "node scripts/set-local-password.mjs",
+    "db:check": "node scripts/db-check.mjs"
   },
   "dependencies": {
-    "@supabase/ssr": "latest",
-    "@supabase/supabase-js": "latest",
+    "@prisma/client": "^6.19.3",
     "@types/qrcode": "^1.5.6",
+    "bcryptjs": "^3.0.3",
     "clsx": "latest",
     "exceljs": "^4.4.0",
     "lucide-react": "latest",
     "next": "latest",
+    "prisma": "^6.19.3",
     "qrcode": "^1.5.4",
     "react": "latest",
     "react-dom": "latest",

@@ -5,7 +5,16 @@ const eslintConfig = [
   ...nextVitals,
   ...nextTs,
   {
-    ignores: [".next/**", "node_modules/**", "next-env.d.ts"]
+    ignores: [".next/**", "node_modules/**", "next-env.d.ts", "scripts/**"]
+  },
+  {
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["warn", {
+        varsIgnorePattern: "^_",
+        argsIgnorePattern: "^_",
+        destructuredArrayIgnorePattern: "^_"
+      }]
+    }
   }
 ];
 

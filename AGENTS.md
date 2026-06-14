@@ -83,7 +83,7 @@ Build a working enterprise-grade Maintenance Management System with:
 19. PDF / print forms
 20. Excel exports
 21. Role-based dashboards
-22. In-app notifications
+22. Dedicated in-app notification system
 23. Audit logs
 24. Private file uploads
 25. PWA-ready mobile experience
@@ -408,6 +408,8 @@ Can:
 15. Do not hardcode secrets or real credentials.
 16. Password reset should be supported if possible through Supabase Auth.
 17. The application must be safe for internal company use.
+18. Notification metadata must not expose sensitive cost data to users without cost visibility.
+19. Notification failures must not block the main business workflow.
 
 ---
 
@@ -939,6 +941,10 @@ Core tables:
 - purchase_request_items
 - approvals
 - notifications
+- notification_events
+- notification_templates
+- notification_preferences
+- notification_delivery_logs
 - audit_logs
 - app_settings
 
@@ -964,6 +970,7 @@ Add useful indexes for:
 - purchase request status
 - created_at
 - approval status
+- notification recipient, read state, created date, event key, category, priority, entity type, and entity id
 
 ---
 
@@ -1103,9 +1110,111 @@ Manager mobile features:
 
 ---
 
-# 23. Notifications
+# 23. Notification System
 
-Add in-app notifications.
+Use the dedicated notification architecture for in-app notifications.
+
+Do not insert notification rows directly from workflow actions unless there is no safe alternative. Prefer the centralized service in:
+
+```txt
+lib/notifications/
+  events.ts
+  templates.ts
+  service.ts
+  recipients.ts
+  preferences.ts
+  delivery.ts
+  types.ts
+```
+
+Required behavior:
+
+- Header notification bell
+- unread count
+- Notification Center at `/notifications`
+- mark single notification as read
+- mark all notifications as read
+- archive notification
+- categories
+- priority
+- templates
+- user preference foundation
+- admin notification settings
+- delivery logs
+- polling hook foundation for future realtime
+- future-ready email, WhatsApp, SMS, and push channels, disabled until approved
+
+Notification tables:
+
+- `notification_events`
+- `notification_templates`
+- extended `notifications`
+- `notification_preferences`
+- `notification_delivery_logs`
+
+Keep backward compatibility with legacy notification fields:
+
+- `recipient_id`
+- `notification_type`
+- `is_read`
+
+New notification fields should include:
+
+- `recipient_user_id`
+- `recipient_role`
+- `recipient_department_id`
+- `event_key`
+- `category`
+- `priority`
+- `title`
+- `message`
+- `entity_type`
+- `entity_id`
+- `action_url`
+- `action_label`
+- `metadata`
+- `read_at`
+- `archived_at`
+- `created_at`
+- `created_by`
+
+Priority values:
+
+- low
+- normal
+- high
+- urgent
+
+Categories:
+
+- Work Orders
+- Approvals
+- Technician Jobs
+- Parts Requests
+- Store / Inventory
+- Purchase
+- Finance
+- CEO / Management
+- Assets
+- Reports
+- System
+
+Central service functions should include:
+
+- `notifyByEvent()`
+- `sendNotification()`
+- `sendBulkNotifications()`
+- `resolveRecipientsForEvent()`
+- `renderNotificationTemplate()`
+- `getUserNotifications()`
+- `getUnreadNotificationCount()`
+- `markNotificationRead()`
+- `markAllNotificationsRead()`
+- `archiveNotification()`
+- `getNotificationPreferences()`
+- `updateNotificationPreferences()`
+
+Recipient logic belongs in `lib/notifications/recipients.ts`.
 
 Notify users when:
 
@@ -1124,7 +1233,16 @@ Notify users when:
 - Job completed
 - Work order closed
 
-Email/WhatsApp/SMS are not required in first version.
+External email, WhatsApp, SMS, and push delivery are not required in the first working version. Keep the schema and service design ready for these channels, but do not send external messages until provider, consent, retention, and security rules are approved.
+
+Notification security:
+
+- Users can read only their own notifications.
+- Users can update read/archive status only for their own notifications.
+- Super Admin and IT Admin can manage notification settings through `admin.notification_settings.manage`.
+- Critical workflow notifications can be forced by `app_settings.force_critical_notifications`.
+- Notification metadata must avoid unauthorized cost details.
+- Notification creation errors must be logged safely and must not crash workflow actions.
 
 ---
 
@@ -1166,6 +1284,9 @@ Create settings for:
 - Enable/disable requester confirmation
 - Enable/disable finance approval
 - Enable/disable CEO approval
+- Notification retention days
+- Notification poll interval seconds
+- Force critical notifications
 
 ---
 
@@ -1190,6 +1311,8 @@ Create these routes.
 - `/admin/departments`
 - `/admin/settings`
 - `/admin/audit-logs`
+- `/admin/notification-settings`
+- `/admin/architecture`
 
 ## Maintenance
 
@@ -1244,6 +1367,11 @@ Create these routes.
 ## Profile
 
 - `/profile`
+- `/profile/notifications`
+
+## Notifications
+
+- `/notifications`
 
 ---
 
@@ -1413,6 +1541,7 @@ lib/
   exports/
   audit/
   notifications/
+hooks/
 types/
 supabase/
   migrations/
@@ -1444,6 +1573,10 @@ Create reusable components such as:
 - PermissionGate
 - CostVisibilityGuard
 - MobileJobCard
+- NotificationBell
+- NotificationCenter
+- NotificationPreferences
+- ArchitecturePresentation
 
 ---
 
@@ -1519,7 +1652,7 @@ Build in this order.
 - Technician assignment
 - Technician mobile dashboard
 - Status history
-- Notifications
+- Basic notifications
 
 ## Phase 4
 
@@ -1535,174 +1668,3 @@ Build in this order.
 - Dashboards
 - Reports
 - Excel exports
-- Audit logs
-- Demo data polish
-- PWA
-- Final build/test
-
----
-
-# 34. AI Development Workflow Inspiration
-
-Use these external projects only as development workflow inspiration:
-
-1. Andrej Karpathy AutoResearch: `https://github.com/karpathy/autoresearch.git`
-2. Garry Tan gstack: `https://github.com/garrytan/gstack.git`
-
-Do not install these repositories as runtime dependencies.
-Do not copy unknown scripts into the production app.
-Do not execute setup scripts from these repositories without review.
-Do not make the RECAFCO app dependent on these external repositories.
-
-## AutoResearch-inspired workflow
-
-Use an experiment-driven development loop:
-
-1. Define the feature or improvement clearly.
-2. Define success criteria before coding.
-3. Make one focused change at a time.
-4. Run checks after each important change:
-   - `npm run lint`
-   - `npm run typecheck`
-   - `npm run build`
-   - relevant tests if available
-5. Keep the change only if it improves correctness, security, performance, UX, or maintainability.
-6. Revert or fix changes that break existing workflow.
-7. Maintain an experiment log for major architecture, workflow, UI, database, or security changes.
-
-Create or update `docs/experiment-log.md`.
-
-The experiment log should include:
-
-- Date
-- Feature / area tested
-- Hypothesis
-- Change made
-- Checks run
-- Result
-- Decision: keep / modify / revert
-- Notes
-
-## gstack-inspired workflow
-
-Use a structured product/design/engineering review process.
-
-Before building a major feature, create or update:
-
-- `docs/feature-brief.md`
-- `docs/architecture.md` when architecture changes
-- `docs/security.md` when auth/RLS/permissions change
-- `docs/testing-checklist.md` when workflows change
-
-For every major feature, perform these reviews:
-
-1. Product review:
-   - Does this solve the business workflow?
-   - Is it clear for maintenance, store, purchase, finance, and management users?
-2. UX review:
-   - Is the screen simple?
-   - Is it mobile friendly?
-   - Are primary actions obvious?
-   - Are status badges clear?
-   - Are errors understandable?
-3. Engineering review:
-   - Is the code maintainable?
-   - Are permissions server-side?
-   - Are DB queries safe?
-   - Is validation implemented?
-4. Security review:
-   - Are routes protected?
-   - Are Supabase RLS policies correct?
-   - Are files private?
-   - Is cost visibility permission-based?
-5. Documentation review:
-   - README updated if setup changes
-   - AGENTS.md updated if project rules change
-   - docs updated if workflow changes
-
-## Documentation Drift Rule
-
-After major code changes, check whether `README.md`, `AGENTS.md`, `docs/architecture.md`, `docs/security.md`, and `docs/testing-checklist.md` are still accurate. Update them if they are outdated.
-
-## Review Command Rule
-
-Before final response, run where possible:
-
-```bash
-npm run lint
-npm run typecheck
-npm run build
-```
-
-If any command fails, fix the issue or clearly document the failure.
-
-## Safety Rule for External Repositories
-
-Do not vendor, install, or execute code from `karpathy/autoresearch` or `garrytan/gstack` unless explicitly requested later.
-If using concepts from them, document the concept in `AGENTS.md` instead of adding external code.
-
----
-
-# 35. Quality Checklist
-
-Before finishing any major task:
-
-1. App compiles.
-2. TypeScript passes.
-3. Lint passes.
-4. Build passes.
-5. Protected routes are protected.
-6. Role permissions are enforced server-side.
-7. Technician sees only assigned jobs.
-8. Finance/cost data is hidden from unauthorized roles.
-9. Uploaded files are private.
-10. Signed URLs are used for private files.
-11. Demo data works.
-12. Mobile views are usable.
-13. Forms have validation.
-14. Tables have search/filter where useful.
-15. Critical actions are audited.
-16. README is updated.
-
-Do not leave core features as TODO.
-Do not create fake-only pages.
-If something is too large for one pass, build the foundation and clearly list remaining items.
-
----
-
-# 36. Final Response Format for Codex
-
-After implementation, summarize:
-
-1. What was built
-2. Main files created/changed
-3. Database migrations created
-4. Demo data included
-5. Environment variables needed
-6. Commands to run
-7. How to test login and roles
-8. How to test work order workflow
-9. How to test technician mobile workflow
-10. How to test parts request/store/purchase/finance workflow
-11. Any limitations or next recommended improvements
-
----
-
-# 37. Final Instruction
-
-Always read this `AGENTS.md` before implementation.
-
-Build the system as a secure, scalable, enterprise-ready web application for RECAFCO.
-
-The UI must feel professional, reliable, industrial, and management-ready.
-
-Prioritize:
-
-- correctness
-- security
-- clean workflow
-- mobile usability
-- role-based access
-- auditability
-- realistic demo data
-- management presentation quality
