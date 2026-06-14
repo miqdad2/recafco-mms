@@ -6,7 +6,7 @@ import { prisma } from "@/lib/db/prisma";
 export default async function EditWorkOrderPage({ params }: { params: Promise<{ id: string }> }) {
   await requirePermission("work_orders.manage");
   const { id } = await params;
-  const [rawWorkOrder, departments, assets, supervisors, rawLabor, rawMaterials, rawAttachments] = await Promise.all([
+  const [rawWorkOrder, departments, assets, supervisors, rawLabor, rawMaterials, rawAttachments, rawRequiredParts] = await Promise.all([
     prisma.work_orders.findUnique({ where: { id } }),
     prisma.departments.findMany({
       where: { is_active: true },
@@ -25,7 +25,8 @@ export default async function EditWorkOrderPage({ params }: { params: Promise<{ 
     }),
     prisma.work_order_labor.findMany({ where: { work_order_id: id } }),
     prisma.work_order_materials.findMany({ where: { work_order_id: id } }),
-    prisma.work_order_attachments.findMany({ where: { work_order_id: id } })
+    prisma.work_order_attachments.findMany({ where: { work_order_id: id } }),
+    prisma.workOrderRequiredPart.findMany({ where: { work_order_id: id }, orderBy: { created_at: "asc" } })
   ]);
 
   const workOrder = rawWorkOrder ? {
@@ -67,6 +68,14 @@ export default async function EditWorkOrderPage({ params }: { params: Promise<{ 
     created_at: row.created_at.toISOString()
   }));
 
+  const requiredParts = rawRequiredParts.map((row) => ({
+    ...row,
+    quantity_required: row.quantity_required.toNumber(),
+    created_at: row.created_at.toISOString(),
+    updated_at: row.updated_at.toISOString(),
+    confirmed_at: row.confirmed_at?.toISOString() ?? null
+  }));
+
   return (
     <>
       <PageHeader title="Edit Work Order" description={`Update ${workOrder?.work_order_number ?? "work order"} paper-form details.`} />
@@ -79,6 +88,7 @@ export default async function EditWorkOrderPage({ params }: { params: Promise<{ 
           laborRows={labor ?? []}
           materialRows={materials ?? []}
           attachmentRows={attachments ?? []}
+          requiredPartRows={requiredParts ?? []}
         />
       </div>
     </>

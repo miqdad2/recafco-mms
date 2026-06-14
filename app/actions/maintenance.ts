@@ -153,6 +153,24 @@ function parseMaterialRows(formData: FormData) {
     .filter(Boolean);
 }
 
+function parseRequiredPartRows(formData: FormData) {
+  return [0, 1, 2]
+    .map((index) => {
+      const description = rowValue(formData, "req_part_description", index);
+      if (!description) return null;
+      const qty = numberValue(rowValue(formData, "req_part_quantity", index));
+      return {
+        description,
+        part_number: rowValue(formData, "req_part_part_number", index) || null,
+        quantity_required: qty > 0 ? qty : 1,
+        unit_of_measure: rowValue(formData, "req_part_uom", index) || "PCS",
+        notes: rowValue(formData, "req_part_notes", index) || null,
+        availability_status: "unchecked"
+      };
+    })
+    .filter(Boolean);
+}
+
 function parseAttachmentRows(formData: FormData) {
   return [0, 1]
     .map((index) => {
@@ -303,6 +321,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
   const laborRows = parseLaborRows(formData);
   const materialRows = parseMaterialRows(formData);
   const attachmentRows = parseAttachmentRows(formData);
+  const requiredPartRows = parseRequiredPartRows(formData);
   const totalLabor = laborRows.reduce((sum, row) => sum + (row?.hours ?? 0) * (row?.rate ?? 0), 0);
   const totalMaterials = materialRows.reduce((sum, row) => sum + (row?.quantity ?? 0) * (row?.unit_price ?? 0), 0);
 
@@ -371,6 +390,9 @@ export async function upsertWorkOrderAction(formData: FormData) {
         if (materialRows.length) {
           await prisma.work_order_materials.createMany({ data: materialRows.map((row) => ({ ...row!, work_order_id: recoveredId })) });
         }
+        if (requiredPartRows.length) {
+          await prisma.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id: recoveredId, created_by: context.userId })) });
+        }
         await writeAuditLog({
           actorId: context.userId,
           action: "work_order.create",
@@ -409,7 +431,8 @@ export async function upsertWorkOrderAction(formData: FormData) {
     await Promise.all([
       prisma.work_order_labor.deleteMany({ where: { work_order_id: id } }),
       prisma.work_order_materials.deleteMany({ where: { work_order_id: id } }),
-      prisma.work_order_attachments.deleteMany({ where: { work_order_id: id } })
+      prisma.work_order_attachments.deleteMany({ where: { work_order_id: id } }),
+      prisma.workOrderRequiredPart.deleteMany({ where: { work_order_id: id } })
     ]);
   }
 
@@ -417,6 +440,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
   if (laborRows.length) await prisma.work_order_labor.createMany({ data: laborRows.map((row) => ({ ...row!, work_order_id })) });
   if (materialRows.length) await prisma.work_order_materials.createMany({ data: materialRows.map((row) => ({ ...row!, work_order_id })) });
   if (attachmentRows.length) await prisma.work_order_attachments.createMany({ data: attachmentRows.map((row) => ({ ...row!, work_order_id, uploaded_by: context.userId })) });
+  if (requiredPartRows.length) await prisma.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id, created_by: context.userId })) });
 
   const auditStatus = id
     ? (existingStatus === "Rejected" ? "Rejected→Draft" : "(preserved)")

@@ -31,7 +31,8 @@ export function WorkOrderForm({
   supervisors,
   laborRows = [],
   materialRows = [],
-  attachmentRows = []
+  attachmentRows = [],
+  requiredPartRows = []
 }: {
   workOrder?: FormRecord | null;
   departments: Option[];
@@ -40,6 +41,7 @@ export function WorkOrderForm({
   laborRows?: FormRecord[];
   materialRows?: FormRecord[];
   attachmentRows?: FormRecord[];
+  requiredPartRows?: FormRecord[];
 }) {
   const isNew = !workOrder?.id;
 
@@ -257,6 +259,32 @@ export function WorkOrderForm({
                 </table>
               </div>
 
+              <p className="mt-4 mb-1 text-xs text-[#9CA3AF]">Required parts — optional. List parts or materials expected for this job if known.</p>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] border-collapse text-sm text-[#111827]">
+                  <thead>
+                    <tr className="bg-[#F0FDF4]">
+                      <th className={cellClass}>Description / part name</th>
+                      <th className={cellClass}>Part no.</th>
+                      <th className={cellClass}>Qty</th>
+                      <th className={cellClass}>Unit</th>
+                      <th className={cellClass}>Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[0, 1, 2].map((index) => (
+                      <tr key={index}>
+                        <td className={cellClass}><input className={inputClass} name={`req_part_description_${index}`} placeholder="e.g. oil filter, gasket…" /></td>
+                        <td className={cellClass}><input className={inputClass} name={`req_part_part_number_${index}`} /></td>
+                        <td className={cellClass}><input className={inputClass} name={`req_part_quantity_${index}`} type="number" step="0.01" defaultValue="1" /></td>
+                        <td className={cellClass}><input className={inputClass} name={`req_part_uom_${index}`} defaultValue="PCS" /></td>
+                        <td className={cellClass}><input className={inputClass} name={`req_part_notes_${index}`} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <input type="hidden" name="asset_category" value="" />
                 <input type="hidden" name="assigned_supervisor_id" value="" />
@@ -432,6 +460,20 @@ export function WorkOrderForm({
               <Field label="SS rec code" name={`material_ss_rec_code_${index}`} defaultValue={materialRows[index]?.ss_rec_code} />
               <Field label="Quantity" name={`material_quantity_${index}`} type="number" defaultValue={materialRows[index]?.quantity} />
               <Field label="Unit price" name={`material_unit_price_${index}`} type="number" defaultValue={materialRows[index]?.unit_price} />
+            </div>
+          </div>
+        ))}
+      </FormSection>
+
+      <FormSection title="Required Parts (if known)" description="List parts or materials expected for this job. Store Keeper will check availability.">
+        {[0, 1, 2].map((index) => (
+          <div key={index} className="rounded-md border border-[#E5E7EB] p-3 md:col-span-2">
+            <div className="grid gap-3 md:grid-cols-5">
+              <Field label="Description / part name" name={`req_part_description_${index}`} defaultValue={requiredPartRows[index]?.description} />
+              <Field label="Part number" name={`req_part_part_number_${index}`} defaultValue={requiredPartRows[index]?.part_number} />
+              <Field label="Quantity" name={`req_part_quantity_${index}`} type="number" defaultValue={requiredPartRows[index]?.quantity_required ?? "1"} />
+              <Field label="Unit" name={`req_part_uom_${index}`} defaultValue={requiredPartRows[index]?.unit_of_measure ?? "PCS"} />
+              <Field label="Notes" name={`req_part_notes_${index}`} defaultValue={requiredPartRows[index]?.notes} />
             </div>
           </div>
         ))}

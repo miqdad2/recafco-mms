@@ -102,6 +102,7 @@ const workOrderControlInclude = {
   work_order_attachments: { orderBy: { created_at: "desc" } },
   work_order_labor: { include: { profiles: true }, orderBy: { created_at: "desc" } },
   work_order_materials: { include: { parts: true }, orderBy: { created_at: "desc" } },
+  work_order_required_parts: { orderBy: { created_at: "asc" } },
   work_order_status_history: { orderBy: { changed_at: "asc" } },
   work_order_technician_notes: { include: { profiles: true }, orderBy: { created_at: "desc" } }
 } satisfies Prisma.work_ordersInclude;
@@ -421,6 +422,26 @@ export default async function WorkOrderDetailPage({
                 <MetricCard label="Open requests" value={openPartsRequests} icon={AlertTriangle} tone={openPartsRequests ? "amber" : "green"} />
                 <MetricCard label="Purchase queue" value={purchaseQueue.length} icon={ShoppingCart} tone={purchaseQueue.length ? "red" : "green"} />
               </div>
+              {wo.work_order_required_parts.length > 0 ? (
+                <div className="mt-4">
+                  <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Required parts — listed at creation</p>
+                  <Table
+                    columns={["Description", "Part no.", "Qty", "Unit", "Store status"]}
+                    rows={wo.work_order_required_parts.map((row) => [
+                      row.description,
+                      row.part_number ?? "-",
+                      row.quantity_required.toString(),
+                      row.unit_of_measure,
+                      <StatusBadge
+                        key="status"
+                        label={row.availability_status === "unchecked" ? "Unchecked" : row.availability_status === "available" ? "Available" : row.availability_status === "partial" ? "Partial" : row.availability_status === "unavailable" ? "Unavailable" : row.availability_status}
+                        tone={row.availability_status === "available" ? "green" : row.availability_status === "unavailable" ? "red" : row.availability_status === "partial" ? "amber" : "gray"}
+                      />
+                    ])}
+                    empty=""
+                  />
+                </div>
+              ) : null}
               <Table
                 columns={canViewCosts ? ["Material", "Part no.", "SS rec", "Qty", "Unit", "Amount"] : ["Material", "Part no.", "SS rec", "Qty"]}
                 rows={wo.work_order_materials.map((row) => canViewCosts
