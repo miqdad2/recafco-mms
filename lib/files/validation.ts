@@ -15,15 +15,24 @@ export const ALLOWED_PRIVATE_FILE_TYPES = new Set([
 ]);
 
 export function validatePrivateFile(file: File) {
+  return validatePrivateFileWithOptions(file, {
+    maxSizeBytes: MAX_PRIVATE_FILE_SIZE,
+    allowedTypes: ALLOWED_PRIVATE_FILE_TYPES
+  });
+}
+
+export function validatePrivateFileWithOptions(file: File, options: { maxSizeBytes: number; allowedTypes: Set<string> | string[] }) {
+  const allowedTypes = Array.isArray(options.allowedTypes) ? new Set(options.allowedTypes) : options.allowedTypes;
+
   if (!file.size) {
     return "Select a file before uploading.";
   }
 
-  if (file.size > MAX_PRIVATE_FILE_SIZE) {
-    return "File is too large. Maximum size is 10 MB.";
+  if (file.size > options.maxSizeBytes) {
+    return `File is too large. Maximum size is ${Math.round(options.maxSizeBytes / 1024 / 1024)} MB.`;
   }
 
-  if (!ALLOWED_PRIVATE_FILE_TYPES.has(file.type)) {
+  if (!allowedTypes.has(file.type)) {
     return "Unsupported file type. Use PDF, JPG, PNG, XLS, XLSX, DOC, or DOCX.";
   }
 
