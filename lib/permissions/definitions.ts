@@ -7,7 +7,11 @@ export const permissions: Record<PermissionKey, string> = {
   "admin.departments.manage": "Manage departments",
   "admin.settings.manage": "Manage application settings",
   "admin.audit_logs.view": "View audit logs",
+  "admin.notification_settings.manage": "Manage notification settings",
+  "admin.system_health.view": "View system health and runtime issues",
+  "admin.system_health.manage": "Triage and manage system health issues",
   "system_map.view": "View system workflow map",
+  "architecture.view": "View technical architecture page",
   "costs.view": "View sensitive costs",
   "assets.view": "View asset master and maintenance history",
   "assets.manage": "Create and update asset master records",
@@ -34,7 +38,12 @@ export const permissions: Record<PermissionKey, string> = {
   "reports.view": "View operational reports",
   "reports.export": "Export operational reports",
   "files.upload": "Upload private files",
-  "files.view": "View private signed files"
+  "files.view": "View private signed files",
+  "cost.review": "Review and validate cost items before finance approval",
+  "cost.approve": "Approve or flag cost items after review",
+  "cost.reports.view": "View cost controller reports and cost summaries",
+  "budget.check": "Check budget availability and cost center allocation",
+  "cost_center.manage": "Manage cost centers and budget allocations"
 };
 
 export const roleLabels: Record<RoleSlug, string> = {
@@ -49,7 +58,9 @@ export const roleLabels: Record<RoleSlug, string> = {
   purchase_officer: "Purchase Officer",
   finance_manager: "Finance Manager",
   department_requester: "Department Requester",
-  viewer_auditor: "Viewer / Auditor"
+  viewer_auditor: "Viewer / Auditor",
+  cost_controller: "Cost Controller",
+  accounting_reviewer: "Accounting Reviewer"
 };
 
 export const adminNavigationPermissions: Record<string, PermissionKey> = {
@@ -58,5 +69,8 @@ export const adminNavigationPermissions: Record<string, PermissionKey> = {
   "/admin/departments": "admin.departments.manage",
   "/admin/settings": "admin.settings.manage",
   "/admin/audit-logs": "admin.audit_logs.view",
-  "/admin/system-map": "system_map.view"
+  "/admin/system-health": "admin.system_health.view",
+  "/admin/system-map": "system_map.view",
+  "/admin/architecture": "architecture.view",
+  "/admin/notification-settings": "admin.notification_settings.manage"
 };
