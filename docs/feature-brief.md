@@ -216,7 +216,7 @@ Super Admin can always access the page. IT Admin and CEO / Management can access
 
 1. Authorized user opens `/admin/system-map`.
 2. Page writes a non-blocking `system_map.viewed` audit log.
-3. Server fetches live Supabase statistics.
+3. Server fetches live local database statistics.
 4. Config-driven sections render the executive workflow strip, phases, modules, workflow nodes, edges, role swimlanes, management monitoring cards, and roadmap items.
 5. Presentation mode opens a full-screen executive workflow and detailed workflow map.
 
@@ -227,3 +227,69 @@ Super Admin can always access the page. IT Admin and CEO / Management can access
 - Live stats are fetched server-side through `lib/system-map/stats.ts`.
 - Sidebar link is visible only to permitted users.
 - README explains access and future config updates.
+
+---
+
+## Editable Workflow Map
+
+### Feature / Area
+
+Super Admin workshop editor at `/admin/system-map/edit`.
+
+### Business Problem
+
+RECAFCO workflow details may change after meetings with Maintenance, Store, Purchase, Finance, Operations, and Management. The system needs a safe visual place to modify and discuss the workflow without immediately changing production approvals, permissions, or business rules.
+
+### Users and Permissions
+
+Super Admin only. Other roles redirect server-side to `/dashboard?error=super-admin-required`.
+
+### Workflow
+
+1. Super Admin opens the editor from System Map or navigation.
+2. The board loads the latest official full workflow from `lib/system-map/config.ts`, or the latest saved version from `workflow_map_versions`.
+3. Super Admin drags workflow steps, edits step content, adds notes, and updates handoff arrows.
+4. Super Admin can reset to the official diagram, export JSON, save a draft, or publish a reviewed version.
+5. Saves write audit logs and create `system_map.updated` notifications.
+
+### Success Criteria
+
+- The editor is usable during department meetings.
+- Draft and published versions are saved with version numbers and notes.
+- Publishing archives older published versions.
+- Editable diagrams remain planning records until workflow code, permissions, notifications, and database rules are explicitly updated.
+
+---
+
+## Notification System Upgrade
+
+### Feature / Area
+
+Centralized in-app notification architecture with Notification Center, header bell, preferences, admin settings, templates, delivery logs, and workflow integration.
+
+### Business Problem
+
+RECAFCO workflows cross Maintenance, Store, Purchase, Finance, CEO, IT, and technicians. Basic ad hoc notifications are not enough as the system grows; alerts need one service, consistent recipient rules, unread/archive behavior, and a future-ready path for external channels.
+
+### Users and Permissions
+
+All authenticated users can view and manage their own notifications. Super Admin and IT Admin manage notification events, noncritical event enablement, simple in-app templates, delivery logs, and recent system notifications through `admin.notification_settings.manage`.
+
+### Workflow
+
+1. Workflow action calls `notifyByEvent()`.
+2. The service checks the event catalog and app settings.
+3. Recipients are resolved centrally by user id and role.
+4. In-app templates are rendered with safe metadata.
+5. User preferences are respected for noncritical events.
+6. Notifications are inserted and delivery attempts are logged.
+7. If notification delivery fails, the business action still succeeds.
+
+### Success Criteria
+
+- Existing notification rows remain readable.
+- New notification rows use category, priority, action, metadata, read, and archive fields.
+- Header bell, `/notifications`, `/profile/notifications`, and `/admin/notification-settings` work.
+- Workflow actions use the centralized service rather than direct insert logic where practical.
+- RLS prevents users from reading or updating other users' notifications.
+- External channels are represented but disabled for future review.

@@ -141,6 +141,13 @@ If a command fails, fix the issue or document the failure and reason.
 - Management monitoring cards explain operational, financial, and asset visibility.
 - Workflow diagram nodes and module cards link to operational routes.
 - Presentation mode opens a full-screen view and exit link returns to the normal page.
+- Super Admin sees `Editable Workshop Map` from `/admin/system-map` and `Map Editor` in navigation.
+- Super Admin can open `/admin/system-map/edit`; other roles redirect to `/dashboard?error=super-admin-required`.
+- Editor loads the latest full official workflow when no saved version exists.
+- Editor supports dragging workflow cards, editing selected step text, adding notes, adding/deleting handoff arrows, resetting to the latest official diagram, and exporting JSON.
+- Saving draft creates a `workflow_map_versions` row with status `draft`; publishing archives older published rows and creates a `published` row.
+- Saving or publishing writes audit logs and creates a non-blocking `system_map.updated` notification.
+- Editable workflow versions do not automatically alter live workflow permissions or business logic.
 
 ## Phase 5 Checks
 
@@ -159,9 +166,43 @@ If a command fails, fix the issue or document the failure and reason.
 - Work order, parts request, purchase request, and asset history print pages render RECAFCO headers, tables, generated date, approvals/status where available, and signature sections.
 - Manifest and app icon load; mobile browsers use the RECAFCO red theme color.
 - Mobile bottom navigation appears on small screens without horizontal overflow.
+- Mobile drawer menu exposes every route permitted for the current role, not only the first quick links.
+- Production build registers the service worker, caches the app shell assets, and shows `/offline.html` for failed navigations while secure data workflows remain online-only.
 - Asset and work order detail pages show scannable QR cards.
 - Asset history print and work order print pages show scannable QR codes for internal routes.
 - `lib/system-map/config.ts` shows Phase 5 completed and Phase 6 future items.
+
+## Technical Architecture Page Checks
+
+- Super Admin can open `/admin/architecture`.
+- IT Admin can open `/admin/architecture` after `architecture.view` migration is applied.
+- Other roles redirect to `/dashboard?error=permission-denied`.
+- Sidebar shows `Architecture` only to authorized users.
+- Hero actions link to System Map, Demo Guide, Presentation Mode, and refresh.
+- Live health stats render real counts or graceful zero fallback.
+- High-level architecture diagram shows device, UI, server, permission, Supabase/RLS, and output flow.
+- Security model documents Supabase Auth, server-side RBAC, active profile checks, RLS, private buckets, signed URLs, audit logs, cost visibility, and notification permissions.
+- Database model groups core, maintenance, store/parts, purchase/finance, and notification tables.
+- Notification, file storage, workflow, reporting, deployment, and scalability sections render from config.
+- Presentation Mode at `/admin/architecture?presentation=1` hides the normal shell content and emphasizes architecture, security, database, notifications, and deployment.
+- Opening the page writes a non-blocking `architecture.viewed` audit log.
+
+## Notification System Checks
+
+- Header bell shows the current user's unread count.
+- Bell dropdown shows the latest notifications on desktop and links to `/notifications`.
+- Mark single notification as read clears unread state for that row.
+- Mark all read clears the current user's unread count without changing archived rows.
+- Archive hides a notification from the active Notification Center list.
+- `/notifications` supports unread/read/archive, category, priority, and title/message search filters.
+- `/profile/notifications` saves in-app preferences for noncritical events.
+- Critical events remain enabled when `force_critical_notifications` is active.
+- `/admin/notification-settings` is available only to Super Admin and IT Admin with `admin.notification_settings.manage`.
+- Admin event disabling prevents new noncritical in-app notifications for that event.
+- Delivery logs show sent, failed, or disabled attempts.
+- Workflow actions create notifications through `notifyByEvent()` and still succeed if notification creation fails.
+- Legacy notifications with only `recipient_id`, `notification_type`, and `is_read` remain visible.
+- Notification metadata does not include unauthorized cost details.
 
 ## Final Demo Polish Checks
 

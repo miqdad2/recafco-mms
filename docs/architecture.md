@@ -6,9 +6,9 @@ This document records the intended technical shape of the RECAFCO Enterprise Mai
 
 - Next.js App Router with TypeScript strict mode.
 - Tailwind CSS with shadcn/ui or clean reusable enterprise components.
-- Supabase PostgreSQL for application data.
-- Supabase Auth for login and session handling.
-- Supabase Storage for private file uploads.
+- PostgreSQL for application data, accessed through Prisma.
+- Local email/password authentication with HTTP-only cookie sessions.
+- Local private file storage served through authenticated route handlers.
 - Zod for validation.
 - React Hook Form for forms.
 - Recharts for dashboard charts.
@@ -18,8 +18,8 @@ This document records the intended technical shape of the RECAFCO Enterprise Mai
 
 - Client components may render UI and call safe actions.
 - Server components, route handlers, and server actions enforce business permissions.
-- Supabase service role access must remain server-only.
-- Private file access must go through signed URLs.
+- Database access must remain server-only.
+- Private file access must go through authenticated route handlers.
 - External inspiration repositories must not become application dependencies.
 
 ## Core Modules
@@ -31,15 +31,15 @@ This document records the intended technical shape of the RECAFCO Enterprise Mai
 - Work orders, assignments, status history, labor, materials, and print/PDF views.
 - Parts requests, inventory, and store issue workflow.
 - Purchase requests, finance approvals, and CEO threshold approvals.
-- Notifications, audit logs, reports, and exports.
+- Dedicated notification system, audit logs, reports, and exports.
 
 ## Phase 1 Implementation Plan
 
 - `app/(auth)` contains login, forgot password, and reset password routes.
 - `app/(dashboard)` contains protected dashboard, admin, and profile routes behind `AppLayout`.
-- `proxy.ts` refreshes Supabase sessions and redirects unauthenticated users away from protected routes for Next.js 16.
-- `lib/supabase` contains browser, server, proxy-session, and admin clients. The admin client is server-only and requires `SUPABASE_SERVICE_ROLE_KEY`.
-- `lib/auth` loads the active profile and role context for server components and actions.
+- `proxy.ts` checks the local session cookie and redirects unauthenticated users away from protected routes for Next.js 16.
+- `lib/auth` creates, revokes, and resolves local sessions, then loads the active profile and role context for server components and actions.
+- `lib/supabase` is now a compatibility wrapper over `lib/db/local-query-client.ts` so older Supabase-style page queries run against local PostgreSQL during the migration.
 - `lib/permissions` centralizes permission names, role checks, and route guards.
 - `app/actions` contains validated server actions for sign-in/out, departments, profiles, and settings.
 - `supabase/migrations` contains SQL for Phase 1 tables, RLS policies, seed roles, permissions, departments, settings, and audit foundation.
@@ -78,19 +78,34 @@ This document records the intended technical shape of the RECAFCO Enterprise Mai
 - `/admin/system-map` is a protected server-rendered route under the dashboard layout.
 - `system_map.view` controls access for IT Admin and CEO / Management; Super Admin bypass remains in the shared permission guard pattern.
 - `lib/system-map/config.ts` owns phases, executive workflow steps, modules, workflow nodes, workflow edges, role swimlanes, management monitoring cards, and roadmap items.
-- `lib/system-map/stats.ts` fetches live Supabase counts with graceful fallback for missing or unavailable tables.
+- `lib/system-map/stats.ts` fetches live local PostgreSQL counts with graceful fallback for missing or unavailable tables.
 - `components/system-map/*` renders the premium hero, executive workflow strip, progress overview, detailed workflow diagram, workflow legend, role swimlanes, management monitoring section, module grid, live data snapshot, phase timeline, roadmap, and presentation-mode view.
 - System map views write a non-blocking audit log entry.
+- `/admin/system-map/edit` is a Super Admin workshop route for modifying a planning copy of the latest full workflow diagram.
+- `workflow_map_versions` stores draft, published, and archived editable diagram JSON with version numbers, notes, authorship, timestamps, and audit history.
+- `components/system-map/editor/workflow-map-editor.tsx` provides draggable workflow cards, handoff editing, meeting notes, JSON export, reset-to-official, save draft, and publish actions.
+- Editable map versions are planning artifacts only; confirmed workflow changes still need explicit code/database workflow implementation before they alter live permissions or business logic.
+
+## Technical Architecture Page
+
+- `/admin/architecture` is a protected Super Admin / IT Admin technical presentation route.
+- `architecture.view` grants IT Admin view access; Super Admin bypass remains in the shared server permission pattern.
+- `lib/architecture/config.ts` drives architecture layers, high-level flow, security features, database groups, notification flow, storage flow, workflow flow, reporting flow, deployment options, scalability roadmap, and summary cards.
+- `lib/architecture/stats.ts` fetches live technical counts for users, roles, permissions, departments, assets, work orders, notifications, unread notifications, and audit logs with graceful fallback.
+- `components/architecture/*` renders the hero, high-level diagram, layer cards, security model, database/RLS model, notification architecture, storage architecture, workflow engine, reporting/export architecture, deployment options, scalability roadmap, technical summary, and presentation mode.
+- Architecture page views write a non-blocking `architecture.viewed` audit log.
+- System Map and Demo Guide include the Architecture Page as a completed technical presentation module.
 
 ## Phase 5 Implementation Plan
 
-- `/reports/work-orders`, `/reports/assets`, `/reports/costs`, and `/reports/preventive-maintenance` are server-rendered report pages backed by Supabase queries in `lib/reports/data.ts`.
+- `/reports/work-orders`, `/reports/assets`, `/reports/costs`, and `/reports/preventive-maintenance` are server-rendered report pages backed by local PostgreSQL queries in `lib/reports/data.ts`.
 - `/api/exports/[kind]` provides audited native `.xlsx` exports for work orders, assets, parts, parts requests, purchase requests, inventory movements, cost reports, and preventive maintenance through `lib/exports/excel.ts`.
 - Cost exports and report filters are permission-protected server-side; unauthorized users do not receive sensitive cost columns.
-- `app/actions/files.ts` validates and uploads private files to Supabase Storage using server-side service role access after checking the authenticated user context.
-- `work-order-files`, `asset-files`, and `purchase-files` are private Storage buckets with signed URL viewing through `lib/files/signed-url.ts`.
+- `app/actions/files.ts` validates and stores private files under `UPLOADS_DIR` after checking the authenticated user context.
+- `work-order-files`, `asset-files`, and `purchase-files` remain logical private buckets. Files are served only through authenticated `/api/files/...` route handlers.
 - Browser print routes support improved work order, parts request, purchase request, and asset history PDF-ready layouts.
-- PWA metadata lives in `app/manifest.ts` and `app/layout.tsx`; mobile navigation is rendered in `AppLayout`.
+- PWA metadata lives in `app/manifest.ts` and `app/layout.tsx`; `components/pwa/service-worker-register.tsx` registers `public/sw.js` in production for an installable app shell and offline fallback.
+- Mobile navigation is rendered in `AppLayout` through a role-aware bottom bar plus drawer, so every permitted route remains reachable on phones and tablets.
 - `lib/qr/svg.ts` uses `qrcode` to generate scannable SVG QR codes for internal asset and work order routes. `NEXT_PUBLIC_APP_URL` controls the base URL embedded in QR targets.
 - System Map configuration marks Phase 5 completed and adds Phase 6 future roadmap content.
 
@@ -99,6 +114,18 @@ This document records the intended technical shape of the RECAFCO Enterprise Mai
 - `/admin/demo-guide` is a Super Admin-only server-rendered presentation script for IT Manager and management demos.
 - `components/ui/empty-state.tsx` standardizes clean empty states across reports, uploads, technician jobs, and workflow queues.
 - System Map configuration records Management Demo Polish as completed while Phase 6 remains future roadmap.
+
+## Notification System Architecture
+
+- `notification_events` defines category, priority, criticality, enabled state, and future channel support for every workflow event.
+- `notification_templates` stores in-app templates now and reserves email, WhatsApp, SMS, and push templates for later.
+- The existing `notifications` table is extended in place for backward compatibility with legacy `recipient_id`, `notification_type`, and `is_read` records.
+- `notification_preferences` stores per-user in-app opt-outs for noncritical events.
+- `notification_delivery_logs` records sent, failed, disabled, and skipped attempts without blocking the business workflow.
+- `lib/notifications/service.ts` is the single write path for notifications. Workflow actions call `notifyByEvent()` instead of inserting notification rows directly.
+- `lib/notifications/recipients.ts` centralizes role/user recipient resolution so workflow handoffs stay consistent.
+- `/notifications`, `/profile/notifications`, and `/admin/notification-settings` provide the user center, preference foundation, and admin control surface.
+- `hooks/use-notifications.ts` provides a polling-ready client interface for a future realtime replacement.
 
 ## Data Design Principles
 
