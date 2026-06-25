@@ -11,7 +11,8 @@
     "prisma:pull": "prisma db pull",
     "prisma:generate": "prisma generate",
     "auth:set-password": "node scripts/set-local-password.mjs",
-    "db:check": "node scripts/db-check.mjs"
+    "db:check": "node scripts/db-check.mjs",
+    "seed:demo-users": "node scripts/seed-demo-users.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
