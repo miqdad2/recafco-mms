@@ -1,70 +1,225 @@
 import Link from "next/link";
 
 import { ExportButton } from "@/components/reports/export-button";
-import { ReportFilterPanel } from "@/components/reports/report-filter-panel";
 import { ReportSummaryGrid } from "@/components/reports/report-summary-card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
-import { getAssetReport, getFilterOptions, parseReportFilters } from "@/lib/reports/data";
+import { getAssetReport, parseReportFilters } from "@/lib/reports/data";
 
-export default async function AssetReportsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+export default async function CriticalAssetReportPage({
+  searchParams
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   await requirePermission("reports.view");
   const rawParams = await searchParams;
   const filters = parseReportFilters(rawParams);
-  const [options, report] = await Promise.all([getFilterOptions(), getAssetReport(filters)]);
-  const params = new URLSearchParams(Object.entries(rawParams).flatMap(([key, value]) => Array.isArray(value) ? value.map((item) => [key, item]) : value ? [[key, value]] : []));
+  const report = await getAssetReport(filters);
+  const params = new URLSearchParams(
+    Object.entries(rawParams).flatMap(([key, value]) =>
+      Array.isArray(value) ? value.map((item) => [key, item]) : value ? [[key, value]] : []
+    )
+  );
+
+  const allRows = report.rows;
+
+  const viewParam = (rawParams["view"] as string | undefined) ?? "critical";
+  const showAll = viewParam === "register";
+
+  // Critical: breakdown status, critical criticality, or poor condition
+  const criticalRows = allRows.filter(
+    (a) =>
+      a.status === "Breakdown" ||
+      a.status === "Waiting for Parts" ||
+      a.status === "Under Maintenance" ||
+      a.criticality === "Critical" ||
+      a.condition === "Poor"
+  );
+
+  const displayRows = showAll ? allRows : criticalRows;
+
+  const summaryCards = [
+    { label: "Total Assets", value: report.stats.total, tone: "blue" as const },
+    { label: "Breakdown", value: report.stats.breakdown, tone: "red" as const },
+    { label: "Under Maintenance", value: report.stats.underMaintenance, tone: "amber" as const },
+    { label: "Waiting for Parts", value: report.stats.waitingForParts, tone: "amber" as const },
+    { label: "Next Service Due (30d)", value: report.stats.nextServiceDue, tone: "green" as const },
+    { label: "Registration Expiry (30d)", value: report.stats.registrationExpiry, tone: "amber" as const },
+    { label: "Insurance Expiry (30d)", value: report.stats.insuranceExpiry, tone: "amber" as const },
+    { label: "Warranty Expiry (30d)", value: report.stats.warrantyExpiry, tone: "amber" as const }
+  ];
 
   return (
     <>
-      <PageHeader title="Asset Reports" description="Asset list, maintenance history indicators, expiry alerts, breakdown ranking, and next service due." actions={<ExportButton kind="assets" searchParams={params} />} />
+      <PageHeader
+        title="Critical Asset Report"
+        description="Monitor critical, poor condition, breakdown, and repeated-issue assets."
+        actions={<ExportButton kind="assets" searchParams={params} />}
+      />
+
       <div className="space-y-5 p-4 lg:p-6">
-        <ReportFilterPanel filters={filters} options={options} />
-        <ReportSummaryGrid cards={[
-          { label: "Assets", value: report.stats.total, tone: "blue" },
-          { label: "Under maintenance", value: report.stats.underMaintenance, tone: "amber" },
-          { label: "Waiting parts", value: report.stats.waitingForParts, tone: "amber" },
-          { label: "Breakdown", value: report.stats.breakdown, tone: "red" },
-          { label: "Next service due", value: report.stats.nextServiceDue, tone: "green" },
-          { label: "Registration expiry", value: report.stats.registrationExpiry, tone: "amber" },
-          { label: "Insurance expiry", value: report.stats.insuranceExpiry, tone: "amber" },
-          { label: "Warranty expiry", value: report.stats.warrantyExpiry, tone: "amber" }
-        ]} />
-        <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold">Top Breakdown Assets</h2>
-          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            {report.topBreakdownAssets.length ? report.topBreakdownAssets.map((asset) => (
-              <Link key={asset.id} href={`/assets/${asset.id}`} className="rounded-md border border-[#E5E7EB] p-3 hover:border-[#ED1C24]">
-                <p className="font-bold text-[#111827]">{asset.asset_code}</p>
-                <p className="text-sm text-[#4B5563]">{asset.asset_name}</p>
-                <p className="mt-2 text-sm font-bold text-[#ED1C24]">{asset.breakdownCount} breakdown WOs</p>
-              </Link>
-            )) : <div className="md:col-span-2 xl:col-span-5"><EmptyState title="No breakdown assets" message="No matching breakdown history is available for the selected filters." /></div>}
+
+        <ReportSummaryGrid cards={summaryCards} />
+
+        {/* Top breakdown assets */}
+        {report.topBreakdownAssets.length > 0 && (
+          <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
+            <h2 className="text-sm font-bold text-[#111827]">Assets with Most Breakdown Repair Orders</h2>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              {report.topBreakdownAssets.map((asset) => (
+                <Link
+                  key={asset.id}
+                  href={`/assets/${asset.id}`}
+                  className="rounded-md border border-[#E5E7EB] p-3 hover:border-[#ED1C24] transition-colors"
+                >
+                  <p className="font-bold text-[#111827]">{asset.asset_code}</p>
+                  <p className="text-sm text-[#4B5563]">{asset.asset_name}</p>
+                  <p className="mt-2 text-sm font-bold text-[#ED1C24]">{asset.breakdownCount} breakdown ROs</p>
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* View toggle */}
+        <div className="flex gap-2">
+          <Link
+            href="?view=critical"
+            className={`rounded-md border px-4 py-2 text-sm font-semibold transition ${
+              !showAll
+                ? "border-[#ED1C24] bg-red-50 text-[#ED1C24]"
+                : "border-[#E5E7EB] bg-white text-[#4B5563] hover:bg-gray-50"
+            }`}
+          >
+            Critical Assets ({criticalRows.length})
+          </Link>
+          <Link
+            href="?view=register"
+            className={`rounded-md border px-4 py-2 text-sm font-semibold transition ${
+              showAll
+                ? "border-[#ED1C24] bg-red-50 text-[#ED1C24]"
+                : "border-[#E5E7EB] bg-white text-[#4B5563] hover:bg-gray-50"
+            }`}
+          >
+            All Assets ({allRows.length})
+          </Link>
+        </div>
+
+        {/* Asset table */}
+        <section className="rounded-md border border-[#E5E7EB] bg-white shadow-sm">
+          <div className="border-b border-[#E5E7EB] px-5 py-3">
+            <h2 className="text-sm font-bold text-[#111827]">
+              {showAll ? "All Assets" : "Critical / Breakdown Assets"}
+            </h2>
+            <p className="text-xs text-[#4B5563]">{displayRows.length} record{displayRows.length !== 1 ? "s" : ""}</p>
           </div>
-        </section>
-        <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold">Asset List</h2>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full min-w-[1100px] text-left text-sm">
-              <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]"><tr><th className="px-3 py-2">Asset</th><th className="px-3 py-2">Category</th><th className="px-3 py-2">Department</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">KM</th><th className="px-3 py-2">Hours</th><th className="px-3 py-2">Next service</th><th className="px-3 py-2">Registration</th><th className="px-3 py-2">Insurance</th><th className="px-3 py-2">Warranty</th></tr></thead>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-max text-left text-sm">
+              <thead className="bg-gray-50 text-xs font-bold uppercase tracking-wide text-[#4B5563]">
+                <tr>
+                  <th className="px-4 py-2.5">Asset</th>
+                  <th className="px-4 py-2.5">Category</th>
+                  <th className="px-4 py-2.5">Location</th>
+                  <th className="px-4 py-2.5">Condition</th>
+                  <th className="px-4 py-2.5">Criticality</th>
+                  <th className="px-4 py-2.5">Status</th>
+                  <th className="px-4 py-2.5">Open ROs</th>
+                  <th className="px-4 py-2.5">Last Repair</th>
+                  <th className="px-4 py-2.5">Action</th>
+                </tr>
+              </thead>
               <tbody className="divide-y divide-[#E5E7EB]">
-                {report.rows.length ? report.rows.map((asset) => {
-                  const department = Array.isArray(asset.departments) ? asset.departments[0] : asset.departments;
+                {!displayRows.length && (
+                  <tr>
+                    <td colSpan={9} className="px-4 py-8">
+                      <EmptyState
+                        title={showAll ? "No assets found" : "No critical assets found"}
+                        message={
+                          showAll
+                            ? "No assets have been added yet. Import assets to see them here."
+                            : "No assets are currently in critical condition, breakdown status, or poor condition."
+                        }
+                      />
+                    </td>
+                  </tr>
+                )}
+                {displayRows.map((asset) => {
+                  const openWOs = asset.work_orders.filter(
+                    (wo) => !["Closed", "Cancelled", "Rejected"].includes(wo.status)
+                  ).length;
+                  const allWOs = asset.work_orders;
+                  const criticalityColor =
+                    asset.criticality === "Critical"
+                      ? "text-[#DC2626] font-bold"
+                      : asset.criticality === "High"
+                        ? "text-amber-600 font-bold"
+                        : "text-[#4B5563]";
+
+                  const conditionColor =
+                    asset.condition === "Poor" || asset.condition === "Out of Service"
+                      ? "text-[#DC2626] font-bold"
+                      : asset.condition === "Fair"
+                        ? "text-amber-600"
+                        : "text-[#4B5563]";
+
+                  const statusColor =
+                    asset.status === "Breakdown"
+                      ? "bg-red-100 text-red-700"
+                      : asset.status === "Under Maintenance" || asset.status === "Waiting for Parts"
+                        ? "bg-amber-100 text-amber-700"
+                        : asset.status === "Active" || asset.status === "In Use"
+                          ? "bg-green-100 text-green-700"
+                          : "bg-gray-100 text-gray-500";
+
                   return (
-                    <tr key={asset.id}>
-                      <td className="px-3 py-2"><Link href={`/assets/${asset.id}`} className="font-bold text-[#ED1C24]">{asset.asset_code} - {asset.asset_name}</Link></td>
-                      <td className="px-3 py-2">{asset.category}</td>
-                      <td className="px-3 py-2">{department?.name ?? "-"}</td>
-                      <td className="px-3 py-2">{asset.status}</td>
-                      <td className="px-3 py-2">{asset.current_kilometer_reading ?? "-"}</td>
-                      <td className="px-3 py-2">{asset.current_running_hours ?? "-"}</td>
-                      <td className="px-3 py-2">{asset.next_service_date ?? "-"}</td>
-                      <td className="px-3 py-2">{asset.registration_expiry_date ?? "-"}</td>
-                      <td className="px-3 py-2">{asset.insurance_expiry_date ?? "-"}</td>
-                      <td className="px-3 py-2">{asset.warranty_expiry_date ?? "-"}</td>
+                    <tr key={asset.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-2.5">
+                        <Link href={`/assets/${asset.id}`} className="font-bold text-[#ED1C24] hover:underline">
+                          {asset.asset_code}
+                        </Link>
+                        <p className="text-xs text-[#4B5563]">{asset.asset_name}</p>
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-[#4B5563]">{asset.category}</td>
+                      <td className="px-4 py-2.5 text-xs text-[#4B5563]">{asset.location ?? "—"}</td>
+                      <td className={`px-4 py-2.5 text-xs ${conditionColor}`}>{asset.condition ?? "—"}</td>
+                      <td className={`px-4 py-2.5 text-xs ${criticalityColor}`}>{asset.criticality ?? "—"}</td>
+                      <td className="px-4 py-2.5">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-bold ${statusColor}`}>
+                          {asset.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {openWOs > 0 ? (
+                          <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-700">
+                            {openWOs}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-[#9CA3AF]">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-[#4B5563]">
+                        {allWOs.length > 0 ? `${allWOs.length} total ROs` : "—"}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex gap-2">
+                          <Link
+                            href={`/assets/${asset.id}`}
+                            className="inline-flex items-center rounded border border-[#E5E7EB] px-2.5 py-1 text-xs font-bold transition hover:bg-gray-50"
+                          >
+                            View Asset
+                          </Link>
+                          <Link
+                            href={`/maintenance/work-orders?assetId=${asset.id}`}
+                            className="inline-flex items-center rounded border border-[#E5E7EB] px-2.5 py-1 text-xs font-bold transition hover:bg-gray-50"
+                          >
+                            ROs
+                          </Link>
+                        </div>
+                      </td>
                     </tr>
                   );
-                }) : <tr><td className="px-3 py-4" colSpan={10}><EmptyState title="No assets found" message="Adjust filters or clear selections to show asset records." /></td></tr>}
+                })}
               </tbody>
             </table>
           </div>

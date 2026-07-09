@@ -12,25 +12,20 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 UPLOADS_DIR=uploads
 ```
 
-Apply the additive local-auth migration after the imported Supabase public schema is present:
-
-```txt
-supabase/migrations/20260606100000_local_auth_replacement.sql
-```
-
-Then generate Prisma Client:
+Apply the Prisma migrations, then generate Prisma Client:
 
 ```bash
-npm run prisma:generate
+npx prisma migrate deploy
+npx prisma generate
 ```
 
-Create or reset a local login for an existing imported profile:
+Create or reset a local login for an existing profile:
 
 ```bash
 npm run auth:set-password -- <profile-id> admin@example.com "change-this-password"
 ```
 
-Supabase Auth, Supabase Storage, Supabase Realtime, anon keys, and service-role keys are no longer required for the private local version. Notifications and dashboard refreshes use polling; uploaded files are stored under `UPLOADS_DIR` and served through authenticated `/api/files/...` routes.
+Supabase is no longer used at runtime. PostgreSQL accessed through Prisma is the active database stack. Notifications and dashboard refreshes use polling; uploaded files are stored under `UPLOADS_DIR` and served through authenticated `/api/files/...` routes.
 
 ## Built So Far
 
@@ -60,7 +55,6 @@ Supabase Auth, Supabase Storage, Supabase Realtime, anon keys, and service-role 
 
 ```bash
 npm install
-npm run prisma:generate
 ```
 
 Create `.env` from `.env.example`:
@@ -76,24 +70,17 @@ Do not commit real `.env` values.
 
 ## Database Migrations
 
-Apply migrations in order:
+PostgreSQL + Prisma is the active database stack. Fresh setup:
 
-```txt
-supabase/migrations/20260603093000_phase_1_foundation.sql
-supabase/migrations/20260603110000_phase_2_assets_parts_work_orders.sql
-supabase/migrations/20260603130000_phase_3_workflow_notifications.sql
-supabase/migrations/20260603150000_phase_4_store_purchase_finance.sql
-supabase/migrations/20260603162000_system_map_permission.sql
-supabase/migrations/20260603180000_phase_5_reports_files_pwa.sql
-supabase/migrations/20260604120000_notification_system_upgrade.sql
-supabase/migrations/20260604143000_architecture_view_permission.sql
-supabase/migrations/20260604153000_technician_notification_templates.sql
-supabase/migrations/20260606100000_local_auth_replacement.sql
-supabase/migrations/20260606113000_system_audit_real_data.sql
-supabase/migrations/20260606140000_workflow_map_versions.sql
+```bash
+npx prisma generate
+npx prisma migrate deploy
+npm run db:check
 ```
 
-The earlier migrations keep the original public schema and demo data. The local-auth migration adds `auth_users` and `auth_sessions` for private deployment without Supabase Auth.
+`prisma/migrations/` is the source of truth for schema changes. Historical SQL migrations that predate the Prisma migration history are archived under `docs/archive/supabase-migrations/` for reference only; they are not applied by fresh setups.
+
+Local auth uses the `auth_users` table (bcrypt password hashes) and `auth_sessions` for HTTP-only cookie sessions — Supabase Auth is not used.
 
 Create or reset the first local login for an existing Super Admin profile:
 
@@ -213,7 +200,7 @@ Export buttons download audited native `.xlsx` workbooks for work orders, assets
 
 ## Private File Uploads
 
-Phase 5 creates private Supabase Storage buckets:
+Phase 5 creates private local file storage buckets:
 
 - `work-order-files`
 - `asset-files`
@@ -229,7 +216,7 @@ Files are validated server-side, stored in private buckets, written to metadata 
 
 ## PWA, Mobile, and QR Codes
 
-The app includes a manifest, RECAFCO icon placeholder, red mobile theme color, standalone start URL, production service worker registration, an offline fallback shell, and role-aware mobile navigation with quick links plus a full drawer menu. Secure Supabase workflows still require a live connection for login, permissions, signed files, approvals, and fresh data.
+The app includes a manifest, RECAFCO icon placeholder, red mobile theme color, standalone start URL, production service worker registration, an offline fallback shell, and role-aware mobile navigation with quick links plus a full drawer menu. Secure workflows still require a live connection for login, permissions, signed files, approvals, and fresh data.
 
 Asset and work order detail pages and print pages generate scannable QR SVGs for internal `/assets/[id]` and `/maintenance/work-orders/[id]` routes. Set `NEXT_PUBLIC_APP_URL` so scanned QR codes resolve to the correct deployed/internal base URL.
 
@@ -241,7 +228,7 @@ Cost fields are visible only to Super Admin and users with `costs.view`. Finance
 
 - All secure routes require login.
 - Permissions are checked in server components and server actions.
-- RLS policies protect Supabase tables.
+- Server-side permission checks protect data access in server components and server actions.
 - Inactive users cannot access protected application context.
 - Service role key is not exposed to the browser.
 - Workflow actions write audit logs where practical.

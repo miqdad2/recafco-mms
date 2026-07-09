@@ -43,22 +43,16 @@ The `.env` file is git-ignored and must never be committed to the repository.
 
 ## First-time database setup
 
-The database schema is managed through the SQL migration files in `supabase/migrations/`.  
-These must be applied to your local PostgreSQL instance before the app can run.
+The database schema is managed through Prisma migrations in `prisma/migrations/`. Supabase is not used at runtime; PostgreSQL accessed through Prisma is the active database stack.
 
-**Apply migrations** using `psql` or any PostgreSQL client:
-
-```bash
-# Example using psql
-psql -U postgres -d recafco_maintenance -f supabase/migrations/20260603093000_phase_1_foundation.sql
-# ... repeat for each migration file in order
-```
-
-After applying migrations, generate the Prisma client:
+**Apply migrations** and generate the Prisma client:
 
 ```bash
-npm run prisma:generate
+npx prisma migrate deploy
+npx prisma generate
 ```
+
+Historical SQL migrations that predate the Prisma migration history are archived under `docs/archive/supabase-migrations/` for reference only; they are not applied by fresh setups.
 
 ---
 
@@ -147,4 +141,4 @@ The directory is created automatically when the first file is uploaded.
 → Run `npm run prisma:generate` to regenerate the Prisma client.
 
 **"Relation does not exist"**  
-→ The database schema has not been applied yet. Apply the SQL migrations in order.
+→ The database schema has not been applied yet. Run `npx prisma migrate deploy`.

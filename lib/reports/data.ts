@@ -4,7 +4,6 @@ import type { CurrentUserContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 
 export type ReportMode =
-  | "pending-approvals"
   | "overdue"
   | "waiting-parts"
   | "asset-history"
@@ -81,8 +80,8 @@ export async function getFilterOptions(): Promise<FilterOptions> {
 
 export function parseReportMode(raw: string | string[] | undefined): ReportMode {
   const v = Array.isArray(raw) ? raw[0] : (raw ?? "");
-  const modes: ReportMode[] = ["pending-approvals", "overdue", "waiting-parts", "asset-history", "monthly-summary", "technician-workload"];
-  return modes.includes(v as ReportMode) ? (v as ReportMode) : "pending-approvals";
+  const modes: ReportMode[] = ["overdue", "waiting-parts", "asset-history", "monthly-summary", "technician-workload"];
+  return modes.includes(v as ReportMode) ? (v as ReportMode) : "overdue";
 }
 
 export async function getMgrFilterOptions(deptId: string): Promise<FilterOptions> {
@@ -165,10 +164,12 @@ export async function getWorkOrderReport(filters: ReportFilters) {
     stats: {
       total: rows.length,
       open: rows.filter((row) => !["Closed", "Cancelled", "Rejected"].includes(row.status)).length,
-      closed: rows.filter((row) => row.status === "Closed").length,
-      overdue: rows.filter((row) => row.next_service_date && new Date(row.next_service_date) < new Date() && row.status !== "Closed").length,
+      inProgress: rows.filter((row) => ["In Progress", "Parts Issued"].includes(row.status)).length,
+      waitingForParts: rows.filter((row) => ["Waiting for Parts", "Waiting for Purchase"].includes(row.status)).length,
+      completed: rows.filter((row) => ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"].includes(row.status)).length,
+      closed: rows.filter((row) => ["Closed", "Cancelled", "Rejected"].includes(row.status)).length,
+      overdue: rows.filter((row) => row.starting_datetime && new Date(row.starting_datetime) < new Date() && !["Closed", "Cancelled", "Rejected", "Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"].includes(row.status)).length,
       pendingApprovals: rows.filter((row) => ["Submitted", "Pending Approval"].includes(row.status)).length,
-      waitingForParts: rows.filter((row) => row.status === "Waiting for Parts").length,
       waitingForPurchase: rows.filter((row) => row.status === "Waiting for Purchase").length,
       completedByTechnician: rows.filter((row) => row.status === "Completed by Technician").length,
       verifiedBySupervisor: rows.filter((row) => row.status === "Verified by Supervisor").length
@@ -384,6 +385,185 @@ function isDateBetween(value: Date | string | null | undefined, start: Date, end
   if (!value) return false;
   const date = value instanceof Date ? value : new Date(value);
   return date >= start && date <= end;
+}
+
+// ─── Landing page stats ────────────────────────────────────────────────────────
+
+export async function getReportLandingStats() {
+  const [openWOs, overdueWOs, criticalAssets, lowStockRaw] = await Promise.all([
+    prisma.work_orders.count({ where: { deleted_at: null, status: { notIn: ["Closed", "Cancelled", "Rejected"] } } }),
+    prisma.work_orders.count({
+      where: {
+        deleted_at: null,
+        starting_datetime: { lt: new Date() },
+        status: { in: ["Approved", "Assigned", "In Progress", "Waiting for Parts", "Waiting for Purchase"] }
+      }
+    }),
+    prisma.assets.count({
+      where: {
+        deleted_at: null,
+        OR: [
+          { status: "Breakdown" },
+          { status: "Waiting for Parts" },
+          { criticality: "Critical" },
+          { condition: "Poor" }
+        ]
+      }
+    }),
+    prisma.$queryRaw<[{ count: bigint }]>`SELECT COUNT(*) AS count FROM parts WHERE deleted_at IS NULL AND current_stock <= minimum_stock`
+  ]).catch(() => [0, 0, 0, [{ count: BigInt(0) }]] as const);
+
+  const lowStockRawResult = Array.isArray(lowStockRaw) ? (lowStockRaw as [{ count: bigint }]) : [{ count: BigInt(0) }];
+  return {
+    openWOs: Number(openWOs),
+    overdueWOs: Number(overdueWOs),
+    criticalAssets: Number(criticalAssets),
+    lowStockCount: Number(lowStockRawResult[0]?.count ?? 0)
+  };
+}
+
+// ─── Spare parts usage ─────────────────────────────────────────────────────────
+
+export async function getSparePartsUsageReport(filters: { dateFrom?: string; dateTo?: string; assetId?: string }) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const woWhere: any = { deleted_at: null };
+  if (filters.dateFrom || filters.dateTo) {
+    woWhere.date_of_order = {};
+    if (filters.dateFrom) woWhere.date_of_order.gte = new Date(filters.dateFrom);
+    if (filters.dateTo) woWhere.date_of_order.lte = new Date(filters.dateTo);
+  }
+  if (filters.assetId) woWhere.asset_id = filters.assetId;
+
+  const wos = await prisma.work_orders.findMany({
+    where: woWhere,
+    select: {
+      work_order_number: true,
+      date_of_order: true,
+      assets: { select: { asset_code: true, asset_name: true } },
+      work_order_materials: {
+        select: {
+          id: true,
+          material_name: true,
+          part_number: true,
+          quantity: true,
+          parts: { select: { part_code: true, part_name: true } }
+        }
+      }
+    }
+  }).catch(() => []);
+
+  const rows = wos.flatMap((wo) =>
+    wo.work_order_materials.map((m) => ({
+      id: m.id,
+      work_order_number: wo.work_order_number ?? "—",
+      date: wo.date_of_order.toISOString().slice(0, 10),
+      asset: wo.assets ? `${wo.assets.asset_code} — ${wo.assets.asset_name}` : "—",
+      part_code: m.parts?.part_code ?? null,
+      part_name: m.parts?.part_name ?? m.material_name,
+      part_number: m.part_number ?? null,
+      quantity: Number(m.quantity)
+    }))
+  );
+
+  return { rows };
+}
+
+// ─── Low stock ────────────────────────────────────────────────────────────────
+
+export async function getLowStockReport() {
+  const all = await prisma.parts.findMany({
+    where: { deleted_at: null },
+    orderBy: [{ current_stock: "asc" }, { part_code: "asc" }]
+  }).catch(() => []);
+
+  const rows = all
+    .filter((p) => Number(p.current_stock) <= Number(p.minimum_stock))
+    .map((p) => ({
+      id: p.id,
+      part_code: p.part_code,
+      part_name: p.part_name,
+      part_number: p.part_number ?? null,
+      current_stock: Number(p.current_stock),
+      minimum_stock: Number(p.minimum_stock),
+      shortage: Math.max(0, Number(p.minimum_stock) - Number(p.current_stock)),
+      supplier: p.supplier ?? null,
+      store_location_bin: p.store_location_bin ?? null,
+      status: p.status,
+      is_out: Number(p.current_stock) === 0
+    }));
+
+  return {
+    rows,
+    stats: {
+      total: all.length,
+      lowStock: rows.length,
+      outOfStock: rows.filter((p) => p.is_out).length
+    }
+  };
+}
+
+// ─── Asset repair history ─────────────────────────────────────────────────────
+
+export async function getAssetRepairHistoryReport(filters: { assetId?: string; dateFrom?: string; dateTo?: string; status?: string }) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const woWhere: any = {};
+  if (filters.dateFrom || filters.dateTo) {
+    woWhere.date_of_order = {};
+    if (filters.dateFrom) woWhere.date_of_order.gte = new Date(filters.dateFrom);
+    if (filters.dateTo) woWhere.date_of_order.lte = new Date(filters.dateTo);
+  }
+  if (filters.status) woWhere.status = filters.status;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const assetWhere: any = { deleted_at: null };
+  if (filters.assetId) assetWhere.id = filters.assetId;
+
+  const assets = await prisma.assets.findMany({
+    where: assetWhere,
+    select: {
+      id: true,
+      asset_code: true,
+      asset_name: true,
+      category: true,
+      location: true,
+      work_orders: {
+        where: woWhere,
+        select: {
+          id: true,
+          work_order_number: true,
+          date_of_order: true,
+          status: true,
+          maintenance_type: true
+        }
+      }
+    },
+    orderBy: { asset_code: "asc" }
+  }).catch(() => []);
+
+  const rows = assets.map((a) => {
+    const wos = a.work_orders;
+    const sorted = [...wos].sort((x, y) => new Date(y.date_of_order).getTime() - new Date(x.date_of_order).getTime());
+    return {
+      id: a.id,
+      asset_code: a.asset_code,
+      asset_name: a.asset_name,
+      category: a.category,
+      location: a.location,
+      totalRepairs: wos.length,
+      lastRepairDate: sorted[0]?.date_of_order.toISOString().slice(0, 10) ?? null,
+      openRepairs: wos.filter((wo) => !["Closed", "Cancelled", "Rejected"].includes(wo.status)).length,
+      waitingParts: wos.filter((wo) => ["Waiting for Parts", "Waiting for Purchase"].includes(wo.status)).length
+    };
+  });
+
+  return {
+    rows,
+    stats: {
+      totalAssets: rows.length,
+      totalRepairs: rows.reduce((n, r) => n + r.totalRepairs, 0),
+      withOpenRepairs: rows.filter((r) => r.openRepairs > 0).length
+    }
+  };
 }
 
 // ─── CEO Report ──────────────────────────────────────────────────────────────

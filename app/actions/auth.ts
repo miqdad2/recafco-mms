@@ -16,8 +16,8 @@ const LOCKOUT_THRESHOLD = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
 
 const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(6),
+  email: z.string().min(1),
+  password: z.string().min(1),
   next: z.string().optional()
 });
 
@@ -227,7 +227,7 @@ export async function resetPasswordAction() {
 
 const changePasswordSchema = z.object({
   current_password: z.string().min(1),
-  new_password: z.string().min(8).max(128),
+  new_password: z.string().min(1).max(128),
   confirm_new_password: z.string().min(1)
 });
 

@@ -50,8 +50,8 @@ PostgreSQL
 - `lib/workflows/` — transition rules and workflow helpers
 - `lib/work-orders/` — visibility rules
 - `lib/reports/` — reporting and cost visibility
-- `prisma/` — Prisma schema and generated model boundary
-- `supabase/migrations/` — historical SQL migrations applied to PostgreSQL
+- `prisma/` — Prisma schema, migrations, and generated model boundary
+- `docs/archive/supabase-migrations/` — historical SQL migrations, archived for reference only
 - `scripts/` — health, backup, password, and demo utilities
 - `uploads/` — local file bytes
 

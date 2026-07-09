@@ -5,7 +5,7 @@ const columns = [
   { title: "User Devices", items: ["Desktop Browser", "Mobile Browser", "PWA Install"] },
   { title: "Frontend Layer", items: ["Next.js App Router", "Role-based Layouts", "Dashboard Pages", "Forms and Tables", "Mobile Technician UI"] },
   { title: "Server Layer", items: ["Server Actions", "API Routes", "Permission Guards", "Zod Validation", "Audit Logging", "Notification Service", "Export Service", "QR Service"] },
-  { title: "Supabase Layer", items: ["Supabase Auth", "PostgreSQL Database", "Row Level Security", "Private Storage Buckets", "Signed URLs", "Realtime/Polling Foundation"] }
+  { title: "Data Layer", items: ["Local Auth", "PostgreSQL Database", "Prisma ORM", "Private Storage Buckets", "Signed URLs", "Realtime/Polling Foundation"] }
 ];
 
 export function HighLevelArchitecture() {

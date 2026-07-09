@@ -12,7 +12,7 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
   const context = await requirePermission("work_orders.print");
   const { id } = await params;
 
-  // Enforce visibility before handing off to Supabase queries.
+  // Enforce visibility before handing off to the Prisma query.
   // Uses the same role-scoped filter as the list and detail pages so access
   // is consistent regardless of which page the user reaches first.
   const visibilityFilter = getWorkOrderVisibilityFilter(context);

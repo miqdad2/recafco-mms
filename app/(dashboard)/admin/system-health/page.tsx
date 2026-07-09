@@ -83,14 +83,9 @@ export default async function SystemHealthPage({ searchParams }: { searchParams?
         title="System Health Center"
         description="Super Admin and IT monitoring for crashes, workflow failures, notification delivery issues, session problems, and day-to-day system reliability."
         actions={
-          <>
-            <Link href="/admin/audit-logs">
-              <Button variant="secondary">Audit logs</Button>
-            </Link>
-            <Link href="/admin/notification-settings">
-              <Button variant="secondary">Notification logs</Button>
-            </Link>
-          </>
+          <Link href="/admin/audit-logs">
+            <Button variant="secondary">Audit logs</Button>
+          </Link>
         }
       />
       <div className="space-y-5 p-4 lg:p-6">

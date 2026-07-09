@@ -2,17 +2,14 @@ import Link from "next/link";
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronDown,
   ClipboardList,
   Clock3,
   DollarSign,
   Eye,
-  FileText,
   Package,
   Plus,
   Printer,
   ShieldAlert,
-  ShoppingCart,
   TrendingUp,
   Wrench,
   Zap,
@@ -27,16 +24,12 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission, type CurrentUserContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts } from "@/lib/reports/data";
-import { getWorkOrderVisibilityFilter, getRoleDescription } from "@/lib/work-orders/visibility";
+import { displayStatus } from "@/lib/display/work-order-labels";
+import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 25;
-
-const WORKER_TYPES = [
-  "Auto", "Mechanical", "Electrical", "Civil", "AC",
-  "Plumbing", "Welding/Fabrication", "Other",
-];
 
 const PRIORITIES = ["Low", "Normal", "High", "Urgent"];
 
@@ -48,20 +41,34 @@ const TERMINAL_STATUSES = [
 const OVERDUE_DAYS = 7;
 
 const TAB_LIST = [
-  { label: "All",              status: "" },
-  { label: "Draft",            status: "Draft" },
-  { label: "Submitted",        status: "Submitted" },
-  { label: "Pending Approval", status: "Pending Approval" },
-  { label: "Approved",         status: "Approved" },
-  { label: "Assigned",         status: "Assigned" },
-  { label: "In Progress",      status: "In Progress" },
-  { label: "Waiting Parts",    status: "Waiting for Parts" },
-  { label: "Waiting Purchase", status: "Waiting for Purchase" },
-  { label: "Completed",        status: "Completed by Technician" },
-  { label: "Verified",         status: "Verified by Supervisor" },
-  { label: "Closed",           status: "Closed" },
-  { label: "Rejected",         status: "Rejected" },
+  { label: "All",           status: "" },
+  { label: "Open",          status: "Open" },
+  { label: "In Progress",   status: "In Progress" },
+  { label: "Waiting Parts", status: "Waiting for Parts" },
+  { label: "Completed",     status: "Completed by Technician" },
+  { label: "Closed",        status: "Closed" },
 ] as const;
+
+// Each tab label maps to one or more DB status values.
+const COMBINED_STATUSES: Record<string, string[]> = {
+  "Open":                    ["Draft", "Submitted", "Pending Approval", "Approved", "Assigned", "Reopened"],
+  "In Progress":             ["In Progress", "Parts Issued"],
+  "Waiting for Parts":       ["Waiting for Parts", "Waiting for Purchase"],
+  "Completed by Technician": ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"],
+  "Closed":                  ["Closed", "Cancelled", "Rejected"],
+};
+
+function expandStatuses(tabStatus: string): string[] {
+  return COMBINED_STATUSES[tabStatus] ?? [tabStatus];
+}
+
+function tabCount(summaries: StatusSummary[], tabStatus: string): number {
+  return countFor(summaries, expandStatuses(tabStatus));
+}
+
+function tabIsActive(currentStatus: string, tabStatus: string): boolean {
+  return currentStatus === tabStatus || expandStatuses(tabStatus).includes(currentStatus);
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -84,8 +91,6 @@ type PageProps = {
 };
 
 type StatusSummary = { status: string; _count: { _all: number } };
-type PrioritySummary = { priority: string; _count: { _all: number } };
-type Department = { id: string; name: string };
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
@@ -144,19 +149,19 @@ function getNeedsActionFilter(context: CurrentUserContext) {
   return { status: { in: [] as string[] } };
 }
 
-// ── Per-row "needs my action" ─────────────────────────────────────────────────
+// ── Per-row specific action button label ─────────────────────────────────────
 
-function rowNeedsAction(status: string, createdBy: string | null, context: CurrentUserContext): boolean {
+function getRowActLabel(status: string, context: CurrentUserContext): string | null {
   const p = context.permissions;
   const isAdmin = context.role?.slug === "super_admin";
-  if ((isAdmin || p.includes("work_orders.approve")) &&
-    ["Submitted", "Pending Approval", "Verified by Supervisor", "Confirmed by Requester"].includes(status)) return true;
-  if ((isAdmin || p.includes("work_orders.assign")) &&
-    ["Approved", "Completed by Technician"].includes(status)) return true;
-  if (p.includes("store.issue") && status === "Waiting for Parts") return true;
-  if (p.includes("purchase_requests.manage") && status === "Waiting for Purchase") return true;
-  if (p.includes("work_orders.manage") && ["Draft", "Rejected"].includes(status) && createdBy === context.userId) return true;
-  return false;
+  const canApprove = isAdmin || p.includes("work_orders.approve");
+  const canAssign = isAdmin || p.includes("work_orders.assign");
+  if (canApprove && ["Submitted", "Pending Approval"].includes(status)) return "Assign";
+  if (canAssign && status === "Approved") return "Assign";
+  if (p.includes("store.issue") && ["Waiting for Parts", "Waiting for Purchase"].includes(status)) return "Parts";
+  if ((canApprove || canAssign) &&
+    ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"].includes(status)) return "Close";
+  return null;
 }
 
 // ── Next action label ─────────────────────────────────────────────────────────
@@ -168,22 +173,22 @@ function getNextAction(status: string, context: CurrentUserContext): { label: st
   const canAssign = isAdmin || p.includes("work_orders.assign");
 
   switch (status) {
-    case "Draft":                    return { label: "Submit for approval",        mine: p.includes("work_orders.manage") };
+    case "Draft":                    return { label: "Submit repair order",  mine: p.includes("work_orders.manage") };
     case "Submitted":
-    case "Pending Approval":         return { label: canApprove ? "Approve / Reject" : "Awaiting approval",     mine: canApprove };
-    case "Rejected":                 return { label: "Needs correction",            mine: p.includes("work_orders.manage") };
-    case "Approved":                 return { label: canAssign ? "Assign technician" : "Awaiting assignment",   mine: canAssign };
-    case "Assigned":                 return { label: "Technician to start",         mine: false };
-    case "In Progress":              return { label: "Job in progress",             mine: false };
-    case "Waiting for Parts":        return { label: p.includes("store.issue") ? "Issue parts" : "Awaiting parts",     mine: p.includes("store.issue") };
-    case "Waiting for Purchase":     return { label: p.includes("purchase_requests.manage") ? "Process purchase" : "Awaiting purchase", mine: p.includes("purchase_requests.manage") };
-    case "Parts Issued":             return { label: "Resume work",                 mine: false };
-    case "Completed by Technician":  return { label: canAssign ? "Verify completion" : "Awaiting verification", mine: canAssign };
+    case "Pending Approval":         return { label: "Assign technician",   mine: canApprove };
+    case "Approved":                 return { label: "Assign technician",   mine: canAssign };
+    case "Assigned":                 return { label: "Technician to start", mine: false };
+    case "In Progress":
+    case "Parts Issued":             return { label: "Job in progress",     mine: false };
+    case "Waiting for Parts":
+    case "Waiting for Purchase":     return { label: "Waiting for parts",   mine: false };
+    case "Completed by Technician":
     case "Verified by Supervisor":
-    case "Confirmed by Requester":   return { label: canApprove ? "Close work order" : "Awaiting closure",      mine: canApprove };
-    case "Closed":                   return { label: "Closed",                      mine: false };
-    case "Cancelled":                return { label: "Cancelled",                   mine: false };
-    default:                         return { label: status,                        mine: false };
+    case "Confirmed by Requester":   return { label: "Close repair order",  mine: canApprove || canAssign };
+    case "Closed":                   return { label: "Closed",              mine: false };
+    case "Rejected":                 return { label: "Rejected",            mine: false };
+    case "Cancelled":                return { label: "Cancelled",           mine: false };
+    default:                         return { label: status,                mine: false };
   }
 }
 
@@ -218,10 +223,6 @@ function ageInDays(createdAt: Date): number {
 
 function countFor(summaries: StatusSummary[], statuses: string[]): number {
   return summaries.filter((s) => statuses.includes(s.status)).reduce((n, s) => n + s._count._all, 0);
-}
-
-function countPriority(summaries: PrioritySummary[], priorities: string[]): number {
-  return summaries.filter((s) => priorities.includes(s.priority)).reduce((n, s) => n + s._count._all, 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -457,7 +458,10 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
     { deleted_at: null },
     visibilityFilter,
   ];
-  if (status)     listConditions.push({ status });
+  if (status) {
+    const statusList = expandStatuses(status);
+    listConditions.push(statusList.length === 1 ? { status } : { status: { in: statusList } });
+  }
   if (priority)   listConditions.push({ priority });
   if (deptId)     listConditions.push({ requested_by_department_id: deptId });
   if (workerType) listConditions.push({ worker_type: workerType });
@@ -468,6 +472,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       { ordered_by:         { contains: search, mode: "insensitive" } },
       { job_location:       { contains: search, mode: "insensitive" } },
       { operator_complaint: { contains: search, mode: "insensitive" } },
+      { assets: { asset_code:   { contains: search, mode: "insensitive" } } },
       { assets: { asset_name:   { contains: search, mode: "insensitive" } } },
       { assets: { plate_number: { contains: search, mode: "insensitive" } } },
     ],
@@ -478,14 +483,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   const overdueDate = new Date();
   overdueDate.setDate(overdueDate.getDate() - OVERDUE_DAYS);
 
-  // Department filter dropdown: Data Entry users only see their own department.
-  const slug = context.role?.slug ?? "";
-  const departmentFilterWhere =
-    slug === "maintenance_data_entry" && context.department?.id
-      ? { id: context.department.id, is_active: true }
-      : { is_active: true };
-
-  const [workOrders, count, statusSummaries, departments, prioritySummaries, overdueCount] =
+  const [workOrders, count, statusSummaries, overdueCount] =
     await Promise.all([
       prisma.work_orders.findMany({
         where,
@@ -504,8 +502,8 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           status: true,
           job_location: true,
           created_by: true,
+          operator_complaint: true,
           assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
-          departments: { select: { name: true } },
           work_order_assignments: {
             select: { profiles: { select: { full_name: true } } },
           },
@@ -515,21 +513,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       prisma.work_orders.groupBy({
         by: ["status"],
         where: visibilityOnlyWhere,
-        _count: { _all: true },
-      }),
-      prisma.departments.findMany({
-        where: departmentFilterWhere,
-        select: { id: true, name: true },
-        orderBy: { name: "asc" },
-      }),
-      prisma.work_orders.groupBy({
-        by: ["priority"],
-        where: {
-          AND: [
-            visibilityOnlyWhere,
-            { status: { notIn: TERMINAL_STATUSES } },
-          ],
-        },
         _count: { _all: true },
       }),
       prisma.work_orders.count({
@@ -545,111 +528,192 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
   const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE));
 
-  const totalWOs       = statusSummaries.reduce((n, s) => n + s._count._all, 0);
-  const pendingApproval = countFor(statusSummaries, ["Submitted", "Pending Approval"]);
-  const urgentHigh     = countPriority(prioritySummaries, ["Urgent", "High"]);
-  const activeJobs     = countFor(statusSummaries, ["Approved", "Assigned", "In Progress"]);
-  const waitingParts   = countFor(statusSummaries, ["Waiting for Parts", "Parts Issued"]);
-  const waitingPurchase = countFor(statusSummaries, ["Waiting for Purchase"]);
+  const totalWOs        = statusSummaries.reduce((n, s) => n + s._count._all, 0);
+  const submittedCount = countFor(statusSummaries, ["Submitted", "Pending Approval"]);
+  const activeJobs      = countFor(statusSummaries, ["Approved", "Assigned", "In Progress"]);
+  const waitingParts    = countFor(statusSummaries, ["Waiting for Parts", "Parts Issued"]);
   const completedPending = countFor(statusSummaries, ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"]);
-  const closed         = countFor(statusSummaries, ["Closed"]);
+  const closed          = countFor(statusSummaries, ["Closed"]);
 
   const hasFilters = search || status || priority || deptId || workerType || dateFrom || dateTo || needsAction;
+
+  const roleSlug = context.role?.slug ?? "";
+  const isNormalUser = ["maintenance_data_entry", "department_requester"].includes(roleSlug);
+
+  // ── Onboarding empty state — no repair orders at all ──────────────────────
+  if (totalWOs === 0) {
+    return (
+      <>
+        <PageHeader
+          title="Repair Orders"
+          description="Track asset repair requests, technician work, waiting parts, and repair history."
+          actions={
+            <Link
+              href="/maintenance/work-orders/new"
+              className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Create Repair Order
+            </Link>
+          }
+        />
+        <div className="p-4 lg:p-6">
+          <div className="mx-auto flex max-w-md flex-col items-center gap-6 py-20 text-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full border border-[#E5E7EB] bg-[#F5F6F8]">
+              <ClipboardList className="h-8 w-8 text-[#9CA3AF]" aria-hidden="true" />
+            </div>
+            <div>
+              <h2 className="text-lg font-black text-[#111827]">No repair orders yet</h2>
+              <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">
+                Create the first repair order by selecting an asset or machine.
+                All repair history will be saved under the selected asset.
+                Parts can be requested from inside a repair order after it is created.
+              </p>
+            </div>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <Link
+                href="/maintenance/work-orders/new"
+                className="inline-flex items-center gap-2 rounded-md bg-[#ED1C24] px-5 py-2.5 text-sm font-bold text-white transition hover:bg-[#c8181e]"
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Create Repair Order
+              </Link>
+              <Link
+                href="/assets"
+                className="inline-flex items-center gap-2 rounded-md border border-[#E5E7EB] bg-white px-5 py-2.5 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
+              >
+                View Assets
+              </Link>
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
       <PageHeader
-        title="Work Orders"
-        description={getRoleDescription(context)}
-        actions={<TemplatePickerButton />}
+        title="Repair Orders"
+        description="Track asset repair requests, technician work, waiting parts, and repair history."
+        actions={
+          <Link
+            href="/maintenance/work-orders/new"
+            className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            Create Repair Order
+          </Link>
+        }
       />
 
       <div className="space-y-4 p-4 lg:p-6">
 
         {/* ── Operational KPI cards ─────────────────────────────────────────── */}
-        <section className="grid gap-3 grid-cols-2 sm:grid-cols-4 lg:grid-cols-4">
-          <KpiCard
-            title="Total Work Orders"
-            value={totalWOs}
-            href="/maintenance/work-orders"
-            tone="blue"
-            icon={ClipboardList}
-            detail="All maintenance work orders"
-          />
-          <KpiCard
-            title="Pending Approval"
-            value={pendingApproval}
-            href={buildHref({ status: "Pending Approval" })}
-            tone={pendingApproval > 0 ? "amber" : "gray"}
-            icon={Clock3}
-            detail="Submitted · awaiting manager"
-            urgent={pendingApproval > 0}
-          />
-          <KpiCard
-            title="High / Urgent"
-            value={urgentHigh}
-            href={buildHref({ priority: "Urgent" })}
-            tone={urgentHigh > 0 ? "red" : "gray"}
-            icon={Zap}
-            detail="High priority or urgent — active"
-            urgent={urgentHigh > 0}
-          />
-          <KpiCard
-            title="Active Jobs"
-            value={activeJobs}
-            href={buildHref({ status: "In Progress" })}
-            tone="blue"
-            icon={Wrench}
-            detail="Approved · assigned · in progress"
-          />
-          <KpiCard
-            title="Waiting for Parts"
-            value={waitingParts}
-            href={buildHref({ status: "Waiting for Parts" })}
-            tone={waitingParts > 0 ? "amber" : "gray"}
-            icon={Package}
-            detail="Parts or store issue needed"
-          />
-          <KpiCard
-            title="Waiting for Purchase"
-            value={waitingPurchase}
-            href={buildHref({ status: "Waiting for Purchase" })}
-            tone={waitingPurchase > 0 ? "amber" : "gray"}
-            icon={ShoppingCart}
-            detail="Purchase request in progress"
-          />
-          <KpiCard
-            title="Overdue"
-            value={overdueCount}
-            href={buildHref({})}
-            tone={overdueCount > 0 ? "red" : "gray"}
-            icon={AlertTriangle}
-            detail={`Open for more than ${OVERDUE_DAYS} days`}
-            urgent={overdueCount > 0}
-          />
-          <KpiCard
-            title="Closed"
-            value={closed}
-            href={buildHref({ status: "Closed" })}
-            tone="green"
-            icon={CheckCircle2}
-            detail={`${completedPending} completed · awaiting closure`}
-          />
-        </section>
+        {isNormalUser ? (
+          <section className="grid gap-3 grid-cols-2 sm:grid-cols-4">
+            <KpiCard
+              title="Total Repair Orders"
+              value={totalWOs}
+              href="/maintenance/work-orders"
+              tone="blue"
+              icon={ClipboardList}
+              detail="All my repair orders"
+            />
+            <KpiCard
+              title="Submitted"
+              value={submittedCount}
+              href={buildHref({ status: "Submitted" })}
+              tone={submittedCount > 0 ? "amber" : "gray"}
+              icon={Clock3}
+              detail="Submitted · awaiting assignment"
+              urgent={submittedCount > 0}
+            />
+            <KpiCard
+              title="In Progress"
+              value={activeJobs}
+              href={buildHref({ status: "In Progress" })}
+              tone="blue"
+              icon={Wrench}
+              detail="Approved · assigned · in progress"
+            />
+            <KpiCard
+              title="Waiting for Parts"
+              value={waitingParts}
+              href={buildHref({ status: "Waiting for Parts" })}
+              tone={waitingParts > 0 ? "amber" : "gray"}
+              icon={Package}
+              detail="Parts needed or store issue pending"
+            />
+          </section>
+        ) : (
+          <section className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+            <KpiCard
+              title="Total Repair Orders"
+              value={totalWOs}
+              href="/maintenance/work-orders"
+              tone="blue"
+              icon={ClipboardList}
+              detail="All maintenance repair orders"
+            />
+            <KpiCard
+              title="Submitted"
+              value={submittedCount}
+              href={buildHref({ status: "Submitted" })}
+              tone={submittedCount > 0 ? "amber" : "gray"}
+              icon={Clock3}
+              detail="Submitted · awaiting assignment"
+              urgent={submittedCount > 0}
+            />
+            <KpiCard
+              title="Active Jobs"
+              value={activeJobs}
+              href={buildHref({ status: "In Progress" })}
+              tone="blue"
+              icon={Wrench}
+              detail="Approved · assigned · in progress"
+            />
+            <KpiCard
+              title="Waiting for Parts"
+              value={waitingParts}
+              href={buildHref({ status: "Waiting for Parts" })}
+              tone={waitingParts > 0 ? "amber" : "gray"}
+              icon={Package}
+              detail="Parts needed or store issue pending"
+            />
+            <KpiCard
+              title="Overdue"
+              value={overdueCount}
+              href={buildHref({})}
+              tone={overdueCount > 0 ? "red" : "gray"}
+              icon={AlertTriangle}
+              detail={`Open for more than ${OVERDUE_DAYS} days`}
+              urgent={overdueCount > 0}
+            />
+            <KpiCard
+              title="Closed"
+              value={closed}
+              href={buildHref({ status: "Closed" })}
+              tone="green"
+              icon={CheckCircle2}
+              detail={`${completedPending} completed · awaiting closure`}
+            />
+          </section>
+        )}
 
         {/* ── Role-based quick actions ──────────────────────────────────────── */}
         <QuickActions context={context} />
 
         {/* ── Filters ───────────────────────────────────────────────────────── */}
-        <FilterSection sp={sp} departments={departments} />
+        <FilterSection sp={sp} />
 
         {/* ── Workflow tabs ─────────────────────────────────────────────────── */}
         <div className="overflow-x-auto rounded-t-md border border-[#E5E7EB] bg-white shadow-sm">
           <div className="flex min-w-max">
             {TAB_LIST.map((tab) => {
-              const isActive = status === tab.status || (!status && tab.status === "");
-              const tabCount = tab.status
-                ? (statusSummaries.find((s) => s.status === tab.status)?._count._all ?? 0)
+              const isActive = tab.status === "" ? !status : tabIsActive(status, tab.status);
+              const itemCount = tab.status
+                ? tabCount(statusSummaries, tab.status)
                 : totalWOs;
               return (
                 <Link
@@ -662,9 +726,9 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                   }`}
                 >
                   {tab.label}
-                  {tabCount > 0 && (
+                  {itemCount > 0 && (
                     <span className={`rounded-full px-1.5 py-0.5 text-xs ${isActive ? "bg-[#ED1C24] text-white" : "bg-gray-100 text-[#4B5563]"}`}>
-                      {tabCount}
+                      {itemCount}
                     </span>
                   )}
                 </Link>
@@ -677,9 +741,9 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         <section className="overflow-hidden rounded-b-md border border-t-0 border-[#E5E7EB] bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
             <div>
-              <p className="text-xs font-black uppercase text-[#4B5563]">Work order records</p>
+              <p className="text-xs font-black uppercase text-[#4B5563]">Repair order records</p>
               <p className="mt-0.5 text-sm font-semibold text-[#111827]">
-                {count.toLocaleString()} {hasFilters ? "matching" : "total"} work orders
+                {count.toLocaleString()} {hasFilters ? "matching" : "total"} repair orders
                 {hasFilters && (
                   <Link href="/maintenance/work-orders" className="ml-2 text-xs font-bold text-[#ED1C24] underline">
                     Clear filters
@@ -687,19 +751,15 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                 )}
               </p>
             </div>
-            {pendingApproval > 0 && !status && (
-              <StatusBadge label={`${pendingApproval} need approval`} tone="amber" />
-            )}
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1120px] text-left text-sm">
+            <table className="w-full min-w-[1040px] text-left text-sm">
               <thead className="bg-gray-50 text-xs font-black uppercase text-[#4B5563]">
                 <tr>
-                  <th className="px-4 py-3">Work Order</th>
-                  <th className="px-4 py-3">Asset / Vehicle</th>
-                  <th className="px-4 py-3">Department</th>
-                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Repair Order</th>
+                  <th className="px-4 py-3">Asset / Machine</th>
+                  <th className="px-4 py-3">Issue / Problem</th>
                   <th className="px-4 py-3">Priority</th>
                   <th className="px-4 py-3">Status &amp; Next Action</th>
                   <th className="px-4 py-3">Technician</th>
@@ -710,8 +770,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               <tbody className="divide-y divide-[#E5E7EB]">
                 {workOrders.length > 0 ? (
                   workOrders.map((wo) => {
-                    const isUrgent   = wo.priority === "Urgent";
-                    const needsAct   = rowNeedsAction(wo.status, wo.created_by, context);
+                    const actLabel   = getRowActLabel(wo.status, context);
                     const nextAct    = getNextAction(wo.status, context);
                     const stageIdx   = getStageIndex(wo.status);
                     const isTerminal = TERMINAL_STATUSES.includes(wo.status);
@@ -722,20 +781,20 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                       .map((a) => a.profiles!.full_name)
                       .join(", ");
 
+                    const rowBg = (() => {
+                      if (wo.status === "Rejected" || wo.status === "Cancelled") return "bg-red-50/50 hover:bg-red-50";
+                      if (isOverdue || wo.priority === "Urgent") return "bg-red-50/30 hover:bg-red-50";
+                      if (["Waiting for Parts", "Waiting for Purchase"].includes(wo.status)) return "bg-amber-50/40 hover:bg-amber-50";
+                      if (["Assigned", "In Progress", "Parts Issued", "Approved"].includes(wo.status)) return "bg-blue-50/30 hover:bg-blue-50";
+                      if (["Closed", "Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"].includes(wo.status)) return "bg-green-50/30 hover:bg-green-50";
+                      return "hover:bg-gray-50";
+                    })();
+
                     return (
-                      <tr
-                        key={wo.id}
-                        className={`transition hover:bg-gray-50 ${isUrgent ? "border-l-4 border-l-[#ED1C24]" : ""}`}
-                      >
-                        {/* Work order + mini pipeline */}
+                      <tr key={wo.id} className={`transition ${rowBg}`}>
+                        {/* Repair order + mini pipeline */}
                         <td className="px-4 py-3.5">
                           <div className="flex items-start gap-2">
-                            {needsAct && (
-                              <span
-                                className="mt-1.5 h-2 w-2 flex-shrink-0 rounded-full bg-amber-500"
-                                title="Needs your action"
-                              />
-                            )}
                             <div className="min-w-0">
                               <Link
                                 href={`/maintenance/work-orders/${wo.id}`}
@@ -750,7 +809,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                           </div>
                         </td>
 
-                        {/* Asset */}
+                        {/* Asset / Machine */}
                         <td className="px-4 py-3.5">
                           {wo.assets ? (
                             <div>
@@ -761,19 +820,17 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                               </p>
                             </div>
                           ) : (
-                            <span className="text-[#9CA3AF]">No asset</span>
+                            <span className="text-[#9CA3AF]">No asset linked</span>
                           )}
                         </td>
 
-                        {/* Department */}
-                        <td className="px-4 py-3.5">
-                          <span className="text-[#4B5563]">{wo.departments?.name ?? "—"}</span>
-                        </td>
-
-                        {/* Type */}
-                        <td className="px-4 py-3.5">
-                          <p className="font-medium text-[#111827]">{wo.maintenance_type}</p>
-                          <p className="text-xs text-[#4B5563]">{wo.worker_type}</p>
+                        {/* Issue / Problem */}
+                        <td className="max-w-[180px] px-4 py-3.5">
+                          {wo.operator_complaint ? (
+                            <p className="line-clamp-2 text-xs text-[#111827]">{wo.operator_complaint}</p>
+                          ) : (
+                            <span className="text-xs text-[#9CA3AF]">—</span>
+                          )}
                         </td>
 
                         {/* Priority */}
@@ -783,7 +840,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
                         {/* Status + next action */}
                         <td className="px-4 py-3.5">
-                          <StatusBadge label={wo.status} tone={statusTone(wo.status)} />
+                          <StatusBadge label={displayStatus(wo.status)} tone={statusTone(wo.status)} />
                           <p className={`mt-1 text-xs ${nextAct.mine ? "font-bold text-[#ED1C24]" : "text-[#4B5563]"}`}>
                             {nextAct.label}
                           </p>
@@ -803,27 +860,31 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                           <span className={`text-xs font-semibold ${isOverdue ? "text-[#DC2626]" : "text-[#4B5563]"}`}>
                             {age === 0 ? "Today" : age === 1 ? "1 day" : `${age} days`}
                           </span>
-                          {isOverdue && <p className="text-xs text-[#DC2626]">Overdue</p>}
+                          {isOverdue && <p className="text-xs font-bold text-[#DC2626]">Overdue</p>}
                         </td>
 
                         {/* Action */}
                         <td className="whitespace-nowrap px-4 py-3.5">
-                          <div className="flex items-center justify-end gap-2">
+                          <div className="flex items-center justify-end gap-1.5">
                             <Link
                               href={`/maintenance/work-orders/${wo.id}`}
-                              className={`inline-block w-[72px] rounded-md py-2 text-center text-xs font-bold transition ${
-                                needsAct
-                                  ? "bg-[#ED1C24] text-white hover:bg-[#c8181e]"
-                                  : "border border-[#E5E7EB] text-[#111827] hover:bg-gray-50"
-                              }`}
+                              className="inline-block rounded-md border border-[#E5E7EB] px-3 py-2 text-center text-xs font-bold text-[#111827] transition hover:bg-gray-50"
                             >
-                              {needsAct ? "Act" : "View"}
+                              View
                             </Link>
+                            {actLabel && (
+                              <Link
+                                href={`/maintenance/work-orders/${wo.id}`}
+                                className="inline-block rounded-md bg-[#ED1C24] px-3 py-2 text-center text-xs font-bold text-white transition hover:bg-[#c8181e]"
+                              >
+                                {actLabel}
+                              </Link>
+                            )}
                             {context.permissions.includes("work_orders.print") && (
                               <Link
                                 href={`/maintenance/work-orders/${wo.id}/print`}
                                 className="flex items-center justify-center rounded-md border border-[#E5E7EB] p-2 hover:bg-gray-50"
-                                title="Print work order"
+                                title="Print repair order"
                               >
                                 <Printer className="h-4 w-4" aria-hidden="true" />
                               </Link>
@@ -835,20 +896,23 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                   })
                 ) : (
                   <tr>
-                    <td colSpan={9} className="px-4 py-10">
+                    <td colSpan={8} className="px-4 py-10">
                       <EmptyState
-                        title={hasFilters ? "No work orders match these filters" : "No work orders yet"}
-                        message={
-                          hasFilters
-                            ? "Try adjusting the search or filter criteria. Use the Clear filters link to reset."
-                            : "Create the first work order to get started. All maintenance work orders will appear here."
-                        }
+                        title="No repair orders match your filters"
+                        message="Clear the filters or adjust your search to see repair orders. You can also create a new repair order."
                         action={
-                          hasFilters ? (
+                          <div className="flex gap-3">
                             <Link href="/maintenance/work-orders">
                               <Button variant="secondary">Clear filters</Button>
                             </Link>
-                          ) : undefined
+                            <Link
+                              href="/maintenance/work-orders/new"
+                              className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
+                            >
+                              <Plus className="h-4 w-4" aria-hidden="true" />
+                              New Repair Order
+                            </Link>
+                          </div>
                         }
                       />
                     </td>
@@ -862,7 +926,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         {/* ── Pagination ────────────────────────────────────────────────────── */}
         <div className="flex items-center justify-between rounded-md border border-[#E5E7EB] bg-white p-3 text-sm font-semibold text-[#4B5563]">
           <span>
-            Page {page} of {totalPages} &nbsp;·&nbsp; {count.toLocaleString()} work orders
+            Page {page} of {totalPages} &nbsp;·&nbsp; {count.toLocaleString()} repair orders
           </span>
           <div className="flex gap-2">
             {page > 1 && (
@@ -897,11 +961,11 @@ function QuickActions({ context }: { context: CurrentUserContext }) {
 
   if (slug === "super_admin" || slug === "it_admin") {
     actions = [
-      { label: "Pending Approval",  href: buildHref({ status: "Pending Approval" }),  primary: true },
-      { label: "In Progress",       href: buildHref({ status: "In Progress" }) },
-      { label: "Needs My Action",   href: buildHref({ needs_action: "1" }) },
-      { label: "High Priority",     href: buildHref({ priority: "High" }) },
-      { label: "All Work Orders",   href: "/maintenance/work-orders" },
+      { label: "Submitted",          href: buildHref({ status: "Submitted" }),          primary: true },
+      { label: "In Progress",        href: buildHref({ status: "In Progress" }) },
+      { label: "Needs My Action",    href: buildHref({ needs_action: "1" }) },
+      { label: "High Priority",      href: buildHref({ priority: "High" }) },
+      { label: "All Repair Orders",  href: "/maintenance/work-orders" },
     ];
   } else if (slug === "ceo_management") {
     actions = [
@@ -912,10 +976,10 @@ function QuickActions({ context }: { context: CurrentUserContext }) {
     ];
   } else if (slug === "maintenance_manager" || p.includes("work_orders.approve")) {
     actions = [
-      { label: "Needs Approval",    href: buildHref({ status: "Pending Approval" }),  primary: true },
+      { label: "Submitted",         href: buildHref({ status: "Submitted" }),          primary: true },
       { label: "Urgent",            href: buildHref({ priority: "Urgent" }) },
       { label: "High Priority",     href: buildHref({ priority: "High" }) },
-      { label: "Waiting Purchase",  href: buildHref({ status: "Waiting for Purchase" }) },
+      { label: "Waiting Parts",     href: buildHref({ status: "Waiting for Parts" }) },
       { label: "Ready to Close",    href: buildHref({ status: "Verified by Supervisor" }) },
     ];
   } else if (slug === "maintenance_supervisor" || p.includes("work_orders.assign")) {
@@ -927,11 +991,11 @@ function QuickActions({ context }: { context: CurrentUserContext }) {
     ];
   } else if (slug === "maintenance_data_entry" || (p.includes("work_orders.manage") && !p.includes("work_orders.approve"))) {
     actions = [
-      { label: "Create Request",    href: "/maintenance/work-orders/new",              primary: true },
-      { label: "My Requests",       href: buildHref({}) },
-      { label: "My Drafts",         href: buildHref({ status: "Draft" }) },
+      { label: "Submitted",         href: buildHref({ status: "Submitted" }),          primary: true },
+      { label: "In Progress",       href: buildHref({ status: "In Progress" }) },
       { label: "My Submitted",      href: buildHref({ status: "Submitted" }) },
       { label: "Rejected / Fix",    href: buildHref({ status: "Rejected" }) },
+      { label: "All Repair Orders", href: "/maintenance/work-orders" },
     ];
   } else if (slug === "technician") {
     actions = [
@@ -947,7 +1011,7 @@ function QuickActions({ context }: { context: CurrentUserContext }) {
     ];
   } else if (slug === "purchase_officer") {
     actions = [
-      { label: "Waiting Purchase",  href: buildHref({ status: "Waiting for Purchase" }), primary: true },
+      { label: "Parts On Order",    href: buildHref({ status: "Waiting for Purchase" }), primary: true },
       { label: "Active Jobs",       href: buildHref({ status: "In Progress" }) },
     ];
   } else if (slug === "finance_manager") {
@@ -961,7 +1025,7 @@ function QuickActions({ context }: { context: CurrentUserContext }) {
   return (
     <section className="rounded-md border border-[#E5E7EB] bg-white px-4 py-3 shadow-sm">
       <p className="mb-2.5 text-xs font-black uppercase text-[#4B5563]">
-        Quick actions — {context.role?.name ?? "your role"}
+        Quick Filters
       </p>
       <div className="flex flex-wrap gap-2">
         {actions.map((a) => (
@@ -982,7 +1046,7 @@ function QuickActions({ context }: { context: CurrentUserContext }) {
   );
 }
 
-function FilterSection({ sp, departments }: { sp: SP; departments: Department[] }) {
+function FilterSection({ sp }: { sp: SP }) {
   return (
     <form method="GET" action="/maintenance/work-orders" className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
@@ -991,7 +1055,7 @@ function FilterSection({ sp, departments }: { sp: SP; departments: Department[] 
           <input
             name="search"
             defaultValue={sp.search ?? ""}
-            placeholder="Work order no., asset, requester, location…"
+            placeholder="Repair order no., asset name, requester, location…"
             className="focus-ring w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
           />
         </div>
@@ -1003,24 +1067,6 @@ function FilterSection({ sp, departments }: { sp: SP; departments: Department[] 
         >
           <option value="">All priorities</option>
           {PRIORITIES.map((pr) => <option key={pr} value={pr}>{pr}</option>)}
-        </select>
-
-        <select
-          name="dept"
-          defaultValue={sp.dept ?? ""}
-          className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
-        >
-          <option value="">All departments</option>
-          {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-        </select>
-
-        <select
-          name="worker_type"
-          defaultValue={sp.worker_type ?? ""}
-          className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
-        >
-          <option value="">All worker types</option>
-          {WORKER_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
 
         <input
@@ -1038,17 +1084,6 @@ function FilterSection({ sp, departments }: { sp: SP; departments: Department[] 
           className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm text-[#4B5563]"
           title="Date to"
         />
-
-        <label className="flex cursor-pointer items-center gap-2 rounded-md border border-[#E5E7EB] px-3 py-2 text-sm hover:bg-gray-50">
-          <input
-            type="checkbox"
-            name="needs_action"
-            value="1"
-            defaultChecked={sp.needs_action === "1"}
-            className="h-4 w-4 rounded border-gray-300 accent-[#ED1C24]"
-          />
-          <span className="font-medium text-[#111827]">Needs my action</span>
-        </label>
 
         <div className="flex gap-2">
           <Button type="submit" variant="secondary" className="flex-1">Apply</Button>
@@ -1422,58 +1457,3 @@ function MiniPipeline({ stage, total, failed }: { stage: number; total: number; 
   );
 }
 
-function TemplatePickerButton() {
-  return (
-    <details className="relative">
-      <summary
-        className="flex cursor-pointer list-none select-none items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
-        aria-label="Create request — select form type"
-      >
-        <Plus className="h-4 w-4" aria-hidden="true" />
-        Create Request
-        <ChevronDown className="h-3.5 w-3.5 opacity-80" aria-hidden="true" />
-      </summary>
-      <div className="absolute right-0 top-full z-20 mt-1 w-72 overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-lg">
-        <p className="border-b border-[#E5E7EB] bg-gray-50 px-3 py-2 text-xs font-black uppercase text-[#4B5563]">
-          Select Form Type
-        </p>
-        <Link
-          href="/maintenance/work-orders/new"
-          className="flex items-start gap-3 px-3 py-3 text-sm text-[#111827] hover:bg-red-50"
-        >
-          <Wrench className="mt-0.5 h-4 w-4 flex-shrink-0 text-[#ED1C24]" aria-hidden="true" />
-          <div>
-            <p className="font-bold">Maintenance Work Order</p>
-            <p className="text-xs text-[#4B5563]">Maintenance work order form used by the maintenance department.</p>
-            <p className="mt-1 text-xs font-bold text-[#ED1C24]">Start Work Order →</p>
-          </div>
-        </Link>
-        <Link
-          href="/store/parts-requests/new"
-          className="flex items-start gap-3 border-t border-[#E5E7EB] px-3 py-3 text-sm text-[#111827] hover:bg-red-50"
-        >
-          <Package className="mt-0.5 h-4 w-4 flex-shrink-0 text-[#ED1C24]" aria-hidden="true" />
-          <div>
-            <p className="font-bold">Parts Request</p>
-            <p className="text-xs text-[#4B5563]">Request spare parts or materials for a work order.</p>
-            <p className="mt-1 text-xs font-bold text-[#ED1C24]">Start Parts Request →</p>
-          </div>
-        </Link>
-        <div className="flex cursor-not-allowed items-start gap-3 border-t border-[#E5E7EB] px-3 py-3 text-sm opacity-40">
-          <FileText className="mt-0.5 h-4 w-4 flex-shrink-0" aria-hidden="true" />
-          <div>
-            <p className="font-bold">Vehicle Requisition</p>
-            <p className="text-xs">Coming soon</p>
-          </div>
-        </div>
-        <div className="flex cursor-not-allowed items-start gap-3 border-t border-[#E5E7EB] px-3 py-3 text-sm opacity-40">
-          <FileText className="mt-0.5 h-4 w-4 flex-shrink-0" aria-hidden="true" />
-          <div>
-            <p className="font-bold">Daily Inspection Checklist</p>
-            <p className="text-xs">Coming soon</p>
-          </div>
-        </div>
-      </div>
-    </details>
-  );
-}

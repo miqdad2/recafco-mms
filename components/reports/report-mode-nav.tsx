@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, BarChart3, Calendar, ClipboardCheck, Package, Wrench } from "lucide-react";
+import { AlertTriangle, BarChart3, Calendar, Package, Wrench } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { ReportMode } from "@/lib/reports/data";
@@ -13,13 +13,6 @@ type ModeConfig = {
 };
 
 const MODES: ModeConfig[] = [
-  {
-    id: "pending-approvals",
-    label: "Pending Approvals",
-    description: "WOs needing your decision",
-    icon: ClipboardCheck,
-    urgency: true
-  },
   {
     id: "overdue",
     label: "Overdue",

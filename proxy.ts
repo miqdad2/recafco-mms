@@ -90,6 +90,30 @@ export async function proxy(request: NextRequest) {
     }
   }
 
+  // Roles page redirects to Users page — two-account model has no role management UI.
+  if (pathname === "/admin/roles") {
+    const url = request.nextUrl.clone();
+    url.pathname = "/admin/users";
+    url.search = "";
+    return NextResponse.redirect(url);
+  }
+
+  // Disabled routes — maintenance department scope.
+  const disabledRoutes = new Set([
+    "/admin/departments",
+    "/admin/notification-settings",
+    "/admin/architecture",
+    "/admin/system-map",
+    "/admin/system-map/edit",
+    "/admin/demo-guide"
+  ]);
+  if (disabledRoutes.has(pathname)) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/dashboard";
+    url.search = "";
+    return NextResponse.redirect(url);
+  }
+
   // Auth session enforcement.
   return updateSession(request);
 }

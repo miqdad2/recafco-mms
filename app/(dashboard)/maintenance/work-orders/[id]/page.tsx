@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   ClipboardList,
+  Cpu,
   FileText,
   History,
   LockKeyhole,
@@ -21,6 +22,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
+import { addWorkOrderMaterialAction } from "@/app/actions/maintenance";
 import { respondToClarificationAction } from "@/app/actions/workflow";
 import { uploadWorkOrderFileAction } from "@/app/actions/files";
 import { PrivateFilePanel } from "@/components/files/private-file-panel";
@@ -39,6 +41,7 @@ import { createSignedFileUrl } from "@/lib/files/signed-url";
 import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/security/permissions";
 import { canViewEntityFile } from "@/lib/security/file-access";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import { displayStatus } from "@/lib/display/work-order-labels";
 
 const lifecycle = [
   "Draft",
@@ -194,12 +197,12 @@ export default async function WorkOrderDetailPage({
   return (
     <>
       <PageHeader
-        title={wo.work_order_number ?? "Unnumbered work order"}
-        description="Work order control center with lifecycle tracking, accountability, approval history, parts, purchasing, costs, attachments, and audit trail."
+        title={wo.work_order_number ?? "Unnumbered repair order"}
+        description="Repair order detail — linked asset, issue description, assigned technician, work performed, parts used, and status timeline."
         actions={
           <>
             {canPrint ? <Link href={`/maintenance/work-orders/${wo.id}/print`}><Button variant="secondary"><Printer className="h-4 w-4" /> Print</Button></Link> : null}
-            {canManage && ["Draft", "Rejected"].includes(wo.status) ? <Link href={`/maintenance/work-orders/${wo.id}/edit`}><Button>Edit work order</Button></Link> : null}
+            {canManage && ["Draft", "Rejected"].includes(wo.status) ? <Link href={`/maintenance/work-orders/${wo.id}/edit`}><Button>Edit repair order</Button></Link> : null}
           </>
         }
       />
@@ -213,10 +216,10 @@ export default async function WorkOrderDetailPage({
         ) : null}
         {warningMessage === "recovery-draft-saved" ? (
           <div className="rounded-md border border-[#F59E0B] bg-amber-50 p-4">
-            <p className="text-sm font-black text-[#92400E]">Submit failed — work order saved as draft</p>
+            <p className="text-sm font-black text-[#92400E]">Submit failed — repair order saved as draft</p>
             <p className="mt-1 text-sm leading-5 text-[#4B5563]">
-              Your submission could not be processed, but your work order was saved as a draft so your work is not lost.
-              Review the details below, correct any issues, then use the workflow actions to resubmit for approval.
+              Your submission could not be processed, but your repair order was saved as a draft so your work is not lost.
+              Review the details below, correct any issues, then use the workflow actions to resubmit.
             </p>
           </div>
         ) : null}
@@ -224,7 +227,7 @@ export default async function WorkOrderDetailPage({
           <div className="rounded-md border border-[#16A34A] bg-green-50 p-4">
             <p className="text-sm font-black text-[#16A34A]">Response submitted</p>
             <p className="mt-1 text-sm leading-5 text-[#4B5563]">
-              Your clarification response has been recorded. The Maintenance Manager has been notified and can now approve or reject this work order.
+              Your clarification response has been recorded. The repair order will now be processed for assignment.
             </p>
           </div>
         ) : null}
@@ -232,22 +235,28 @@ export default async function WorkOrderDetailPage({
           <div className="rounded-md border border-[#16A34A] bg-green-50 p-4">
             <p className="text-sm font-black text-[#16A34A]">Clarification request sent</p>
             <p className="mt-1 text-sm leading-5 text-[#4B5563]">
-              The work order creator has been notified. The work order status remains Pending Approval until you approve or reject.
+              The repair order creator has been notified and will provide the requested information.
             </p>
+          </div>
+        ) : null}
+        {successMessage === "material-added" ? (
+          <div className="rounded-md border border-[#16A34A] bg-green-50 p-4">
+            <p className="text-sm font-black text-[#16A34A]">Parts usage recorded</p>
+            <p className="mt-1 text-sm leading-5 text-[#4B5563]">The part has been added to this repair order.</p>
           </div>
         ) : null}
         {wo.status === "Rejected" ? (
           <div className="rounded-md border border-[#ED1C24] bg-red-50 p-4">
-            <p className="font-black text-[#ED1C24]">This work order was rejected</p>
+            <p className="font-black text-[#ED1C24]">This repair order was rejected</p>
             <p className="mt-1 text-sm leading-5 text-[#4B5563]">
               {latestRejection?.comments ? `Rejection reason: "${latestRejection.comments}". ` : "No rejection reason was provided. "}
-              {canManage ? "Use the Return to Draft & Edit button on the right to revise and resubmit." : "Contact your manager for next steps."}
+              {canManage ? "Use the Return to Draft & Edit button on the right to revise and resubmit." : "Contact your supervisor for next steps."}
             </p>
           </div>
         ) : null}
         {pendingClarification ? (
           <div className="rounded-md border border-amber-300 bg-amber-50 p-4">
-            <p className="font-black text-amber-800">Clarification requested by Maintenance Manager</p>
+            <p className="font-black text-amber-800">More information requested</p>
             <p className="mt-1 text-sm font-semibold leading-5 text-[#111827]">{pendingClarification.question}</p>
             <p className="mt-1 text-xs text-[#4B5563]">
               Requested by {actorName(pendingClarification.requested_by)} on {formatDateTimeValue(pendingClarification.requested_at)}
@@ -264,11 +273,11 @@ export default async function WorkOrderDetailPage({
                 />
                 <div className="flex items-center gap-3">
                   <Button type="submit">Submit Clarification Response</Button>
-                  <p className="text-xs text-[#4B5563]">Responding sends this back to Maintenance Manager review. Work order status remains Pending Approval.</p>
+                  <p className="text-xs text-[#4B5563]">Responding sends this back for processing. The order will proceed to assignment once reviewed.</p>
                 </div>
               </form>
             ) : (
-              <p className="mt-3 text-xs text-[#4B5563]">Only the work order creator or an authorized manager can respond to this clarification request.</p>
+              <p className="mt-3 text-xs text-[#4B5563]">Only the repair order creator or an authorized supervisor can respond to this clarification request.</p>
             )}
           </div>
         ) : null}
@@ -276,13 +285,13 @@ export default async function WorkOrderDetailPage({
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <StatusBadge label={wo.status} tone={statusTone(wo.status)} />
+                <StatusBadge label={displayStatus(wo.status)} tone={statusTone(wo.status)} />
                 <StatusBadge label={wo.priority} tone={priorityTone(wo.priority)} />
                 <StatusBadge label={wo.worker_type} tone="gray" />
               </div>
-              <h2 className="mt-3 text-2xl font-black text-[#111827]">{wo.operator_complaint || wo.description_of_work || "Maintenance work order"}</h2>
+              <h2 className="mt-3 text-2xl font-black text-[#111827]">{wo.operator_complaint || wo.description_of_work || "Repair order"}</h2>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-[#4B5563]">
-                {wo.description_of_work || "No work description was recorded. Add clear work details before approval to reduce execution errors."}
+                {wo.description_of_work || "No work description was recorded. Add clear work details to reduce execution errors."}
               </p>
               <div className="mt-4 grid gap-3 md:grid-cols-4">
                 <MetricCard label="Current owner" value={owner} icon={UserCheck} tone="blue" />
@@ -308,7 +317,7 @@ export default async function WorkOrderDetailPage({
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-xs font-black uppercase text-[#ED1C24]">Lifecycle tracker</p>
-              <h2 className="mt-1 text-lg font-black text-[#111827]">Work Order Engine</h2>
+              <h2 className="mt-1 text-lg font-black text-[#111827]">Repair Order Progress</h2>
             </div>
             <StatusBadge label={`${Math.max(0, lifecycleIndex + 1)} of ${lifecycle.length}`} tone="blue" />
           </div>
@@ -324,7 +333,7 @@ export default async function WorkOrderDetailPage({
                     </span>
                     {isDone ? <CheckCircle2 className="h-4 w-4 text-[#16A34A]" aria-hidden="true" /> : null}
                   </div>
-                  <p className="mt-3 text-xs font-black uppercase leading-4 text-[#111827]">{step}</p>
+                  <p className="mt-3 text-xs font-black uppercase leading-4 text-[#111827]">{displayStatus(step)}</p>
                 </div>
               );
             })}
@@ -335,8 +344,39 @@ export default async function WorkOrderDetailPage({
 
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_24rem]">
           <main className="space-y-5">
+            {wo.assets && (
+              <section id="linked-asset" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
+                <SectionHeader eyebrow="Machine / equipment" title="Linked Asset" icon={Cpu} />
+                <div className="mt-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-lg font-black text-[#111827]">{wo.assets.asset_code} — {wo.assets.asset_name}</p>
+                      {(wo.assets.category || wo.assets.location) && (
+                        <p className="mt-1 text-sm text-[#4B5563]">
+                          {[wo.assets.category, wo.assets.location].filter(Boolean).join(" · ")}
+                        </p>
+                      )}
+                    </div>
+                    <StatusBadge label={wo.assets.status} tone={wo.assets.status === "Breakdown" ? "red" : "green"} />
+                  </div>
+                  <div className="mt-4 grid gap-4 md:grid-cols-3">
+                    <InfoBlock label="Brand" value={wo.assets.brand ?? "Not recorded"} />
+                    <InfoBlock label="Model" value={wo.assets.model ?? "Not recorded"} />
+                    <InfoBlock label="Serial number" value={wo.assets.serial_number ?? "Not recorded"} />
+                    <InfoBlock label="Condition" value={wo.assets.condition ?? "Not set"} />
+                    <InfoBlock label="Criticality" value={wo.assets.criticality ?? "Not set"} />
+                  </div>
+                  <div className="mt-4">
+                    <Link href={`/assets/${wo.asset_id}`} className="inline-flex items-center gap-1 text-sm font-bold text-[#ED1C24] hover:underline">
+                      View full asset profile →
+                    </Link>
+                  </div>
+                </div>
+              </section>
+            )}
+
             <section id="overview" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
-              <SectionHeader eyebrow="Operational record" title="Work Order Overview" icon={ClipboardList} />
+              <SectionHeader eyebrow="Repair record" title="Repair Order Overview" icon={ClipboardList} />
               <div className="mt-5 grid gap-4 md:grid-cols-3">
                 <InfoBlock label="Ordered by" value={wo.ordered_by} />
                 <InfoBlock label="Maintenance type" value={wo.maintenance_type} />
@@ -359,7 +399,7 @@ export default async function WorkOrderDetailPage({
             </section>
 
             <section id="timeline" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
-              <SectionHeader eyebrow="Complete trace" title="Unified Work Order Timeline" icon={History} />
+              <SectionHeader eyebrow="Complete trace" title="Status Timeline" icon={History} />
               <div className="mt-5 space-y-3">
                 {timeline.length ? timeline.map((item) => (
                   <div key={item.id} className="grid gap-3 rounded-md border border-[#E5E7EB] p-4 md:grid-cols-[9rem_minmax(0,1fr)]">
@@ -416,7 +456,18 @@ export default async function WorkOrderDetailPage({
             </section>
 
             <section id="parts" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
-              <SectionHeader eyebrow="Materials and inventory" title="Parts, Store, and Purchase Tracking" icon={PackageSearch} />
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <SectionHeader eyebrow="Materials and inventory" title="Parts and Materials Used" icon={PackageSearch} />
+                {canCreatePartsRequest && !["Closed", "Cancelled", "Rejected"].includes(wo.status) && (
+                  <Link
+                    href={`/store/parts-requests/new?repair_order_id=${wo.id}`}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
+                  >
+                    <PackageSearch className="h-4 w-4" aria-hidden="true" />
+                    Request Parts
+                  </Link>
+                )}
+              </div>
               <div className="mt-5 grid gap-4 md:grid-cols-3">
                 <MetricCard label="Parts requests" value={wo.parts_requests.length} icon={PackageSearch} tone="blue" />
                 <MetricCard label="Open requests" value={openPartsRequests} icon={AlertTriangle} tone={openPartsRequests ? "amber" : "green"} />
@@ -450,6 +501,45 @@ export default async function WorkOrderDetailPage({
                 )}
                 empty="No material rows recorded."
               />
+              {canManage && !["Closed", "Cancelled", "Rejected"].includes(wo.status) && (
+                <div className="mt-6">
+                  <p className="mb-3 text-xs font-black uppercase tracking-wide text-[#4B5563]">Record parts used</p>
+                  <form action={addWorkOrderMaterialAction} className="flex flex-wrap items-end gap-3 rounded-md border border-[#E5E7EB] bg-[#F8FAFC] p-4">
+                    <input type="hidden" name="work_order_id" value={wo.id} />
+                    <div className="flex-1 min-w-[200px]">
+                      <label className="block text-xs font-semibold text-[#4B5563] mb-1">Spare Part</label>
+                      <select
+                        name="part_id"
+                        className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
+                        required
+                      >
+                        <option value="">Select part from inventory...</option>
+                        {parts.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.part_code} — {p.part_name}{p.part_number ? ` (${p.part_number})` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="w-28 shrink-0">
+                      <label className="block text-xs font-semibold text-[#4B5563] mb-1">Quantity</label>
+                      <input
+                        type="number"
+                        name="quantity"
+                        min="0.01"
+                        step="0.01"
+                        required
+                        placeholder="0"
+                        className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <Button type="submit" variant="secondary" className="shrink-0">
+                      Record
+                    </Button>
+                  </form>
+                </div>
+              )}
+
               <div className="mt-5 space-y-3">
                 {wo.parts_requests.length ? wo.parts_requests.map((request) => (
                   <Link key={request.id} href={`/store/parts-requests/${request.id}`} className="block rounded-md border border-[#E5E7EB] p-4 transition hover:border-[#ED1C24]">
@@ -461,12 +551,26 @@ export default async function WorkOrderDetailPage({
                       <StatusBadge label={request.status} tone={statusTone(request.status)} />
                     </div>
                   </Link>
-                )) : <EmptyState title="No parts request" message="Technicians or supervisors can submit a linked parts request when materials are needed." />}
+                )) : (
+                  <div className="flex flex-col items-center gap-3 py-6 text-center">
+                    <p className="text-sm font-semibold text-[#111827]">No parts requested yet.</p>
+                    <p className="text-xs text-[#4B5563]">Request spare parts or materials directly from this repair order.</p>
+                    {canCreatePartsRequest && !["Closed", "Cancelled", "Rejected"].includes(wo.status) && (
+                      <Link
+                        href={`/store/parts-requests/new?repair_order_id=${wo.id}`}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
+                      >
+                        <PackageSearch className="h-4 w-4" aria-hidden="true" />
+                        Request Parts
+                      </Link>
+                    )}
+                  </div>
+                )}
               </div>
             </section>
 
             <section id="purchase" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
-              <SectionHeader eyebrow="Financial control" title="Purchase and Finance Chain" icon={ShoppingCart} />
+              <SectionHeader eyebrow="Parts order status" title="Parts Order Chain" icon={ShoppingCart} />
               <Table
                 columns={canViewCosts ? ["Purchase request", "Supplier", "Status", "Estimate", "Finance", "CEO"] : ["Purchase request", "Supplier", "Status", "Finance", "CEO"]}
                 rows={[...wo.purchase_requests, ...wo.parts_requests.flatMap((request) => request.purchase_requests)].map((request) => canViewCosts
@@ -525,7 +629,7 @@ export default async function WorkOrderDetailPage({
               </dl>
             </section>
 
-            <QrLinkCard title="Internal work order route" href={`/maintenance/work-orders/${wo.id}`} />
+            <QrLinkCard title="Repair order QR link" href={`/maintenance/work-orders/${wo.id}`} />
           </aside>
         </div>
 
@@ -760,7 +864,7 @@ function currentOwner(status: string, technicianNames: string[]) {
 
 function currentBlocker(status: string, openPartsRequests: number, purchaseQueue: number, assignmentCount: number) {
   if (status === "Approved" && assignmentCount === 0) return "Technician assignment needed";
-  if (["Submitted", "Pending Approval"].includes(status)) return "Manager approval needed";
+  if (["Submitted", "Pending Approval"].includes(status)) return "Awaiting assignment";
   if (status === "Waiting for Parts" || openPartsRequests > 0) return "Parts/store action needed";
   if (status === "Waiting for Purchase" || purchaseQueue > 0) return "Purchase or finance action needed";
   if (status === "Completed by Technician") return "Supervisor verification needed";

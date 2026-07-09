@@ -43,9 +43,9 @@ export type SummaryCard = {
 
 export const heroBadges = [
   "Next.js App Router",
-  "Supabase PostgreSQL",
+  "PostgreSQL + Prisma",
   "Server-side RBAC",
-  "Row Level Security",
+  "Local Auth",
   "Private File Storage",
   "PWA Ready",
   "Notification Engine"
@@ -56,7 +56,7 @@ export const highLevelFlow: FlowStep[] = [
   { title: "Next.js UI", description: "Role-based layouts, dashboards, forms, tables, and technician mobile screens.", tone: "blue" },
   { title: "Server Actions / API", description: "Validated mutations, exports, signed URLs, QR services, and workflow commands.", tone: "blue" },
   { title: "Permission Check", description: "Active profile, role, permission, and cost visibility guards.", tone: "red" },
-  { title: "Supabase / RLS", description: "Auth, PostgreSQL, private storage, signed URLs, and database-level policies.", tone: "green" },
+  { title: "PostgreSQL / Prisma", description: "Local auth, PostgreSQL, private storage, and signed URLs.", tone: "green" },
   { title: "Outputs", description: "Dashboards, Notification Center, reports, Excel exports, print/PDF, and QR codes.", tone: "amber" }
 ];
 
@@ -80,16 +80,16 @@ export const architectureLayers: ArchitectureLayer[] = [
   {
     name: "Security Layer",
     responsibility: "Authenticates users, loads active profiles, resolves roles, and enforces permissions and cost visibility.",
-    files: ["lib/auth", "lib/permissions", "proxy.ts", "supabase/migrations"],
-    securityNote: "Supabase RLS remains the database backstop even if UI code changes.",
+    files: ["lib/auth", "lib/permissions", "proxy.ts", "prisma/migrations"],
+    securityNote: "Server-side permission guards remain the backstop even if UI code changes.",
     status: "completed",
     tone: "red"
   },
   {
     name: "Data Layer",
     responsibility: "Stores master data, workflow transactions, status history, audit logs, and notification records.",
-    files: ["supabase/migrations", "lib/supabase", "types/database.ts"],
-    securityNote: "UUID primary keys, indexes, RLS policies, audit trails, and soft-delete patterns protect records.",
+    files: ["prisma/migrations", "lib/backend", "prisma/schema.prisma"],
+    securityNote: "UUID primary keys, indexes, permission-gated queries, audit trails, and soft-delete patterns protect records.",
     status: "completed",
     tone: "green"
   },
@@ -112,11 +112,11 @@ export const architectureLayers: ArchitectureLayer[] = [
 ];
 
 export const securityFlow: FlowStep[] = [
-  { title: "Login", description: "User signs in through Supabase Auth.", tone: "charcoal" },
+  { title: "Login", description: "User signs in through local email/password authentication.", tone: "charcoal" },
   { title: "Active Profile", description: "Inactive users cannot load protected context.", tone: "green" },
   { title: "Role Detection", description: "Profile role maps to server-side permission set.", tone: "blue" },
   { title: "Permission Check", description: "Routes and server actions enforce required permissions.", tone: "red" },
-  { title: "Supabase RLS", description: "Database policies restrict rows and mutations.", tone: "green" },
+  { title: "Query Guards", description: "Repositories and services apply permission and visibility filters.", tone: "green" },
   { title: "Audit Log", description: "Important access and workflow actions are tracked.", tone: "amber" }
 ];
 
@@ -136,10 +136,10 @@ export const roleHierarchy = [
 ];
 
 export const securityFeatures: SecurityFeature[] = [
-  { feature: "Supabase Auth", purpose: "Central login and session identity.", status: "Completed", tone: "green" },
+  { feature: "Local Auth", purpose: "Central login and session identity.", status: "Completed", tone: "green" },
   { feature: "Server-side RBAC", purpose: "Routes and actions require explicit permissions.", status: "Completed", tone: "green" },
   { feature: "Active profile checks", purpose: "Inactive users cannot access the app.", status: "Completed", tone: "green" },
-  { feature: "RLS policies", purpose: "Database-level row protection.", status: "Completed", tone: "green" },
+  { feature: "Query-level visibility filters", purpose: "Row-level protection enforced in repositories and services.", status: "Completed", tone: "green" },
   { feature: "Private buckets", purpose: "No public access to uploaded documents.", status: "Completed", tone: "green" },
   { feature: "Signed URLs", purpose: "Temporary access for authorized file viewers.", status: "Completed", tone: "green" },
   { feature: "Audit logs", purpose: "Trace administrative and workflow actions.", status: "Completed", tone: "amber" },
@@ -211,9 +211,9 @@ export const reportingFlow: FlowStep[] = [
 ];
 
 export const deploymentOptions: RoadmapGroup[] = [
-  { area: "Current Demo", tone: "green", items: ["Next.js on local or Vercel", "Supabase cloud project", "Supabase Auth", "Supabase PostgreSQL", "Supabase Storage"] },
-  { area: "Future Production", tone: "blue", items: ["Vercel + Supabase", "Company server + managed PostgreSQL", "Company server + self-hosted Supabase if approved", "Kuwait/private cloud if required"] },
-  { area: "IT Controls", tone: "red", items: ["Server-only service role key", "Controlled production environment variables", "Database backups", "Monitoring and restore policy"] }
+  { area: "Current Demo", tone: "green", items: ["Next.js on local server", "PostgreSQL + Prisma", "Local Auth", "Local File Storage"] },
+  { area: "Future Production", tone: "blue", items: ["Company server + managed PostgreSQL", "Company server + persistent shared storage", "Kuwait/private cloud if required"] },
+  { area: "IT Controls", tone: "red", items: ["Server-only environment variables", "Controlled production environment variables", "Database backups", "Monitoring and restore policy"] }
 ];
 
 export const scalabilityRoadmap: RoadmapGroup[] = [
@@ -228,9 +228,9 @@ export const scalabilityRoadmap: RoadmapGroup[] = [
 export const technicalSummaryCards: SummaryCard[] = [
   { title: "Frontend", value: "Next.js App Router", detail: "Server-rendered protected routes with role-aware layouts.", tone: "blue" },
   { title: "Backend", value: "Server Actions + API Routes", detail: "Validated workflow mutations and exports.", tone: "charcoal" },
-  { title: "Database", value: "Supabase PostgreSQL", detail: "UUID tables, indexes, migrations, and RLS.", tone: "green" },
-  { title: "Auth", value: "Supabase Auth", detail: "Profile-linked authenticated access.", tone: "red" },
-  { title: "Security", value: "RBAC + RLS", detail: "Server permission guards and database policy protection.", tone: "red" },
+  { title: "Database", value: "PostgreSQL + Prisma", detail: "UUID tables, indexes, and migrations.", tone: "green" },
+  { title: "Auth", value: "Local Auth", detail: "Profile-linked authenticated access.", tone: "red" },
+  { title: "Security", value: "Server-side RBAC", detail: "Server permission guards and query-level visibility filters.", tone: "red" },
   { title: "Files", value: "Private Buckets + Signed URLs", detail: "Secure upload and temporary viewing model.", tone: "amber" },
   { title: "Notifications", value: "Event-driven In-App Engine", detail: "Templates, preferences, delivery logs, and bell.", tone: "green" },
   { title: "Exports", value: "Native XLSX", detail: "Audited workbook exports with cost filtering.", tone: "blue" },
@@ -242,4 +242,4 @@ export const businessModules = ["Assets", "Work Orders", "Approvals", "Technicia
 export const outputModules = ["Dashboards", "Excel Exports", "Browser Print/PDF", "QR Codes", "Notification Center"];
 export const storageBuckets = ["work-order-files", "asset-files", "purchase-files"];
 export const storageFileTypes = ["before/after photos", "damaged part photos", "meter/kilometer photos", "asset documents", "registration/insurance/warranty", "quotations", "invoices", "delivery notes"];
-export const architectureEnvVars = ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY", "NEXT_PUBLIC_APP_URL"];
+export const architectureEnvVars = ["DATABASE_URL", "NEXT_PUBLIC_APP_URL", "UPLOADS_DIR"];

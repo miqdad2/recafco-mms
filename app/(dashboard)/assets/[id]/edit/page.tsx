@@ -1,18 +1,19 @@
-import { AssetForm } from "@/components/assets/asset-form";
+import { AssetWizard } from "@/components/assets/asset-wizard";
 import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 
 export default async function EditAssetPage({ params }: { params: Promise<{ id: string }> }) {
-  await requirePermission("assets.manage");
+  const context = await requirePermission("assets.manage");
+  const canManageCategories = context.role?.slug === "super_admin";
   const { id } = await params;
-  const [rawAsset, departments] = await Promise.all([
+  const [rawAsset, categories] = await Promise.all([
     prisma.assets.findUnique({ where: { id } }),
-    prisma.departments.findMany({
+    prisma.asset_categories.findMany({
       where: { is_active: true },
-      select: { id: true, name: true },
-      orderBy: { name: "asc" }
-    })
+      select: { id: true, name: true, parent_id: true, is_active: true },
+      orderBy: [{ sort_order: "asc" }, { name: "asc" }],
+    }),
   ]);
   const asset = rawAsset ? {
     id: rawAsset.id,
@@ -39,13 +40,20 @@ export default async function EditAssetPage({ params }: { params: Promise<{ id: 
     next_service_kilometer: rawAsset.next_service_kilometer?.toNumber() ?? null,
     next_service_running_hours: rawAsset.next_service_running_hours?.toNumber() ?? null,
     notes: rawAsset.notes,
+    condition: rawAsset.condition,
+    criticality: rawAsset.criticality,
+    remarks: rawAsset.remarks,
   } : null;
 
   return (
     <>
       <PageHeader title="Edit Asset" description="Update asset master fields and next service details." />
       <div className="p-4 lg:p-6">
-        <AssetForm asset={asset} departments={departments ?? []} />
+        <AssetWizard
+          asset={asset}
+          categories={categories}
+          canManageCategories={canManageCategories}
+        />
       </div>
     </>
   );

@@ -85,7 +85,7 @@ export function MobileNavigation({ items }: MobileNavigationProps) {
         <div className="flex min-h-20 items-center justify-between gap-3 border-b border-[#E5E7EB] px-4">
           <BrandLogo variant="light" size="sm" showText={false} />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-black text-[#111827]">RECAFCO MMS</p>
+            <p className="truncate text-sm font-black text-[#111827]">RECAFCO Maintenance Dept.</p>
             <p className="truncate text-xs font-semibold text-[#4B5563]">Role-based navigation</p>
           </div>
           <button type="button" className="focus-ring rounded-md border border-[#E5E7EB] p-2 text-[#111827]" onClick={() => setOpen(false)} aria-label="Close menu">

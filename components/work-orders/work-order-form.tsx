@@ -18,6 +18,20 @@ type AssetOption = {
   serial_number: string | null;
   plate_number: string | null;
 };
+type FullAssetOption = {
+  id: string;
+  asset_code: string;
+  asset_name: string;
+  category: string | null;
+  serial_number: string | null;
+  plate_number: string | null;
+  location: string | null;
+  status: string;
+  condition: string | null;
+  criticality: string | null;
+  brand: string | null;
+  model: string | null;
+};
 type FormRecord = Record<string, string | number | null | undefined>;
 
 function dateTimeLocal(value: string | number | null | undefined) {
@@ -29,6 +43,7 @@ export function WorkOrderForm({
   departments,
   assets,
   supervisors,
+  preselectedAsset = null,
   laborRows = [],
   materialRows = [],
   attachmentRows = [],
@@ -38,6 +53,7 @@ export function WorkOrderForm({
   departments: Option[];
   assets: AssetOption[];
   supervisors: Option[];
+  preselectedAsset?: FullAssetOption | null;
   laborRows?: FormRecord[];
   materialRows?: FormRecord[];
   attachmentRows?: FormRecord[];
@@ -53,12 +69,71 @@ export function WorkOrderForm({
 
     return (
       <form action={upsertWorkOrderAction} className="space-y-4">
+
+        {/* Asset selection — first and most prominent step */}
+        <section className="overflow-hidden rounded-md border-2 border-[#ED1C24]/40 bg-white shadow-sm">
+          <div className="border-b border-[#ED1C24]/20 bg-[#FFF5F5] px-4 py-3">
+            <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Machine / Asset</p>
+            <p className="mt-0.5 text-xs text-[#4B5563]">Identify the machine or equipment requiring repair. All records will be linked to this asset.</p>
+          </div>
+          <div className="p-4">
+            {preselectedAsset ? (
+              <div className="rounded-md border border-[#059669]/30 bg-[#ECFDF5] p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-lg font-black text-[#111827]">{preselectedAsset.asset_code} — {preselectedAsset.asset_name}</p>
+                    {(preselectedAsset.category || preselectedAsset.location) && (
+                      <p className="mt-0.5 text-sm text-[#4B5563]">{[preselectedAsset.category, preselectedAsset.location].filter(Boolean).join(" · ")}</p>
+                    )}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <span className="rounded-full border border-[#E5E7EB] bg-white px-3 py-0.5 text-xs font-bold text-[#111827]">Status: {preselectedAsset.status}</span>
+                      {preselectedAsset.condition && (
+                        <span className="rounded-full border border-[#E5E7EB] bg-white px-3 py-0.5 text-xs font-bold text-[#111827]">Condition: {preselectedAsset.condition}</span>
+                      )}
+                      {preselectedAsset.criticality && (
+                        <span className="rounded-full border border-[#E5E7EB] bg-white px-3 py-0.5 text-xs font-bold text-[#111827]">Criticality: {preselectedAsset.criticality}</span>
+                      )}
+                      {(preselectedAsset.brand || preselectedAsset.model) && (
+                        <span className="rounded-full border border-[#E5E7EB] bg-white px-3 py-0.5 text-xs font-semibold text-[#4B5563]">{[preselectedAsset.brand, preselectedAsset.model].filter(Boolean).join(" / ")}</span>
+                      )}
+                    </div>
+                  </div>
+                  <Link href={`/assets/${preselectedAsset.id}`} className="shrink-0 text-xs font-bold text-[#ED1C24] hover:underline">View asset profile →</Link>
+                </div>
+                <p className="mt-3 text-xs font-semibold text-[#059669]">Asset selected — repair order will be linked to this machine.</p>
+                <input type="hidden" name="asset_id" value={preselectedAsset.id} />
+              </div>
+            ) : (
+              <div>
+                <label className="mb-1.5 block text-sm font-semibold text-[#111827]">
+                  Select machine / asset <span className="font-normal text-[#9CA3AF]">(optional)</span>
+                </label>
+                <select
+                  className="h-11 w-full rounded-md border border-[#2B2B2B] bg-white px-3 text-sm text-[#111827] focus:border-[#ED1C24] focus:outline-none"
+                  name="asset_id"
+                  defaultValue={workOrder?.asset_id ?? ""}
+                >
+                  <option value="">— Select the machine or asset —</option>
+                  {assets.map((asset) => (
+                    <option key={asset.id} value={asset.id}>
+                      {asset.asset_code} — {asset.asset_name}
+                      {asset.category ? ` [${asset.category}]` : ""}
+                      {asset.plate_number ? ` / ${asset.plate_number}` : ""}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1.5 text-xs text-[#6B7280]">Can be set now or linked later from the repair order record.</p>
+              </div>
+            )}
+          </div>
+        </section>
+
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
           <section className="overflow-hidden rounded-md border border-[#DDE2EA] bg-white shadow-sm">
             <div className="border-b border-[#E5E7EB] bg-[#F8FAFC] px-4 py-3">
               <FormDocumentHeader
                 variant="form"
-                title="Work Order"
+                title="Repair Order"
                 departmentName="Maintenance Department"
                 referenceLabel="Ref:"
                 referenceNumber="REC/MD/JOB/Sr.No"
@@ -98,16 +173,9 @@ export function WorkOrderForm({
                     </tr>
                     <tr>
                       <td className={cellClass}>
-                        <span className="font-semibold">Machine / asset</span>
-                        <select className={inputClass} name="asset_id" defaultValue="">
-                          <option value="">Select asset if known</option>
-                          {assets.map((asset) => (
-                            <option key={asset.id} value={asset.id}>
-                              {asset.asset_code} - {asset.asset_name}
-                              {asset.plate_number ? ` / ${asset.plate_number}` : ""}
-                            </option>
-                          ))}
-                        </select>
+                        <span className="font-semibold">Serial / plate no.</span>
+                        <input className={inputClass} name="serial_number" placeholder="if known" />
+                        <input type="hidden" name="plate_number" value="" />
                       </td>
                       <td className={cellClass}>
                         <span className="font-semibold">Start / end date time</span>
@@ -118,14 +186,9 @@ export function WorkOrderForm({
                       </td>
                     </tr>
                     <tr>
-                      <td className={cellClass}>
-                        <span className="font-semibold">Serial / plate no.</span>
-                        <input className={inputClass} name="serial_number" placeholder="if known" />
-                        <input type="hidden" name="plate_number" value="" />
-                      </td>
-                      <td className={cellClass}>
+                      <td className={cellClass} colSpan={2}>
                         <span className="font-semibold">Running hours / kms</span>
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="mt-1 grid max-w-sm grid-cols-2 gap-2">
                           <input className={inputClass} name="running_hours" type="number" placeholder="hours (if known)" />
                           <input className={inputClass} name="kilometers" type="number" placeholder="kms (if known)" />
                         </div>
@@ -304,7 +367,7 @@ export function WorkOrderForm({
             {/* Other forms panel */}
             <section className="rounded-md border border-[#DDE2EA] bg-white p-4 shadow-sm">
               <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Other Forms</p>
-              <p className="mt-0.5 mb-3 text-xs text-[#4B5563]">Currently filling: Work Order</p>
+              <p className="mt-0.5 mb-3 text-xs text-[#4B5563]">Currently filling: Repair Order</p>
               <Link
                 href="/store/parts-requests/new"
                 className="flex flex-col gap-0.5 rounded-md border border-[#E5E7EB] bg-[#F8FAFC] p-3 transition hover:border-[#ED1C24] hover:bg-red-50"
@@ -341,9 +404,9 @@ export function WorkOrderForm({
               {/* Action buttons */}
               <div className="space-y-3 border-t border-[#E5E7EB] pt-3">
                 <div>
-                  <p className="mb-2 text-xs text-[#4B5563]">Submit sends this request to the manager for approval.</p>
+                  <p className="mb-2 text-xs text-[#4B5563]">Submit sends this repair order for assignment.</p>
                   <Button type="submit" name="intent" value="submit_for_approval" className="w-full">
-                    Submit for Approval
+                    Submit Repair Order
                   </Button>
                 </div>
                 <div className="border-t border-[#E5E7EB] pt-3">
@@ -363,7 +426,7 @@ export function WorkOrderForm({
   return (
     <form action={upsertWorkOrderAction} className="space-y-5">
       {workOrder?.id ? <input type="hidden" name="id" value={workOrder.id} /> : null}
-      <FormSection title="Work Order Header" description="Primary paper-form details and asset reference.">
+      <FormSection title="Repair Order Header" description="Primary paper-form details and asset reference.">
         <Field label="Ordered by" name="ordered_by" defaultValue={workOrder?.ordered_by} required />
         <Field label="Requested by department" name="requested_by_department_id">
           <select className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="requested_by_department_id" defaultValue={workOrder?.requested_by_department_id ?? ""}>
@@ -504,7 +567,7 @@ export function WorkOrderForm({
         ))}
       </FormSection>
 
-      <Button type="submit">Save work order</Button>
+      <Button type="submit">Save repair order</Button>
     </form>
   );
 }

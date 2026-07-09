@@ -11,10 +11,10 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
             <BrandLogo variant="dark" size="lg" />
 
             <div className="max-w-2xl">
-              <p className="text-sm font-bold uppercase tracking-wide text-red-200">Industrial maintenance control</p>
+              <p className="text-sm font-bold uppercase tracking-wide text-red-200">Maintenance Department System</p>
               <h1 className="mt-5 max-w-xl text-5xl font-black leading-tight">Maintenance work, approvals, and asset records in one secure system.</h1>
               <p className="mt-6 max-w-xl text-base leading-7 text-gray-300">
-                Built for RECAFCO teams handling work orders, assets, spare parts, purchase coordination, and management review.
+                Built for RECAFCO teams managing maintenance work orders, assets, and spare parts operations.
               </p>
 
               <div className="mt-8 grid max-w-2xl grid-cols-3 gap-4">

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, Boxes, CalendarClock, Component, Factory, Forklift, PackageSearch, Plus, ShieldAlert, ShoppingCart, Truck, Wrench } from "lucide-react";
+import { AlertTriangle, Boxes, Layers, PackageSearch, Plus, ShieldAlert, ShoppingCart, Upload, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -8,9 +8,10 @@ import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+// Categories loaded from DB — see asset_categories table
 
 type AssetsPageProps = {
-  searchParams?: Promise<{ page?: string; search?: string; status?: string; category?: string; due_soon?: string }>;
+  searchParams?: Promise<{ page?: string; search?: string; status?: string; category?: string; main_category?: string; location?: string; due_soon?: string; condition?: string; criticality?: string }>;
 };
 
 const pageSize = 25;
@@ -22,88 +23,16 @@ type AssetRow = {
   category: string;
   status: string;
   location: string | null;
-  current_kilometer_reading: string | number | null;
-  current_running_hours: string | number | null;
-  next_service_date: Date | string | null;
+  condition: string | null;
+  criticality: string | null;
+  serial_number: string | null;
+  model: string | null;
 };
 
-type CategorySummary = {
+type CategoryChip = {
   category: string;
   count: bigint;
-  breakdown_count: bigint;
-  maintenance_count: bigint;
-  waiting_parts_count: bigint;
-  due_soon_count: bigint;
 };
-
-type StatusSummary = {
-  status: string;
-  count: bigint;
-};
-
-type PartInventorySummary = {
-  total_parts: bigint;
-  low_stock_parts: bigint;
-  unavailable_parts: bigint;
-  active_parts: bigint;
-};
-
-const categoryIconMap: Record<string, LucideIcon> = {
-  Bus: Truck,
-  Car: Truck,
-  Crane: Wrench,
-  Forklift,
-  Generator: Component,
-  Truck,
-  Vehicle: Truck,
-  "Factory Machine": Factory,
-  "Electrical Equipment": Component,
-  "Building/Facility": Factory
-};
-
-type UrgencyLevel = "breakdown" | "waiting" | "due" | "none";
-
-function categoryUrgency(item: CategorySummary): UrgencyLevel {
-  if (Number(item.breakdown_count) > 0) return "breakdown";
-  if (Number(item.waiting_parts_count) > 0) return "waiting";
-  if (Number(item.due_soon_count) > 0) return "due";
-  return "none";
-}
-
-function categoryCardClass(urgency: UrgencyLevel, active: boolean) {
-  if (active) return "border-[#ED1C24] bg-red-50";
-  if (urgency === "breakdown") return "border-red-300 bg-red-50";
-  if (urgency === "waiting") return "border-amber-300 bg-amber-50";
-  if (urgency === "due") return "border-blue-200 bg-blue-50";
-  return "border-[#E5E7EB] bg-white";
-}
-
-function categoryIconClass(urgency: UrgencyLevel) {
-  if (urgency === "breakdown") return "bg-[#ED1C24] text-white";
-  if (urgency === "waiting") return "bg-[#F59E0B] text-white";
-  if (urgency === "due") return "bg-[#2563EB] text-white";
-  return "bg-[#111827] text-white";
-}
-
-function assetStatusTone(status: string): "green" | "amber" | "red" | "gray" {
-  if (status === "Breakdown" || status === "Out of Service") return "red";
-  if (status === "Under Maintenance" || status === "Waiting for Parts") return "amber";
-  if (status === "Retired") return "gray";
-  return "green";
-}
-
-function statusDotClass(status: string) {
-  if (status === "Breakdown" || status === "Out of Service") return "bg-[#ED1C24]";
-  if (status === "Under Maintenance" || status === "Waiting for Parts") return "bg-[#F59E0B]";
-  if (status === "Active" || status === "In Use") return "bg-[#16A34A]";
-  return "bg-[#9CA3AF]";
-}
-
-function isOverdue(value: Date | string | null) {
-  if (!value) return false;
-  const date = value instanceof Date ? value : new Date(value);
-  return !Number.isNaN(date.getTime()) && date < new Date();
-}
 
 type CeoAssetWO = { id: string; status: string; priority: string; work_order_number: string | null };
 type CeoAsset = {
@@ -114,17 +43,26 @@ type CeoAsset = {
 };
 
 function getCeoAssetReason(asset: CeoAsset, serviceDueSoon: Date): { label: string; tone: "red" | "amber" | "blue" | "gray" } {
-  if (asset.status === "Breakdown")        return { label: "Breakdown",          tone: "red"   };
-  if (asset.status === "Out of Service")   return { label: "Out of service",      tone: "red"   };
-  if (asset.status === "Waiting for Parts")return { label: "Waiting for parts",   tone: "amber" };
-  if (asset.status === "Under Maintenance")return { label: "Under maintenance",   tone: "amber" };
+  if (asset.status === "Breakdown")         return { label: "Breakdown",            tone: "red"   };
+  if (asset.status === "Out of Service")    return { label: "Out of service",        tone: "red"   };
+  if (asset.status === "Waiting for Parts") return { label: "Waiting for parts",     tone: "amber" };
+  if (asset.status === "Under Maintenance") return { label: "Under maintenance",     tone: "amber" };
   const now = new Date();
-  const sd = asset.next_service_date ? (asset.next_service_date instanceof Date ? asset.next_service_date : new Date(String(asset.next_service_date))) : null;
-  if (sd && sd < now)              return { label: "Service overdue",        tone: "red"   };
-  if (sd && sd <= serviceDueSoon)  return { label: "Service due soon",       tone: "blue"  };
+  const sd = asset.next_service_date
+    ? (asset.next_service_date instanceof Date ? asset.next_service_date : new Date(String(asset.next_service_date)))
+    : null;
+  if (sd && sd < now)             return { label: "Service overdue",          tone: "red"   };
+  if (sd && sd <= serviceDueSoon) return { label: "Service due soon",         tone: "blue"  };
   const hasHighPrio = asset.work_orders.some((w) => ["High", "Urgent"].includes(w.priority));
-  if (hasHighPrio) return { label: "High-priority open work", tone: "amber" };
+  if (hasHighPrio)                return { label: "High-priority open work",  tone: "amber" };
   return { label: "Executive visibility", tone: "gray" };
+}
+
+function assetStatusTone(status: string): "green" | "amber" | "red" | "gray" {
+  if (status === "Breakdown" || status === "Out of Service") return "red";
+  if (status === "Under Maintenance" || status === "Waiting for Parts") return "amber";
+  if (status === "Retired") return "gray";
+  return "green";
 }
 
 export default async function AssetsPage({ searchParams }: AssetsPageProps) {
@@ -134,7 +72,11 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   const search = String(params?.search ?? "").replace(/[%,()]/g, " ").trim().slice(0, 80);
   const status = String(params?.status ?? "").trim();
   const category = String(params?.category ?? "").trim();
+  const location = String(params?.location ?? "").replace(/[%,()]/g, " ").trim().slice(0, 80);
+  const condition = String(params?.condition ?? "").trim();
+  const criticality = String(params?.criticality ?? "").trim();
   const dueSoonFilter = params?.due_soon === "1";
+  const mainCategory = String(params?.main_category ?? "").trim();
 
   const dueSoon = new Date();
   dueSoon.setDate(dueSoon.getDate() + 30);
@@ -385,6 +327,43 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   }
   // ── End CEO early-return ──────────────────────────────────────────────────
 
+  // ── Load active categories from DB ────────────────────────────────────────
+  const dbCategories = await prisma.asset_categories.findMany({
+    where: { is_active: true },
+    select: { id: true, name: true, parent_id: true, sort_order: true },
+    orderBy: [{ sort_order: "asc" }, { name: "asc" }],
+  });
+
+  const dbMainCats = dbCategories.filter((c) => c.parent_id === null);
+  const dbSubcats  = dbCategories.filter((c) => c.parent_id !== null);
+
+  // Map: subcategory name (lower) → main category name
+  const subcatToMain = new Map<string, string>();
+  for (const sub of dbSubcats) {
+    const parent = dbMainCats.find((m) => m.id === sub.parent_id);
+    if (parent) subcatToMain.set(sub.name.toLowerCase(), parent.name);
+  }
+  // Also map main category name → itself (handles legacy assets stored with main cat name)
+  for (const m of dbMainCats) subcatToMain.set(m.name.toLowerCase(), m.name);
+
+  function getMainCategoryName(catValue: string): string {
+    return subcatToMain.get(catValue.toLowerCase()) ?? "Other";
+  }
+
+  // All subcategory names that belong to a given main category (for WHERE filtering)
+  function subcatNamesForMain(mainName: string): string[] {
+    const main = dbMainCats.find((m) => m.name === mainName);
+    if (!main) return [];
+    // Include the main category name itself to catch legacy assets
+    return [mainName, ...dbSubcats.filter((s) => s.parent_id === main.id).map((s) => s.name)];
+  }
+
+  // All known category names (subcats + mains) — for "Other" filter
+  const allKnownNames = new Set([
+    ...dbMainCats.map((m) => m.name),
+    ...dbSubcats.map((s) => s.name),
+  ]);
+
   const statusFilter = status
     ? { status }
     : dueSoonFilter
@@ -394,21 +373,41 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   const where = {
     deleted_at: null,
     ...statusFilter,
-    ...(category ? { category } : {}),
+    ...(category
+      ? { category }
+      : mainCategory
+        ? mainCategory === "Other"
+          ? { category: { notIn: [...allKnownNames] } }
+          : { category: { in: subcatNamesForMain(mainCategory) } }
+        : {}),
+    ...(location ? { location: { contains: location, mode: "insensitive" as const } } : {}),
+    ...(condition ? { condition } : {}),
+    ...(criticality ? { criticality } : {}),
     ...(dueSoonFilter ? { next_service_date: { lte: dueSoon } } : {}),
     ...(search
-      ? {
-          OR: [
-            { asset_code: { contains: search, mode: "insensitive" as const } },
-            { asset_name: { contains: search, mode: "insensitive" as const } },
-            { serial_number: { contains: search, mode: "insensitive" as const } },
-            { plate_number: { contains: search, mode: "insensitive" as const } }
-          ]
-        }
-      : {})
+      ? (() => {
+          // Expand search to include subcategories of any matching main category
+          const lc = search.toLowerCase();
+          const matchingSubcats = dbMainCats
+            .filter((mc) => mc.name.toLowerCase().includes(lc))
+            .flatMap((mc) => dbSubcats.filter((s) => s.parent_id === mc.id).map((s) => s.name));
+          return {
+            OR: [
+              { asset_code:    { contains: search, mode: "insensitive" as const } },
+              { asset_name:    { contains: search, mode: "insensitive" as const } },
+              { serial_number: { contains: search, mode: "insensitive" as const } },
+              { plate_number:  { contains: search, mode: "insensitive" as const } },
+              { model:         { contains: search, mode: "insensitive" as const } },
+              { category:      { contains: search, mode: "insensitive" as const } },
+              { location:      { contains: search, mode: "insensitive" as const } },
+              ...(matchingSubcats.length > 0 ? [{ category: { in: matchingSubcats } }] : []),
+            ],
+          };
+        })()
+      : {}),
   };
 
-  const [assets, count, categorySummaries, statusSummaries, partSummaryRows, dueSoonCount] = await Promise.all([
+  const [assets, count, categoryChips, criticalStatusCount, poorConditionCount, waitingCount] = await Promise.all([
     prisma.assets.findMany({
       where,
       orderBy: dueSoonFilter ? { next_service_date: "asc" } : { asset_code: "asc" },
@@ -421,272 +420,406 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         category: true,
         status: true,
         location: true,
-        current_kilometer_reading: true,
-        current_running_hours: true,
-        next_service_date: true
-      }
+        condition: true,
+        criticality: true,
+        serial_number: true,
+        model: true,
+      },
     }) as Promise<AssetRow[]>,
     prisma.assets.count({ where }),
-    prisma.$queryRaw<CategorySummary[]>`
-      select
-        category,
-        count(*)::bigint as count,
-        count(*) filter (where status = 'Breakdown')::bigint as breakdown_count,
-        count(*) filter (where status = 'Under Maintenance')::bigint as maintenance_count,
-        count(*) filter (where status = 'Waiting for Parts')::bigint as waiting_parts_count,
-        count(*) filter (where next_service_date is not null and next_service_date <= ${dueSoon})::bigint as due_soon_count
+    prisma.$queryRaw<CategoryChip[]>`
+      select category, count(*)::bigint as count
       from public.assets
       where deleted_at is null
       group by category
       order by count(*) desc, category asc
     `,
-    prisma.$queryRaw<StatusSummary[]>`
-      select status, count(*)::bigint as count
-      from public.assets
-      where deleted_at is null
-      group by status
-      order by count(*) desc, status asc
-    `,
-    prisma.$queryRaw<PartInventorySummary[]>`
-      select
-        count(*)::bigint as total_parts,
-        count(*) filter (where current_stock <= minimum_stock)::bigint as low_stock_parts,
-        count(*) filter (where status in ('Unavailable', 'Discontinued'))::bigint as unavailable_parts,
-        count(*) filter (where status = 'Active')::bigint as active_parts
-      from public.parts
-      where deleted_at is null
-    `,
-    prisma.assets.count({
-      where: {
-        deleted_at: null,
-        next_service_date: { lte: dueSoon },
-        status: { notIn: ["Retired"] }
-      }
-    })
+    prisma.assets.count({ where: { deleted_at: null, status: { in: ["Breakdown", "Out of Service"] } } }),
+    prisma.assets.count({ where: { deleted_at: null, condition: { in: ["Poor", "Out of Service"] } } }),
+    prisma.assets.count({ where: { deleted_at: null, status: { in: ["Waiting for Parts", "Under Maintenance"] } } }),
   ]);
 
-  const totalPages = Math.max(1, Math.ceil(count / pageSize));
-  const totalAssets = categorySummaries.reduce((sum, item) => sum + Number(item.count), 0);
-  const zeroBigInt = BigInt(0);
-  const partSummary = partSummaryRows[0] ?? { total_parts: zeroBigInt, low_stock_parts: zeroBigInt, unavailable_parts: zeroBigInt, active_parts: zeroBigInt };
+  // Last repair date per asset on this page (most recent closed work order)
+  const assetIds = (assets as AssetRow[]).map((a) => a.id);
+  const lastRepairData = assetIds.length > 0
+    ? await prisma.work_orders.groupBy({
+        by: ["asset_id"],
+        where: { asset_id: { in: assetIds }, deleted_at: null, status: "Closed" },
+        _max: { date_of_order: true },
+      })
+    : [];
+  const lastRepairMap = new Map<string, Date | null>();
+  for (const row of lastRepairData) {
+    if (row.asset_id) lastRepairMap.set(row.asset_id, row._max.date_of_order);
+  }
 
-  const totalBreakdowns = categorySummaries.reduce((sum, item) => sum + Number(item.breakdown_count), 0);
-  const totalWaitingParts = categorySummaries.reduce((sum, item) => sum + Number(item.waiting_parts_count), 0);
+  const totalAssets = categoryChips.reduce((sum, item) => sum + Number(item.count), 0);
+  const totalPages = Math.max(1, Math.ceil(count / pageSize));
+
+  // Per-main-category total counts for the overview — derived from existing categoryChips, no extra query
+  const catOverviewMap = new Map<string, number>();
+  for (const chip of categoryChips) {
+    const mainName = getMainCategoryName(chip.category);
+    catOverviewMap.set(mainName, (catOverviewMap.get(mainName) ?? 0) + Number(chip.count));
+  }
+  const canManage = context.role?.slug === "super_admin" || (context.permissions as string[]).includes("assets.manage");
+  const hasActiveFilters = !!(search || status || category || mainCategory || location || condition || criticality || dueSoonFilter);
+
+  // Subcategory filter options: if a main category is active, show its DB subcats; else show all DB subcats found in assets
+  const activeMainCat = dbMainCats.find((m) => m.name === mainCategory);
+  const subcategoryOptions: string[] = activeMainCat
+    ? dbSubcats.filter((s) => s.parent_id === activeMainCat.id).map((s) => s.name)
+    : categoryChips.map((c) => c.category);
 
   return (
     <>
       <PageHeader
         title="Assets"
-        description="Asset, vehicle, equipment, facility, and support inventory control with category grouping and service tracking."
+        description="Search machines, view asset condition, and open repair history."
         actions={
-          <Link href="/assets/new">
-            <Button>
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              New asset
-            </Button>
-          </Link>
+          canManage ? (
+            <>
+              <Link href="/assets/import">
+                <Button variant="secondary" className="gap-2">
+                  <Upload className="h-4 w-4" aria-hidden="true" />
+                  Import Excel
+                </Button>
+              </Link>
+              <Link href="/assets/new">
+                <Button className="gap-2">
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                  New Asset
+                </Button>
+              </Link>
+            </>
+          ) : undefined
         }
       />
-      <div className="p-4 lg:p-6">
 
-        {/* Top KPI strip */}
-        <section className="mb-4 grid gap-3 md:grid-cols-4">
-          <SummaryCard title="Total assets" value={totalAssets} detail="Equipment, vehicles, and facilities" icon={Boxes} />
+      <div className="p-4 lg:p-6 space-y-4">
+
+        {/* KPI cards */}
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <SummaryCard
-            title="Due in 30 days"
-            value={dueSoonCount}
-            detail="Click to view assets needing service"
-            icon={CalendarClock}
-            tone="amber"
-            href="/assets?due_soon=1"
-            active={dueSoonFilter}
+            title="Total Assets"
+            value={totalAssets}
+            detail="All registered machines and equipment"
+            icon={Boxes}
+            href="/assets"
           />
-          <SummaryCard title="Spare parts" value={Number(partSummary.total_parts)} detail={`${Number(partSummary.low_stock_parts)} low stock / ${Number(partSummary.active_parts)} active`} icon={PackageSearch} tone="blue" href="/store/parts" />
-          <SummaryCard title="Unavailable parts" value={Number(partSummary.unavailable_parts)} detail="May affect asset repair planning" icon={AlertTriangle} tone="red" href="/store/low-stock" />
+          <SummaryCard
+            title="Critical Assets"
+            value={criticalStatusCount}
+            detail="Breakdown or out of service"
+            icon={ShieldAlert}
+            tone={criticalStatusCount > 0 ? "red" : "gray"}
+            href="/assets?status=Breakdown"
+          />
+          <SummaryCard
+            title="Poor Condition"
+            value={poorConditionCount}
+            detail="Condition rated Poor or Out of Service"
+            icon={AlertTriangle}
+            tone={poorConditionCount > 0 ? "amber" : "gray"}
+            href="/assets?condition=Poor"
+          />
+          <SummaryCard
+            title="Waiting / Maintenance"
+            value={waitingCount}
+            detail="Waiting for parts or under maintenance"
+            icon={Wrench}
+            tone={waitingCount > 0 ? "amber" : "gray"}
+            href="/assets?status=Waiting+for+Parts"
+          />
         </section>
 
-        {/* Operational risk banner — only shown when there are breakdowns or waiting parts */}
-        {(totalBreakdowns > 0 || totalWaitingParts > 0) && (
-          <div className="mb-4 flex flex-wrap items-center gap-4 rounded-md border border-red-200 bg-red-50 px-4 py-3">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-[#ED1C24]" aria-hidden="true" />
-            <span className="text-sm font-bold text-[#ED1C24]">Operational risk</span>
-            {totalBreakdowns > 0 && (
-              <Link href={filterHref({ status: "Breakdown", category: "", search: "" })} className="text-sm font-semibold text-[#111827] underline underline-offset-2 hover:text-[#ED1C24]">
-                {totalBreakdowns} breakdown{totalBreakdowns !== 1 ? "s" : ""}
-              </Link>
-            )}
-            {totalWaitingParts > 0 && (
-              <Link href={filterHref({ status: "Waiting for Parts", category: "", search: "" })} className="text-sm font-semibold text-[#111827] underline underline-offset-2 hover:text-[#ED1C24]">
-                {totalWaitingParts} waiting for parts
-              </Link>
-            )}
-          </div>
-        )}
-
-        {/* Active due-soon filter indicator */}
-        {dueSoonFilter && (
-          <div className="mb-4 flex items-center gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3">
-            <CalendarClock className="h-4 w-4 shrink-0 text-[#F59E0B]" aria-hidden="true" />
-            <span className="text-sm font-bold text-[#92400E]">Showing assets due for service within 30 days</span>
-            <Link href="/assets" className="ml-auto text-xs font-bold text-[#4B5563] underline underline-offset-2 hover:text-[#111827]">
-              Clear filter
-            </Link>
-          </div>
-        )}
-
-        {/* Category cards */}
-        <section className="mb-4">
-          <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <p className="text-xs font-black uppercase text-[#ED1C24]">Asset categories</p>
-              <h2 className="text-lg font-black text-[#111827]">Grouped Asset Register</h2>
-            </div>
-            <div className="flex flex-wrap gap-2">
+        {/* ── Category Overview — always visible ──────────────────────────── */}
+        <section>
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Asset Categories</p>
+            {canManage && (
               <Link
-                className={`rounded-md border px-3 py-2 text-xs font-bold ${category || dueSoonFilter ? "border-[#E5E7EB] bg-white text-[#111827]" : "border-[#ED1C24] bg-red-50 text-[#ED1C24]"}`}
-                href={filterHref({ category: "", status, search })}
+                href="/admin/settings/asset-categories"
+                className="text-xs font-bold text-[#ED1C24] hover:underline"
               >
-                All categories
+                Manage Categories
               </Link>
-              <Link className="rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-xs font-bold text-[#111827]" href="/store/parts">
-                Spare parts inventory
-              </Link>
-            </div>
+            )}
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {categorySummaries.map((item) => {
-              const Icon = categoryIconMap[item.category] ?? Boxes;
-              const active = category === item.category;
-              const urgency = categoryUrgency(item);
-              const breakdownN = Number(item.breakdown_count);
-              const waitingN = Number(item.waiting_parts_count);
-              const dueN = Number(item.due_soon_count);
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {dbMainCats.map((cat) => {
+              const catCount = catOverviewMap.get(cat.name) ?? 0;
+              const isSelected = mainCategory === cat.name;
               return (
                 <Link
-                  key={item.category}
-                  href={filterHref({ category: item.category, status, search })}
-                  className={`rounded-md border p-4 shadow-sm transition hover:border-[#ED1C24] ${categoryCardClass(urgency, active)}`}
+                  key={cat.id}
+                  href={filterHref({ mainCategory: cat.name })}
+                  className={`group flex items-center justify-between rounded-md border bg-white px-4 py-3 shadow-sm transition hover:border-[#ED1C24] hover:shadow-md ${
+                    isSelected ? "border-[#ED1C24] ring-1 ring-[#ED1C24]" : "border-[#E5E7EB]"
+                  }`}
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className={`rounded-md p-2 ${categoryIconClass(urgency)}`}>
-                      <Icon className="h-4 w-4" aria-hidden="true" />
-                    </div>
-                    <span className="text-2xl font-black text-[#111827]">{Number(item.count).toLocaleString("en-US")}</span>
+                  <div className="min-w-0">
+                    <p className={`text-sm font-bold truncate ${isSelected ? "text-[#ED1C24]" : "text-[#111827]"}`}>
+                      {cat.name}
+                    </p>
+                    <p className="mt-0.5 text-xs text-[#9CA3AF]">
+                      {catCount === 0 ? "No assets yet" : `${catCount} asset${catCount !== 1 ? "s" : ""}`}
+                    </p>
                   </div>
-                  <h3 className="mt-3 font-black text-[#111827]">{item.category}</h3>
-                  <p className="mt-1 text-xs leading-5">
-                    <span className={dueN > 0 ? "font-bold text-[#2563EB]" : "text-[#4B5563]"}>{dueN} due soon</span>
-                    <span className="text-[#4B5563]"> / </span>
-                    <span className={breakdownN > 0 ? "font-bold text-[#ED1C24]" : "text-[#4B5563]"}>{breakdownN} breakdown</span>
-                    <span className="text-[#4B5563]"> / </span>
-                    <span className={waitingN > 0 ? "font-bold text-[#F59E0B]" : "text-[#4B5563]"}>{waitingN} waiting parts</span>
-                  </p>
+                  <span className={`ml-3 shrink-0 text-xl font-black ${catCount > 0 ? "text-[#111827]" : "text-[#D1D5DB]"}`}>
+                    {catCount}
+                  </span>
                 </Link>
               );
             })}
           </div>
         </section>
 
-        {/* Search / Status Mix row */}
-        <section className="mb-4 grid gap-3 xl:grid-cols-[1fr_22rem]">
-          <form className="grid gap-3 rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm md:grid-cols-[1fr_14rem_14rem_auto]">
-            <input className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm" name="search" defaultValue={params?.search ?? ""} placeholder="Search asset, serial, plate" />
-            <select className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm font-semibold" name="category" defaultValue={params?.category ?? ""}>
-              <option value="">All categories</option>
-              {categorySummaries.map((item) => <option key={item.category} value={item.category}>{item.category}</option>)}
-            </select>
-            <select className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm font-semibold" name="status" defaultValue={params?.status ?? ""}>
-              <option value="">All statuses</option>
-              {["Active", "In Use", "Under Maintenance", "Breakdown", "Waiting for Parts", "Out of Service", "Retired"].map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-            <Button type="submit" variant="secondary">Filter</Button>
-          </form>
+        {totalAssets > 0 && (<>
 
-          <div className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm">
-            <p className="text-xs font-black uppercase text-[#4B5563]">Status mix</p>
-            <div className="mt-3 space-y-2">
-              {statusSummaries.map((item) => (
-                <Link
-                  key={item.status}
-                  href={filterHref({ category, status: item.status, search })}
-                  className="flex items-center gap-3 rounded-md border border-[#E5E7EB] px-3 py-2 text-sm hover:bg-gray-50"
-                >
-                  <span className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(item.status)}`} aria-hidden="true" />
-                  <span className="flex-1 font-bold text-[#111827]">{item.status}</span>
-                  <span className="font-black text-[#4B5563]">{Number(item.count).toLocaleString("en-US")}</span>
-                </Link>
-              ))}
-            </div>
-          </div>
-        </section>
+        {/* Main category pills */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href={filterHref({ status, search, location, condition, criticality })}
+            className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
+              !mainCategory && !category
+                ? "border-[#111827] bg-[#111827] text-white"
+                : "border-[#E5E7EB] bg-white text-[#111827] hover:border-[#111827]"
+            }`}
+          >
+            All
+          </Link>
+          {dbMainCats.map((topLevel) => {
+            // Sum counts for all subcategories + legacy assets stored under the main cat name itself
+            const names = new Set(subcatNamesForMain(topLevel.name).map((n) => n.toLowerCase()));
+            const subcats = categoryChips.filter((c) => names.has(c.category.toLowerCase()));
+            if (!subcats.length) return null;
+            const totalCount = subcats.reduce((s, c) => s + Number(c.count), 0);
+            const isActive = mainCategory === topLevel.name || subcats.some((c) => c.category === category);
+            return (
+              <Link
+                key={topLevel.id}
+                href={topLevelChipHref({ mainCategory: topLevel.name, status, search, location, condition, criticality })}
+                className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
+                  isActive
+                    ? "border-[#111827] bg-[#111827] text-white"
+                    : "border-[#E5E7EB] bg-white text-[#111827] hover:border-[#111827]"
+                }`}
+              >
+                {topLevel.name}
+                <span className={`ml-1.5 text-[10px] font-normal ${isActive ? "text-gray-300" : "text-[#9CA3AF]"}`}>
+                  {totalCount}
+                </span>
+              </Link>
+            );
+          })}
+        </div>
 
-        {/* Asset list table */}
+        {/* Filter bar */}
+        <form className="flex flex-wrap items-center gap-2 rounded-md border border-[#E5E7EB] bg-white p-3 shadow-sm">
+          <input
+            className="focus-ring h-9 min-w-[180px] flex-1 rounded-md border border-[#E5E7EB] px-3 text-sm"
+            name="search"
+            defaultValue={params?.search ?? ""}
+            placeholder="Search asset code, name, model, serial, or location…"
+          />
+          <input
+            className="focus-ring h-9 w-32 rounded-md border border-[#E5E7EB] px-3 text-sm"
+            name="location"
+            defaultValue={params?.location ?? ""}
+            placeholder="Location"
+          />
+          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="main_category" defaultValue={mainCategory}>
+            <option value="">Main Category</option>
+            {dbMainCats.map((mc) => (
+              <option key={mc.id} value={mc.name}>{mc.name}</option>
+            ))}
+          </select>
+          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="category" defaultValue={params?.category ?? ""}>
+            <option value="">Subcategory</option>
+            {subcategoryOptions.map((sub) => (
+              <option key={sub} value={sub}>{sub}</option>
+            ))}
+          </select>
+          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="status" defaultValue={params?.status ?? ""}>
+            <option value="">Status</option>
+            {["Active", "In Use", "Under Maintenance", "Breakdown", "Waiting for Parts", "Out of Service", "Retired"].map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="condition" defaultValue={params?.condition ?? ""}>
+            <option value="">Condition</option>
+            {["Excellent", "Good", "Fair", "Poor", "Out of Service"].map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="criticality" defaultValue={params?.criticality ?? ""}>
+            <option value="">Criticality</option>
+            {["Critical", "High", "Medium", "Low"].map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+          <Button type="submit" className="h-9 shrink-0">Apply</Button>
+          {hasActiveFilters && (
+            <Link
+              href="/assets"
+              className="inline-flex h-9 items-center rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold text-[#4B5563] hover:bg-gray-50"
+            >
+              Reset
+            </Link>
+          )}
+        </form>
+        </>)}
+
+        {/* Asset register table */}
         <section className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
           <div className="border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
-            <p className="text-xs font-black uppercase text-[#4B5563]">Asset records</p>
-            <p className="mt-1 text-sm font-semibold text-[#111827]">{count.toLocaleString("en-US")} matching assets</p>
+            <p className="text-xs font-black uppercase text-[#4B5563]">Asset Register</p>
+            {totalAssets > 0 && (
+              <p className="mt-1 text-sm font-semibold text-[#111827]">
+                {count.toLocaleString("en-US")} {count === 1 ? "asset" : "assets"}
+                {hasActiveFilters && " matching filters"}
+              </p>
+            )}
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] text-left text-sm">
-              <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
-                <tr>
-                  <th className="px-4 py-3">Asset</th>
-                  <th className="px-4 py-3">Category</th>
-                  <th className="px-4 py-3">Location</th>
-                  <th className="px-4 py-3">KM</th>
-                  <th className="px-4 py-3">Hours</th>
-                  <th className="px-4 py-3">Next service</th>
-                  <th className="px-4 py-3">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#E5E7EB]">
-                {assets.map((asset) => {
-                  const overdue = isOverdue(asset.next_service_date);
-                  const rowBreakdown = asset.status === "Breakdown";
-                  return (
-                    <tr
-                      key={asset.id}
-                      className={rowBreakdown ? "bg-red-50" : "hover:bg-gray-50"}
-                    >
-                      <td className="px-4 py-3">
-                        <Link href={`/assets/${asset.id}`} className="font-bold text-[#111827] hover:text-[#ED1C24]">
-                          {asset.asset_code}
+          {totalAssets === 0 ? (
+            <div className="px-6 py-16 text-center">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100">
+                <Boxes className="h-6 w-6 text-[#4B5563]" aria-hidden="true" />
+              </div>
+              <p className="text-base font-bold text-[#111827]">No assets imported yet</p>
+              <p className="mt-2 mx-auto max-w-sm text-sm text-[#4B5563]">
+                Start by reviewing asset categories above, then import the company asset Excel file or create the first asset manually.
+              </p>
+              {canManage && (
+                <div className="mt-6 flex flex-wrap justify-center gap-3">
+                  <Link href="/assets/import">
+                    <Button variant="secondary" className="gap-2">
+                      <Upload className="h-4 w-4" aria-hidden="true" />
+                      Import Excel
+                    </Button>
+                  </Link>
+                  <Link href="/assets/new">
+                    <Button className="gap-2">
+                      <Plus className="h-4 w-4" aria-hidden="true" />
+                      New Asset
+                    </Button>
+                  </Link>
+                  <Link href="/admin/settings/asset-categories">
+                    <Button variant="secondary" className="gap-2">
+                      <Layers className="h-4 w-4" aria-hidden="true" />
+                      Manage Categories
+                    </Button>
+                  </Link>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1100px] text-left text-sm">
+                <thead className="bg-gray-50 text-xs font-black uppercase text-[#4B5563]">
+                  <tr>
+                    <th className="px-4 py-3">Asset / Machine</th>
+                    <th className="px-4 py-3">Main Category</th>
+                    <th className="px-4 py-3">Subcategory</th>
+                    <th className="px-4 py-3">Location</th>
+                    <th className="px-4 py-3">Condition</th>
+                    <th className="px-4 py-3">Criticality</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Last Repair</th>
+                    <th className="px-4 py-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E5E7EB]">
+                  {assets.map((asset) => {
+                    const isCritical = asset.status === "Breakdown" || asset.status === "Out of Service";
+                    const lastRepair = lastRepairMap.get(asset.id) ?? null;
+                    return (
+                      <tr key={asset.id} className={isCritical ? "bg-red-50" : "hover:bg-gray-50"}>
+                        <td className="px-4 py-3">
+                          <p className="font-bold text-[#111827]">{asset.asset_code}</p>
+                          <p className="text-xs text-[#4B5563]">{asset.asset_name}</p>
+                          {(asset.model || asset.serial_number) && (
+                            <p className="text-[10px] text-[#9CA3AF]">
+                              {[asset.model, asset.serial_number].filter(Boolean).join(" · ")}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-[#4B5563]">{getMainCategoryName(asset.category)}</td>
+                        <td className="px-4 py-3 text-sm text-[#4B5563]">{asset.category}</td>
+                        <td className="px-4 py-3 text-sm text-[#4B5563]">
+                          {asset.location ?? <span className="text-[#9CA3AF]">—</span>}
+                        </td>
+                        <td className="px-4 py-3">
+                          {asset.condition ? (
+                            <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-bold ${conditionClass(asset.condition)}`}>
+                              {asset.condition}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-[#9CA3AF]">Not set</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {asset.criticality ? (
+                            <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-bold ${criticalityClass(asset.criticality)}`}>
+                              {asset.criticality}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-[#9CA3AF]">Not set</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusBadge label={asset.status} tone={assetStatusTone(asset.status)} />
+                        </td>
+                        <td className="px-4 py-3">
+                          {lastRepair ? (
+                            <span className="text-sm text-[#4B5563]">{formatDate(lastRepair)}</span>
+                          ) : (
+                            <span className="text-xs text-[#9CA3AF]">No repair history</span>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-right">
+                          <Link
+                            href={`/assets/${asset.id}`}
+                            className="inline-block rounded-md border border-[#E5E7EB] px-3 py-1.5 text-xs font-bold text-[#111827] hover:border-[#ED1C24] hover:text-[#ED1C24]"
+                          >
+                            View
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!assets.length && (
+                    <tr>
+                      <td className="px-4 py-10 text-center" colSpan={9}>
+                        <p className="text-sm font-semibold text-[#4B5563]">No assets match the current filters.</p>
+                        <Link href="/assets" className="mt-2 inline-block text-xs text-[#ED1C24] hover:underline">
+                          Clear filters
                         </Link>
-                        <p className="text-[#4B5563]">{asset.asset_name}</p>
-                      </td>
-                      <td className="px-4 py-3">{asset.category}</td>
-                      <td className="px-4 py-3">{asset.location ?? "Not recorded"}</td>
-                      <td className="px-4 py-3">{formatValue(asset.current_kilometer_reading)}</td>
-                      <td className="px-4 py-3">{formatValue(asset.current_running_hours)}</td>
-                      <td className="px-4 py-3">
-                        {asset.next_service_date ? (
-                          <span className={overdue ? "font-bold text-[#ED1C24]" : ""}>
-                            {overdue && <span className="mr-1 inline-block rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-black uppercase text-[#ED1C24]">Overdue</span>}
-                            {formatDate(asset.next_service_date)}
-                          </span>
-                        ) : (
-                          <span className="text-[#9CA3AF]">Not scheduled</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <StatusBadge label={asset.status} tone={assetStatusTone(asset.status)} />
                       </td>
                     </tr>
-                  );
-                })}
-                {!assets.length ? (
-                  <tr>
-                    <td className="px-4 py-6 text-center text-sm font-semibold text-[#4B5563]" colSpan={7}>
-                      No assets match the current filters.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
-        <Pagination page={page} totalPages={totalPages} search={params?.search} status={params?.status} category={params?.category} dueSoon={dueSoonFilter ? "1" : undefined} />
+        {totalAssets > 0 && (
+          <Pagination
+            page={page}
+            totalPages={totalPages}
+            search={params?.search}
+            status={params?.status}
+            mainCategory={params?.main_category}
+            category={params?.category}
+            location={params?.location}
+            condition={params?.condition}
+            criticality={params?.criticality}
+            dueSoon={dueSoonFilter ? "1" : undefined}
+          />
+        )}
+
       </div>
     </>
   );
@@ -716,17 +849,51 @@ function CeoAssetKpi({
   );
 }
 
-function filterHref({ category, status, search }: { category?: string; status?: string; search?: string }) {
-  const params = new URLSearchParams();
-  if (category) params.set("category", category);
-  if (status) params.set("status", status);
-  if (search) params.set("search", search);
-  const query = params.toString();
-  return query ? `/assets?${query}` : "/assets";
+function filterHref({
+  category, mainCategory, status, search, location, condition, criticality,
+}: {
+  category?: string; mainCategory?: string; status?: string; search?: string;
+  location?: string; condition?: string; criticality?: string;
+}) {
+  const p = new URLSearchParams();
+  if (mainCategory) p.set("main_category", mainCategory);
+  if (category)     p.set("category", category);
+  if (status)       p.set("status", status);
+  if (search)       p.set("search", search);
+  if (location)     p.set("location", location);
+  if (condition)    p.set("condition", condition);
+  if (criticality)  p.set("criticality", criticality);
+  const q = p.toString();
+  return q ? `/assets?${q}` : "/assets";
+}
+
+function topLevelChipHref({
+  mainCategory, status, search, location, condition, criticality,
+}: {
+  mainCategory: string; status?: string; search?: string;
+  location?: string; condition?: string; criticality?: string;
+}) {
+  return filterHref({ mainCategory, status, search, location, condition, criticality });
+}
+
+function conditionClass(c: string): string {
+  if (c === "Poor" || c === "Out of Service") return "bg-red-100 text-[#DC2626]";
+  if (c === "Fair")      return "bg-amber-100 text-amber-800";
+  if (c === "Good")      return "bg-blue-100 text-[#2563EB]";
+  if (c === "Excellent") return "bg-green-100 text-[#16A34A]";
+  return "bg-gray-100 text-[#4B5563]";
+}
+
+function criticalityClass(c: string): string {
+  if (c === "Critical") return "bg-red-100 text-[#DC2626]";
+  if (c === "High")     return "bg-amber-100 text-amber-800";
+  if (c === "Medium")   return "bg-blue-100 text-[#2563EB]";
+  if (c === "Low")      return "bg-gray-100 text-[#4B5563]";
+  return "bg-gray-100 text-[#4B5563]";
 }
 
 function SummaryCard({
-  title, value, detail, icon: Icon, tone = "gray", href, active = false
+  title, value, detail, icon: Icon, tone = "gray", href, active = false,
 }: {
   title: string;
   value: number;
@@ -737,15 +904,13 @@ function SummaryCard({
   active?: boolean;
 }) {
   const toneClass = {
-    gray: "bg-[#111827] text-white",
+    gray:  "bg-[#111827] text-white",
     amber: "bg-[#F59E0B] text-white",
-    blue: "bg-[#2563EB] text-white",
-    red: "bg-[#ED1C24] text-white"
+    blue:  "bg-[#2563EB] text-white",
+    red:   "bg-[#ED1C24] text-white",
   }[tone];
 
-  const borderClass = active
-    ? "border-amber-300 ring-1 ring-amber-300"
-    : "border-[#E5E7EB]";
+  const borderClass = active ? "border-amber-300 ring-1 ring-amber-300" : "border-[#E5E7EB]";
 
   const content = (
     <div className={`rounded-md border bg-white p-4 shadow-sm ${borderClass}`}>
@@ -763,11 +928,6 @@ function SummaryCard({
   return href ? <Link href={href}>{content}</Link> : content;
 }
 
-function formatValue(value: string | number | null) {
-  if (value === null || value === undefined || value === "") return "-";
-  return String(value);
-}
-
 function formatDate(value: Date | string | null) {
   if (!value) return "Not scheduled";
   const date = value instanceof Date ? value : new Date(value);
@@ -776,31 +936,47 @@ function formatDate(value: Date | string | null) {
 }
 
 function Pagination({
-  page, totalPages, search, status, category, dueSoon
+  page, totalPages, search, status, mainCategory, category, location, condition, criticality, dueSoon,
 }: {
   page: number;
   totalPages: number;
   search?: string;
   status?: string;
+  mainCategory?: string;
   category?: string;
+  location?: string;
+  condition?: string;
+  criticality?: string;
   dueSoon?: string;
 }) {
   const hrefFor = (nextPage: number) => {
-    const params = new URLSearchParams();
-    params.set("page", String(nextPage));
-    if (search) params.set("search", search);
-    if (status) params.set("status", status);
-    if (category) params.set("category", category);
-    if (dueSoon) params.set("due_soon", dueSoon);
-    return `/assets?${params.toString()}`;
+    const p = new URLSearchParams();
+    p.set("page", String(nextPage));
+    if (search)        p.set("search", search);
+    if (status)        p.set("status", status);
+    if (mainCategory)  p.set("main_category", mainCategory);
+    if (category)      p.set("category", category);
+    if (location)      p.set("location", location);
+    if (condition)     p.set("condition", condition);
+    if (criticality)   p.set("criticality", criticality);
+    if (dueSoon)       p.set("due_soon", dueSoon);
+    return `/assets?${p.toString()}`;
   };
 
   return (
-    <div className="mt-4 flex items-center justify-between rounded-md border border-[#E5E7EB] bg-white p-3 text-sm font-semibold text-[#4B5563]">
+    <div className="flex items-center justify-between rounded-md border border-[#E5E7EB] bg-white p-3 text-sm font-semibold text-[#4B5563]">
       <span>Page {page} of {totalPages}</span>
       <div className="flex gap-2">
-        {page > 1 ? <Link className="rounded-md border border-[#E5E7EB] px-3 py-2 text-[#111827]" href={hrefFor(page - 1)}>Previous</Link> : null}
-        {page < totalPages ? <Link className="rounded-md border border-[#E5E7EB] px-3 py-2 text-[#111827]" href={hrefFor(page + 1)}>Next</Link> : null}
+        {page > 1 && (
+          <Link className="rounded-md border border-[#E5E7EB] px-3 py-2 text-[#111827] hover:bg-gray-50" href={hrefFor(page - 1)}>
+            Previous
+          </Link>
+        )}
+        {page < totalPages && (
+          <Link className="rounded-md border border-[#E5E7EB] px-3 py-2 text-[#111827] hover:bg-gray-50" href={hrefFor(page + 1)}>
+            Next
+          </Link>
+        )}
       </div>
     </div>
   );

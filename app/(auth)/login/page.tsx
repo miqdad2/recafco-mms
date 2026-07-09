@@ -33,7 +33,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           <BrandLogo variant="dark" size="lg" showText={false} />
           <div>
             <p className="text-lg font-black tracking-wide text-white">RECAFCO</p>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-red-100 sm:text-xs">Enterprise Maintenance Management</p>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-red-100 sm:text-xs">Maintenance & Asset Management</p>
           </div>
         </div>
       </div>

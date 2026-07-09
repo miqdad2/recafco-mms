@@ -1,21 +1,29 @@
-import { AssetForm } from "@/components/assets/asset-form";
+import { AssetWizard } from "@/components/assets/asset-wizard";
 import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 
 export default async function NewAssetPage() {
-  await requirePermission("assets.manage");
-  const departments = await prisma.departments.findMany({
+  const context = await requirePermission("assets.manage");
+  const canManageCategories = context.role?.slug === "super_admin";
+
+  const categories = await prisma.asset_categories.findMany({
     where: { is_active: true },
-    select: { id: true, name: true },
-    orderBy: { name: "asc" }
+    select: { id: true, name: true, parent_id: true, is_active: true },
+    orderBy: [{ sort_order: "asc" }, { name: "asc" }],
   });
 
   return (
     <>
-      <PageHeader title="New Asset" description="Create a full RECAFCO asset, vehicle, equipment, or facility master record." />
+      <PageHeader
+        title="New Asset"
+        description="Add a new asset, vehicle, or equipment record to the RECAFCO register."
+      />
       <div className="p-4 lg:p-6">
-        <AssetForm departments={departments ?? []} />
+        <AssetWizard
+          categories={categories}
+          canManageCategories={canManageCategories}
+        />
       </div>
     </>
   );

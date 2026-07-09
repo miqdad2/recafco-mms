@@ -34,7 +34,7 @@ export function BrandLogo({ variant = "dark", size = "sm", showText = true, subt
           <p className={cn("font-black tracking-wide", size === "lg" ? "text-2xl" : "text-xl", variant === "dark" ? "text-white" : "text-[#111827]")}>
             RECAFCO
           </p>
-          <p className={cn("text-sm", variant === "dark" ? "text-gray-300" : "text-[#4B5563]")}>{subtitle ?? "Enterprise Maintenance Management"}</p>
+          <p className={cn("text-sm", variant === "dark" ? "text-gray-300" : "text-[#4B5563]")}>{subtitle ?? "Maintenance & Asset Management"}</p>
         </div>
       ) : null}
     </div>

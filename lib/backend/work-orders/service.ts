@@ -31,7 +31,7 @@ async function transitionWorkOrder(context: CurrentUserContext, workOrderId: str
   return withBackendTransaction(context.userId, (tx) => transitionWorkOrderInTransaction(tx, context, workOrderId, nextStatus));
 }
 
-async function transitionWorkOrderInTransaction(tx: BackendTransaction, context: CurrentUserContext, workOrderId: string, nextStatus: string): Promise<WorkflowResult & { createdBy: string | null }> {
+async function transitionWorkOrderInTransaction(tx: BackendTransaction, context: CurrentUserContext, workOrderId: string, nextStatus: string): Promise<WorkflowResult & { createdBy: string | null; wasAlreadyInStatus: boolean }> {
   const existing = await findWorkflowWorkOrder(tx, workOrderId);
   if (!existing) {
     throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
@@ -41,13 +41,15 @@ async function transitionWorkOrderInTransaction(tx: BackendTransaction, context:
     throw new AppError(transitionError("work_order", existing.status, nextStatus), { code: "WORKFLOW_ERROR" });
   }
 
-  const row = existing.status === nextStatus ? existing : await updateWorkOrderStatus(tx, workOrderId, nextStatus, context.userId);
+  const wasAlreadyInStatus = existing.status === nextStatus;
+  const row = wasAlreadyInStatus ? existing : await updateWorkOrderStatus(tx, workOrderId, nextStatus, context.userId);
 
   return {
     workOrderId: row.id,
     workOrderNumber: row.work_order_number,
     status: row.status,
-    createdBy: row.created_by
+    createdBy: row.created_by,
+    wasAlreadyInStatus
   };
 }
 
@@ -87,13 +89,15 @@ export async function approveWorkOrder(context: CurrentUserContext, workOrderId:
   assertBackendPermission(context, "work_orders.approve");
   const result = await transitionWorkOrder(context, workOrderId, "Approved");
   const supervisors = await withBackendTransaction(context.userId, async (tx) => {
-    await tx.approvals.create({
-      data: { work_order_id: result.workOrderId, status: "Approved", decided_by: context.userId, comments: comments || null }
-    });
-    try {
-      await advanceMaintenanceManagerReview(tx, result.workOrderId, "approved", context.userId, comments);
-    } catch (err) {
-      console.error("[workflow] Tracking update failed on work order approve:", err);
+    if (!result.wasAlreadyInStatus) {
+      await tx.approvals.create({
+        data: { work_order_id: result.workOrderId, status: "Approved", decided_by: context.userId, comments: comments || null }
+      });
+      try {
+        await advanceMaintenanceManagerReview(tx, result.workOrderId, "approved", context.userId, comments);
+      } catch (err) {
+        console.error("[workflow] Tracking update failed on work order approve:", err);
+      }
     }
     return getActiveUserIdsByRoleSlugs(tx, ["super_admin", "maintenance_supervisor"]);
   });
@@ -119,16 +123,18 @@ export async function rejectWorkOrder(context: CurrentUserContext, workOrderId: 
   assertBackendPermission(context, "work_orders.approve");
   const result = await transitionWorkOrder(context, workOrderId, "Rejected");
 
-  await withBackendTransaction(context.userId, async (tx) => {
-    await tx.approvals.create({
-      data: { work_order_id: result.workOrderId, status: "Rejected", decided_by: context.userId, comments: comments || null }
+  if (!result.wasAlreadyInStatus) {
+    await withBackendTransaction(context.userId, async (tx) => {
+      await tx.approvals.create({
+        data: { work_order_id: result.workOrderId, status: "Rejected", decided_by: context.userId, comments: comments || null }
+      });
+      try {
+        await advanceMaintenanceManagerReview(tx, result.workOrderId, "rejected", context.userId, comments);
+      } catch (err) {
+        console.error("[workflow] Tracking update failed on work order reject:", err);
+      }
     });
-    try {
-      await advanceMaintenanceManagerReview(tx, result.workOrderId, "rejected", context.userId, comments);
-    } catch (err) {
-      console.error("[workflow] Tracking update failed on work order reject:", err);
-    }
-  });
+  }
 
   await Promise.all([
     notifyWorkflowEvent({
@@ -469,9 +475,11 @@ export async function verifyWorkOrder(context: CurrentUserContext, workOrderId: 
   assertBackendPermission(context, "work_orders.assign");
   const result = await transitionWorkOrder(context, workOrderId, "Verified by Supervisor");
   const managers = await withBackendTransaction(context.userId, async (tx) => {
-    await tx.approvals.create({
-      data: { work_order_id: result.workOrderId, status: "Verified", decided_by: context.userId, comments: comments || null }
-    });
+    if (!result.wasAlreadyInStatus) {
+      await tx.approvals.create({
+        data: { work_order_id: result.workOrderId, status: "Verified", decided_by: context.userId, comments: comments || null }
+      });
+    }
     return getActiveUserIdsByRoleSlugs(tx, ["super_admin", "maintenance_manager"]);
   });
 
@@ -496,11 +504,13 @@ export async function closeWorkOrder(context: CurrentUserContext, workOrderId: s
   assertBackendPermission(context, "work_orders.approve");
   const result = await transitionWorkOrder(context, workOrderId, "Closed");
 
-  await withBackendTransaction(context.userId, async (tx) => {
-    await tx.approvals.create({
-      data: { work_order_id: result.workOrderId, status: "Closed", decided_by: context.userId, comments: comments || null }
+  if (!result.wasAlreadyInStatus) {
+    await withBackendTransaction(context.userId, async (tx) => {
+      await tx.approvals.create({
+        data: { work_order_id: result.workOrderId, status: "Closed", decided_by: context.userId, comments: comments || null }
+      });
     });
-  });
+  }
 
   await Promise.all([
     notifyWorkflowEvent({

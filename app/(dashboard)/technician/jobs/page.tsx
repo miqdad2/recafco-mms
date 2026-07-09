@@ -33,7 +33,7 @@ export default async function TechnicianJobsPage() {
 
   return (
     <>
-      <PageHeader title="My Technician Jobs" description="Mobile job dashboard for assigned maintenance work orders." />
+      <PageHeader title="My Technician Jobs" description="Mobile job dashboard for your assigned repair orders." />
       <div className="grid gap-4 p-4 sm:grid-cols-2 xl:grid-cols-3">
         {jobs.length ? jobs.map((job) => {
           const asset = Array.isArray(job.assets) ? job.assets[0] : job.assets;
@@ -53,7 +53,7 @@ export default async function TechnicianJobsPage() {
               </div>
             </Link>
           );
-        }) : <div className="sm:col-span-2 xl:col-span-3"><EmptyState title="No assigned jobs" message="Assigned work orders will appear here when a supervisor schedules work for you." /></div>}
+        }) : <div className="sm:col-span-2 xl:col-span-3"><EmptyState title="No assigned jobs" message="Assigned repair orders will appear here when a supervisor schedules them for you." /></div>}
       </div>
     </>
   );

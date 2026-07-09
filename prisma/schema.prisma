@@ -95,6 +95,9 @@ model assets {
   next_service_kilometer     Decimal?          @db.Decimal(12, 2)
   next_service_running_hours Decimal?          @db.Decimal(12, 2)
   notes                      String?
+  condition                  String?
+  criticality                String?
+  remarks                    String?
   created_at                 DateTime          @default(now()) @db.Timestamptz(6)
   updated_at                 DateTime          @default(now()) @db.Timestamptz(6)
   created_by                 String?           @db.Uuid
@@ -111,6 +114,24 @@ model assets {
   @@index([registration_expiry_date, insurance_expiry_date, warranty_expiry_date], map: "idx_assets_expiry_dates")
   @@index([next_service_date, status], map: "idx_assets_service_due")
   @@index([status], map: "idx_assets_status")
+  @@index([criticality], map: "idx_assets_criticality")
+  @@index([condition], map: "idx_assets_condition")
+}
+
+model asset_categories {
+  id         String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name       String
+  parent_id  String?           @db.Uuid
+  is_active  Boolean           @default(true)
+  sort_order Int               @default(0)
+  created_at DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at DateTime          @default(now()) @db.Timestamptz(6)
+  parent     asset_categories? @relation("CategoryChildren", fields: [parent_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  children   asset_categories[] @relation("CategoryChildren")
+
+  @@index([parent_id], map: "idx_asset_categories_parent_id")
+  @@index([is_active], map: "idx_asset_categories_is_active")
+  @@index([sort_order, name], map: "idx_asset_categories_sort_order")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -1009,7 +1030,7 @@ model PurchaseOrderItem {
 }
 
 // ─── Phase 5-C1: Schema hygiene — reconcile workflow_map_versions drift ───────
-// Table was created in supabase/migrations/20260606140000_workflow_map_versions.sql
+// Table was created in docs/archive/supabase-migrations/20260606140000_workflow_map_versions.sql
 // but was missing from prisma/schema.prisma. Adding model only — no migration needed.
 
 model WorkflowMapVersion {

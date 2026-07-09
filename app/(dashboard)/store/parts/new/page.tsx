@@ -1,15 +1,19 @@
-import { PartForm } from "@/components/store/part-form";
+import { NewPartWizard } from "@/components/store/new-part-wizard";
 import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
+import { canViewCosts } from "@/lib/security/permissions";
 
 export default async function NewPartPage() {
-  await requirePermission("parts.manage");
+  const context = await requirePermission("parts.manage");
 
   return (
     <>
-      <PageHeader title="New Spare Part" description="Create a spare part inventory record for store issue and future parts requests." />
+      <PageHeader
+        title="New Spare Part"
+        description="Add a spare part to the inventory in three quick steps."
+      />
       <div className="p-4 lg:p-6">
-        <PartForm />
+        <NewPartWizard canViewCosts={canViewCosts(context)} />
       </div>
     </>
   );

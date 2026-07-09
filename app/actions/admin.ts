@@ -39,8 +39,8 @@ const profileSchema = z.object({
 const localUserSchema = profileSchema
   .omit({ id: true })
   .extend({
-    email: z.string().trim().email().max(320),
-    password: z.string().min(6).max(128)
+    email: z.string().trim().min(1).max(320),
+    password: z.string().min(1).max(128)
   });
 
 const settingsSchema = z.object({
@@ -153,7 +153,17 @@ export async function upsertProfileAction(formData: FormData) {
 
 export async function createLocalUserAction(formData: FormData) {
   const context = await requirePermission("admin.users.manage");
-  const parsed = localUserSchema.safeParse(Object.fromEntries(formData));
+
+  // Resolve simplified account_type field → role_id before schema validation.
+  const rawData: Record<string, FormDataEntryValue> = Object.fromEntries(formData);
+  if (typeof rawData.account_type === "string" && rawData.account_type) {
+    const roleSlug = rawData.account_type === "system_admin" ? "super_admin" : "maintenance_data_entry";
+    const roleRow = await prisma.roles.findFirst({ where: { slug: roleSlug }, select: { id: true } }).catch(() => null);
+    if (roleRow) rawData.role_id = roleRow.id;
+    delete rawData.account_type;
+  }
+
+  const parsed = localUserSchema.safeParse(rawData);
 
   if (!parsed.success) {
     redirect("/admin/users?error=invalid-input");

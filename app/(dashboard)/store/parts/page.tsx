@@ -5,7 +5,6 @@ import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
-import { CostVisibilityGuard } from "@/components/ui/cost-visibility-guard";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -64,7 +63,6 @@ export default async function PartsPage({ searchParams }: { searchParams?: Promi
         ss_rec_code: true,
         current_stock: true,
         minimum_stock: true,
-        unit_price: true,
         supplier: true,
         store_location_bin: true,
         status: true,
@@ -84,7 +82,7 @@ export default async function PartsPage({ searchParams }: { searchParams?: Promi
     <>
       <PageHeader
         title="Spare Parts Inventory"
-        description="Store inventory master with stock health, supplier, bin, part number, SS rec code, and low-stock tracking."
+        description="Track repair materials, stock balance, and part availability."
         actions={
           <Link href="/store/parts/new">
             <Button>
@@ -97,9 +95,9 @@ export default async function PartsPage({ searchParams }: { searchParams?: Promi
       <div className="space-y-4 p-4 lg:p-6">
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <InventoryStat icon={Package} label="Total parts" value={totalParts} tone="gray" />
-          <InventoryStat icon={Warehouse} label="Active stock" value={activeParts} tone="green" />
+          <InventoryStat icon={Warehouse} label="In Stock" value={activeParts} tone="green" />
           <InventoryStat icon={TriangleAlert} label="Low stock" value={lowStockParts} tone={lowStockParts ? "amber" : "green"} />
-          <InventoryStat icon={TriangleAlert} label="Unavailable" value={unavailableParts} tone={unavailableParts ? "red" : "green"} />
+          <InventoryStat icon={TriangleAlert} label="Out of Stock" value={unavailableParts} tone={unavailableParts ? "red" : "green"} />
         </section>
 
         <section className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm">
@@ -137,16 +135,14 @@ export default async function PartsPage({ searchParams }: { searchParams?: Promi
           </div>
           {parts.length ? (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1120px] text-left text-sm">
+              <table className="w-full min-w-[900px] text-left text-sm">
                 <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
                   <tr>
                     <th className="px-4 py-3">Part</th>
-                    <th className="px-4 py-3">Category</th>
                     <th className="px-4 py-3">Part No.</th>
-                    <th className="px-4 py-3">SS rec</th>
+                    <th className="px-4 py-3">Category</th>
                     <th className="px-4 py-3">Stock</th>
                     <th className="px-4 py-3">Minimum</th>
-                    <th className="px-4 py-3">Unit price</th>
                     <th className="px-4 py-3">Supplier</th>
                     <th className="px-4 py-3">Bin</th>
                     <th className="px-4 py-3">Health</th>
@@ -163,17 +159,16 @@ export default async function PartsPage({ searchParams }: { searchParams?: Promi
                         <td className="px-4 py-3">
                           <p className="font-black text-[#111827]">{part.part_code}</p>
                           <p className="text-[#4B5563]">{part.part_name}</p>
+                          {part.ss_rec_code && (
+                            <p className="text-[10px] text-[#9CA3AF]">SS {part.ss_rec_code}</p>
+                          )}
                         </td>
-                        <td className="px-4 py-3">{part.category ?? "-"}</td>
                         <td className="px-4 py-3">{part.part_number ?? "-"}</td>
-                        <td className="px-4 py-3">{part.ss_rec_code ?? "-"}</td>
+                        <td className="px-4 py-3">{part.category ?? "-"}</td>
                         <td className="px-4 py-3 font-semibold">
                           {formatQty(currentStock)} {part.unit_of_measure}
                         </td>
                         <td className="px-4 py-3">{formatQty(minimumStock)}</td>
-                        <td className="px-4 py-3">
-                          <CostVisibilityGuard context={context}>{formatMoney(Number(part.unit_price ?? 0))}</CostVisibilityGuard>
-                        </td>
                         <td className="px-4 py-3">{part.supplier ?? "Not recorded"}</td>
                         <td className="px-4 py-3">{part.store_location_bin ?? "-"}</td>
                         <td className="px-4 py-3">
@@ -217,10 +212,6 @@ function single(value: string | string[] | undefined) {
 
 function formatQty(value: number) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
-}
-
-function formatMoney(value: number) {
-  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 3 }).format(value)} KWD`;
 }
 
 function partsHref({ search, status, page }: { search: string; status: string; page: number }) {

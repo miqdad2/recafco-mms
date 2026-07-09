@@ -22,7 +22,7 @@ export function DeploymentArchitecture() {
           <h3 className="mb-3 text-base font-black text-[#111827]">Environment variables</h3>
           <ChipList items={architectureEnvVars} />
           <p className="mt-4 rounded-md bg-red-50 p-3 text-sm font-semibold text-[#7F1D1D]">
-            `SUPABASE_SERVICE_ROLE_KEY` must never be exposed to browser code. Production variables, backups, and monitoring must be controlled by IT.
+            `DATABASE_URL` must never be exposed to browser code. Production variables, backups, and monitoring must be controlled by IT.
           </p>
         </div>
       </div>

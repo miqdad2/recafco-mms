@@ -37,9 +37,9 @@ export function WorkflowActions({ workOrderId, status, context }: WorkflowAction
         {canReturnToDraft ? (
           <div className="rounded-md border border-[#ED1C24] bg-red-50 p-4 space-y-3">
             <div>
-              <p className="text-sm font-black text-[#ED1C24]">Work order was rejected</p>
+              <p className="text-sm font-black text-[#ED1C24]">Repair order was rejected</p>
               <p className="mt-1 text-sm leading-5 text-[#4B5563]">
-                Return it to Draft, update the details, then submit again for approval.
+                Return it to Draft, update the details, then resubmit.
               </p>
             </div>
             <form action={returnWorkOrderToDraftAction}>
@@ -51,7 +51,7 @@ export function WorkflowActions({ workOrderId, status, context }: WorkflowAction
         {canSubmit ? (
           <form action={submitWorkOrderAction}>
             <input type="hidden" name="work_order_id" value={workOrderId} />
-            <Button type="submit" className="w-full">Submit for approval</Button>
+            <Button type="submit" className="w-full">Submit Repair Order</Button>
           </form>
         ) : null}
         {canApprove ? (
@@ -59,12 +59,12 @@ export function WorkflowActions({ workOrderId, status, context }: WorkflowAction
             <form action={approveWorkOrderAction} className="space-y-2">
               <input type="hidden" name="work_order_id" value={workOrderId} />
               <textarea className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm" name="comments" placeholder="Approval comments" />
-              <Button type="submit" className="w-full">Approve work order</Button>
+              <Button type="submit" className="w-full">Proceed to assignment</Button>
             </form>
             <form action={rejectWorkOrderAction} className="space-y-2">
               <input type="hidden" name="work_order_id" value={workOrderId} />
               <textarea className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm" name="comments" placeholder="Rejection reason" required />
-              <Button type="submit" variant="danger" className="w-full">Reject work order</Button>
+              <Button type="submit" variant="danger" className="w-full">Reject repair order</Button>
             </form>
             <div className="rounded-md border border-amber-200 bg-amber-50 p-3 space-y-2">
               <p className="text-xs font-black text-amber-800">Need more information?</p>
@@ -93,7 +93,7 @@ export function WorkflowActions({ workOrderId, status, context }: WorkflowAction
           <form action={closeWorkOrderAction} className="space-y-2">
             <input type="hidden" name="work_order_id" value={workOrderId} />
             <textarea className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm" name="comments" placeholder="Closure comments" />
-            <Button type="submit" className="w-full">Close work order</Button>
+            <Button type="submit" className="w-full">Close repair order</Button>
           </form>
         ) : null}
       </div>

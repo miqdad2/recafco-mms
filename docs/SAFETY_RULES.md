@@ -76,21 +76,16 @@ Before changing `lib/workflows/status-rules.ts`:
 
 ---
 
-## Rule 5 — Do not delete the LocalQueryClient adapter
+## Rule 5 — Supabase runtime files are removed
 
-The file `lib/db/local-query-client.ts` is a compatibility adapter that allows code written
-in the Supabase JS client style (`supabase.from('table').select('*').eq('id', x)`) to work
-against the local PostgreSQL database through Prisma.
+`lib/supabase/*` (the Supabase-style compatibility clients) and `lib/db/local-query-client.ts`
+(the adapter they wrapped) were removed once an audit confirmed zero remaining call sites —
+all application code had already migrated to direct Prisma calls through `lib/backend`.
+Supabase is not used at runtime. PostgreSQL accessed through Prisma is the active database
+stack.
 
-It is referenced by 67+ call sites across the codebase via:
-- `createSupabaseServerClient()` in `lib/supabase/server.ts`
-- `createSupabaseAdminClient()` in `lib/supabase/admin.ts`
-
-**Do not delete or modify this adapter until every call site has been migrated to direct
-Prisma calls and the build, typecheck, and lint checks all still pass.**
-
-Migration progress must be tracked explicitly. Deleting the adapter before all 67+ usages
-are replaced will cause an immediate runtime crash.
+Do not reintroduce a Supabase-style query adapter. New data access should go through
+`lib/backend` services/repositories using Prisma directly.
 
 ---
 

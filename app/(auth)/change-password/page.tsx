@@ -88,10 +88,8 @@ export default async function ChangePasswordPage({
               type="password"
               name="new_password"
               autoComplete="new-password"
-              minLength={8}
               required
             />
-            <p className="mt-1 text-xs text-[#6B7280]">Minimum 8 characters.</p>
           </label>
 
           <label className="block">
@@ -103,7 +101,6 @@ export default async function ChangePasswordPage({
               type="password"
               name="confirm_new_password"
               autoComplete="new-password"
-              minLength={8}
               required
             />
           </label>

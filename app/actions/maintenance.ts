@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { requirePermission } from "@/lib/auth/context";
 import { writeAuditLog } from "@/lib/audit/log";
+import { logSystemError } from "@/lib/errors/logging";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { createMaintenanceWorkflowInstanceForWorkOrder } from "@/lib/backend/workflows/engine";
 import { notifyByEvent } from "@/lib/notifications/service";
@@ -30,8 +31,15 @@ const optionalNumber = z.preprocess((value) => {
 
 const optionalDate = z.preprocess((value) => {
   if (typeof value !== "string" || !value.trim()) return undefined;
-  return value;
-}, z.string().optional());
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}, z.date().optional());
+
+const requiredDate = z.preprocess((value) => {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}, z.date());
 
 const assetSchema = z.object({
   id: optionalUuid,
@@ -57,12 +65,15 @@ const assetSchema = z.object({
   next_service_date: optionalDate,
   next_service_kilometer: optionalNumber,
   next_service_running_hours: optionalNumber,
-  notes: optionalString
+  notes: optionalString,
+  condition: optionalString,
+  criticality: optionalString,
+  remarks: optionalString
 });
 
 const partSchema = z.object({
   id: optionalUuid,
-  part_code: z.string().trim().min(2).max(60),
+  part_code: z.string().trim().max(60).optional().default(""),
   part_name: z.string().trim().min(2).max(160),
   description: optionalString,
   category: optionalString,
@@ -87,10 +98,10 @@ const workOrderSchema = z.object({
   asset_category: optionalString,
   serial_number: optionalString,
   plate_number: optionalString,
-  date_of_order: z.string().min(8),
+  date_of_order: requiredDate,
   job_location: optionalString,
-  starting_datetime: optionalString,
-  ending_datetime: optionalString,
+  starting_datetime: optionalDate,
+  ending_datetime: optionalDate,
   maintenance_type: z.string().trim().min(2),
   worker_type: z.string().trim().min(2),
   running_hours: optionalNumber,
@@ -154,7 +165,7 @@ function parseMaterialRows(formData: FormData) {
 }
 
 function parseRequiredPartRows(formData: FormData) {
-  return [0, 1, 2]
+  return [0, 1, 2, 3, 4, 5, 6, 7]
     .map((index) => {
       const description = rowValue(formData, "req_part_description", index);
       if (!description) return null;
@@ -198,7 +209,31 @@ export async function upsertAssetAction(formData: FormData) {
     data = id
       ? await prisma.assets.update({ where: { id }, data: clean({ ...values, updated_by: context.userId }), select: { id: true, asset_code: true } })
       : await prisma.assets.create({ data: clean({ ...values, updated_by: context.userId, created_by: context.userId }), select: { id: true, asset_code: true } });
-  } catch {
+  } catch (saveError) {
+    const rawMessage = saveError instanceof Error ? saveError.message : "save failed";
+    console.error("[maintenance.upsertAssetAction] Save failed:", {
+      source: "maintenance.upsertAssetAction",
+      severity: "error",
+      code: (saveError as { code?: string } | null)?.code ?? null,
+      message: rawMessage,
+      meta: (saveError as { meta?: unknown } | null)?.meta ?? null,
+      isEdit: !!id,
+    });
+    await logSystemError({
+      source: "maintenance.upsertAssetAction",
+      severity: "error",
+      // Prisma's actual validation detail is usually at the END of the message
+      // (after the pretty-printed query dump), so keep the tail, not the head.
+      message: rawMessage.slice(-1500),
+      userId: context.userId,
+      route: "/assets",
+      entityType: "asset",
+      metadata: {
+        code: (saveError as { code?: string } | null)?.code ?? null,
+        meta: JSON.stringify((saveError as { meta?: unknown } | null)?.meta ?? null),
+        isEdit: !!id,
+      },
+    });
     redirect("/assets?error=save-failed");
   }
   if (!data) redirect("/assets?error=save-failed");
@@ -222,14 +257,30 @@ export async function upsertPartAction(formData: FormData) {
 
   if (!parsed.success) redirect("/store/parts?error=invalid-input");
 
-  const { id, compatible_asset_categories, ...values } = parsed.data;
+  const { id, compatible_asset_categories, part_code: rawCode, ...values } = parsed.data;
   const categories = compatible_asset_categories?.split(",").map((item) => item.trim()).filter(Boolean) ?? [];
+
+  // Auto-generate part code if not supplied on create; leave undefined on edit (DB retains existing)
+  const part_code: string | undefined = rawCode?.trim()
+    ? rawCode.trim()
+    : !id
+      ? `PT-${Math.floor(Math.random() * 0xFFFFFF).toString(16).padStart(6, "0").toUpperCase()}`
+      : undefined;
+
   let data: { id: string; part_code: string } | undefined;
   try {
     data = id
-      ? await prisma.parts.update({ where: { id }, data: clean({ ...values, compatible_asset_categories: categories, updated_by: context.userId }), select: { id: true, part_code: true } })
-      : await prisma.parts.create({ data: clean({ ...values, compatible_asset_categories: categories, updated_by: context.userId, created_by: context.userId }), select: { id: true, part_code: true } });
-  } catch {
+      ? await prisma.parts.update({ where: { id }, data: clean({ ...values, ...(part_code ? { part_code } : {}), compatible_asset_categories: categories, updated_by: context.userId }), select: { id: true, part_code: true } })
+      : await prisma.parts.create({ data: clean({ ...values, part_code, compatible_asset_categories: categories, updated_by: context.userId, created_by: context.userId }), select: { id: true, part_code: true } });
+  } catch (saveError) {
+    console.error("[maintenance.upsertPartAction] Save failed:", {
+      source: "maintenance.upsertPartAction",
+      severity: "error",
+      code: (saveError as { code?: string } | null)?.code ?? null,
+      message: saveError instanceof Error ? saveError.message : "save failed",
+      meta: (saveError as { meta?: unknown } | null)?.meta ?? null,
+      isEdit: !!id,
+    });
     redirect("/store/parts?error=save-failed");
   }
   if (!data) redirect("/store/parts?error=save-failed");
@@ -295,7 +346,6 @@ export async function upsertWorkOrderAction(formData: FormData) {
     // Submit-specific validation: department, complaint, and description are required
     // when the user clicks "Submit for Approval" (not required for Save Draft).
     if (createStatus === "Pending Approval") {
-      if (!parsed.data.requested_by_department_id) redirect(`${formBackHref}?error=missing-department`);
       if (!parsed.data.operator_complaint) redirect(`${formBackHref}?error=missing-complaint`);
       if (!parsed.data.description_of_work) redirect(`${formBackHref}?error=missing-description`);
     }
@@ -456,6 +506,12 @@ export async function upsertWorkOrderAction(formData: FormData) {
   });
 
   if (!id && createStatus === "Pending Approval") {
+    let asset_name = "unassigned asset";
+    if (parsed.data.asset_id) {
+      const asset = await prisma.assets.findUnique({ where: { id: parsed.data.asset_id }, select: { asset_name: true } }).catch(() => null);
+      asset_name = asset?.asset_name ?? "unknown asset";
+    }
+
     await notifyByEvent({
       eventKey: "work_order.submitted",
       entityType: "work_order",
@@ -464,7 +520,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
       recipientRoles: ["super_admin", "maintenance_manager"],
       metadata: {
         work_order_number: data.work_order_number,
-        asset_name: parsed.data.asset_id ? "selected asset" : "unassigned asset"
+        asset_name
       },
       actionUrl: `/maintenance/work-orders/${data.id}`,
       actionLabel: "Review work order"
@@ -487,4 +543,74 @@ export async function upsertWorkOrderAction(formData: FormData) {
 
   revalidatePath("/maintenance/work-orders");
   redirect(`/maintenance/work-orders/${data.id}?success=work-order-saved`);
+}
+
+// ── Record a material / part used on an existing work order ───────────────────
+
+export async function addWorkOrderMaterialAction(formData: FormData) {
+  const context = await requirePermission("work_orders.manage");
+
+  const workOrderId = z.string().uuid().safeParse(formData.get("work_order_id"));
+  if (!workOrderId.success) redirect("/maintenance/work-orders?error=invalid-input");
+
+  const returnTo = `/maintenance/work-orders/${workOrderId.data}`;
+
+  const partId = z.string().uuid().optional().safeParse(
+    (() => { const v = String(formData.get("part_id") ?? "").trim(); return v || undefined; })()
+  );
+  const qty = z.preprocess((v) => Number(v), z.number().positive().finite()).safeParse(formData.get("quantity"));
+  if (!qty.success) redirect(`${returnTo}?error=invalid-input`);
+
+  const wo = await prisma.work_orders.findFirst({
+    where: { id: workOrderId.data, deleted_at: null },
+    select: { id: true, work_order_number: true, status: true },
+  });
+  if (!wo) redirect(`${returnTo}?error=not-found`);
+
+  const TERMINAL = new Set(["Closed", "Cancelled", "Rejected"]);
+  if (TERMINAL.has(wo.status)) redirect(`${returnTo}?error=invalid-status`);
+
+  let materialName = String(formData.get("material_name") ?? "").trim();
+  let partNumber: string | null = null;
+  let ssRecCode: string | null = null;
+  let resolvedPartId: string | null = null;
+
+  if (partId.success && partId.data) {
+    const part = await prisma.parts.findUnique({
+      where: { id: partId.data },
+      select: { part_name: true, part_number: true, ss_rec_code: true },
+    });
+    if (part) {
+      materialName = part.part_name;
+      partNumber = part.part_number ?? null;
+      ssRecCode = part.ss_rec_code ?? null;
+      resolvedPartId = partId.data;
+    }
+  }
+
+  if (!materialName) redirect(`${returnTo}?error=invalid-input`);
+
+  await prisma.work_order_materials.create({
+    data: {
+      work_order_id: wo.id,
+      part_id: resolvedPartId,
+      material_name: materialName,
+      part_number: partNumber,
+      ss_rec_code: ssRecCode,
+      quantity: qty.data,
+      unit_price: 0,
+    },
+  });
+
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "work_order_materials.add",
+    entityType: "work_order",
+    entityId: wo.id,
+    summary: `Recorded ${materialName} (qty ${qty.data}) used on ${wo.work_order_number}`,
+    metadata: { material_name: materialName, quantity: qty.data },
+  });
+
+  revalidatePath(`/maintenance/work-orders/${wo.id}`);
+  redirect(`${returnTo}?success=material-added`);
 }
