@@ -590,6 +590,10 @@ export async function addWorkOrderMaterialAction(formData: FormData) {
       ssRecCode = part.ss_rec_code ?? null;
       resolvedPartId = partId.data;
     }
+  } else {
+    // Free-text entry: read optional part_number from form
+    const freePartNumber = String(formData.get("part_number_free") ?? "").trim();
+    if (freePartNumber) partNumber = freePartNumber;
   }
 
   if (!materialName) redirect(`${returnTo}?error=invalid-input`);

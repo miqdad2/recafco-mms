@@ -112,7 +112,7 @@ export default async function NewPartsRequestPage({
 
   const pageDescription = preselectedWorkOrder
     ? `Requesting materials for job card ${preselectedWorkOrder.work_order_number ?? "Draft"}.`
-    : "Request spare parts or materials linked to a job card. Reference number is generated on save.";
+    : "Request materials linked to a job card. Reference number is generated on save.";
 
   return (
     <>

@@ -102,6 +102,20 @@ Current settings:
 - Phase Dashboard-Manager-UX-03 — Manager dashboard action cleanup:
   - `app/(dashboard)/dashboard/page.tsx`: added `FileText` icon import; added `MgActionRow` type with `description_of_work` and `asset_name`; added `ageLabel()` helper; added `mgActionMeta()` helper mapping status to contextual button label/style; added `ManagerActionRow` component showing Job Card No., asset name, description excerpt, status badge, age, and contextual button (Assign in red / Close in green / View neutral); refactored manager data fetch to parallel `Promise.all` returning `[counts, mgAction, mgMaterials]`; manager `mgAction` query now includes `description_of_work` and `assets.asset_name`; added `mgMaterials` query for open parts requests (Waiting for Store / Waiting for Purchase / Partially Issued, take 5); quick actions updated from 4 to 6 (Review Job Cards / Materials Requests / Assign Work / Offline Inventory / Service Contracts / Reports) using `sm:grid-cols-3` grid; KPI card "Waiting Parts" renamed to "Waiting Materials"; "Needs Your Action" now uses `ManagerActionRow`; "Materials Waiting" section conditionally rendered when `mgMaterials.length > 0`. All other role dashboards (Normal User, Technician, Store Keeper, Super Admin, Fallback) unchanged.
 
+- Phase Remove-SpareParts-01 — Remove Spare Parts module from visible system:
+  - `components/layout/app-layout.tsx`: removed `{ href: "/store/parts", label: "Spare Parts", ... }` entry from all four role nav groups (Super Admin, Maintenance Manager, Store Keeper, Normal User). No Spare Parts item in any sidebar.
+  - `app/(dashboard)/store/parts/page.tsx`: added `redirect("/store/offline-inventory")` at start of page function. Any visit to `/store/parts` (by user or old bookmark) now redirects to Offline Inventory Control.
+  - `app/(dashboard)/store/parts/new/page.tsx`: added `redirect("/store/offline-inventory")` at start of page function.
+  - `app/(dashboard)/dashboard/page.tsx`: replaced "Spare Parts" quick action with "Offline Inventory" (href `/store/offline-inventory`) in Normal User, Store Keeper, and Super Admin sections. Renamed "Low Stock Parts" KPI label to "Low Stock Materials" in Store Keeper and Super Admin sections. Store Keeper quick actions now: Materials Requests / Offline Inventory / Notifications / Job Cards.
+  - `app/(dashboard)/maintenance/work-orders/[id]/page.tsx`: removed standalone `prisma.parts.findMany()` query and `parts` destructure variable. Section eyebrow changed from "Materials and inventory" to "Materials". Section title changed from "Parts & Materials" to "Materials". Header button changed from "Request Parts" to "Request Materials". "Record parts used" form replaced: removed spare part `<select name="part_id">` dropdown; replaced with free-text `<input name="material_name">` (required) and `<input name="part_number_free">` (optional). Empty state text changed from "Request spare parts or materials directly from this job card." to "Request materials for this job card." Empty state button changed from "Request Parts" to "Request Materials".
+  - `app/actions/maintenance.ts`: updated `addWorkOrderMaterialAction` to read `part_number_free` from formData when no `part_id` is provided (free-text material recording path now supports optional part number).
+  - `app/(dashboard)/assets/page.tsx`: changed `/store/parts` risk row href to `/store/offline-inventory`.
+  - `app/(dashboard)/assets/[id]/page.tsx`: changed "Materials & Spare Parts" tab label to "Materials".
+  - `app/(dashboard)/reports/page.tsx`: removed `AlertTriangle` import (no longer used); removed "Low Stock Spare Parts / Materials" report card entirely; renamed "Low / Out of Stock Parts" stat to "Low Stock Materials".
+  - `app/(dashboard)/reports/low-stock/page.tsx`: renamed "Total Spare Parts" KPI to "Total Materials"; page title changed from "Low Stock Spare Parts" to "Low Stock Materials"; empty state changed from "No spare parts..." to "No materials..."; "View Part" link changed from `/store/parts/${id}` to `/store/offline-inventory`.
+  - `app/(dashboard)/store/parts-requests/new/page.tsx`: changed page description from "Request spare parts or materials..." to "Request materials...".
+  - Database tables (`parts`, `work_order_materials`, etc.) untouched. Backend models and actions intact. All checks pass: lint ✓, typecheck ✓, build ✓.
+
 - Phase ManagerDashboard-AssignModal-01 — Open Job Card Quick View / Assign Modal from Manager Dashboard:
   - Reused existing `RepairOrderQuickView` component (already implemented with full status stepper, assign panel, materials summary, quick actions, sticky footer). No new modal component required.
   - `app/(dashboard)/dashboard/page.tsx`: added `RepairOrderQuickView` + `QuickViewData` imports; added `PageProps` type with `searchParams?: Promise<{ preview?: string }>`; updated `ManagerActionRow` — row title click and Assign/View buttons use `?preview=${row.id}` (opens modal via URL param), Close button stays as full `/maintenance/work-orders/${row.id}` link; added `?preview=` fetch block before `firstName` — reads searchParams, validates UUID format, fetches `work_orders`, `parts_requests`, and `profiles` (technicians) in parallel (same query shape as work orders list page); builds `QuickViewData` with `closeHref: "/dashboard"` (modal close returns to dashboard without navigation flash); renders `{drawerData && <RepairOrderQuickView data={drawerData} />}` at bottom of JSX. Permission-gated: technician list only fetched when `canAssignModal` (approve or assign permission). All other dashboard sections (Normal User, Technician, Store Keeper, Super Admin, Fallback) unchanged.
@@ -112,6 +126,32 @@ Current settings:
   - `app/actions/offline-inventory.ts`: added `computeBalance()` helper that queries current balance per material server-side; `receiveOfflineMaterialAction` now blocks exact duplicates when reference_number is provided; `issueOfflineMaterialAction` now recomputes live balance and blocks if `qty > available` with specific error message.
   - `app/(dashboard)/store/offline-inventory/page.tsx`: removed `take: 100` limit on movements query (fetches all for balance accuracy); computes per-material `BalanceItem[]` using `buildBalanceKey()` (groups by `part_id` for master parts, by `name|unit` for manual); formula simplified to `totalReceived - totalIssued`; passes `balanceItems` to shell; ledger capped at 200 for display.
   - `components/store/offline-inventory-shell.tsx`: removed `totalReturned` prop and `RotateCcw` icon; KPI cards reduced to 3 (Total Received / Total Issued / Current Balance); added Balance/Movements tabs; Balance tab shows per-material table with Total Received, Total Issued, Balance, Last Movement, and Action column (View + Issue button per row); `IssueModal` completely rewritten to accept `availableItems` (balance > 0 only), shows "No materials available" fallback if empty, pre-fills material when Issue clicked from Balance tab row, unit is read-only from selected item, submit disabled when no material selected; Issue button in header disabled when no available balance.
+
+## Phase OfflineInventory-04 — Unit Dropdown and Remove Spare Parts Wording — COMPLETE
+
+No DB schema changes. No action changes.
+
+**`components/store/offline-inventory-shell.tsx`**:
+- Removed `PartOption` type (no longer needed — Spare Parts master no longer queried)
+- Removed `parts` from `OfflineInventoryShellProps`
+- Removed `parts` from shell function params
+- Added `UNITS` constant: `["PCS","SET","BOX","PACK","MTR","ROLL","KG","LTR","DRUM","BAG","PAIR","NOS"]`
+- `ReceiveModal`: prop changed from `parts: PartOption[]` to `knownMaterials: BalanceItem[]` (previously received materials from balance, already computed in shell)
+- `ReceiveModal` material selector: removed spare parts master dropdown; now shows previously received materials from `balanceItems` with default option "Select existing material or enter manually"; selecting a known material auto-fills unit and part number; empty selection = manual entry mode
+- `ReceiveModal` unit field: replaced free-text `<input>` with `<select>` dropdown (UNITS list); default PCS; auto-filled from selected known material; falls back gracefully for units not in list (renders extra option)
+- `ReceiveModal` labels: "Material / Spare Part" → "Material"; "Manual material name" → "Material name"
+- `ReceiveModal` hidden inputs: when known material selected, `part_id` and `manual_material_name` sent as hidden fields so action receives correct identity (covers both part-master and previously received manual materials)
+- `IssueModal`: no changes — unit was already read-only from selected balance item; no Spare Parts wording existed
+- Shell `ReceiveModal` call: updated to pass `knownMaterials={balanceItems}`
+
+**`app/(dashboard)/store/offline-inventory/page.tsx`**:
+- Removed `PartOption` import
+- Removed `prisma.parts.findMany()` from `Promise.all` (spare parts master query no longer needed)
+- Removed `partsRaw` variable and parts serialization block
+- Removed `parts={parts}` prop from `<OfflineInventoryShell>`
+- `Promise.all` now only fetches movements and work orders (2 queries instead of 3)
+
+All checks pass: lint ✓, typecheck ✓, build ✓
 
 ## Implemented but Feature-Flagged
 
@@ -133,6 +173,32 @@ Inventory check is implemented but `inventory_check_enabled = false`.
 - Construction Project Request application flow
 - Realtime event consumer
 - External notification delivery
+
+## Phase Reports-UX-02 — Reports Landing Page Cleanup — COMPLETE
+
+No DB schema changes. No backend deletions. Display layer only.
+
+**`lib/reports/data.ts`** — `getReportLandingStats()` rewritten:
+- Removed: `criticalAssets` (assets with status Critical/Breakdown) and `lowStockCount` (parts below min stock)
+- Added: `openPartsRequests` (parts_requests with open statuses) and `expiringContracts` (service_contracts expiring within 30 days, non-terminated)
+- Returns: `{ openWOs, overdueWOs, openPartsRequests, expiringContracts }`
+
+**`app/(dashboard)/reports/page.tsx`** — Complete rewrite:
+- Imports simplified: removed `ShieldAlert`, `Calendar`; added `ArrowDownUp`, `ShoppingCart`, `FileText`
+- KPI strip: always shows 4 cards — Open Job Cards / Overdue Job Cards / Open Materials Requests / Contracts Expiring (30d). Removed conditional wrapper that previously hid cards when counts were zero.
+- Catch fallback updated to use new field names: `{ openWOs: 0, overdueWOs: 0, openPartsRequests: 0, expiringContracts: 0 }`
+- Removed report cards: "Critical Asset Report" and "Preventive Maintenance"
+- Kept report cards: Job Card Summary, Asset Repair History, Materials Usage, Technician Workload, Asset Register Report
+- Added report cards: "Materials Requests" (→ `/store/parts-requests`), "Offline Inventory Movements" (→ `/store/offline-inventory`), "Service Contracts Expiry" (→ `/assets/service-contracts`)
+- `StatCard` and `ReportCard` helper components inline in the file; `ReportCard` supports optional `badge` with `badgeTone`
+
+**`app/(dashboard)/reports/preventive-maintenance/page.tsx`** — Replaced with single `redirect("/reports")`. All prior PM report logic removed from page file (backend query functions in `lib/reports/data.ts` untouched).
+
+All checks pass: lint ✓, typecheck ✓, build ✓
+
+## Phase Remove-SpareParts-01 — Remove Spare Parts module from visible system — COMPLETE
+
+(Documented above in Completed section)
 
 ## In Progress
 

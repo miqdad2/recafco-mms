@@ -1,13 +1,13 @@
 import Link from "next/link";
 import {
-  AlertTriangle,
+  ArrowDownUp,
   BarChart3,
-  Calendar,
   ClipboardList,
+  FileText,
   Gauge,
   Package,
-  ShieldAlert,
-  Wrench
+  ShoppingCart,
+  Wrench,
 } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
@@ -20,8 +20,8 @@ export default async function ReportsLandingPage() {
   const stats = await getReportLandingStats().catch(() => ({
     openWOs: 0,
     overdueWOs: 0,
-    criticalAssets: 0,
-    lowStockCount: 0
+    openPartsRequests: 0,
+    expiringContracts: 0,
   }));
 
   return (
@@ -33,27 +33,33 @@ export default async function ReportsLandingPage() {
 
       <div className="p-4 lg:p-6 space-y-6">
 
-        {/* Quick stats strip */}
-        {(stats.openWOs > 0 || stats.overdueWOs > 0 || stats.criticalAssets > 0 || stats.lowStockCount > 0) && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm text-center">
-              <p className="text-2xl font-black text-[#111827]">{stats.openWOs}</p>
-              <p className="mt-1 text-xs font-semibold text-[#4B5563]">Open Job Cards</p>
-            </div>
-            <div className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm text-center">
-              <p className={`text-2xl font-black ${stats.overdueWOs > 0 ? "text-[#DC2626]" : "text-[#111827]"}`}>{stats.overdueWOs}</p>
-              <p className="mt-1 text-xs font-semibold text-[#4B5563]">Overdue</p>
-            </div>
-            <div className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm text-center">
-              <p className={`text-2xl font-black ${stats.criticalAssets > 0 ? "text-amber-600" : "text-[#111827]"}`}>{stats.criticalAssets}</p>
-              <p className="mt-1 text-xs font-semibold text-[#4B5563]">Critical / Breakdown Assets</p>
-            </div>
-            <div className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm text-center">
-              <p className={`text-2xl font-black ${stats.lowStockCount > 0 ? "text-amber-600" : "text-[#111827]"}`}>{stats.lowStockCount}</p>
-              <p className="mt-1 text-xs font-semibold text-[#4B5563]">Low / Out of Stock Parts</p>
-            </div>
-          </div>
-        )}
+        {/* Summary strip — always shown */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatCard
+            value={stats.openWOs}
+            label="Open Job Cards"
+            href="/reports/work-orders"
+            tone={stats.openWOs > 0 ? "amber" : "green"}
+          />
+          <StatCard
+            value={stats.overdueWOs}
+            label="Overdue Job Cards"
+            href="/reports/work-orders"
+            tone={stats.overdueWOs > 0 ? "red" : "green"}
+          />
+          <StatCard
+            value={stats.openPartsRequests}
+            label="Open Materials Requests"
+            href="/store/parts-requests"
+            tone={stats.openPartsRequests > 0 ? "amber" : "green"}
+          />
+          <StatCard
+            value={stats.expiringContracts}
+            label="Contracts Expiring (30d)"
+            href="/assets/service-contracts"
+            tone={stats.expiringContracts > 0 ? "amber" : "green"}
+          />
+        </div>
 
         {/* Report cards grid */}
         <div>
@@ -77,15 +83,6 @@ export default async function ReportsLandingPage() {
             />
 
             <ReportCard
-              href="/reports/assets"
-              icon={ShieldAlert}
-              title="Critical Asset Report"
-              description="Monitor critical, poor condition, breakdown, and repeated-issue assets."
-              badge={stats.criticalAssets > 0 ? `${stats.criticalAssets} need attention` : undefined}
-              badgeTone="amber"
-            />
-
-            <ReportCard
               href="/reports/spare-parts-usage"
               icon={Package}
               title="Materials Usage"
@@ -93,27 +90,10 @@ export default async function ReportsLandingPage() {
             />
 
             <ReportCard
-              href="/reports/low-stock"
-              icon={AlertTriangle}
-              title="Low Stock Spare Parts / Materials"
-              description="Review parts below minimum stock and unavailable items."
-              badge={stats.lowStockCount > 0 ? `${stats.lowStockCount} below minimum` : undefined}
-              badgeTone="amber"
-            />
-
-            <ReportCard
               href="/reports/work-orders?report=technician-workload"
               icon={BarChart3}
               title="Technician Workload"
               description="Monitor assigned, in-progress, and completed jobs by technician."
-              comingSoon={false}
-            />
-
-            <ReportCard
-              href="/reports/preventive-maintenance"
-              icon={Calendar}
-              title="Preventive Maintenance"
-              description="Track due, overdue, and upcoming preventive maintenance by asset."
             />
 
             <ReportCard
@@ -123,10 +103,63 @@ export default async function ReportsLandingPage() {
               description="Full asset list with status, expiry dates, service due, and inspection data."
             />
 
+            <ReportCard
+              href="/store/parts-requests"
+              icon={ShoppingCart}
+              title="Materials Requests"
+              description="View and track all materials requests by status, job card, and date."
+              badge={stats.openPartsRequests > 0 ? `${stats.openPartsRequests} open` : undefined}
+              badgeTone="amber"
+            />
+
+            <ReportCard
+              href="/store/offline-inventory"
+              icon={ArrowDownUp}
+              title="Offline Inventory Movements"
+              description="Review material receipts, issues, and running balance across all offline inventory."
+            />
+
+            <ReportCard
+              href="/assets/service-contracts"
+              icon={FileText}
+              title="Service Contracts Expiry"
+              description="Monitor service contract end dates, renewals, and upcoming expirations."
+              badge={stats.expiringContracts > 0 ? `${stats.expiringContracts} expiring soon` : undefined}
+              badgeTone="amber"
+            />
+
           </div>
         </div>
       </div>
     </>
+  );
+}
+
+function StatCard({
+  value,
+  label,
+  href,
+  tone,
+}: {
+  value: number;
+  label: string;
+  href: string;
+  tone: "red" | "amber" | "green";
+}) {
+  const valueClass =
+    tone === "red"
+      ? "text-[#DC2626]"
+      : tone === "amber"
+        ? "text-amber-600"
+        : "text-[#111827]";
+  return (
+    <Link
+      href={href}
+      className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm text-center transition hover:border-[#ED1C24] hover:shadow-md block"
+    >
+      <p className={`text-2xl font-black ${valueClass}`}>{value}</p>
+      <p className="mt-1 text-xs font-semibold text-[#4B5563]">{label}</p>
+    </Link>
   );
 }
 
@@ -137,7 +170,6 @@ function ReportCard({
   description,
   badge,
   badgeTone = "amber",
-  comingSoon
 }: {
   href: string;
   icon: React.ElementType;
@@ -145,7 +177,6 @@ function ReportCard({
   description: string;
   badge?: string;
   badgeTone?: "red" | "amber";
-  comingSoon?: boolean;
 }) {
   const badgeClass =
     badgeTone === "red"
@@ -154,39 +185,26 @@ function ReportCard({
 
   return (
     <Link
-      href={comingSoon ? "#" : href}
-      className={`group relative flex flex-col gap-3 rounded-lg border bg-white p-5 shadow-sm transition-all ${
-        comingSoon
-          ? "border-[#E5E7EB] cursor-default opacity-70"
-          : "border-[#E5E7EB] hover:border-[#ED1C24] hover:shadow-md"
-      }`}
+      href={href}
+      className="group relative flex flex-col gap-3 rounded-lg border border-[#E5E7EB] bg-white p-5 shadow-sm transition-all hover:border-[#ED1C24] hover:shadow-md"
     >
       <div className="flex items-start justify-between gap-3">
-        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${comingSoon ? "bg-gray-100" : "bg-red-50"}`}>
-          <Icon className={`h-5 w-5 ${comingSoon ? "text-[#9CA3AF]" : "text-[#ED1C24]"}`} aria-hidden="true" />
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-50">
+          <Icon className="h-5 w-5 text-[#ED1C24]" aria-hidden="true" />
         </div>
-        <div className="flex gap-1.5">
-          {badge && !comingSoon && (
-            <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${badgeClass}`}>
-              {badge}
-            </span>
-          )}
-          {comingSoon && (
-            <span className="inline-flex shrink-0 items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-bold text-[#4B5563]">
-              Coming soon
-            </span>
-          )}
-        </div>
+        {badge && (
+          <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${badgeClass}`}>
+            {badge}
+          </span>
+        )}
       </div>
       <div>
         <p className="font-bold text-[#111827]">{title}</p>
         <p className="mt-1 text-sm text-[#4B5563] leading-snug">{description}</p>
       </div>
-      {!comingSoon && (
-        <p className="mt-auto text-xs font-semibold text-[#ED1C24] opacity-0 transition-opacity group-hover:opacity-100">
-          View report →
-        </p>
-      )}
+      <p className="mt-auto text-xs font-semibold text-[#ED1C24] opacity-0 transition-opacity group-hover:opacity-100">
+        View report →
+      </p>
     </Link>
   );
 }

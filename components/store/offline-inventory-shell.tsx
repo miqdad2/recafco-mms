@@ -26,13 +26,6 @@ import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type PartOption = {
-  id: string;
-  part_name: string;
-  part_number: string | null;
-  unit_of_measure: string;
-};
-
 export type WorkOrderOption = {
   id: string;
   work_order_number: string | null;
@@ -70,7 +63,6 @@ export type BalanceItem = {
 
 export interface OfflineInventoryShellProps {
   movements: MovementRow[];
-  parts: PartOption[];
   workOrders: WorkOrderOption[];
   balanceItems: BalanceItem[];
   totalReceived: number;
@@ -86,6 +78,8 @@ const TYPE_META: Record<string, { label: string; tone: "green" | "red" | "blue" 
   RETURNED:   { label: "Returned",   tone: "blue" },
   ADJUSTMENT: { label: "Adjustment", tone: "amber" },
 };
+
+const UNITS = ["PCS", "SET", "BOX", "PACK", "MTR", "ROLL", "KG", "LTR", "DRUM", "BAG", "PAIR", "NOS"] as const;
 
 const inp =
   "w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm placeholder:text-[#9CA3AF] focus:outline-none focus:ring-1 focus:ring-[#ED1C24] disabled:bg-gray-50 disabled:text-[#9CA3AF]";
@@ -182,12 +176,12 @@ function Modal({
 // ── Receive Modal ─────────────────────────────────────────────────────────────
 
 function ReceiveModal({
-  parts,
+  knownMaterials,
   workOrders,
   onClose,
   onSuccess,
 }: {
-  parts: PartOption[];
+  knownMaterials: BalanceItem[];
   workOrders: WorkOrderOption[];
   onClose: () => void;
   onSuccess: () => void;
@@ -196,7 +190,7 @@ function ReceiveModal({
     receiveOfflineMaterialAction,
     null
   );
-  const [partId, setPartId]               = useState("");
+  const [selectedKey, setSelectedKey]     = useState("");
   const [unit, setUnit]                   = useState("PCS");
   const [manualPartNum, setManualPartNum] = useState("");
 
@@ -205,20 +199,21 @@ function ReceiveModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.ok]);
 
-  const isManual    = partId === "" || partId === "__manual__";
-  const currentPart = parts.find((p) => p.id === partId) ?? null;
+  const isManual      = selectedKey === "";
+  const selectedKnown = isManual ? null : (knownMaterials.find((m) => m.key === selectedKey) ?? null);
+  const unitInList    = (UNITS as readonly string[]).includes(unit);
 
-  function onPartChange(e: React.ChangeEvent<HTMLSelectElement>) {
-    const id = e.target.value;
-    setPartId(id);
-    if (id === "" || id === "__manual__") {
+  function onMaterialChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const key = e.target.value;
+    setSelectedKey(key);
+    if (!key) {
       setUnit("PCS");
       setManualPartNum("");
     } else {
-      const p = parts.find((p) => p.id === id);
-      if (p) {
-        setUnit(p.unit_of_measure);
-        setManualPartNum(p.part_number ?? "");
+      const known = knownMaterials.find((m) => m.key === key);
+      if (known) {
+        setUnit(known.unit);
+        setManualPartNum(known.part_number ?? "");
       }
     }
   }
@@ -231,6 +226,14 @@ function ReceiveModal({
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             <span>{state.error}</span>
           </div>
+        )}
+
+        {/* Hidden identity fields when a known material is selected */}
+        {!isManual && selectedKnown && (
+          <>
+            <input type="hidden" name="part_id"              value={selectedKnown.part_id ?? ""} />
+            <input type="hidden" name="manual_material_name" value={selectedKnown.manual_material_name ?? ""} />
+          </>
         )}
 
         {/* Date */}
@@ -249,34 +252,33 @@ function ReceiveModal({
           />
         </div>
 
-        {/* Part selector */}
+        {/* Material selector — previously received materials or manual entry */}
         <div>
-          <label htmlFor="r-part" className={lbl}>
-            Material / Spare Part <span className="text-[#ED1C24]">*</span>
+          <label htmlFor="r-material" className={lbl}>
+            Material <span className="text-[#ED1C24]">*</span>
           </label>
           <select
-            id="r-part"
-            name="part_id"
-            value={partId}
-            onChange={onPartChange}
+            id="r-material"
+            value={selectedKey}
+            onChange={onMaterialChange}
             className={inp}
             disabled={isPending}
           >
-            <option value="">Select from spare parts master…</option>
-            <option value="__manual__">— Enter material name manually —</option>
-            {parts.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.part_name}{p.part_number ? ` (${p.part_number})` : ""}
+            <option value="">Select existing material or enter manually</option>
+            {knownMaterials.map((m) => (
+              <option key={m.key} value={m.key}>
+                {m.display_name}
+                {m.part_number ? ` (${m.part_number})` : ""} — {m.unit}
               </option>
             ))}
           </select>
         </div>
 
-        {/* Manual name — only shown when not using master */}
+        {/* Manual name — shown when no known material is selected */}
         {isManual && (
           <div>
             <label htmlFor="r-manual-name" className={lbl}>
-              Manual material name <span className="text-[#ED1C24]">*</span>
+              Material name <span className="text-[#ED1C24]">*</span>
             </label>
             <input
               id="r-manual-name"
@@ -300,7 +302,7 @@ function ReceiveModal({
             id="r-partnum"
             type="text"
             name="manual_part_number"
-            value={isManual ? manualPartNum : (currentPart?.part_number ?? "")}
+            value={isManual ? manualPartNum : (selectedKnown?.part_number ?? "")}
             onChange={isManual ? (e) => setManualPartNum(e.target.value) : undefined}
             readOnly={!isManual}
             placeholder="Optional"
@@ -331,17 +333,20 @@ function ReceiveModal({
             <label htmlFor="r-unit" className={lbl}>
               Unit <span className="text-[#ED1C24]">*</span>
             </label>
-            <input
+            <select
               id="r-unit"
-              type="text"
               name="unit"
               value={unit}
               onChange={(e) => setUnit(e.target.value)}
               required
-              placeholder="PCS"
               className={inp}
               disabled={isPending}
-            />
+            >
+              {!unitInList && <option value={unit}>{unit}</option>}
+              {UNITS.map((u) => (
+                <option key={u} value={u}>{u}</option>
+              ))}
+            </select>
           </div>
         </div>
 
@@ -662,7 +667,6 @@ function IssueModal({
 
 export function OfflineInventoryShell({
   movements,
-  parts,
   workOrders,
   balanceItems,
   totalReceived,
@@ -994,7 +998,7 @@ export function OfflineInventoryShell({
       {/* Modals */}
       {openModal === "receive" && (
         <ReceiveModal
-          parts={parts}
+          knownMaterials={balanceItems}
           workOrders={workOrders}
           onClose={() => setOpenModal(null)}
           onSuccess={() => handleSuccess("receive")}

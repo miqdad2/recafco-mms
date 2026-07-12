@@ -14,7 +14,7 @@ export default async function LowStockReportPage() {
   const { rows, stats } = report;
 
   const summaryCards = [
-    { label: "Total Spare Parts", value: stats.total, tone: "blue" as const },
+    { label: "Total Materials", value: stats.total, tone: "blue" as const },
     { label: "Below Minimum Stock", value: stats.lowStock, tone: stats.lowStock > 0 ? ("red" as const) : ("green" as const) },
     { label: "Out of Stock", value: stats.outOfStock, tone: stats.outOfStock > 0 ? ("red" as const) : ("green" as const) }
   ];
@@ -22,8 +22,8 @@ export default async function LowStockReportPage() {
   return (
     <>
       <PageHeader
-        title="Low Stock Spare Parts"
-        description="Review parts below minimum stock and unavailable items."
+        title="Low Stock Materials"
+        description="Review materials below minimum stock and unavailable items."
         actions={<ExportButton kind="parts" label="Export Excel" />}
       />
 
@@ -67,7 +67,7 @@ export default async function LowStockReportPage() {
                     <td colSpan={9} className="px-4 py-8">
                       <EmptyState
                         title="All parts are sufficiently stocked"
-                        message="No spare parts are currently below minimum stock levels."
+                        message="No materials are currently below minimum stock levels."
                       />
                     </td>
                   </tr>
@@ -109,10 +109,10 @@ export default async function LowStockReportPage() {
                     </td>
                     <td className="px-4 py-2.5">
                       <Link
-                        href={`/store/parts/${part.id}`}
+                        href="/store/offline-inventory"
                         className="inline-flex items-center rounded border border-[#E5E7EB] px-3 py-1 text-xs font-bold transition hover:bg-gray-50"
                       >
-                        View Part
+                        View Inventory
                       </Link>
                     </td>
                   </tr>

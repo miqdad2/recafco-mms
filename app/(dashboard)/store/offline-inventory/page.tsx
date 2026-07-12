@@ -3,7 +3,6 @@ import { prisma } from "@/lib/db/prisma";
 import {
   OfflineInventoryShell,
   type MovementRow,
-  type PartOption,
   type WorkOrderOption,
   type BalanceItem,
 } from "@/components/store/offline-inventory-shell";
@@ -20,7 +19,7 @@ function buildBalanceKey(m: {
 export default async function OfflineInventoryPage() {
   await requirePermission("parts.view");
 
-  const [allMovementsRaw, partsRaw, workOrdersRaw] = await Promise.all([
+  const [allMovementsRaw, workOrdersRaw] = await Promise.all([
     prisma.offline_inventory_movements.findMany({
       where: { deleted_at: null },
       include: {
@@ -29,11 +28,6 @@ export default async function OfflineInventoryPage() {
         profiles:    { select: { full_name: true } },
       },
       orderBy: [{ movement_date: "desc" }, { created_at: "desc" }],
-    }),
-    prisma.parts.findMany({
-      where: { status: "Active" },
-      select: { id: true, part_name: true, part_number: true, unit_of_measure: true },
-      orderBy: { part_name: "asc" },
     }),
     prisma.work_orders.findMany({
       select: { id: true, work_order_number: true },
@@ -113,13 +107,6 @@ export default async function OfflineInventoryPage() {
     created_by_name:       m.profiles.full_name,
   }));
 
-  const parts: PartOption[] = partsRaw.map((p) => ({
-    id:              p.id,
-    part_name:       p.part_name,
-    part_number:     p.part_number,
-    unit_of_measure: p.unit_of_measure,
-  }));
-
   const workOrders: WorkOrderOption[] = workOrdersRaw.map((wo) => ({
     id:                wo.id,
     work_order_number: wo.work_order_number,
@@ -128,7 +115,6 @@ export default async function OfflineInventoryPage() {
   return (
     <OfflineInventoryShell
       movements={movements}
-      parts={parts}
       workOrders={workOrders}
       balanceItems={balanceItems}
       totalReceived={totalReceived}

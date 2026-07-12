@@ -1,7 +1,7 @@
+import { redirect } from "next/navigation";
 import type { Prisma } from "@prisma/client";
 import { Package, Plus, Search, TriangleAlert, Warehouse } from "lucide-react";
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ const statusOptions = ["Active", "Inactive", "Low Stock", "Unavailable", "Discon
 type SearchParams = Record<string, string | string[] | undefined>;
 
 export default async function PartsPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
+  redirect("/store/offline-inventory");
   const context = await requirePermission("parts.view");
   const params = (await searchParams) ?? {};
   const page = Math.max(1, Number(single(params.page) ?? 1) || 1);

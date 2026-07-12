@@ -147,15 +147,10 @@ export default async function WorkOrderDetailPage({
   const successMessage = resolvedSearch.success;
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
 
-  const [wo, parts, auditLogs, pendingClarification, technicians] = await Promise.all([
+  const [wo, auditLogs, pendingClarification, technicians] = await Promise.all([
     prisma.work_orders.findFirst({
       where: { AND: [{ id }, { deleted_at: null }, visibilityFilter] },
       include: workOrderControlInclude,
-    }),
-    prisma.parts.findMany({
-      where: { deleted_at: null },
-      orderBy: { part_code: "asc" },
-      select: { id: true, part_code: true, part_name: true, part_number: true, ss_rec_code: true, unit_price: true },
     }),
     prisma.audit_logs.findMany({
       where: { entity_type: "work_order", entity_id: id },
@@ -639,17 +634,17 @@ export default async function WorkOrderDetailPage({
               </section>
             ) : null}
 
-            {/* 4 — Parts & Materials */}
+            {/* 4 — Materials */}
             <section id="parts" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <SectionHeader eyebrow="Materials and inventory" title="Parts &amp; Materials" icon={PackageSearch} />
+                <SectionHeader eyebrow="Materials" title="Materials" icon={PackageSearch} />
                 {canCreatePartsRequest && !["Closed", "Cancelled", "Rejected"].includes(wo.status) ? (
                   <Link
                     href={`/store/parts-requests/new?repair_order_id=${wo.id}`}
                     className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
                   >
                     <PackageSearch className="h-4 w-4" aria-hidden="true" />
-                    Request Parts
+                    Request Materials
                   </Link>
                 ) : null}
               </div>
@@ -730,30 +725,33 @@ export default async function WorkOrderDetailPage({
 
               {canManage && !["Closed", "Cancelled", "Rejected"].includes(wo.status) ? (
                 <div className="mt-5">
-                  <p className="mb-3 text-xs font-black uppercase tracking-wide text-[#4B5563]">Record parts used</p>
+                  <p className="mb-3 text-xs font-black uppercase tracking-wide text-[#4B5563]">Record material used</p>
                   <form
                     action={addWorkOrderMaterialAction}
                     className="flex flex-wrap items-end gap-3 rounded-md border border-[#E5E7EB] bg-[#F8FAFC] p-4"
                   >
                     <input type="hidden" name="work_order_id" value={wo.id} />
                     <div className="min-w-[200px] flex-1">
-                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Spare Part</label>
-                      <select
-                        name="part_id"
-                        className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
+                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Material *</label>
+                      <input
+                        name="material_name"
+                        type="text"
                         required
-                      >
-                        <option value="">Select part from inventory…</option>
-                        {parts.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.part_code} — {p.part_name}
-                            {p.part_number ? ` (${p.part_number})` : ""}
-                          </option>
-                        ))}
-                      </select>
+                        placeholder="e.g. oil filter…"
+                        className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
+                      />
                     </div>
-                    <div className="w-28 shrink-0">
-                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Quantity</label>
+                    <div className="w-36 shrink-0">
+                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Part No.</label>
+                      <input
+                        name="part_number_free"
+                        type="text"
+                        placeholder="optional"
+                        className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div className="w-24 shrink-0">
+                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Quantity *</label>
                       <input
                         type="number"
                         name="quantity"
@@ -791,14 +789,14 @@ export default async function WorkOrderDetailPage({
                 ) : (
                   <div className="flex flex-col items-center gap-3 py-6 text-center">
                     <p className="text-sm font-semibold text-[#111827]">No materials requested yet.</p>
-                    <p className="text-xs text-[#4B5563]">Request spare parts or materials directly from this job card.</p>
+                    <p className="text-xs text-[#4B5563]">Request materials for this job card.</p>
                     {canCreatePartsRequest && !["Closed", "Cancelled", "Rejected"].includes(wo.status) ? (
                       <Link
                         href={`/store/parts-requests/new?repair_order_id=${wo.id}`}
                         className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
                       >
                         <PackageSearch className="h-4 w-4" aria-hidden="true" />
-                        Request Parts
+                        Request Materials
                       </Link>
                     ) : null}
                   </div>

@@ -77,7 +77,6 @@ const navigationGroups: NavGroup[] = [
     label: "Management",
     items: [
       { href: "/assets",                        label: "Assets & Equipment", iconKey: "Gauge",      permission: "assets.view" },
-      { href: "/store/parts",                   label: "Spare Parts",         iconKey: "Package",    permission: "parts.view" },
       { href: "/maintenance/assignments",        label: "Technician",          iconKey: "Wrench",     permission: "work_orders.assign" },
       { href: "/reports",                       label: "Reports",             iconKey: "BarChart3",  permission: "reports.view" },
       { href: "/notifications",                 label: "Notifications",       iconKey: "Bell",       permission: "notifications.view" },
@@ -112,7 +111,6 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
     label: "Management",
     items: [
       { href: "/assets",                  label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
-      { href: "/store/parts",             label: "Spare Parts",         iconKey: "Package",   permission: "parts.view" },
       { href: "/maintenance/assignments", label: "Technician",          iconKey: "Wrench",    permission: "work_orders.assign" },
       { href: "/reports",                 label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
       { href: "/notifications",           label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
@@ -139,7 +137,6 @@ const storeKeeperNavigationGroups: NavGroup[] = [
   {
     label: "Management",
     items: [
-      { href: "/store/parts",   label: "Spare Parts",  iconKey: "Package", permission: "parts.view" },
       { href: "/notifications", label: "Notifications", iconKey: "Bell",    permission: "notifications.view" }
     ]
   }
@@ -192,7 +189,6 @@ const normalUserNavigationGroups: NavGroup[] = [
     label: "Management",
     items: [
       { href: "/assets",        label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
-      { href: "/store/parts",   label: "Spare Parts",         iconKey: "Package",   permission: "parts.view" },
       { href: "/reports",       label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
       { href: "/notifications", label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
     ]

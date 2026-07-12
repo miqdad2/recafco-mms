@@ -562,7 +562,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               <QuickAction label="Create Job Card"       href="/maintenance/work-orders/new"  icon={PlusCircle}   iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
               <QuickAction label="Request Materials"     href="/store/parts-requests/new"      icon={ShoppingCart} iconBg="bg-violet-50" iconColor="text-violet-600" />
               <QuickAction label="Assets & Equipment"   href="/assets"                         icon={Gauge}        iconBg="bg-blue-50"   iconColor="text-blue-600" />
-              <QuickAction label="Spare Parts"          href="/store/parts"                    icon={Package}      iconBg="bg-green-50"  iconColor="text-green-600" />
+              <QuickAction label="Offline Inventory"    href="/store/offline-inventory"        icon={Package}      iconBg="bg-green-50"  iconColor="text-green-600" />
             </div>
 
             {/* KPI Queue */}
@@ -652,10 +652,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         {isStoreKeeper && skQueue && (
           <>
             <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
-              <QuickAction label="Materials Requests" href="/store/parts-requests" icon={ShoppingCart}  iconBg="bg-red-50"   iconColor="text-[#ED1C24]" />
-              <QuickAction label="Spare Parts"    href="/store/parts"          icon={Package}       iconBg="bg-blue-50"  iconColor="text-blue-600" />
-              <QuickAction label="Low Stock"      href="/store/low-stock"      icon={AlertTriangle} iconBg="bg-amber-50" iconColor="text-amber-600" />
-              <QuickAction label="Notifications"  href="/notifications"        icon={Bell}          iconBg="bg-green-50" iconColor="text-green-600" />
+              <QuickAction label="Materials Requests"   href="/store/parts-requests"     icon={ShoppingCart}  iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
+              <QuickAction label="Offline Inventory"  href="/store/offline-inventory"  icon={Package}       iconBg="bg-blue-50"   iconColor="text-blue-600" />
+              <QuickAction label="Notifications"       href="/notifications"            icon={Bell}          iconBg="bg-green-50"  iconColor="text-green-600" />
+              <QuickAction label="Job Cards"           href="/maintenance/work-orders"  icon={ClipboardList} iconBg="bg-violet-50" iconColor="text-violet-600" />
             </div>
 
             <section className="space-y-2">
@@ -663,7 +663,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               <KpiRow cols="sm:grid-cols-4" cards={[
                 { label: "Submitted Requests", value: skQueue[0], icon: ClipboardList, tone: skQueue[0] > 0 ? "red"   : "green", href: "/store/parts-requests?status=Waiting+for+Store" },
                 { label: "Partially Issued",   value: skQueue[1], icon: Package,       tone: skQueue[1] > 0 ? "amber" : "green", href: "/store/parts-requests?status=Partially+Issued" },
-                { label: "Low Stock Parts",    value: skQueue[2], icon: AlertTriangle, tone: skQueue[2] > 0 ? "amber" : "green", href: "/store/low-stock" },
+                { label: "Low Stock Materials", value: skQueue[2], icon: AlertTriangle, tone: skQueue[2] > 0 ? "amber" : "green", href: "/store/low-stock" },
                 { label: "Waiting Purchase",   value: skQueue[3], icon: ShoppingCart,  tone: skQueue[3] > 0 ? "amber" : "gray",  href: "/store/parts-requests?status=Waiting+for+Purchase" },
               ]} />
             </section>
@@ -680,7 +680,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
               <QuickAction label="Create Job Card"     href="/maintenance/work-orders/new" icon={PlusCircle}  iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
               <QuickAction label="Assets & Equipment"  href="/assets"                      icon={Gauge}       iconBg="bg-blue-50"   iconColor="text-blue-600" />
-              <QuickAction label="Spare Parts"         href="/store/parts"                 icon={Package}     iconBg="bg-green-50"  iconColor="text-green-600" />
+              <QuickAction label="Offline Inventory"   href="/store/offline-inventory"     icon={Package}     iconBg="bg-green-50"  iconColor="text-green-600" />
               <QuickAction label="Users"               href="/admin/users"                 icon={Users}       iconBg="bg-violet-50" iconColor="text-violet-600" />
             </div>
 
@@ -690,7 +690,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 { label: "Total Assets",      value: saCount[0], icon: Gauge,         tone: "blue",                              href: "/assets" },
                 { label: "Open Job Cards",    value: saCount[1], icon: ClipboardList, tone: saCount[1] > 0 ? "amber" : "green", href: "/maintenance/work-orders" },
                 { label: "Waiting Materials", value: saCount[2], icon: AlertTriangle, tone: saCount[2] > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Waiting+for+Parts" },
-                { label: "Low Stock Parts",   value: saCount[3], icon: Package,       tone: saCount[3] > 0 ? "amber" : "green", href: "/store/low-stock" },
+                { label: "Low Stock Materials", value: saCount[3], icon: Package,       tone: saCount[3] > 0 ? "amber" : "green", href: "/store/low-stock" },
                 { label: "Active Users",      value: saCount[4], icon: Users,         tone: "blue",                              href: "/admin/users" },
               ]} />
             </section>

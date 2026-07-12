@@ -390,35 +390,38 @@ function isDateBetween(value: Date | string | null | undefined, start: Date, end
 // ─── Landing page stats ────────────────────────────────────────────────────────
 
 export async function getReportLandingStats() {
-  const [openWOs, overdueWOs, criticalAssets, lowStockRaw] = await Promise.all([
-    prisma.work_orders.count({ where: { deleted_at: null, status: { notIn: ["Closed", "Cancelled", "Rejected"] } } }),
+  const thirtyDaysAhead = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+  const [openWOs, overdueWOs, openPartsRequests, expiringContracts] = await Promise.all([
+    prisma.work_orders.count({
+      where: { deleted_at: null, status: { notIn: ["Closed", "Cancelled", "Rejected"] } },
+    }),
     prisma.work_orders.count({
       where: {
         deleted_at: null,
         starting_datetime: { lt: new Date() },
-        status: { in: ["Approved", "Assigned", "In Progress", "Waiting for Parts", "Waiting for Purchase"] }
-      }
+        status: { in: ["Approved", "Assigned", "In Progress", "Waiting for Parts", "Waiting for Purchase"] },
+      },
     }),
-    prisma.assets.count({
+    prisma.parts_requests.count({
+      where: {
+        status: { in: ["Pending Approval", "Waiting for Store", "Partially Issued", "Waiting for Purchase"] },
+      },
+    }),
+    prisma.service_contracts.count({
       where: {
         deleted_at: null,
-        OR: [
-          { status: "Breakdown" },
-          { status: "Waiting for Parts" },
-          { criticality: "Critical" },
-          { condition: "Poor" }
-        ]
-      }
+        contract_status: { notIn: ["Expired", "Cancelled", "Terminated"] },
+        end_date: { gte: new Date(), lte: thirtyDaysAhead },
+      },
     }),
-    prisma.$queryRaw<[{ count: bigint }]>`SELECT COUNT(*) AS count FROM parts WHERE deleted_at IS NULL AND current_stock <= minimum_stock`
-  ]).catch(() => [0, 0, 0, [{ count: BigInt(0) }]] as const);
+  ]).catch(() => [0, 0, 0, 0] as const);
 
-  const lowStockRawResult = Array.isArray(lowStockRaw) ? (lowStockRaw as [{ count: bigint }]) : [{ count: BigInt(0) }];
   return {
     openWOs: Number(openWOs),
     overdueWOs: Number(overdueWOs),
-    criticalAssets: Number(criticalAssets),
-    lowStockCount: Number(lowStockRawResult[0]?.count ?? 0)
+    openPartsRequests: Number(openPartsRequests),
+    expiringContracts: Number(expiringContracts),
   };
 }
 

@@ -788,7 +788,7 @@ export default async function AssetDetailPage({
             <div className="flex items-center justify-between gap-3 border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
               <div>
                 <p className="text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
-                  Materials &amp; Spare Parts
+                  Materials
                 </p>
                 <p className="mt-0.5 text-sm font-bold text-[#111827]">
                   Parts Used ({partsUsed.length} record{partsUsed.length !== 1 ? "s" : ""})

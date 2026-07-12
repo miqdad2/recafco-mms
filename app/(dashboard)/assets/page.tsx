@@ -190,7 +190,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         reason: isUnavailable ? "Unavailable" : "Low Stock",
         location: null,
         stage: isUnavailable ? "Purchase / Procurement" : "Store Keeper / Purchase",
-        href: `/store/parts`,
+        href: `/store/offline-inventory`,
       };
     });
 
