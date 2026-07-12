@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
+import { hasPermission } from "@/lib/security/permissions";
 import { prisma } from "@/lib/db/prisma";
 import { cn } from "@/lib/utils";
 
@@ -84,12 +85,14 @@ export default async function PartsPage({ searchParams }: { searchParams?: Promi
         title="Spare Parts Inventory"
         description="Track repair materials, stock balance, and part availability."
         actions={
-          <Link href="/store/parts/new">
-            <Button>
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              New part
-            </Button>
-          </Link>
+          hasPermission(context, "parts.manage") ? (
+            <Link href="/store/parts/new">
+              <Button>
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                New part
+              </Button>
+            </Link>
+          ) : undefined
         }
       />
       <div className="space-y-4 p-4 lg:p-6">

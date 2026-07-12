@@ -28,18 +28,21 @@ const SUCCESS_MAP: Record<string, ToastMessage> = {
   // Generic saves
   saved:                  { tone: "success", title: "Saved" },
   "1":                    { tone: "success", title: "Saved" }, // legacy ?saved=1
-  // Work orders / assets / parts
-  "work-order-saved":     { tone: "success", title: "Work order saved" },
-  "asset-saved":          { tone: "success", title: "Asset saved" },
-  "part-saved":           { tone: "success", title: "Part saved" },
+  // Work orders / assets / parts / inventory
+  "work-order-saved":       { tone: "success", title: "Work order saved" },
+  "asset-saved":            { tone: "success", title: "Asset saved" },
+  "part-saved":             { tone: "success", title: "Part saved" },
+  "material-received":      { tone: "success", title: "Material received", description: "Movement recorded in the offline inventory ledger." },
+  "material-issued":        { tone: "success", title: "Material issued",   description: "Movement recorded in the offline inventory ledger." },
   "settings-saved":       { tone: "success", title: "Settings saved" },
   "department-saved":     { tone: "success", title: "Department saved" },
   approved:               { tone: "success", title: "Approved" },
-  rejected:               { tone: "warning", title: "Rejected" },
-  assigned:               { tone: "success", title: "Assigned" },
-  closed:                 { tone: "success", title: "Work order closed" },
-  submitted:              { tone: "success", title: "Submitted for approval" },
+  rejected:               { tone: "warning", title: "Returned for fix" },
+  assigned:               { tone: "success", title: "Technician assigned" },
+  closed:                 { tone: "success", title: "Repair order closed" },
+  submitted:              { tone: "success", title: "Submitted for review" },
   completed:              { tone: "success", title: "Marked as completed" },
+  cancelled:              { tone: "warning", title: "Repair order cancelled" },
 };
 
 const ERROR_MAP: Record<string, ToastMessage> = {
@@ -71,6 +74,19 @@ const ERROR_MAP: Record<string, ToastMessage> = {
   "rate-limited":               { tone: "error",   title: "Too many attempts",              description: "Please wait before trying again." },
   "inactive-profile":           { tone: "error",   title: "Account inactive",               description: "Contact your administrator." },
   "no-account":                 { tone: "error",   title: "No login account found" },
+  // Repair order form validation
+  "missing-complaint":          { tone: "error",   title: "Operator complaint required",    description: "Please describe the fault or issue reported before submitting." },
+  "missing-description":        { tone: "error",   title: "Description of work required",   description: "Please add a description of the work to be carried out before submitting." },
+  "missing-ordered-by":         { tone: "error",   title: "\"Order taken by\" is required" },
+  "missing-department":         { tone: "error",   title: "Department is required" },
+  "missing-type":               { tone: "error",   title: "Maintenance type is required" },
+  "missing-team":               { tone: "error",   title: "Worker team is required" },
+  "missing-priority":           { tone: "error",   title: "Priority is required" },
+  "missing-date":               { tone: "error",   title: "Date of order is required" },
+  "invalid-status":             { tone: "error",   title: "Status change not allowed",      description: "This transition is not permitted by the workflow rules." },
+  "clarification-question-too-short": { tone: "error", title: "Clarification question too short", description: "Please provide at least 10 characters." },
+  "clarification-response-too-short": { tone: "error", title: "Response too short",         description: "Please provide at least 10 characters." },
+  "cancel-reason-required":           { tone: "error", title: "Cancellation reason required", description: "Please state why this repair order is being cancelled." },
 };
 
 export function resolveToastMessage(params: {

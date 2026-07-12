@@ -39,8 +39,8 @@ export default async function NewWorkOrderPage({
   return (
     <>
       <PageHeader
-        title="New Repair Order"
-        description="Capture the repair request as structured maintenance data. Reference number is generated on save."
+        title="New Job Card"
+        description="Capture the job request as structured maintenance data. Reference number is generated on save."
       />
       <div className="p-4 lg:p-6">
         <WorkOrderWizard

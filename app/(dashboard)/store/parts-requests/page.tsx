@@ -9,6 +9,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { cn } from "@/lib/utils";
+import { AutoRefresh } from "@/components/auto-refresh";
 
 const PAGE_SIZE = 25;
 const STATUS_OPTIONS = [
@@ -54,9 +55,17 @@ function paginationClass(disabled: boolean) {
 
 export default async function PartsRequestsPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   const context = await requirePermission("parts_requests.view");
+  const roleSlug = context.role?.slug ?? "";
+
   const canCreate =
     context.role?.slug === "super_admin" ||
     context.permissions.includes("parts_requests.create") ||
+    context.permissions.includes("work_orders.manage");
+
+  const canSeeAll =
+    context.role?.slug === "super_admin" ||
+    context.permissions.includes("store.issue") ||
+    context.permissions.includes("work_orders.approve") ||
     context.permissions.includes("work_orders.manage");
 
   const params = (await searchParams) ?? {};
@@ -64,18 +73,23 @@ export default async function PartsRequestsPage({ searchParams }: { searchParams
   const status = single(params.status)?.trim() ?? "";
   const page = Math.max(1, Number(single(params.page) ?? 1) || 1);
 
-  const where: Prisma.parts_requestsWhereInput = {
-    ...(status ? { status } : {}),
-    ...(query
-      ? {
-          OR: [
-            { parts_request_number: { contains: query, mode: "insensitive" } },
-            { work_orders: { work_order_number: { contains: query, mode: "insensitive" } } },
-            { departments: { name: { contains: query, mode: "insensitive" } } }
-          ]
-        }
-      : {})
-  };
+  const conditions: Prisma.parts_requestsWhereInput[] = [];
+  if (!canSeeAll) {
+    conditions.push({ OR: [{ created_by: context.userId }, { requested_by: context.userId }] });
+  }
+  if (status) {
+    conditions.push({ status });
+  }
+  if (query) {
+    conditions.push({
+      OR: [
+        { parts_request_number: { contains: query, mode: "insensitive" } },
+        { work_orders: { work_order_number: { contains: query, mode: "insensitive" } } },
+        { departments: { name: { contains: query, mode: "insensitive" } } }
+      ]
+    });
+  }
+  const where: Prisma.parts_requestsWhereInput = conditions.length > 0 ? { AND: conditions } : {};
 
   const [requests, total] = await Promise.all([
     prisma.parts_requests.findMany({
@@ -100,9 +114,10 @@ export default async function PartsRequestsPage({ searchParams }: { searchParams
 
   return (
     <>
+      <AutoRefresh intervalMs={30000} />
       <PageHeader
-        title="Parts Requests"
-        description="Maintenance parts request queue for approval, store issue, and purchase follow-up."
+        title="Materials Requests"
+        description="Maintenance materials request queue for approval, store issue, and purchase follow-up."
         actions={
           canCreate ? (
             <Link
@@ -110,7 +125,7 @@ export default async function PartsRequestsPage({ searchParams }: { searchParams
               href="/store/parts-requests/new"
             >
               <Plus className="h-4 w-4" />
-              New parts request
+              New materials request
             </Link>
           ) : null
         }
@@ -190,7 +205,24 @@ export default async function PartsRequestsPage({ searchParams }: { searchParams
             </div>
           ) : (
             <div className="p-4">
-              <EmptyState title="No parts requests found" message="Try changing the search or status filter." />
+              <EmptyState
+                title={
+                  query || status
+                    ? "No materials requests match the current filters."
+                    : roleSlug === "store_keeper"
+                      ? "No materials requests waiting for issue."
+                      : roleSlug === "maintenance_manager" || roleSlug === "super_admin"
+                        ? "No materials requests from the team yet."
+                        : "No materials requests yet."
+                }
+                message={
+                  query || status
+                    ? "Try clearing the search or status filter."
+                    : canCreate
+                      ? "Materials requests are created from inside a job card."
+                      : "Materials requests submitted by the team will appear here."
+                }
+              />
             </div>
           )}
         </section>

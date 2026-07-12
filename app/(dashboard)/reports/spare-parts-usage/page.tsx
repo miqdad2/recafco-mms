@@ -35,8 +35,8 @@ export default async function SparePartsUsagePage({
   return (
     <>
       <PageHeader
-        title="Spare Parts Usage"
-        description="Track parts used across repair orders and assets."
+        title="Materials Usage"
+        description="Track materials used across job cards and assets."
       />
 
       <div className="space-y-5 p-4 lg:p-6">
@@ -102,7 +102,7 @@ export default async function SparePartsUsagePage({
         {/* Table */}
         <section className="rounded-md border border-[#E5E7EB] bg-white shadow-sm">
           <div className="border-b border-[#E5E7EB] px-5 py-3">
-            <h2 className="text-sm font-bold text-[#111827]">Parts Used in Repair Orders</h2>
+            <h2 className="text-sm font-bold text-[#111827]">Materials Used in Job Cards</h2>
             <p className="text-xs text-[#4B5563]">{rows.length} record{rows.length !== 1 ? "s" : ""}</p>
           </div>
           <div className="overflow-x-auto">
@@ -113,7 +113,7 @@ export default async function SparePartsUsagePage({
                   <th className="px-4 py-2.5">Part No.</th>
                   <th className="px-4 py-2.5">Qty Used</th>
                   <th className="px-4 py-2.5">Asset / Machine</th>
-                  <th className="px-4 py-2.5">Repair Order</th>
+                  <th className="px-4 py-2.5">Job Card</th>
                   <th className="px-4 py-2.5">Date</th>
                 </tr>
               </thead>
@@ -127,7 +127,7 @@ export default async function SparePartsUsagePage({
                         </div>
                         <EmptyState
                           title="No parts usage data yet"
-                          message="Parts usage records will appear here after materials are added to repair orders."
+                          message="Materials usage records will appear here after materials are added to job cards."
                         />
                       </div>
                     </td>

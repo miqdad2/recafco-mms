@@ -46,7 +46,7 @@ export default async function PrintPartsRequestPage({ params }: { params: Promis
       <article className="mx-auto max-w-5xl border border-[#E5E7EB] p-8 shadow-sm">
         <FormDocumentHeader
           variant="print"
-          title="Parts Request"
+          title="Materials Request"
           departmentName="Maintenance Department"
           subtitle={`Generated: ${formatDateTime(new Date().toISOString())}`}
           referenceLabel="Number"

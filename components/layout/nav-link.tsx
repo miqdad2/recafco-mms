@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  ArrowDownUp,
   BarChart3,
   Bell,
   BellDot,
@@ -35,6 +36,7 @@ import { cn } from "@/lib/utils";
 
 export const navIcons = {
   Activity,
+  ArrowDownUp,
   BarChart3,
   Bell,
   BellDot,

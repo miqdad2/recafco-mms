@@ -107,6 +107,7 @@ model assets {
   departments                departments?      @relation(fields: [department_id], references: [id], onUpdate: NoAction)
   parts_requests             parts_requests[]
   work_orders                work_orders[]
+  service_contracts          service_contracts[]
 
   @@index([category], map: "idx_assets_category")
   @@index([deleted_at], map: "idx_assets_deleted_at")
@@ -116,6 +117,71 @@ model assets {
   @@index([status], map: "idx_assets_status")
   @@index([criticality], map: "idx_assets_criticality")
   @@index([condition], map: "idx_assets_condition")
+}
+
+model offline_inventory_movements {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  movement_type         String
+  movement_date         DateTime  @db.Date
+  part_id               String?   @db.Uuid
+  manual_material_name  String?
+  manual_part_number    String?
+  quantity              Decimal   @db.Decimal(12, 3)
+  unit                  String    @default("PCS")
+  reference_number      String?
+  counterparty          String?
+  purpose               String?
+  receiver_name         String?
+  related_work_order_id String?   @db.Uuid
+  remarks               String?
+  adjustment_reason     String?
+  created_by            String    @db.Uuid
+  created_at            DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime  @default(now()) @db.Timestamptz(6)
+  deleted_at            DateTime? @db.Timestamptz(6)
+
+  parts       parts?       @relation(fields: [part_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  work_orders work_orders? @relation(fields: [related_work_order_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  profiles    profiles     @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([movement_type], map: "idx_oim_movement_type")
+  @@index([movement_date(sort: Desc)], map: "idx_oim_movement_date")
+  @@index([part_id], map: "idx_oim_part_id")
+  @@index([related_work_order_id], map: "idx_oim_work_order")
+  @@index([created_by], map: "idx_oim_created_by")
+  @@index([deleted_at], map: "idx_oim_deleted_at")
+}
+
+model service_contracts {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  asset_id          String    @db.Uuid
+  contract_title    String
+  contract_number   String?
+  service_company   String
+  contact_person    String?
+  phone             String?
+  email             String?
+  start_date        DateTime  @db.Date
+  end_date          DateTime  @db.Date
+  renewal_date      DateTime? @db.Date
+  service_frequency String    @default("One-time")
+  contract_status   String    @default("Active")
+  scope_of_service  String?
+  remarks           String?
+  created_by        String    @db.Uuid
+  updated_by        String?   @db.Uuid
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime  @default(now()) @db.Timestamptz(6)
+  deleted_at        DateTime? @db.Timestamptz(6)
+
+  assets                            assets   @relation(fields: [asset_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  profiles_created_by               profiles @relation("sc_created_by", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  profiles_updated_by               profiles? @relation("sc_updated_by", fields: [updated_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([asset_id], map: "idx_sc_asset_id")
+  @@index([contract_status], map: "idx_sc_contract_status")
+  @@index([end_date], map: "idx_sc_end_date")
+  @@index([deleted_at], map: "idx_sc_deleted_at")
 }
 
 model asset_categories {
@@ -367,12 +433,13 @@ model parts {
   created_by                  String?                  @db.Uuid
   updated_by                  String?                  @db.Uuid
   deleted_at                  DateTime?                @db.Timestamptz(6)
-  inventory_movements         inventory_movements[]
-  parts_request_items         parts_request_items[]
-  purchase_request_items      purchase_request_items[]
-  work_order_materials        work_order_materials[]
-  work_order_required_parts   WorkOrderRequiredPart[]
-  purchase_order_items        PurchaseOrderItem[]
+  inventory_movements             inventory_movements[]
+  parts_request_items             parts_request_items[]
+  purchase_request_items          purchase_request_items[]
+  work_order_materials            work_order_materials[]
+  work_order_required_parts       WorkOrderRequiredPart[]
+  purchase_order_items            PurchaseOrderItem[]
+  offline_inventory_movements     offline_inventory_movements[]
 
   @@index([current_stock], map: "idx_parts_current_stock")
   @@index([deleted_at], map: "idx_parts_deleted_at")
@@ -485,6 +552,9 @@ model profiles {
   workflow_map_versions_workflow_map_versions_created_byToprofiles  WorkflowMapVersion[]    @relation("workflow_map_versions_created_byToprofiles")
   workflow_map_versions_workflow_map_versions_updated_byToprofiles  WorkflowMapVersion[]    @relation("workflow_map_versions_updated_byToprofiles")
   work_order_required_parts_confirmed                               WorkOrderRequiredPart[]
+  offline_inventory_movements                                       offline_inventory_movements[]
+  service_contracts_created                                         service_contracts[]         @relation("sc_created_by")
+  service_contracts_updated                                         service_contracts[]         @relation("sc_updated_by")
 
   @@index([department_id], map: "idx_profiles_department_id")
   @@index([is_active], map: "idx_profiles_is_active")
@@ -591,14 +661,21 @@ model roles {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model work_order_assignments {
-  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  work_order_id String      @db.Uuid
-  technician_id String?     @db.Uuid
-  assigned_by   String?     @db.Uuid
-  assigned_at   DateTime    @default(now()) @db.Timestamptz(6)
-  notes         String?
-  profiles      profiles?   @relation(fields: [technician_id], references: [id], onUpdate: NoAction)
-  work_orders   work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id                           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id                String    @db.Uuid
+  technician_id                String?   @db.Uuid
+  assigned_by                  String?   @db.Uuid
+  assigned_at                  DateTime  @default(now()) @db.Timestamptz(6)
+  notes                        String?
+  assignment_type              String    @default("INTERNAL_TECHNICIAN")
+  external_name                String?
+  external_company             String?
+  external_contact_person      String?
+  external_phone               String?
+  external_trade               String?
+  external_expected_visit_date DateTime? @db.Date
+  profiles                     profiles?   @relation(fields: [technician_id], references: [id], onUpdate: NoAction)
+  work_orders                  work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([technician_id], map: "idx_work_order_assignments_technician")
 }
@@ -730,6 +807,7 @@ model work_orders {
   work_order_status_history       work_order_status_history[]
   work_order_technician_notes     work_order_technician_notes[]
   work_order_required_parts       WorkOrderRequiredPart[]
+  offline_inventory_movements     offline_inventory_movements[]
   assets                          assets?                       @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
   profiles                        profiles?                     @relation(fields: [assigned_supervisor_id], references: [id], onUpdate: NoAction)
   departments                     departments?                  @relation(fields: [requested_by_department_id], references: [id], onUpdate: NoAction)

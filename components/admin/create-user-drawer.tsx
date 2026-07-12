@@ -6,8 +6,27 @@ import { useEffect, useState } from "react";
 import { createLocalUserAction } from "@/app/actions/admin";
 import { Button } from "@/components/ui/button";
 
+const ACCOUNT_TYPES = [
+  { value: "maintenance_data_entry", label: "Maintenance Data Entry" },
+  { value: "maintenance_manager",    label: "Maintenance Manager" },
+  { value: "technician",             label: "Technician" },
+  { value: "store_keeper",           label: "Store / Spare Parts User" },
+  { value: "system_admin",           label: "System Administrator" },
+  { value: "viewer_auditor",         label: "Viewer / Auditor" },
+] as const;
+
+const ACCOUNT_TYPE_HELP: Record<string, string> = {
+  maintenance_data_entry: "Creates and manages repair orders. Can submit requests and track progress.",
+  maintenance_manager:    "Reviews and approves repair orders, assigns technicians, and closes completed work.",
+  technician:             "Receives job assignments, logs work updates, and marks work as completed.",
+  store_keeper:           "Manages spare parts inventory, handles parts requests, and processes store issues.",
+  system_admin:           "Full system access including user management, settings, and all records.",
+  viewer_auditor:         "Read-only access to repair orders, assets, and reports. Cannot create or modify records.",
+};
+
 export function CreateUserDrawer({ initialOpen = false }: { initialOpen?: boolean }) {
   const [open, setOpen] = useState(initialOpen);
+  const [accountType, setAccountType] = useState<string>("maintenance_data_entry");
 
   // Close on Escape key
   useEffect(() => {
@@ -141,11 +160,16 @@ export function CreateUserDrawer({ initialOpen = false }: { initialOpen?: boolea
                 <select
                   className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
                   name="account_type"
-                  defaultValue="normal_user"
+                  value={accountType}
+                  onChange={(e) => setAccountType(e.target.value)}
                 >
-                  <option value="normal_user">Normal User</option>
-                  <option value="system_admin">System Administrator</option>
+                  {ACCOUNT_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
                 </select>
+                {ACCOUNT_TYPE_HELP[accountType] && (
+                  <p className="mt-1.5 text-xs text-[#4B5563]">{ACCOUNT_TYPE_HELP[accountType]}</p>
+                )}
               </label>
 
               <label className="flex items-center gap-2 text-sm font-semibold">

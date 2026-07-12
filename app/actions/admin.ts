@@ -157,7 +157,15 @@ export async function createLocalUserAction(formData: FormData) {
   // Resolve simplified account_type field → role_id before schema validation.
   const rawData: Record<string, FormDataEntryValue> = Object.fromEntries(formData);
   if (typeof rawData.account_type === "string" && rawData.account_type) {
-    const roleSlug = rawData.account_type === "system_admin" ? "super_admin" : "maintenance_data_entry";
+    const ACCOUNT_TYPE_TO_SLUG: Record<string, string> = {
+      maintenance_data_entry: "maintenance_data_entry",
+      maintenance_manager:    "maintenance_manager",
+      technician:             "technician",
+      store_keeper:           "store_keeper",
+      system_admin:           "super_admin",
+      viewer_auditor:         "viewer_auditor",
+    };
+    const roleSlug = ACCOUNT_TYPE_TO_SLUG[rawData.account_type] ?? "maintenance_data_entry";
     const roleRow = await prisma.roles.findFirst({ where: { slug: roleSlug }, select: { id: true } }).catch(() => null);
     if (roleRow) rawData.role_id = roleRow.id;
     delete rawData.account_type;

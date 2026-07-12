@@ -6,6 +6,8 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { displayStatus } from "@/lib/display/work-order-labels";
+import { AutoRefresh } from "@/components/auto-refresh";
 
 export default async function TechnicianJobsPage() {
   const context = await requirePermission("technician.jobs.view");
@@ -33,7 +35,8 @@ export default async function TechnicianJobsPage() {
 
   return (
     <>
-      <PageHeader title="My Technician Jobs" description="Mobile job dashboard for your assigned repair orders." />
+      <AutoRefresh intervalMs={20000} />
+      <PageHeader title="My Technician Jobs" description="Mobile job dashboard for your assigned job cards." />
       <div className="grid gap-4 p-4 sm:grid-cols-2 xl:grid-cols-3">
         {jobs.length ? jobs.map((job) => {
           const asset = Array.isArray(job.assets) ? job.assets[0] : job.assets;
@@ -44,7 +47,7 @@ export default async function TechnicianJobsPage() {
                   <p className="text-lg font-black text-[#111827]">{job.work_order_number}</p>
                   <p className="mt-1 text-sm text-[#4B5563]">{asset ? `${asset.asset_code} - ${asset.asset_name}` : "No asset"}</p>
                 </div>
-                <StatusBadge label={job.status} tone={job.status === "In Progress" ? "blue" : job.status === "Completed by Technician" ? "green" : "amber"} />
+                <StatusBadge label={displayStatus(job.status)} tone={job.status === "In Progress" ? "blue" : job.status === "Completed by Technician" ? "green" : "amber"} />
               </div>
               <p className="mt-4 text-sm text-[#111827]">{job.operator_complaint || "No complaint recorded."}</p>
               <div className="mt-4 flex flex-wrap gap-3 text-xs font-semibold text-[#4B5563]">
@@ -53,7 +56,7 @@ export default async function TechnicianJobsPage() {
               </div>
             </Link>
           );
-        }) : <div className="sm:col-span-2 xl:col-span-3"><EmptyState title="No assigned jobs" message="Assigned repair orders will appear here when a supervisor schedules them for you." /></div>}
+        }) : <div className="sm:col-span-2 xl:col-span-3"><EmptyState title="No assigned jobs" message="Assigned job cards will appear here when a supervisor schedules them for you." /></div>}
       </div>
     </>
   );

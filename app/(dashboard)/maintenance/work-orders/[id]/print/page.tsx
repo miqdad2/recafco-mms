@@ -96,7 +96,7 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
       <article className="print-sheet mx-auto max-w-5xl border border-[#E5E7EB] p-8 shadow-sm">
         <FormDocumentHeader
           variant="print"
-          title="Maintenance Work Order"
+          title="Maintenance Job Card"
           departmentName="Maintenance Department"
           subtitle={`Generated: ${formatDateTime(new Date().toISOString())}`}
           referenceLabel="Work order number"

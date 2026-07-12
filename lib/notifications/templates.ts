@@ -57,8 +57,8 @@ const fallbackTemplates: Record<string, { title: string; message: string; action
     actionUrl: "/maintenance/work-orders/{entity_id}"
   },
   "parts_request.submitted": {
-    title: "Parts request pending approval",
-    message: "Parts request {parts_request_number} is waiting for approval.",
+    title: "Materials request pending approval",
+    message: "Materials request {parts_request_number} is waiting for approval.",
     actionLabel: "Review request",
     actionUrl: "/store/parts-requests/{entity_id}"
   },

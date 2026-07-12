@@ -6,9 +6,20 @@ export const workOrderIdSchema = z.string().uuid();
 
 export const workflowCommentSchema = z.string().trim().max(1000).optional();
 
+export const ASSIGNMENT_TYPES = ["INTERNAL_TECHNICIAN", "FREELANCER", "EXTERNAL_COMPANY"] as const;
+export type AssignmentType = (typeof ASSIGNMENT_TYPES)[number];
+
 export const technicianAssignmentSchema = z.object({
   workOrderId: workOrderIdSchema,
-  technicianIds: z.array(workOrderIdSchema).min(1)
+  assignmentType: z.enum(ASSIGNMENT_TYPES).default("INTERNAL_TECHNICIAN"),
+  technicianIds: z.array(workOrderIdSchema).optional().default([]),
+  externalName: z.string().trim().max(200).optional(),
+  externalCompany: z.string().trim().max(200).optional(),
+  externalContactPerson: z.string().trim().max(200).optional(),
+  externalPhone: z.string().trim().max(50).optional(),
+  externalTrade: z.string().trim().max(100).optional(),
+  externalExpectedVisitDate: z.string().trim().max(20).optional(),
+  notes: z.string().trim().max(500).optional(),
 });
 
 export const technicianUpdateSchema = z.object({

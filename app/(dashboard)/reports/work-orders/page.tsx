@@ -8,6 +8,7 @@ import { ReportSummaryGrid } from "@/components/reports/report-summary-card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
+import { displayStatus } from "@/lib/display/work-order-labels";
 import {
   getFilterOptions,
   getMgrFilterOptions,
@@ -28,24 +29,24 @@ type GroupCardDef = { title: string; rows: GroupRow[] };
 
 const MODE_META: Record<ReportMode, { label: string; description: string }> = {
   overdue: {
-    label: "Overdue Repair Orders",
-    description: "Open repair orders delayed past their planned start date."
+    label: "Overdue Job Cards",
+    description: "Open job cards delayed past their planned start date."
   },
   "waiting-parts": {
-    label: "Waiting for Parts",
-    description: "Repair orders currently blocked by parts availability."
+    label: "Waiting for Materials",
+    description: "Job cards currently blocked by materials availability."
   },
   "asset-history": {
-    label: "Asset Repair History",
-    description: "All repair orders per asset — identify repeated issues or high-maintenance equipment."
+    label: "Asset Job Card History",
+    description: "All job cards per asset — identify repeated issues or high-maintenance equipment."
   },
   "monthly-summary": {
-    label: "Monthly Repair Order Summary",
-    description: "Repair orders this month grouped by status, priority, and maintenance type."
+    label: "Monthly Job Card Summary",
+    description: "Job cards this month grouped by status, priority, and maintenance type."
   },
   "technician-workload": {
     label: "Technician / Team Workload",
-    description: "Active and recently completed repair orders per technician or worker team."
+    description: "Active and recently completed job cards per technician or worker team."
   }
 };
 
@@ -100,7 +101,7 @@ function computeModeSummary(rows: any[], mode: ReportMode): SummaryCard[] {
       const ages = rows.map((r) => daysAgo(r.created_at));
       const oldest = ages.length ? Math.max(...ages) : 0;
       return [
-        { label: "Waiting for parts", value: waitP, tone: waitP > 0 ? "amber" : "green" },
+        { label: "Waiting for materials", value: waitP, tone: waitP > 0 ? "amber" : "green" },
         { label: "Waiting for purchase", value: waitPu, tone: waitPu > 0 ? "red" : "green" },
         { label: "Parts issued (pending)", value: rows.filter((r) => r.status === "Parts Issued").length, tone: "blue" },
         { label: "Oldest blocked (days)", value: oldest, tone: oldest > 14 ? "red" : oldest > 7 ? "amber" : "green" }
@@ -110,7 +111,7 @@ function computeModeSummary(rows: any[], mode: ReportMode): SummaryCard[] {
       const assetIds = new Set(rows.map((r) => r.asset_id).filter(Boolean));
       const breakdowns = rows.filter((r) => r.maintenance_type === "Breakdown").length;
       return [
-        { label: "Total repair orders", value: rows.length, tone: "blue" },
+        { label: "Total job cards", value: rows.length, tone: "blue" },
         { label: "Assets affected", value: assetIds.size, tone: "blue" },
         { label: "Breakdown type", value: breakdowns, tone: breakdowns > 3 ? "red" : "amber" },
         { label: "Other maintenance types", value: rows.length - breakdowns, tone: "gray" }
@@ -125,7 +126,7 @@ function computeModeSummary(rows: any[], mode: ReportMode): SummaryCard[] {
       return [
         { label: "Total created", value: rows.length, tone: "blue" },
         { label: "In progress", value: inProgress, tone: inProgress > 0 ? "amber" : "green" },
-        { label: "Waiting for parts", value: waiting, tone: waiting > 0 ? "amber" : "green" },
+        { label: "Waiting for materials", value: waiting, tone: waiting > 0 ? "amber" : "green" },
         { label: "Completed / Closed", value: completed, tone: completed > 0 ? "green" : "gray" }
       ];
     }
@@ -274,10 +275,10 @@ export default async function WorkOrderReportsPage({
   const meta = MODE_META[reportMode];
 
   const adminCards: SummaryCard[] = [
-    { label: "Total Repair Orders", value: report.stats.total, tone: "blue" },
+    { label: "Total Job Cards", value: report.stats.total, tone: "blue" },
     { label: "Open", value: report.stats.open, tone: "amber" },
     { label: "In Progress", value: report.stats.inProgress, tone: "amber" },
-    { label: "Waiting for Parts", value: report.stats.waitingForParts, tone: "amber" },
+    { label: "Waiting for Materials", value: report.stats.waitingForParts, tone: "amber" },
     { label: "Completed", value: report.stats.completed, tone: "green" },
     { label: "Closed", value: report.stats.closed, tone: "green" },
     { label: "Overdue", value: report.stats.overdue, tone: "red" }
@@ -286,11 +287,11 @@ export default async function WorkOrderReportsPage({
   return (
     <>
       <PageHeader
-        title="Repair Order Summary"
+        title="Job Card Summary"
         description={
           isManager
             ? `${deptName} — overdue, blocked, asset history, monthly summary, and technician workload.`
-            : "Overview of all repair orders by status, type, and monthly trend."
+            : "Overview of all job cards by status, type, and monthly trend."
         }
         actions={
           <ExportButton
@@ -404,7 +405,8 @@ function StatusTag({ status }: { status: string }) {
   const toneMap: Record<string, string> = {
     Draft: "bg-gray-100 text-gray-500",
     Submitted: "bg-blue-100 text-blue-700",
-    "Pending Approval": "bg-amber-100 text-amber-700",
+    "Pending Approval": "bg-amber-100 text-amber-700", // kept for map lookup; display label remapped below
+    "Manager Review":   "bg-amber-100 text-amber-700",
     Approved: "bg-green-100 text-green-700",
     Assigned: "bg-blue-100 text-blue-700",
     "In Progress": "bg-amber-100 text-amber-700",
@@ -421,7 +423,7 @@ function StatusTag({ status }: { status: string }) {
   };
   return (
     <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-bold ${toneMap[status] ?? "bg-gray-100 text-gray-500"}`}>
-      {status}
+      {displayStatus(status)}
     </span>
   );
 }
@@ -443,7 +445,7 @@ function AdminWOTable({ rows }: { rows: any[] }) {
     <section className="rounded-md border border-[#E5E7EB] bg-white shadow-sm">
       <div className="flex items-center justify-between border-b border-[#E5E7EB] px-5 py-3">
         <div>
-          <h2 className="text-sm font-bold text-[#111827]">Repair Order List</h2>
+          <h2 className="text-sm font-bold text-[#111827]">Job Card List</h2>
           <p className="text-xs text-[#4B5563]">{rows.length} record{rows.length !== 1 ? "s" : ""}</p>
         </div>
       </div>
@@ -451,7 +453,7 @@ function AdminWOTable({ rows }: { rows: any[] }) {
         <table className="w-full min-w-max text-left text-sm">
           <thead className="bg-gray-50 text-xs font-bold uppercase tracking-wide text-[#4B5563]">
             <tr>
-              <th className="px-4 py-2.5">Repair Order</th>
+              <th className="px-4 py-2.5">Job Card</th>
               <th className="px-4 py-2.5">Date</th>
               <th className="px-4 py-2.5">Asset / Machine</th>
               <th className="px-4 py-2.5">Type</th>
@@ -466,8 +468,8 @@ function AdminWOTable({ rows }: { rows: any[] }) {
               <tr>
                 <td colSpan={8} className="px-4 py-8">
                   <EmptyState
-                    title="No repair orders found"
-                    message="No repair order data yet. Reports will appear after repair orders are created and updated."
+                    title="No job cards found"
+                    message="No job card data yet. Reports will appear after job cards are created and updated."
                   />
                 </td>
               </tr>
@@ -549,7 +551,7 @@ function ManagerWOTable({
             <tr>
               {mode === "overdue" && (
                 <>
-                  <th className="px-4 py-2.5">Repair Order</th>
+                  <th className="px-4 py-2.5">Job Card</th>
                   <th className="px-4 py-2.5">Asset / Machine</th>
                   <th className="px-4 py-2.5">Status</th>
                   <th className="px-4 py-2.5">Technician</th>
@@ -560,7 +562,7 @@ function ManagerWOTable({
               )}
               {mode === "waiting-parts" && (
                 <>
-                  <th className="px-4 py-2.5">Repair Order</th>
+                  <th className="px-4 py-2.5">Job Card</th>
                   <th className="px-4 py-2.5">Asset / Machine</th>
                   <th className="px-4 py-2.5">Status</th>
                   <th className="px-4 py-2.5">Type</th>
@@ -570,7 +572,7 @@ function ManagerWOTable({
               )}
               {mode === "asset-history" && (
                 <>
-                  <th className="px-4 py-2.5">Repair Order</th>
+                  <th className="px-4 py-2.5">Job Card</th>
                   <th className="px-4 py-2.5">Asset / Machine</th>
                   <th className="px-4 py-2.5">Type</th>
                   <th className="px-4 py-2.5">Date</th>
@@ -580,7 +582,7 @@ function ManagerWOTable({
               )}
               {mode === "monthly-summary" && (
                 <>
-                  <th className="px-4 py-2.5">Repair Order</th>
+                  <th className="px-4 py-2.5">Job Card</th>
                   <th className="px-4 py-2.5">Date</th>
                   <th className="px-4 py-2.5">Asset / Machine</th>
                   <th className="px-4 py-2.5">Type</th>
@@ -591,7 +593,7 @@ function ManagerWOTable({
               )}
               {mode === "technician-workload" && (
                 <>
-                  <th className="px-4 py-2.5">Repair Order</th>
+                  <th className="px-4 py-2.5">Job Card</th>
                   <th className="px-4 py-2.5">Technician</th>
                   <th className="px-4 py-2.5">Asset / Machine</th>
                   <th className="px-4 py-2.5">Status</th>
@@ -607,7 +609,7 @@ function ManagerWOTable({
                 <td colSpan={colCount} className="px-4 py-8">
                   <EmptyState
                     title="No records match this report"
-                    message="No repair orders match the current filters. Try clearing filters or selecting a different date range."
+                    message="No job cards match the current filters. Try clearing filters or selecting a different date range."
                   />
                 </td>
               </tr>

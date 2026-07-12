@@ -260,6 +260,8 @@ export async function respondToWorkOrderClarification(context: CurrentUserContex
 export async function assignTechnicians(context: CurrentUserContext, input: TechnicianAssignmentInput) {
   assertBackendPermission(context, "work_orders.assign");
 
+  const assignmentType = input.assignmentType ?? "INTERNAL_TECHNICIAN";
+
   const result = await withBackendTransaction(context.userId, async (tx) => {
     const existing = await findWorkflowWorkOrder(tx, input.workOrderId);
     if (!existing) throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
@@ -287,46 +289,139 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
       }
     }
 
-    const technicians = await tx.profiles.findMany({
-      where: { id: { in: input.technicianIds }, is_active: true },
-      select: { id: true }
-    });
-    const technicianIds = technicians.map((technician) => technician.id);
-    if (!technicianIds.length) {
-      throw new AppError("Select at least one active technician.", { code: "VALIDATION_ERROR" });
+    await tx.work_order_assignments.deleteMany({ where: { work_order_id: input.workOrderId } });
+
+    let technicianIds: string[] = [];
+
+    if (assignmentType === "INTERNAL_TECHNICIAN") {
+      const technicians = await tx.profiles.findMany({
+        where: { id: { in: input.technicianIds ?? [] }, is_active: true },
+        select: { id: true }
+      });
+      technicianIds = technicians.map((t) => t.id);
+      if (!technicianIds.length) {
+        throw new AppError("Select at least one active technician.", { code: "VALIDATION_ERROR" });
+      }
+      await tx.work_order_assignments.createMany({
+        data: technicianIds.map((technicianId) => ({
+          work_order_id: input.workOrderId,
+          technician_id: technicianId,
+          assigned_by: context.userId,
+          assignment_type: "INTERNAL_TECHNICIAN",
+          notes: input.notes?.trim() ?? null,
+        }))
+      });
+    } else if (assignmentType === "FREELANCER") {
+      if (!input.externalName?.trim()) {
+        throw new AppError("Freelancer name is required.", { code: "VALIDATION_ERROR" });
+      }
+      await tx.work_order_assignments.create({
+        data: {
+          work_order_id: input.workOrderId,
+          assigned_by: context.userId,
+          assignment_type: "FREELANCER",
+          external_name: input.externalName.trim(),
+          external_phone: input.externalPhone?.trim() || null,
+          external_trade: input.externalTrade?.trim() || null,
+          external_expected_visit_date: input.externalExpectedVisitDate ? new Date(input.externalExpectedVisitDate) : null,
+          notes: input.notes?.trim() || null,
+        }
+      });
+    } else {
+      if (!input.externalCompany?.trim()) {
+        throw new AppError("Company name is required.", { code: "VALIDATION_ERROR" });
+      }
+      await tx.work_order_assignments.create({
+        data: {
+          work_order_id: input.workOrderId,
+          assigned_by: context.userId,
+          assignment_type: "EXTERNAL_COMPANY",
+          external_company: input.externalCompany.trim(),
+          external_contact_person: input.externalContactPerson?.trim() || null,
+          external_phone: input.externalPhone?.trim() || null,
+          external_trade: input.externalTrade?.trim() || null,
+          external_expected_visit_date: input.externalExpectedVisitDate ? new Date(input.externalExpectedVisitDate) : null,
+          notes: input.notes?.trim() || null,
+        }
+      });
     }
 
-    await tx.work_order_assignments.deleteMany({ where: { work_order_id: input.workOrderId } });
-    await tx.work_order_assignments.createMany({
-      data: technicianIds.map((technicianId) => ({
-        work_order_id: input.workOrderId,
-        technician_id: technicianId,
-        assigned_by: context.userId
-      }))
-    });
     const row = existing.status === "Assigned" ? existing : await updateWorkOrderStatus(tx, input.workOrderId, "Assigned", context.userId);
 
     return {
       workOrderId: row.id,
       workOrderNumber: row.work_order_number,
       status: row.status,
-      technicianIds
+      assignmentType,
+      technicianIds,
     };
   });
 
-  await Promise.all([
-    notifyWorkflowEvent({
-      eventKey: "work_order.assigned",
-      entityType: "work_order",
-      entityId: result.workOrderId,
-      actorId: context.userId,
-      recipientUserIds: result.technicianIds,
-      metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
-      actionUrl: `/technician/jobs/${result.workOrderId}`,
-      actionLabel: "Open job"
-    }),
-    auditWorkflow(context, "work_order.assign", result, `Assigned technicians to ${result.workOrderNumber ?? "work order"}`, { technicianIds: result.technicianIds })
-  ]);
+  const notifyPromises: Promise<unknown>[] = [
+    auditWorkflow(
+      context,
+      "work_order.assign",
+      result,
+      `Assigned ${assignmentType === "INTERNAL_TECHNICIAN" ? "technician" : assignmentType === "FREELANCER" ? "freelancer" : "external company"} to ${result.workOrderNumber ?? "work order"}`,
+      { assignmentType, technicianIds: result.technicianIds }
+    )
+  ];
+
+  if (assignmentType === "INTERNAL_TECHNICIAN" && result.technicianIds.length) {
+    notifyPromises.push(
+      notifyWorkflowEvent({
+        eventKey: "work_order.assigned",
+        entityType: "work_order",
+        entityId: result.workOrderId,
+        actorId: context.userId,
+        recipientUserIds: result.technicianIds,
+        metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
+        actionUrl: `/technician/jobs/${result.workOrderId}`,
+        actionLabel: "Open job"
+      })
+    );
+  }
+
+  await Promise.all(notifyPromises);
+
+  return result;
+}
+
+export async function markExternalWorkCompleted(context: CurrentUserContext, workOrderId: string, notes?: string) {
+  assertBackendPermission(context, "work_orders.assign");
+
+  const result = await withBackendTransaction(context.userId, async (tx) => {
+    const existing = await findWorkflowWorkOrder(tx, workOrderId);
+    if (!existing) throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
+
+    if (!["Assigned", "In Progress"].includes(existing.status)) {
+      throw new AppError("Work order must be Assigned or In Progress to mark external work as completed.", { code: "WORKFLOW_ERROR" });
+    }
+
+    const assignment = await tx.work_order_assignments.findFirst({
+      where: { work_order_id: workOrderId, assignment_type: { in: ["FREELANCER", "EXTERNAL_COMPANY"] } }
+    });
+    if (!assignment) {
+      throw new AppError("This repair order does not have an external assignment.", { code: "VALIDATION_ERROR" });
+    }
+
+    if (notes?.trim()) {
+      await tx.work_order_assignments.update({
+        where: { id: assignment.id },
+        data: { notes: notes.trim() }
+      });
+    }
+
+    return transitionWorkOrderInTransaction(tx, context, workOrderId, "Completed by Technician");
+  });
+
+  await auditWorkflow(
+    context,
+    "work_order.external_completed",
+    result,
+    `External work marked completed for ${result.workOrderNumber ?? "work order"}`,
+    { notes }
+  );
 
   return result;
 }
@@ -524,6 +619,35 @@ export async function closeWorkOrder(context: CurrentUserContext, workOrderId: s
       actionLabel: "View work order"
     }),
     auditWorkflow(context, "work_order.close", result, `Closed ${result.workOrderNumber ?? "work order"}`, { comments })
+  ]);
+
+  return result;
+}
+
+export async function cancelWorkOrder(context: CurrentUserContext, workOrderId: string, comments?: string) {
+  assertBackendPermission(context, "work_orders.approve");
+  const result = await transitionWorkOrder(context, workOrderId, "Cancelled");
+
+  if (!result.wasAlreadyInStatus) {
+    await withBackendTransaction(context.userId, async (tx) => {
+      await tx.approvals.create({
+        data: { work_order_id: result.workOrderId, status: "Cancelled", decided_by: context.userId, comments: comments || null }
+      });
+    });
+  }
+
+  await Promise.all([
+    notifyWorkflowEvent({
+      eventKey: "work_order.cancelled",
+      entityType: "work_order",
+      entityId: result.workOrderId,
+      actorId: context.userId,
+      recipientUserIds: [result.createdBy].filter((id): id is string => Boolean(id)),
+      metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
+      actionLabel: "View job card"
+    }),
+    auditWorkflow(context, "work_order.cancel", result, `Cancelled ${result.workOrderNumber ?? "work order"}`, { comments })
   ]);
 
   return result;

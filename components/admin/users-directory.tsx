@@ -29,6 +29,15 @@ export type SerializedAuthUser = {
 
 type StatusFilter = "all" | "active" | "inactive";
 
+const ROLE_LABEL: Record<string, string> = {
+  maintenance_data_entry: "Maintenance Data Entry",
+  maintenance_manager:    "Maintenance Manager",
+  technician:             "Technician",
+  store_keeper:           "Store / Spare Parts User",
+  super_admin:            "System Administrator",
+  viewer_auditor:         "Viewer / Auditor",
+};
+
 const AVATAR_COLORS = [
   "bg-[#ED1C24]", "bg-[#2563EB]", "bg-[#16A34A]", "bg-[#7C3AED]",
   "bg-[#D97706]", "bg-[#0891B2]", "bg-[#DB2777]", "bg-[#374151]",
@@ -54,16 +63,18 @@ function UserAvatar({ name }: { name: string }) {
 export function UsersDirectory({
   profiles,
   authUsers,
-  normalUserRoleId,
-  superAdminRoleId,
+  roles,
   isSuperAdmin,
 }: {
   profiles: SerializedProfile[];
   authUsers: SerializedAuthUser[];
-  normalUserRoleId: string;
-  superAdminRoleId: string;
+  roles: Array<{ id: string; slug: string }>;
   isSuperAdmin: boolean;
 }) {
+  const roleById = useMemo(
+    () => new Map(roles.map((r) => [r.id, r.slug])),
+    [roles]
+  );
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
@@ -191,7 +202,7 @@ export function UsersDirectory({
                   <td className="px-4 py-3">
                     {profile.is_archived ? (
                       <span className="text-xs text-[#9CA3AF]">
-                        {profile.role_id === superAdminRoleId ? "System Administrator" : "Normal User"}
+                        {ROLE_LABEL[roleById.get(profile.role_id ?? "") ?? ""] ?? "Unknown"}
                       </span>
                     ) : (
                       <form action={upsertProfileFromAdmin} className="flex items-center gap-1.5">
@@ -206,11 +217,14 @@ export function UsersDirectory({
                         <select
                           className="focus-ring w-full min-w-[11rem] rounded-md border border-[#E5E7EB] px-2 py-1.5 text-xs text-[#111827]"
                           name="role_id"
-                          defaultValue={profile.role_id ?? normalUserRoleId}
+                          defaultValue={profile.role_id ?? ""}
                           aria-label={`Account type for ${profile.full_name}`}
                         >
-                          <option value={normalUserRoleId}>Normal User</option>
-                          <option value={superAdminRoleId}>System Administrator</option>
+                          {roles.map((r) => (
+                            <option key={r.id} value={r.id}>
+                              {ROLE_LABEL[r.slug] ?? r.slug}
+                            </option>
+                          ))}
                         </select>
                         <button
                           type="submit"

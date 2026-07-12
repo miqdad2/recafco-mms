@@ -64,7 +64,16 @@ export default async function UsersPage({
         : Promise.resolve([] as Awaited<ReturnType<typeof prisma.profiles.findMany>>),
       prisma.roles.findMany({
         where: {
-          slug: { in: ["super_admin", "maintenance_data_entry"] },
+          slug: {
+            in: [
+              "super_admin",
+              "maintenance_data_entry",
+              "maintenance_manager",
+              "technician",
+              "store_keeper",
+              "viewer_auditor",
+            ],
+          },
         },
         select: { id: true, slug: true },
       }),
@@ -72,8 +81,6 @@ export default async function UsersPage({
     ]);
 
   const superAdminRoleId = roles.find((r) => r.slug === "super_admin")?.id ?? "";
-  const normalUserRoleId =
-    roles.find((r) => r.slug === "maintenance_data_entry")?.id ?? "";
 
   const serialize = (
     p: (typeof nonArchivedProfilesRaw)[number],
@@ -162,8 +169,7 @@ export default async function UsersPage({
         <UsersDirectory
           profiles={profiles}
           authUsers={authUsers}
-          normalUserRoleId={normalUserRoleId}
-          superAdminRoleId={superAdminRoleId}
+          roles={roles}
           isSuperAdmin={isSuperAdmin}
         />
       </div>

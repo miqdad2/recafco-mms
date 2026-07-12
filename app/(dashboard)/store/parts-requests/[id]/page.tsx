@@ -26,6 +26,21 @@ export default async function PartsRequestDetailPage({ params }: { params: Promi
     })
   ]);
   if (!request) return <PageHeader title="Parts request not found" />;
+
+  const canSeeAll =
+    context.role?.slug === "super_admin" ||
+    context.permissions.includes("store.issue") ||
+    context.permissions.includes("work_orders.manage") ||
+    context.permissions.includes("parts_requests.approve");
+
+  const isOwner =
+    request.created_by === context.userId ||
+    request.requested_by === context.userId;
+
+  if (!canSeeAll && !isOwner) {
+    return <PageHeader title="Parts request not found" description="This request does not exist or you do not have access." />;
+  }
+
   const items = rawItems.map((item) => ({
     ...item,
     quantity_requested: item.quantity_requested.toFixed(2),

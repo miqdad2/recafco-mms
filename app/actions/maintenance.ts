@@ -248,6 +248,8 @@ export async function upsertAssetAction(formData: FormData) {
   });
 
   revalidatePath("/assets");
+  revalidatePath("/dashboard");
+  revalidatePath("/maintenance/work-orders");
   redirect(`/assets/${data.id}?success=asset-saved`);
 }
 
@@ -295,6 +297,8 @@ export async function upsertPartAction(formData: FormData) {
   });
 
   revalidatePath("/store/parts");
+  revalidatePath("/store/parts-requests");
+  revalidatePath("/dashboard");
   redirect("/store/parts?success=part-saved");
 }
 
@@ -343,11 +347,9 @@ export async function upsertWorkOrderAction(formData: FormData) {
   const { id, ...values } = parsed.data;
 
   if (!id) {
-    // Submit-specific validation: department, complaint, and description are required
-    // when the user clicks "Submit for Approval" (not required for Save Draft).
+    // Operator complaint is required when submitting — description_of_work is optional.
     if (createStatus === "Pending Approval") {
       if (!parsed.data.operator_complaint) redirect(`${formBackHref}?error=missing-complaint`);
-      if (!parsed.data.description_of_work) redirect(`${formBackHref}?error=missing-description`);
     }
   }
 
@@ -542,6 +544,8 @@ export async function upsertWorkOrderAction(formData: FormData) {
   });
 
   revalidatePath("/maintenance/work-orders");
+  revalidatePath("/dashboard");
+  revalidatePath("/technician/jobs");
   redirect(`/maintenance/work-orders/${data.id}?success=work-order-saved`);
 }
 

@@ -26,6 +26,12 @@ import { prisma } from "@/lib/db/prisma";
 import { canViewCosts } from "@/lib/reports/data";
 import { displayStatus } from "@/lib/display/work-order-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import { AutoRefresh } from "@/components/auto-refresh";
+import {
+  RepairOrderQuickView,
+  type QuickViewData,
+} from "@/components/work-orders/repair-order-quick-view";
+import { QuickViewRow } from "@/components/work-orders/quick-view-row";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -40,34 +46,72 @@ const TERMINAL_STATUSES = [
 
 const OVERDUE_DAYS = 7;
 
-const TAB_LIST = [
+type Tab = { label: string; status: string };
+
+// Normal users: no "Completed" tab — internal sub-statuses are folded into Open/Closed.
+const NORMAL_USER_TABS: Tab[] = [
   { label: "All",           status: "" },
   { label: "Open",          status: "Open" },
   { label: "In Progress",   status: "In Progress" },
-  { label: "Waiting Parts", status: "Waiting for Parts" },
+  { label: "Waiting Materials", status: "Waiting for Parts" },
+  { label: "Closed",        status: "Closed" },
+];
+
+// Manager/admin: "Ready to Close" surfaces tech-completed work, "Awaiting Review" surfaces pending approvals.
+const MANAGER_TABS: Tab[] = [
+  { label: "All",             status: "" },
+  { label: "Awaiting Review", status: "Awaiting Review" },
+  { label: "In Progress",     status: "In Progress" },
+  { label: "Waiting Parts",   status: "Waiting for Parts" },
+  { label: "Ready to Close",  status: "Ready to Close" },
+  { label: "Closed",          status: "Closed" },
+];
+
+const DEFAULT_TABS: Tab[] = [
+  { label: "All",           status: "" },
+  { label: "Open",          status: "Open" },
+  { label: "In Progress",   status: "In Progress" },
+  { label: "Waiting Materials", status: "Waiting for Parts" },
   { label: "Completed",     status: "Completed by Technician" },
   { label: "Closed",        status: "Closed" },
-] as const;
+];
 
-// Each tab label maps to one or more DB status values.
-const COMBINED_STATUSES: Record<string, string[]> = {
-  "Open":                    ["Draft", "Submitted", "Pending Approval", "Approved", "Assigned", "Reopened"],
-  "In Progress":             ["In Progress", "Parts Issued"],
-  "Waiting for Parts":       ["Waiting for Parts", "Waiting for Purchase"],
-  "Completed by Technician": ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"],
-  "Closed":                  ["Closed", "Cancelled", "Rejected"],
-};
-
-function expandStatuses(tabStatus: string): string[] {
-  return COMBINED_STATUSES[tabStatus] ?? [tabStatus];
+// Returns a role-appropriate mapping from tab status keys → arrays of DB status strings.
+// Normal users see "Rejected" (Returned for Fix) under Open — it is still actionable for them.
+// Managers see "Rejected" under Closed — it has been actioned.
+function getStatusMap(roleSlug: string): Record<string, string[]> {
+  const base: Record<string, string[]> = {
+    "Awaiting Review":         ["Submitted", "Pending Approval"],
+    "In Progress":             ["In Progress", "Parts Issued"],
+    "Waiting for Parts":       ["Waiting for Parts", "Waiting for Purchase"],
+    "Ready to Close":          ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"],
+    "Completed by Technician": ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"],
+  };
+  const isNormal = roleSlug === "maintenance_data_entry" || roleSlug === "department_requester";
+  if (isNormal) {
+    return {
+      ...base,
+      "Open":   ["Draft", "Submitted", "Pending Approval", "Approved", "Assigned", "Completed by Technician", "Rejected", "Reopened"],
+      "Closed": ["Closed", "Cancelled"],
+    };
+  }
+  return {
+    ...base,
+    "Open":   ["Draft", "Submitted", "Pending Approval", "Approved", "Assigned", "Reopened"],
+    "Closed": ["Closed", "Cancelled", "Rejected"],
+  };
 }
 
-function tabCount(summaries: StatusSummary[], tabStatus: string): number {
-  return countFor(summaries, expandStatuses(tabStatus));
+function expandStatuses(tabStatus: string, combined: Record<string, string[]>): string[] {
+  return combined[tabStatus] ?? [tabStatus];
 }
 
-function tabIsActive(currentStatus: string, tabStatus: string): boolean {
-  return currentStatus === tabStatus || expandStatuses(tabStatus).includes(currentStatus);
+function tabCount(summaries: StatusSummary[], tabStatus: string, combined: Record<string, string[]>): number {
+  return countFor(summaries, expandStatuses(tabStatus, combined));
+}
+
+function tabIsActive(currentStatus: string, tabStatus: string, combined: Record<string, string[]>): boolean {
+  return currentStatus === tabStatus || expandStatuses(tabStatus, combined).includes(currentStatus);
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -84,6 +128,7 @@ type SP = {
   needs_action?: string;
   ceo_tab?: string;
   cost_min?: string;
+  preview?: string;
 };
 
 type PageProps = {
@@ -108,21 +153,6 @@ function tabHref(sp: SP, status: string): string {
 
 function pageHref(sp: SP, page: number): string {
   return buildHref({ ...sp, page: String(page) });
-}
-
-// ── Status pipeline helpers ───────────────────────────────────────────────────
-
-function getStageIndex(status: string): number {
-  const map: Record<string, number> = {
-    Draft: 0, Submitted: 1, Reopened: 1,
-    "Pending Approval": 2,
-    Approved: 3,
-    Assigned: 4,
-    "In Progress": 5, "Waiting for Parts": 5, "Waiting for Purchase": 5, "Parts Issued": 5,
-    "Completed by Technician": 6, "Verified by Supervisor": 6, "Confirmed by Requester": 6,
-    Closed: 7,
-  };
-  return map[status] ?? 0;
 }
 
 // ── Role-based needs-action filter ────────────────────────────────────────────
@@ -173,7 +203,7 @@ function getNextAction(status: string, context: CurrentUserContext): { label: st
   const canAssign = isAdmin || p.includes("work_orders.assign");
 
   switch (status) {
-    case "Draft":                    return { label: "Submit repair order",  mine: p.includes("work_orders.manage") };
+    case "Draft":                    return { label: "Submit job card",      mine: p.includes("work_orders.manage") };
     case "Submitted":
     case "Pending Approval":         return { label: "Assign technician",   mine: canApprove };
     case "Approved":                 return { label: "Assign technician",   mine: canAssign };
@@ -181,10 +211,10 @@ function getNextAction(status: string, context: CurrentUserContext): { label: st
     case "In Progress":
     case "Parts Issued":             return { label: "Job in progress",     mine: false };
     case "Waiting for Parts":
-    case "Waiting for Purchase":     return { label: "Waiting for parts",   mine: false };
+    case "Waiting for Purchase":     return { label: "Waiting for materials", mine: false };
     case "Completed by Technician":
     case "Verified by Supervisor":
-    case "Confirmed by Requester":   return { label: "Close repair order",  mine: canApprove || canAssign };
+    case "Confirmed by Requester":   return { label: "Close job card",      mine: canApprove || canAssign };
     case "Closed":                   return { label: "Closed",              mine: false };
     case "Rejected":                 return { label: "Rejected",            mine: false };
     case "Cancelled":                return { label: "Cancelled",           mine: false };
@@ -339,7 +369,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           <section className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
             <KpiCard title="Needs CEO Decision"        value={decisionsCount}  href="?ceo_tab=decisions" tone={decisionsCount  > 0 ? "red"   : "gray"} icon={ShieldAlert}   detail="CEO approval required"             urgent={decisionsCount > 0} />
             <KpiCard title="High Risk Work"            value={highRiskCount}   href="?ceo_tab=high_risk" tone={highRiskCount   > 0 ? "amber" : "gray"} icon={Zap}           detail="High/urgent open work orders"      urgent={highRiskCount > 0} />
-            <KpiCard title="Blocked Operations"        value={blockedCount}    href="?ceo_tab=blocked"   tone={blockedCount    > 0 ? "amber" : "gray"} icon={Package}       detail="Waiting for parts or purchase" />
+            <KpiCard title="Blocked Operations"        value={blockedCount}    href="?ceo_tab=blocked"   tone={blockedCount    > 0 ? "amber" : "gray"} icon={Package}       detail="Waiting for materials or purchase" />
             <KpiCard title="Overdue Critical"          value={overdueCount}    href="?ceo_tab=overdue"   tone={overdueCount    > 0 ? "red"   : "gray"} icon={AlertTriangle} detail={`Open ${OVERDUE_DAYS}+ days`}      urgent={overdueCount > 0} />
             <KpiCard title="Cost Exposure"             value={0}               href={canSeeCosts ? "?ceo_tab=high_cost" : "/reports/work-orders?report=cost-exposure"} tone="blue"  icon={canSeeCosts ? DollarSign : Eye} detail={canSeeCosts ? "High-cost active work orders" : "View cost report"} />
             <KpiCard title="Waiting Finance/Purchase"  value={ceoFinanceCount} href="?ceo_tab=decisions" tone={ceoFinanceCount > 0 ? "amber" : "gray"} icon={TrendingUp}    detail="Finance or CEO approval pending" />
@@ -452,6 +482,10 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
     AND: [{ deleted_at: null }, visibilityFilter],
   };
 
+  const roleSlug = context.role?.slug ?? "";
+  const isNormalUser = ["maintenance_data_entry", "department_requester"].includes(roleSlug);
+  const statusMap = getStatusMap(roleSlug);
+
   // Full WHERE for the list: visibility + user-applied filters stacked as AND
   // to prevent key conflicts when the visibility filter itself uses `status`.
   const listConditions: Prisma.work_ordersWhereInput[] = [
@@ -459,7 +493,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
     visibilityFilter,
   ];
   if (status) {
-    const statusList = expandStatuses(status);
+    const statusList = expandStatuses(status, statusMap);
     listConditions.push(statusList.length === 1 ? { status } : { status: { in: statusList } });
   }
   if (priority)   listConditions.push({ priority });
@@ -503,9 +537,14 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           job_location: true,
           created_by: true,
           operator_complaint: true,
-          assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
+          assets: { select: { id: true, asset_code: true, asset_name: true, plate_number: true } },
           work_order_assignments: {
-            select: { profiles: { select: { full_name: true } } },
+            select: {
+              assignment_type: true,
+              external_name: true,
+              external_company: true,
+              profiles: { select: { full_name: true } },
+            },
           },
         },
       }),
@@ -528,6 +567,144 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
   const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE));
 
+  // ── Quick-view preview data ───────────────────────────────────────────────
+  const previewId =
+    sp.preview && /^[0-9a-f-]{36}$/i.test(sp.preview) ? sp.preview : null;
+
+  const canAssignModal =
+    context.role?.slug === "super_admin" ||
+    context.permissions.includes("work_orders.assign") ||
+    context.permissions.includes("work_orders.approve");
+
+  const [previewWO, prData, techsForModal] = previewId
+    ? await Promise.all([
+        prisma.work_orders.findFirst({
+          where: {
+            AND: [{ id: previewId }, { deleted_at: null }, visibilityFilter],
+          },
+          select: {
+            id: true,
+            work_order_number: true,
+            status: true,
+            priority: true,
+            maintenance_type: true,
+            worker_type: true,
+            operator_complaint: true,
+            description_of_work: true,
+            ordered_by: true,
+            date_of_order: true,
+            created_at: true,
+            job_location: true,
+            assets: {
+              select: {
+                id: true,
+                asset_code: true,
+                asset_name: true,
+                location: true,
+                condition: true,
+                criticality: true,
+              },
+            },
+            departments: { select: { name: true } },
+            work_order_assignments: {
+              select: {
+                assignment_type: true,
+                external_name: true,
+                external_company: true,
+                external_contact_person: true,
+                external_phone: true,
+                external_trade: true,
+                profiles: { select: { full_name: true } },
+              },
+            },
+            _count: { select: { work_order_required_parts: true } },
+          },
+        }),
+        prisma.parts_requests.findMany({
+          where: { work_order_id: previewId },
+          select: { status: true },
+          orderBy: { created_at: "desc" },
+          take: 20,
+        }),
+        canAssignModal
+          ? prisma.profiles.findMany({
+              where: { is_active: true, deleted_at: null },
+              select: { id: true, full_name: true },
+              orderBy: { full_name: "asc" },
+            })
+          : Promise.resolve([] as Array<{ id: string; full_name: string }>),
+      ])
+    : [null, [] as Array<{ status: string }>, [] as Array<{ id: string; full_name: string }>];
+
+  const OPEN_PR_STATUSES = [
+    "Pending Approval",
+    "Waiting for Store",
+    "Partially Issued",
+    "Waiting for Purchase",
+  ];
+
+  const isAdmin = context.role?.slug === "super_admin";
+  const drawerData: QuickViewData | null = previewWO
+    ? {
+        id: previewWO.id,
+        work_order_number: previewWO.work_order_number,
+        status: previewWO.status,
+        displayStatus: displayStatus(previewWO.status),
+        priority: previewWO.priority,
+        maintenance_type: previewWO.maintenance_type,
+        worker_type: previewWO.worker_type,
+        operator_complaint: previewWO.operator_complaint,
+        description_of_work: previewWO.description_of_work,
+        ordered_by: previewWO.ordered_by,
+        date_of_order: previewWO.date_of_order?.toISOString() ?? null,
+        created_at: previewWO.created_at.toISOString(),
+        job_location: previewWO.job_location,
+        assets: previewWO.assets
+          ? {
+              id: previewWO.assets.id,
+              asset_code: previewWO.assets.asset_code,
+              asset_name: previewWO.assets.asset_name,
+              location: previewWO.assets.location,
+              condition: previewWO.assets.condition,
+              criticality: previewWO.assets.criticality,
+            }
+          : null,
+        department_name: previewWO.departments?.name ?? null,
+        technician_names: previewWO.work_order_assignments
+          .filter((a) => a.assignment_type === "INTERNAL_TECHNICIAN" && a.profiles?.full_name)
+          .map((a) => a.profiles!.full_name),
+        technicians: techsForModal,
+        primary_assignment: previewWO.work_order_assignments[0]
+          ? {
+              assignment_type: previewWO.work_order_assignments[0].assignment_type,
+              external_name: previewWO.work_order_assignments[0].external_name ?? null,
+              external_company: previewWO.work_order_assignments[0].external_company ?? null,
+              external_contact_person: previewWO.work_order_assignments[0].external_contact_person ?? null,
+              external_phone: previewWO.work_order_assignments[0].external_phone ?? null,
+              external_trade: previewWO.work_order_assignments[0].external_trade ?? null,
+            }
+          : null,
+        required_parts_count: previewWO._count.work_order_required_parts,
+        parts_requests_count: prData.length,
+        open_parts_requests_count: prData.filter((pr) =>
+          OPEN_PR_STATUSES.includes(pr.status)
+        ).length,
+        last_parts_request_status: prData[0]?.status ?? null,
+        roleSlug: context.role?.slug ?? "",
+        canApprove:
+          isAdmin || context.permissions.includes("work_orders.approve"),
+        canAssign:
+          isAdmin || context.permissions.includes("work_orders.assign"),
+        canManage:
+          isAdmin || context.permissions.includes("work_orders.manage"),
+        canCreateParts:
+          isAdmin ||
+          context.permissions.includes("parts_requests.create") ||
+          context.permissions.includes("work_orders.manage"),
+        closeHref: buildHref({ ...sp, preview: undefined }),
+      }
+    : null;
+
   const totalWOs        = statusSummaries.reduce((n, s) => n + s._count._all, 0);
   const submittedCount = countFor(statusSummaries, ["Submitted", "Pending Approval"]);
   const activeJobs      = countFor(statusSummaries, ["Approved", "Assigned", "In Progress"]);
@@ -537,23 +714,51 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
   const hasFilters = search || status || priority || deptId || workerType || dateFrom || dateTo || needsAction;
 
-  const roleSlug = context.role?.slug ?? "";
-  const isNormalUser = ["maintenance_data_entry", "department_requester"].includes(roleSlug);
+  const activeTabs: Tab[] = isNormalUser
+    ? NORMAL_USER_TABS
+    : (roleSlug === "maintenance_manager" || roleSlug === "super_admin")
+      ? MANAGER_TABS
+      : DEFAULT_TABS;
 
-  // ── Onboarding empty state — no repair orders at all ──────────────────────
+  // ── Dev-only debug log — visibility scope and record counts ─────────────
+  if (process.env.NODE_ENV === "development") {
+    console.log("[WO-VISIBILITY]", {
+      userId: context.userId,
+      roleSlug,
+      scope: Object.keys(visibilityFilter).length === 0 ? "ALL" : JSON.stringify(visibilityFilter),
+      totalVisible: totalWOs,
+      statusSummaries: statusSummaries.map((s) => `${s.status}:${s._count._all}`).join(", "),
+    });
+  }
+
+  // ── Onboarding empty state — no job cards in scope ───────────────────────
   if (totalWOs === 0) {
+    const isManagerRole =
+      roleSlug === "maintenance_manager" ||
+      roleSlug === "super_admin" ||
+      roleSlug === "it_admin" ||
+      roleSlug === "viewer_auditor";
+
+    const emptyTitle = isManagerRole
+      ? "No job cards awaiting your team yet"
+      : "No job cards yet";
+
+    const emptyMessage = isManagerRole
+      ? "Job cards will appear here as the team creates and submits them."
+      : "Create the first job card by selecting an asset or machine. All job history will be saved under the selected asset. Materials can be requested from inside a job card after it is created.";
+
     return (
       <>
         <PageHeader
-          title="Repair Orders"
-          description="Track asset repair requests, technician work, waiting parts, and repair history."
+          title="Job Cards"
+          description="Track job cards, technician work, waiting materials, and repair history."
           actions={
             <Link
               href="/maintenance/work-orders/new"
               className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
-              Create Repair Order
+              Create Job Card
             </Link>
           }
         />
@@ -563,28 +768,26 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               <ClipboardList className="h-8 w-8 text-[#9CA3AF]" aria-hidden="true" />
             </div>
             <div>
-              <h2 className="text-lg font-black text-[#111827]">No repair orders yet</h2>
-              <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">
-                Create the first repair order by selecting an asset or machine.
-                All repair history will be saved under the selected asset.
-                Parts can be requested from inside a repair order after it is created.
-              </p>
+              <h2 className="text-lg font-black text-[#111827]">{emptyTitle}</h2>
+              <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">{emptyMessage}</p>
             </div>
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <Link
-                href="/maintenance/work-orders/new"
-                className="inline-flex items-center gap-2 rounded-md bg-[#ED1C24] px-5 py-2.5 text-sm font-bold text-white transition hover:bg-[#c8181e]"
-              >
-                <Plus className="h-4 w-4" aria-hidden="true" />
-                Create Repair Order
-              </Link>
-              <Link
-                href="/assets"
-                className="inline-flex items-center gap-2 rounded-md border border-[#E5E7EB] bg-white px-5 py-2.5 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
-              >
-                View Assets
-              </Link>
-            </div>
+            {!isManagerRole && (
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <Link
+                  href="/maintenance/work-orders/new"
+                  className="inline-flex items-center gap-2 rounded-md bg-[#ED1C24] px-5 py-2.5 text-sm font-bold text-white transition hover:bg-[#c8181e]"
+                >
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                  Create Job Card
+                </Link>
+                <Link
+                  href="/assets"
+                  className="inline-flex items-center gap-2 rounded-md border border-[#E5E7EB] bg-white px-5 py-2.5 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
+                >
+                  View Assets
+                </Link>
+              </div>
+            )}
           </div>
         </div>
       </>
@@ -593,16 +796,18 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
   return (
     <>
+      <AutoRefresh intervalMs={30000} />
+      {drawerData && <RepairOrderQuickView data={drawerData} />}
       <PageHeader
-        title="Repair Orders"
-        description="Track asset repair requests, technician work, waiting parts, and repair history."
+        title="Job Cards"
+        description="Track job cards, technician work, waiting materials, and repair history."
         actions={
           <Link
             href="/maintenance/work-orders/new"
             className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
           >
             <Plus className="h-4 w-4" aria-hidden="true" />
-            Create Repair Order
+            Create Job Card
           </Link>
         }
       />
@@ -613,20 +818,20 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         {isNormalUser ? (
           <section className="grid gap-3 grid-cols-2 sm:grid-cols-4">
             <KpiCard
-              title="Total Repair Orders"
+              title="Total Job Cards"
               value={totalWOs}
               href="/maintenance/work-orders"
               tone="blue"
               icon={ClipboardList}
-              detail="All my repair orders"
+              detail="All my job cards"
             />
             <KpiCard
-              title="Submitted"
+              title="Awaiting Review"
               value={submittedCount}
-              href={buildHref({ status: "Submitted" })}
+              href={buildHref({ status: "Awaiting Review" })}
               tone={submittedCount > 0 ? "amber" : "gray"}
               icon={Clock3}
-              detail="Submitted · awaiting assignment"
+              detail="Submitted and waiting for manager review"
               urgent={submittedCount > 0}
             />
             <KpiCard
@@ -638,31 +843,31 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               detail="Approved · assigned · in progress"
             />
             <KpiCard
-              title="Waiting for Parts"
+              title="Waiting Materials"
               value={waitingParts}
               href={buildHref({ status: "Waiting for Parts" })}
               tone={waitingParts > 0 ? "amber" : "gray"}
               icon={Package}
-              detail="Parts needed or store issue pending"
+              detail="Materials needed or store issue pending"
             />
           </section>
         ) : (
           <section className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
             <KpiCard
-              title="Total Repair Orders"
+              title="Total Job Cards"
               value={totalWOs}
               href="/maintenance/work-orders"
               tone="blue"
               icon={ClipboardList}
-              detail="All maintenance repair orders"
+              detail="All maintenance job cards"
             />
             <KpiCard
-              title="Submitted"
+              title="Awaiting Review"
               value={submittedCount}
-              href={buildHref({ status: "Submitted" })}
+              href={buildHref({ status: "Awaiting Review" })}
               tone={submittedCount > 0 ? "amber" : "gray"}
               icon={Clock3}
-              detail="Submitted · awaiting assignment"
+              detail="Submitted and pending manager review"
               urgent={submittedCount > 0}
             />
             <KpiCard
@@ -674,12 +879,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               detail="Approved · assigned · in progress"
             />
             <KpiCard
-              title="Waiting for Parts"
+              title="Waiting Materials"
               value={waitingParts}
               href={buildHref({ status: "Waiting for Parts" })}
               tone={waitingParts > 0 ? "amber" : "gray"}
               icon={Package}
-              detail="Parts needed or store issue pending"
+              detail="Materials needed or store issue pending"
             />
             <KpiCard
               title="Overdue"
@@ -710,10 +915,10 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         {/* ── Workflow tabs ─────────────────────────────────────────────────── */}
         <div className="overflow-x-auto rounded-t-md border border-[#E5E7EB] bg-white shadow-sm">
           <div className="flex min-w-max">
-            {TAB_LIST.map((tab) => {
-              const isActive = tab.status === "" ? !status : tabIsActive(status, tab.status);
+            {activeTabs.map((tab) => {
+              const isActive = tab.status === "" ? !status : tabIsActive(status, tab.status, statusMap);
               const itemCount = tab.status
-                ? tabCount(statusSummaries, tab.status)
+                ? tabCount(statusSummaries, tab.status, statusMap)
                 : totalWOs;
               return (
                 <Link
@@ -743,7 +948,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             <div>
               <p className="text-xs font-black uppercase text-[#4B5563]">Repair order records</p>
               <p className="mt-0.5 text-sm font-semibold text-[#111827]">
-                {count.toLocaleString()} {hasFilters ? "matching" : "total"} repair orders
+                {count.toLocaleString()} {hasFilters ? "matching" : "total"} job cards
                 {hasFilters && (
                   <Link href="/maintenance/work-orders" className="ml-2 text-xs font-bold text-[#ED1C24] underline">
                     Clear filters
@@ -757,12 +962,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             <table className="w-full min-w-[1040px] text-left text-sm">
               <thead className="bg-gray-50 text-xs font-black uppercase text-[#4B5563]">
                 <tr>
-                  <th className="px-4 py-3">Repair Order</th>
+                  <th className="px-4 py-3">Job Card</th>
                   <th className="px-4 py-3">Asset / Machine</th>
                   <th className="px-4 py-3">Issue / Problem</th>
                   <th className="px-4 py-3">Priority</th>
-                  <th className="px-4 py-3">Status &amp; Next Action</th>
-                  <th className="px-4 py-3">Technician</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Technician / Assignment</th>
                   <th className="px-4 py-3">Age</th>
                   <th className="px-4 py-3 text-right">Action</th>
                 </tr>
@@ -772,14 +977,19 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                   workOrders.map((wo) => {
                     const actLabel   = getRowActLabel(wo.status, context);
                     const nextAct    = getNextAction(wo.status, context);
-                    const stageIdx   = getStageIndex(wo.status);
                     const isTerminal = TERMINAL_STATUSES.includes(wo.status);
                     const age        = ageInDays(wo.created_at);
                     const isOverdue  = age > OVERDUE_DAYS && !isTerminal;
-                    const assignedNames = wo.work_order_assignments
-                      .filter((a) => a.profiles != null)
-                      .map((a) => a.profiles!.full_name)
-                      .join(", ");
+                    const assignedDisplay = (() => {
+                      if (!wo.work_order_assignments.length) return null;
+                      const a = wo.work_order_assignments[0];
+                      if (a.assignment_type === "FREELANCER") return `Freelancer: ${a.external_name ?? ""}`;
+                      if (a.assignment_type === "EXTERNAL_COMPANY") return `Company: ${a.external_company ?? ""}`;
+                      const names = wo.work_order_assignments
+                        .filter((x) => x.profiles != null)
+                        .map((x) => x.profiles!.full_name);
+                      return names.join(", ") || null;
+                    })();
 
                     const rowBg = (() => {
                       if (wo.status === "Rejected" || wo.status === "Cancelled") return "bg-red-50/50 hover:bg-red-50";
@@ -790,42 +1000,42 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                       return "hover:bg-gray-50";
                     })();
 
+                    const previewHref = buildHref({ ...sp, preview: wo.id });
+
                     return (
-                      <tr key={wo.id} className={`transition ${rowBg}`}>
-                        {/* Repair order + mini pipeline */}
-                        <td className="px-4 py-3.5">
-                          <div className="flex items-start gap-2">
-                            <div className="min-w-0">
-                              <Link
-                                href={`/maintenance/work-orders/${wo.id}`}
-                                className="block truncate font-bold text-[#111827] hover:text-[#ED1C24]"
-                              >
-                                {wo.work_order_number ?? "Unnumbered"}
-                              </Link>
-                              <p className="truncate text-xs text-[#4B5563]">{wo.ordered_by}</p>
-                              <p className="text-xs text-[#9CA3AF]">{formatDate(wo.date_of_order)}</p>
-                              <MiniPipeline stage={stageIdx} total={8} failed={wo.status === "Rejected" || wo.status === "Cancelled"} />
-                            </div>
-                          </div>
+                      <QuickViewRow key={wo.id} previewHref={previewHref} className={rowBg}>
+                        {/* Repair order */}
+                        <td className="px-4 py-3">
+                          <Link
+                            href={previewHref}
+                            scroll={false}
+                            className="block truncate font-bold text-[#111827] hover:text-[#ED1C24]"
+                          >
+                            {wo.work_order_number ?? "Unnumbered"}
+                          </Link>
+                          <p className="truncate text-xs text-[#4B5563]">{wo.ordered_by}</p>
+                          <p className="text-xs text-[#9CA3AF]">{formatDate(wo.date_of_order)}</p>
                         </td>
 
                         {/* Asset / Machine */}
-                        <td className="px-4 py-3.5">
+                        <td className="px-4 py-3">
                           {wo.assets ? (
-                            <div>
-                              <p className="font-semibold text-[#111827]">{wo.assets.asset_name}</p>
+                            <Link href={`/assets/${wo.assets.id}`} className="group/asset block">
+                              <p className="font-semibold text-[#111827] transition group-hover/asset:text-[#ED1C24]">
+                                {wo.assets.asset_name}
+                              </p>
                               <p className="text-xs text-[#4B5563]">
                                 {wo.assets.asset_code}
                                 {wo.assets.plate_number ? ` · ${wo.assets.plate_number}` : ""}
                               </p>
-                            </div>
+                            </Link>
                           ) : (
-                            <span className="text-[#9CA3AF]">No asset linked</span>
+                            <span className="text-xs text-[#9CA3AF]">No asset linked</span>
                           )}
                         </td>
 
                         {/* Issue / Problem */}
-                        <td className="max-w-[180px] px-4 py-3.5">
+                        <td className="max-w-[180px] px-4 py-3">
                           {wo.operator_complaint ? (
                             <p className="line-clamp-2 text-xs text-[#111827]">{wo.operator_complaint}</p>
                           ) : (
@@ -834,43 +1044,45 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                         </td>
 
                         {/* Priority */}
-                        <td className="px-4 py-3.5">
+                        <td className="px-4 py-3">
                           <StatusBadge label={wo.priority} tone={priorityTone(wo.priority)} />
                         </td>
 
-                        {/* Status + next action */}
-                        <td className="px-4 py-3.5">
+                        {/* Status */}
+                        <td className="px-4 py-3">
                           <StatusBadge label={displayStatus(wo.status)} tone={statusTone(wo.status)} />
-                          <p className={`mt-1 text-xs ${nextAct.mine ? "font-bold text-[#ED1C24]" : "text-[#4B5563]"}`}>
-                            {nextAct.label}
-                          </p>
+                          {!isTerminal && (
+                            <p className={`mt-1 text-xs ${nextAct.mine ? "font-bold text-[#ED1C24]" : "text-[#9CA3AF]"}`}>
+                              {nextAct.label}
+                            </p>
+                          )}
                         </td>
 
-                        {/* Assigned technician */}
-                        <td className="px-4 py-3.5">
-                          {assignedNames ? (
-                            <span className="text-[#111827]">{assignedNames}</span>
+                        {/* Technician / Assignment */}
+                        <td className="px-4 py-3">
+                          {assignedDisplay ? (
+                            <span className="text-sm text-[#111827]">{assignedDisplay}</span>
                           ) : (
-                            <span className="text-[#9CA3AF]">—</span>
+                            <span className="text-xs text-[#9CA3AF]">Not assigned</span>
                           )}
                         </td>
 
                         {/* Age */}
-                        <td className="px-4 py-3.5">
+                        <td className="px-4 py-3">
                           <span className={`text-xs font-semibold ${isOverdue ? "text-[#DC2626]" : "text-[#4B5563]"}`}>
-                            {age === 0 ? "Today" : age === 1 ? "1 day" : `${age} days`}
+                            {age === 0 ? "Today" : age === 1 ? "1 day open" : `${age} days open`}
                           </span>
                           {isOverdue && <p className="text-xs font-bold text-[#DC2626]">Overdue</p>}
                         </td>
 
                         {/* Action */}
-                        <td className="whitespace-nowrap px-4 py-3.5">
+                        <td className="whitespace-nowrap px-4 py-3">
                           <div className="flex items-center justify-end gap-1.5">
                             <Link
                               href={`/maintenance/work-orders/${wo.id}`}
                               className="inline-block rounded-md border border-[#E5E7EB] px-3 py-2 text-center text-xs font-bold text-[#111827] transition hover:bg-gray-50"
                             >
-                              View
+                              Full Details
                             </Link>
                             {actLabel && (
                               <Link
@@ -880,26 +1092,26 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                                 {actLabel}
                               </Link>
                             )}
-                            {context.permissions.includes("work_orders.print") && (
+                            {!isNormalUser && context.permissions.includes("work_orders.print") && (
                               <Link
                                 href={`/maintenance/work-orders/${wo.id}/print`}
                                 className="flex items-center justify-center rounded-md border border-[#E5E7EB] p-2 hover:bg-gray-50"
-                                title="Print repair order"
+                                title="Print job card"
                               >
                                 <Printer className="h-4 w-4" aria-hidden="true" />
                               </Link>
                             )}
                           </div>
                         </td>
-                      </tr>
+                      </QuickViewRow>
                     );
                   })
                 ) : (
                   <tr>
                     <td colSpan={8} className="px-4 py-10">
                       <EmptyState
-                        title="No repair orders match your filters"
-                        message="Clear the filters or adjust your search to see repair orders. You can also create a new repair order."
+                        title="No job cards match your filters"
+                        message="Clear the filters or adjust your search to see job cards. You can also create a new job card."
                         action={
                           <div className="flex gap-3">
                             <Link href="/maintenance/work-orders">
@@ -910,7 +1122,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                               className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
                             >
                               <Plus className="h-4 w-4" aria-hidden="true" />
-                              New Repair Order
+                              New Job Card
                             </Link>
                           </div>
                         }
@@ -926,7 +1138,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         {/* ── Pagination ────────────────────────────────────────────────────── */}
         <div className="flex items-center justify-between rounded-md border border-[#E5E7EB] bg-white p-3 text-sm font-semibold text-[#4B5563]">
           <span>
-            Page {page} of {totalPages} &nbsp;·&nbsp; {count.toLocaleString()} repair orders
+            Page {page} of {totalPages} &nbsp;·&nbsp; {count.toLocaleString()} job cards
           </span>
           <div className="flex gap-2">
             {page > 1 && (
@@ -965,7 +1177,7 @@ function QuickActions({ context }: { context: CurrentUserContext }) {
       { label: "In Progress",        href: buildHref({ status: "In Progress" }) },
       { label: "Needs My Action",    href: buildHref({ needs_action: "1" }) },
       { label: "High Priority",      href: buildHref({ priority: "High" }) },
-      { label: "All Repair Orders",  href: "/maintenance/work-orders" },
+      { label: "All Job Cards",       href: "/maintenance/work-orders" },
     ];
   } else if (slug === "ceo_management") {
     actions = [
@@ -976,11 +1188,11 @@ function QuickActions({ context }: { context: CurrentUserContext }) {
     ];
   } else if (slug === "maintenance_manager" || p.includes("work_orders.approve")) {
     actions = [
-      { label: "Submitted",         href: buildHref({ status: "Submitted" }),          primary: true },
+      { label: "Awaiting Review",   href: buildHref({ status: "Pending Approval" }),   primary: true },
       { label: "Urgent",            href: buildHref({ priority: "Urgent" }) },
-      { label: "High Priority",     href: buildHref({ priority: "High" }) },
-      { label: "Waiting Parts",     href: buildHref({ status: "Waiting for Parts" }) },
-      { label: "Ready to Close",    href: buildHref({ status: "Verified by Supervisor" }) },
+      { label: "Waiting Materials", href: buildHref({ status: "Waiting for Parts" }) },
+      { label: "Ready to Close",    href: buildHref({ status: "Completed by Technician" }) },
+      { label: "All Orders",        href: "/maintenance/work-orders" },
     ];
   } else if (slug === "maintenance_supervisor" || p.includes("work_orders.assign")) {
     actions = [
@@ -991,22 +1203,22 @@ function QuickActions({ context }: { context: CurrentUserContext }) {
     ];
   } else if (slug === "maintenance_data_entry" || (p.includes("work_orders.manage") && !p.includes("work_orders.approve"))) {
     actions = [
-      { label: "Submitted",         href: buildHref({ status: "Submitted" }),          primary: true },
-      { label: "In Progress",       href: buildHref({ status: "In Progress" }) },
-      { label: "My Submitted",      href: buildHref({ status: "Submitted" }) },
-      { label: "Rejected / Fix",    href: buildHref({ status: "Rejected" }) },
-      { label: "All Repair Orders", href: "/maintenance/work-orders" },
+      { label: "Awaiting Review",   href: buildHref({ status: "Awaiting Review" }),    primary: true },
+      { label: "In Progress",        href: buildHref({ status: "In Progress" }) },
+      { label: "Waiting Materials",  href: buildHref({ status: "Waiting for Parts" }) },
+      { label: "Returned for Fix",   href: buildHref({ status: "Rejected" }) },
+      { label: "All Job Cards",      href: "/maintenance/work-orders" },
     ];
   } else if (slug === "technician") {
     actions = [
       { label: "My Jobs",           href: "/technician/jobs",                          primary: true },
       { label: "New Assignments",   href: buildHref({ status: "Assigned" }) },
-      { label: "In Progress",       href: buildHref({ status: "In Progress" }) },
-      { label: "Waiting for Parts", href: buildHref({ status: "Waiting for Parts" }) },
+      { label: "In Progress",        href: buildHref({ status: "In Progress" }) },
+      { label: "Waiting Materials",  href: buildHref({ status: "Waiting for Parts" }) },
     ];
   } else if (slug === "store_keeper") {
     actions = [
-      { label: "Waiting for Parts", href: buildHref({ status: "Waiting for Parts" }), primary: true },
+      { label: "Waiting Materials",  href: buildHref({ status: "Waiting for Parts" }), primary: true },
       { label: "Parts Issued",      href: buildHref({ status: "Parts Issued" }) },
     ];
   } else if (slug === "purchase_officer") {
@@ -1162,7 +1374,7 @@ function getCeoReason(wo: CeoWO, overdueThreshold: Date): string {
   if (wo.purchase_requests.some((pr) => pr.status === "Pending CEO Approval"))
     return "Waiting CEO approval";
   if (wo.status === "Waiting for Purchase") return "Blocked by purchase";
-  if (wo.status === "Waiting for Parts")    return "Blocked by parts";
+  if (wo.status === "Waiting for Parts")    return "Blocked by materials";
   const age = ageInDays(wo.created_at);
   if (!TERMINAL_STATUSES.includes(wo.status) && wo.created_at < overdueThreshold)
     return `Overdue ${age} days`;
@@ -1438,22 +1650,4 @@ function CeoWorkOrderTable({
   );
 }
 
-function MiniPipeline({ stage, total, failed }: { stage: number; total: number; failed: boolean }) {
-  return (
-    <div className="mt-1.5 flex h-1 gap-px" aria-hidden="true">
-      {Array.from({ length: total }).map((_, i) => (
-        <div
-          key={i}
-          className={`h-full flex-1 rounded-sm ${
-            failed
-              ? i <= stage ? "bg-red-400" : "bg-gray-200"
-              : i < stage  ? "bg-[#ED1C24]"
-              : i === stage ? "bg-[#ED1C24] opacity-60"
-              : "bg-gray-200"
-          }`}
-        />
-      ))}
-    </div>
-  );
-}
 

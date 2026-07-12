@@ -20,8 +20,8 @@ export default async function NewPartsRequestPage({
     return (
       <>
         <PageHeader
-          title="New Parts Request"
-          description="You do not have permission to create parts requests."
+          title="New Materials Request"
+          description="You do not have permission to create materials requests."
         />
         <div className="p-4 lg:p-6" />
       </>
@@ -111,12 +111,12 @@ export default async function NewPartsRequestPage({
     : null;
 
   const pageDescription = preselectedWorkOrder
-    ? `Requesting parts for repair order ${preselectedWorkOrder.work_order_number ?? "Draft"}.`
-    : "Request spare parts or materials linked to a repair order. Reference number is generated on save.";
+    ? `Requesting materials for job card ${preselectedWorkOrder.work_order_number ?? "Draft"}.`
+    : "Request spare parts or materials linked to a job card. Reference number is generated on save.";
 
   return (
     <>
-      <PageHeader title="Parts Request" description={pageDescription} />
+      <PageHeader title="New Materials Request" description={pageDescription} />
       <div className="p-4 lg:p-6">
         <PartsRequestWizard
           workOrders={workOrders}

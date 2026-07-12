@@ -7,8 +7,10 @@ import {
   addTechnicianUpdate,
   approveWorkOrder,
   assignTechnicians,
+  cancelWorkOrder,
   closeWorkOrder,
   completeTechnicianJob,
+  markExternalWorkCompleted,
   rejectWorkOrder,
   requestWorkOrderClarification,
   respondToWorkOrderClarification,
@@ -48,6 +50,7 @@ export async function submitWorkOrderAction(formData: FormData) {
     const result = await submitWorkOrder(context, id);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
     targetPath = `/maintenance/work-orders/${result.workOrderId}`;
   } catch (error) {
     redirect(workflowErrorPath(id, error));
@@ -64,7 +67,9 @@ export async function approveWorkOrderAction(formData: FormData) {
   try {
     const result = await approveWorkOrder(context, id, comments);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
-    revalidatePath("/maintenance/approvals");
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/technician/jobs");
+    revalidatePath("/dashboard");
     targetPath = `/maintenance/work-orders/${result.workOrderId}`;
   } catch (error) {
     redirect(workflowErrorPath(id, error));
@@ -81,7 +86,8 @@ export async function rejectWorkOrderAction(formData: FormData) {
   try {
     const result = await rejectWorkOrder(context, id, comments);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
-    revalidatePath("/maintenance/approvals");
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
     targetPath = `/maintenance/work-orders/${result.workOrderId}`;
   } catch (error) {
     redirect(workflowErrorPath(id, error));
@@ -102,7 +108,8 @@ export async function requestClarificationAction(formData: FormData) {
   try {
     const result = await requestWorkOrderClarification(context, id, question);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
-    revalidatePath("/maintenance/approvals");
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
     targetPath = `/maintenance/work-orders/${result.workOrderId}?success=clarification-sent`;
   } catch (error) {
     redirect(workflowErrorPath(id, error));
@@ -123,7 +130,8 @@ export async function respondToClarificationAction(formData: FormData) {
   try {
     const result = await respondToWorkOrderClarification(context, id, response);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
-    revalidatePath("/maintenance/approvals");
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
     targetPath = `/maintenance/work-orders/${result.workOrderId}?success=clarification-responded`;
   } catch (error) {
     redirect(workflowErrorPath(id, error));
@@ -131,17 +139,91 @@ export async function respondToClarificationAction(formData: FormData) {
   redirect(targetPath);
 }
 
+export type AssignModalState = {
+  ok: boolean;
+  error?: string;
+  workOrderId?: string;
+  assignmentType?: string;
+} | null;
+
+export async function assignTechniciansModalAction(
+  _prev: AssignModalState,
+  formData: FormData
+): Promise<AssignModalState> {
+  const context = await requirePermission("work_orders.assign");
+  const workOrderId = formData.get("work_order_id") as string | null;
+  if (!workOrderId || !/^[0-9a-f-]{36}$/i.test(workOrderId)) {
+    return { ok: false, error: "Invalid repair order ID." };
+  }
+  const assignmentType = (formData.get("assignment_type") as string) || "INTERNAL_TECHNICIAN";
+  try {
+    const technicianIds = formData.getAll("technician_ids").map(String).filter(Boolean);
+    const input = technicianAssignmentSchema.parse({
+      workOrderId,
+      assignmentType,
+      technicianIds,
+      externalName: formData.get("external_name") || undefined,
+      externalCompany: formData.get("external_company") || undefined,
+      externalContactPerson: formData.get("external_contact_person") || undefined,
+      externalPhone: formData.get("external_phone") || undefined,
+      externalTrade: formData.get("external_trade") || undefined,
+      externalExpectedVisitDate: formData.get("external_expected_visit_date") || undefined,
+      notes: formData.get("assign_notes") || undefined,
+    });
+    const result = await assignTechnicians(context, input);
+    revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/technician/jobs");
+    revalidatePath("/dashboard");
+    return { ok: true, workOrderId: result.workOrderId, assignmentType };
+  } catch (error) {
+    return { ok: false, error: safeErrorMessage(error) };
+  }
+}
+
 export async function assignTechniciansAction(formData: FormData) {
   const context = await requirePermission("work_orders.assign");
   const workOrderId = idFrom(formData);
-  const technicianIds = formData.getAll("technician_ids").map(String);
+  const assignmentType = (formData.get("assignment_type") as string) || "INTERNAL_TECHNICIAN";
   let targetPath = `/maintenance/work-orders/${workOrderId}`;
 
   try {
-    const input = technicianAssignmentSchema.parse({ workOrderId, technicianIds });
+    const technicianIds = formData.getAll("technician_ids").map(String).filter(Boolean);
+    const input = technicianAssignmentSchema.parse({
+      workOrderId,
+      assignmentType,
+      technicianIds,
+      externalName: formData.get("external_name") || undefined,
+      externalCompany: formData.get("external_company") || undefined,
+      externalContactPerson: formData.get("external_contact_person") || undefined,
+      externalPhone: formData.get("external_phone") || undefined,
+      externalTrade: formData.get("external_trade") || undefined,
+      externalExpectedVisitDate: formData.get("external_expected_visit_date") || undefined,
+      notes: formData.get("assign_notes") || undefined,
+    });
     const result = await assignTechnicians(context, input);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
-    revalidatePath("/maintenance/assignments");
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/technician/jobs");
+    revalidatePath("/dashboard");
+    targetPath = `/maintenance/work-orders/${result.workOrderId}`;
+  } catch (error) {
+    redirect(workflowErrorPath(workOrderId, error));
+  }
+  redirect(targetPath);
+}
+
+export async function markExternalWorkCompletedAction(formData: FormData) {
+  const context = await requirePermission("work_orders.assign");
+  const workOrderId = idFrom(formData);
+  const notes = (formData.get("completion_notes") as string | null) ?? undefined;
+  let targetPath = `/maintenance/work-orders/${workOrderId}`;
+
+  try {
+    const result = await markExternalWorkCompleted(context, workOrderId, notes);
+    revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
     targetPath = `/maintenance/work-orders/${result.workOrderId}`;
   } catch (error) {
     redirect(workflowErrorPath(workOrderId, error));
@@ -158,6 +240,9 @@ export async function startTechnicianJobAction(formData: FormData) {
     const result = await startTechnicianJob(context, id);
     revalidatePath(`/technician/jobs/${result.workOrderId}`);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/technician/jobs");
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
     targetPath = `/technician/jobs/${result.workOrderId}`;
   } catch (error) {
     redirect(workflowErrorPath(id, error, "/technician/jobs"));
@@ -181,6 +266,8 @@ export async function addTechnicianUpdateAction(formData: FormData) {
     const result = await addTechnicianUpdate(context, input);
     revalidatePath(`/technician/jobs/${result.workOrderId}`);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/technician/jobs");
+    revalidatePath("/maintenance/work-orders");
     targetPath = `/technician/jobs/${result.workOrderId}`;
   } catch (error) {
     redirect(workflowErrorPath(workOrderId, error, "/technician/jobs"));
@@ -197,6 +284,9 @@ export async function completeTechnicianJobAction(formData: FormData) {
     const result = await completeTechnicianJob(context, id);
     revalidatePath(`/technician/jobs/${result.workOrderId}`);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/technician/jobs");
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
     targetPath = `/technician/jobs/${result.workOrderId}`;
   } catch (error) {
     redirect(workflowErrorPath(id, error, "/technician/jobs"));
@@ -213,6 +303,8 @@ export async function verifyWorkOrderAction(formData: FormData) {
   try {
     const result = await verifyWorkOrder(context, id, comments);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
     targetPath = `/maintenance/work-orders/${result.workOrderId}`;
   } catch (error) {
     redirect(workflowErrorPath(id, error));
@@ -230,6 +322,7 @@ export async function closeWorkOrderAction(formData: FormData) {
     const result = await closeWorkOrder(context, id, comments);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
     targetPath = `/maintenance/work-orders/${result.workOrderId}`;
   } catch (error) {
     redirect(workflowErrorPath(id, error));
@@ -251,6 +344,27 @@ export async function returnWorkOrderToDraftAction(formData: FormData) {
     redirect(workflowErrorPath(id, error));
   }
   redirect(targetPath);
+}
+
+export async function cancelWorkOrderAction(formData: FormData) {
+  const context = await requirePermission("work_orders.approve");
+  const id = idFrom(formData);
+  const comments = String(formData.get("comments") ?? "").trim();
+  const targetPath = `/maintenance/work-orders/${id}`;
+
+  if (comments.length < 5) {
+    redirect(`${targetPath}?error=cancel-reason-required`);
+  }
+
+  try {
+    const result = await cancelWorkOrder(context, id, comments);
+    revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
+  } catch (error) {
+    redirect(workflowErrorPath(id, error));
+  }
+  redirect(`${targetPath}?success=cancelled`);
 }
 
 export async function markNotificationsReadAction() {

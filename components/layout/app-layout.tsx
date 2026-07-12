@@ -7,7 +7,8 @@ import {
 import { signOutAction } from "@/app/actions/auth";
 import { BrandLogo } from "@/components/layout/brand-logo";
 import { MobileNavigation } from "@/components/layout/mobile-navigation";
-import { NavLink, type NavIconKey } from "@/components/layout/nav-link";
+import { type NavIconKey } from "@/components/layout/nav-link";
+import { CollapsibleNav, type CollapsibleNavGroup } from "@/components/layout/collapsible-nav";
 import { NotificationBell } from "@/components/notifications/notification-bell";
 import { ActionToast } from "@/components/ui/action-toast";
 import { Button } from "@/components/ui/button";
@@ -32,6 +33,8 @@ type NavGroup = {
   items: NavItem[];
 };
 
+// ── CEO ────────────────────────────────────────────────────────────────────────
+
 const ceoNavigationGroups: NavGroup[] = [
   {
     label: null,
@@ -43,96 +46,16 @@ const ceoNavigationGroups: NavGroup[] = [
     label: "Executive",
     items: [
       { href: "/ceo/approvals",            label: "CEO Approvals",          iconKey: "Landmark",       permission: "ceo.approve" },
-      { href: "/maintenance/work-orders",  label: "Executive Work Orders",  iconKey: "ClipboardList",  permission: "work_orders.view" },
+      { href: "/maintenance/work-orders",  label: "Executive Job Cards",    iconKey: "ClipboardList",  permission: "work_orders.view" },
       { href: "/assets",                   label: "Asset & Parts Risk",     iconKey: "Gauge",          permission: "assets.view" },
       { href: "/purchase/requests",        label: "Purchase",               iconKey: "ShoppingCart",   permission: "purchase_requests.view" },
-      { href: "/reports",      label: "Executive Reports",      iconKey: "BarChart3",      permission: "reports.view" },
+      { href: "/reports",                  label: "Executive Reports",      iconKey: "BarChart3",      permission: "reports.view" },
       { href: "/notifications",            label: "Notifications",          iconKey: "Bell",           permission: "notifications.view" }
     ]
   }
 ];
 
-const maintenanceManagerNavigationGroups: NavGroup[] = [
-  {
-    label: null,
-    items: [
-      { href: "/dashboard", label: "Dashboard", iconKey: "LayoutDashboard", permission: "dashboard.view" }
-    ]
-  },
-  {
-    label: "Maintenance",
-    items: [
-      { href: "/maintenance/work-orders", label: "Repair Orders", iconKey: "ClipboardList", permission: "work_orders.view" },
-      { href: "/maintenance/assignments", label: "Assignments",  iconKey: "Users",          permission: "work_orders.assign" }
-    ]
-  },
-  {
-    label: "Assets & Inventory",
-    items: [
-      { href: "/assets",      label: "Asset Register",    iconKey: "Gauge",   permission: "assets.view" },
-      { href: "/store/parts", label: "Spare Parts Stock", iconKey: "Package", permission: "parts.view" }
-    ]
-  },
-  {
-    label: "Operations",
-    items: [
-      { href: "/reports",  label: "Reports",        iconKey: "BarChart3",    permission: "reports.view" },
-      { href: "/notifications",        label: "Notifications",  iconKey: "Bell",         permission: "notifications.view" }
-    ]
-  }
-];
-
-const storeKeeperNavigationGroups: NavGroup[] = [
-  {
-    label: null,
-    items: [
-      { href: "/dashboard", label: "Dashboard", iconKey: "LayoutDashboard", permission: "dashboard.view" }
-    ]
-  },
-  {
-    label: "Stock Management",
-    items: [
-      { href: "/store/parts",               label: "Spare Parts Stock",   iconKey: "Package",       permission: "parts.view" },
-      { href: "/store/inventory-movements", label: "Stock Movements", iconKey: "Activity", permission: "inventory.movements.view" },
-      { href: "/store/parts?status=Low+Stock", label: "Low Stock Alert",  iconKey: "TriangleAlert", permission: "parts.view" }
-    ]
-  },
-  {
-    label: "Operations",
-    items: [
-      { href: "/notifications", label: "Notifications", iconKey: "Bell", permission: "notifications.view" }
-    ]
-  }
-];
-
-const normalUserNavigationGroups: NavGroup[] = [
-  {
-    label: null,
-    items: [
-      { href: "/dashboard", label: "Dashboard", iconKey: "LayoutDashboard", permission: "dashboard.view" }
-    ]
-  },
-  {
-    label: "Maintenance",
-    items: [
-      { href: "/maintenance/work-orders", label: "Repair Orders", iconKey: "ClipboardList", permission: "work_orders.view" },
-      { href: "/reports",    label: "Reports",        iconKey: "BarChart3",      permission: "reports.view" }
-    ]
-  },
-  {
-    label: "Assets & Store",
-    items: [
-      { href: "/assets", label: "Assets", iconKey: "Gauge", permission: "assets.view" },
-      { href: "/store/parts", label: "Spare Parts", iconKey: "Package", permission: "parts.view" }
-    ]
-  },
-  {
-    label: "Account",
-    items: [
-      { href: "/notifications", label: "Notifications", iconKey: "Bell", permission: "notifications.view" }
-    ]
-  }
-];
+// ── Super Admin ────────────────────────────────────────────────────────────────
 
 const navigationGroups: NavGroup[] = [
   {
@@ -142,42 +65,149 @@ const navigationGroups: NavGroup[] = [
     ]
   },
   {
-    label: "Maintenance",
+    label: null,
     items: [
-      { href: "/maintenance/work-orders", label: "Repair Orders", iconKey: "ClipboardList", permission: "work_orders.view" },
-      { href: "/reports",    label: "Reports",        iconKey: "BarChart3",      permission: "reports.view" }
+      { href: "/maintenance/work-orders",  label: "Job Cards",               iconKey: "ClipboardList", permission: "work_orders.view" },
+      { href: "/store/parts-requests",     label: "Materials Requests",       iconKey: "ShoppingCart",  permission: "parts_requests.view" },
+      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",  permission: "parts.view" },
+      { href: "/assets/service-contracts", label: "Service Contracts",        iconKey: "FileText",      permission: "assets.view" }
     ]
   },
   {
-    label: "Assets & Store",
+    label: "Management",
     items: [
-      { href: "/assets", label: "Assets", iconKey: "Gauge", permission: "assets.view" },
-      { href: "/store/parts", label: "Spare Parts", iconKey: "Package", permission: "parts.view" }
-    ]
-  },
-  {
-    label: "Administration",
-    items: [
-      { href: "/admin/users", label: "Users", iconKey: "Users", permission: "admin.users.manage" },
-      { href: "/notifications", label: "Notifications", iconKey: "Bell", permission: "notifications.view" },
-      { href: "/admin/settings", label: "Settings", iconKey: "Settings", permission: "admin.settings.manage" },
-      { href: "/admin/settings/asset-categories", label: "Asset Categories", iconKey: "Layers", permission: "assets.manage" },
-      { href: "/admin/audit-logs", label: "Audit Logs", iconKey: "Activity", permission: "admin.audit_logs.view" }
-    ]
-  },
-  {
-    label: "System Control",
-    items: [
-      { href: "/admin/system-health", label: "System Health", iconKey: "HeartPulse", permission: "admin.system_health.view" }
+      { href: "/assets",                        label: "Assets & Equipment", iconKey: "Gauge",      permission: "assets.view" },
+      { href: "/store/parts",                   label: "Spare Parts",         iconKey: "Package",    permission: "parts.view" },
+      { href: "/maintenance/assignments",        label: "Technician",          iconKey: "Wrench",     permission: "work_orders.assign" },
+      { href: "/reports",                       label: "Reports",             iconKey: "BarChart3",  permission: "reports.view" },
+      { href: "/notifications",                 label: "Notifications",       iconKey: "Bell",       permission: "notifications.view" },
+      { href: "/admin/users",                   label: "Users",               iconKey: "Users",      permission: "admin.users.manage" },
+      { href: "/admin/settings",                label: "Settings",            iconKey: "Settings",   permission: "admin.settings.manage" },
+      { href: "/admin/settings/asset-categories", label: "Asset Categories", iconKey: "Layers",     permission: "assets.manage" },
+      { href: "/admin/audit-logs",              label: "Audit Logs",          iconKey: "Activity",   permission: "admin.audit_logs.view" },
+      { href: "/admin/system-health",           label: "System Health",       iconKey: "HeartPulse", permission: "admin.system_health.view" }
     ]
   }
 ];
+
+// ── Maintenance Manager ────────────────────────────────────────────────────────
+
+const maintenanceManagerNavigationGroups: NavGroup[] = [
+  {
+    label: null,
+    items: [
+      { href: "/dashboard", label: "Dashboard", iconKey: "LayoutDashboard", permission: "dashboard.view" }
+    ]
+  },
+  {
+    label: null,
+    items: [
+      { href: "/maintenance/work-orders",  label: "Job Cards",               iconKey: "ClipboardList", permission: "work_orders.view" },
+      { href: "/store/parts-requests",     label: "Materials Requests",       iconKey: "ShoppingCart",  permission: "parts_requests.view" },
+      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",  permission: "parts.view" },
+      { href: "/assets/service-contracts", label: "Service Contracts",        iconKey: "FileText",      permission: "assets.view" }
+    ]
+  },
+  {
+    label: "Management",
+    items: [
+      { href: "/assets",                  label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
+      { href: "/store/parts",             label: "Spare Parts",         iconKey: "Package",   permission: "parts.view" },
+      { href: "/maintenance/assignments", label: "Technician",          iconKey: "Wrench",    permission: "work_orders.assign" },
+      { href: "/reports",                 label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
+      { href: "/notifications",           label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
+    ]
+  }
+];
+
+// ── Store Keeper ───────────────────────────────────────────────────────────────
+
+const storeKeeperNavigationGroups: NavGroup[] = [
+  {
+    label: null,
+    items: [
+      { href: "/dashboard", label: "Dashboard", iconKey: "LayoutDashboard", permission: "dashboard.view" }
+    ]
+  },
+  {
+    label: null,
+    items: [
+      { href: "/store/parts-requests",    label: "Materials Requests",       iconKey: "ShoppingCart", permission: "store.issue" },
+      { href: "/store/offline-inventory", label: "Offline Inventory Control", iconKey: "ArrowDownUp",  permission: "parts.view" }
+    ]
+  },
+  {
+    label: "Management",
+    items: [
+      { href: "/store/parts",   label: "Spare Parts",  iconKey: "Package", permission: "parts.view" },
+      { href: "/notifications", label: "Notifications", iconKey: "Bell",    permission: "notifications.view" }
+    ]
+  }
+];
+
+// ── Technician ─────────────────────────────────────────────────────────────────
+
+const technicianNavigationGroups: NavGroup[] = [
+  {
+    label: null,
+    items: [
+      { href: "/dashboard", label: "Dashboard", iconKey: "LayoutDashboard", permission: "dashboard.view" }
+    ]
+  },
+  {
+    label: null,
+    items: [
+      { href: "/maintenance/work-orders", label: "Job Cards",          iconKey: "ClipboardList", permission: "work_orders.view" },
+      { href: "/store/parts-requests",    label: "Materials Requests", iconKey: "ShoppingCart",  permission: "parts_requests.view" }
+    ]
+  },
+  {
+    label: "Management",
+    items: [
+      { href: "/technician/jobs", label: "Technician",    iconKey: "Wrench", permission: "technician.jobs.view" },
+      { href: "/notifications",   label: "Notifications", iconKey: "Bell",   permission: "notifications.view" }
+    ]
+  }
+];
+
+// ── Normal User (Maintenance Data Entry / Department Requester) ────────────────
+
+const normalUserNavigationGroups: NavGroup[] = [
+  {
+    label: null,
+    items: [
+      { href: "/dashboard", label: "Dashboard", iconKey: "LayoutDashboard", permission: "dashboard.view" }
+    ]
+  },
+  {
+    label: null,
+    items: [
+      { href: "/maintenance/work-orders",  label: "Job Cards",               iconKey: "ClipboardList", permission: "work_orders.view" },
+      { href: "/store/parts-requests",     label: "Materials Requests",       iconKey: "ShoppingCart",  permission: "parts_requests.view" },
+      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",  permission: "parts.view" },
+      { href: "/assets/service-contracts", label: "Service Contracts",        iconKey: "FileText",      permission: "assets.view" }
+    ]
+  },
+  {
+    label: "Management",
+    items: [
+      { href: "/assets",        label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
+      { href: "/store/parts",   label: "Spare Parts",         iconKey: "Package",   permission: "parts.view" },
+      { href: "/reports",       label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
+      { href: "/notifications", label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
+    ]
+  }
+];
+
+// ── Permission filter ──────────────────────────────────────────────────────────
 
 function canSee(context: CurrentUserContext, item: NavItem) {
   if (item.superAdminOnly) return context.role?.slug === "super_admin";
   const permission = item.permission;
   return !permission || context.role?.slug === "super_admin" || context.permissions.includes(permission);
 }
+
+// ── Layout ─────────────────────────────────────────────────────────────────────
 
 export async function AppLayout({ children }: { children: React.ReactNode }) {
   const context = await requireUser();
@@ -187,9 +217,9 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
   const isSuperAdmin = roleSlug === "super_admin";
   const isMaintenanceManager = roleSlug === "maintenance_manager";
   const isStoreKeeper = roleSlug === "store_keeper";
+  const isTechnician = roleSlug === "technician";
 
-  // Feature-flag-gated nav injection for Store Keeper: add Inventory Check link
-  // only when app_settings.inventory_check_enabled = true.
+  // Feature-flag-gated nav injection for Store Keeper: Inventory Check link
   let activeStoreKeeperGroups = storeKeeperNavigationGroups;
   if (isStoreKeeper) {
     const sk = await prisma.app_settings
@@ -199,7 +229,7 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
       activeStoreKeeperGroups = [
         storeKeeperNavigationGroups[0],
         {
-          label: "Stock Management",
+          label: null,
           items: [
             {
               href: "/store/inventory-check",
@@ -218,10 +248,11 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
   const groups = isCeo ? ceoNavigationGroups
     : isMaintenanceManager ? maintenanceManagerNavigationGroups
     : isStoreKeeper ? activeStoreKeeperGroups
+    : isTechnician ? technicianNavigationGroups
     : isSuperAdmin ? navigationGroups
     : normalUserNavigationGroups;
 
-  const visibleGroups = groups
+  const visibleGroups: CollapsibleNavGroup[] = groups
     .map((group) => ({ ...group, items: group.items.filter((item) => canSee(context, item)) }))
     .filter((group) => group.items.length > 0);
 
@@ -234,20 +265,7 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
           <BrandLogo variant="dark" size="sm" subtitle="Maintenance & Asset Management" />
         </div>
         <nav className="flex-1 overflow-y-auto px-3 py-3" aria-label="Main navigation">
-          {visibleGroups.map((group, idx) => (
-            <div key={group.label ?? "__main__"} className={idx > 0 ? "mt-6" : ""}>
-              {group.label ? (
-                <p className="mb-2 px-3 pt-1 text-[10px] font-black uppercase tracking-widest text-gray-500 select-none">
-                  {group.label}
-                </p>
-              ) : null}
-              <div className="space-y-1">
-                {group.items.map((item) => (
-                  <NavLink key={item.href} href={item.href} label={item.label} iconKey={item.iconKey} />
-                ))}
-              </div>
-            </div>
-          ))}
+          <CollapsibleNav groups={visibleGroups} />
         </nav>
       </aside>
 

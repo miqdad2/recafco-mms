@@ -453,6 +453,21 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
     if (row.asset_id) lastRepairMap.set(row.asset_id, row._max.date_of_order);
   }
 
+  // Open (non-closed) work orders per asset on this page — for Last Repair column display
+  const openRepairData = assetIds.length > 0
+    ? await prisma.work_orders.findMany({
+        where: {
+          asset_id: { in: assetIds },
+          deleted_at: null,
+          status: { notIn: ["Closed", "Cancelled", "Rejected"] },
+        },
+        select: { asset_id: true },
+      })
+    : [];
+  const openRepairSet = new Set(
+    openRepairData.map((r) => r.asset_id).filter((id): id is string => id !== null)
+  );
+
   const totalAssets = categoryChips.reduce((sum, item) => sum + Number(item.count), 0);
   const totalPages = Math.max(1, Math.ceil(count / pageSize));
 
@@ -462,7 +477,14 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
     const mainName = getMainCategoryName(chip.category);
     catOverviewMap.set(mainName, (catOverviewMap.get(mainName) ?? 0) + Number(chip.count));
   }
-  const canManage = context.role?.slug === "super_admin" || (context.permissions as string[]).includes("assets.manage");
+  // Admin actions only for super_admin and managers with explicit assets.manage permission.
+  // maintenance_data_entry is excluded even if the role carries assets.manage in DB.
+  const canManage =
+    context.role?.slug === "super_admin" ||
+    (context.role?.slug === "maintenance_manager" && (context.permissions as string[]).includes("assets.manage"));
+  // Normal users (maintenance_data_entry, viewer, etc.) get a simplified filter set.
+  const isFullFilterUser =
+    context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
   const hasActiveFilters = !!(search || status || category || mainCategory || location || condition || criticality || dueSoonFilter);
 
   // Subcategory filter options: if a main category is active, show its DB subcats; else show all DB subcats found in assets
@@ -474,8 +496,8 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   return (
     <>
       <PageHeader
-        title="Assets"
-        description="Search machines, view asset condition, and open repair history."
+        title="Assets & Equipment"
+        description="Manage machines, equipment, vehicles, condition, and repair history."
         actions={
           canManage ? (
             <>
@@ -501,7 +523,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         {/* KPI cards */}
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <SummaryCard
-            title="Total Assets"
+            title="Total Assets & Equipment"
             value={totalAssets}
             detail="All registered machines and equipment"
             icon={Boxes}
@@ -524,7 +546,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             href="/assets?condition=Poor"
           />
           <SummaryCard
-            title="Waiting / Maintenance"
+            title="Under Maintenance"
             value={waitingCount}
             detail="Waiting for parts or under maintenance"
             icon={Wrench}
@@ -554,8 +576,8 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                 <Link
                   key={cat.id}
                   href={filterHref({ mainCategory: cat.name })}
-                  className={`group flex items-center justify-between rounded-md border bg-white px-4 py-3 shadow-sm transition hover:border-[#ED1C24] hover:shadow-md ${
-                    isSelected ? "border-[#ED1C24] ring-1 ring-[#ED1C24]" : "border-[#E5E7EB]"
+                  className={`group flex items-center justify-between rounded-md border px-4 py-3 shadow-sm transition hover:border-[#ED1C24] hover:shadow-md ${
+                    isSelected ? "border-[#ED1C24] bg-red-50" : "border-[#E5E7EB] bg-white"
                   }`}
                 >
                   <div className="min-w-0">
@@ -615,30 +637,18 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
           })}
         </div>
 
-        {/* Filter bar */}
+        {/* Filter bar — simplified for normal users, full for managers and admins */}
         <form className="flex flex-wrap items-center gap-2 rounded-md border border-[#E5E7EB] bg-white p-3 shadow-sm">
           <input
             className="focus-ring h-9 min-w-[180px] flex-1 rounded-md border border-[#E5E7EB] px-3 text-sm"
             name="search"
             defaultValue={params?.search ?? ""}
-            placeholder="Search asset code, name, model, serial, or location…"
-          />
-          <input
-            className="focus-ring h-9 w-32 rounded-md border border-[#E5E7EB] px-3 text-sm"
-            name="location"
-            defaultValue={params?.location ?? ""}
-            placeholder="Location"
+            placeholder="Search asset code, name, model, or serial…"
           />
           <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="main_category" defaultValue={mainCategory}>
             <option value="">Main Category</option>
             {dbMainCats.map((mc) => (
               <option key={mc.id} value={mc.name}>{mc.name}</option>
-            ))}
-          </select>
-          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="category" defaultValue={params?.category ?? ""}>
-            <option value="">Subcategory</option>
-            {subcategoryOptions.map((sub) => (
-              <option key={sub} value={sub}>{sub}</option>
             ))}
           </select>
           <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="status" defaultValue={params?.status ?? ""}>
@@ -647,18 +657,32 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
               <option key={s} value={s}>{s}</option>
             ))}
           </select>
-          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="condition" defaultValue={params?.condition ?? ""}>
-            <option value="">Condition</option>
-            {["Excellent", "Good", "Fair", "Poor", "Out of Service"].map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
-          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="criticality" defaultValue={params?.criticality ?? ""}>
-            <option value="">Criticality</option>
-            {["Critical", "High", "Medium", "Low"].map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
+          {isFullFilterUser && (<>
+            <input
+              className="focus-ring h-9 w-32 rounded-md border border-[#E5E7EB] px-3 text-sm"
+              name="location"
+              defaultValue={params?.location ?? ""}
+              placeholder="Location"
+            />
+            <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="category" defaultValue={params?.category ?? ""}>
+              <option value="">Subcategory</option>
+              {subcategoryOptions.map((sub) => (
+                <option key={sub} value={sub}>{sub}</option>
+              ))}
+            </select>
+            <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="condition" defaultValue={params?.condition ?? ""}>
+              <option value="">Condition</option>
+              {["Excellent", "Good", "Fair", "Poor", "Out of Service"].map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+            <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="criticality" defaultValue={params?.criticality ?? ""}>
+              <option value="">Criticality</option>
+              {["Critical", "High", "Medium", "Low"].map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </>)}
           <Button type="submit" className="h-9 shrink-0">Apply</Button>
           {hasActiveFilters && (
             <Link
@@ -683,48 +707,54 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             )}
           </div>
           {totalAssets === 0 ? (
-            <div className="px-6 py-16 text-center">
+            <div className="px-6 py-14 text-center">
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100">
-                <Boxes className="h-6 w-6 text-[#4B5563]" aria-hidden="true" />
+                <Boxes className="h-6 w-6 text-[#9CA3AF]" aria-hidden="true" />
               </div>
-              <p className="text-base font-bold text-[#111827]">No assets imported yet</p>
-              <p className="mt-2 mx-auto max-w-sm text-sm text-[#4B5563]">
-                Start by reviewing asset categories above, then import the company asset Excel file or create the first asset manually.
-              </p>
-              {canManage && (
-                <div className="mt-6 flex flex-wrap justify-center gap-3">
-                  <Link href="/assets/import">
-                    <Button variant="secondary" className="gap-2">
-                      <Upload className="h-4 w-4" aria-hidden="true" />
-                      Import Excel
-                    </Button>
-                  </Link>
-                  <Link href="/assets/new">
-                    <Button className="gap-2">
-                      <Plus className="h-4 w-4" aria-hidden="true" />
-                      New Asset
-                    </Button>
-                  </Link>
-                  <Link href="/admin/settings/asset-categories">
-                    <Button variant="secondary" className="gap-2">
-                      <Layers className="h-4 w-4" aria-hidden="true" />
-                      Manage Categories
-                    </Button>
-                  </Link>
-                </div>
+              <p className="text-base font-bold text-[#111827]">No assets or equipment found</p>
+              {canManage ? (
+                <>
+                  <p className="mt-2 mx-auto max-w-sm text-sm text-[#4B5563]">
+                    Import assets from Excel or create the first asset.
+                  </p>
+                  <div className="mt-6 flex flex-wrap justify-center gap-3">
+                    <Link href="/assets/import">
+                      <Button variant="secondary" className="gap-2">
+                        <Upload className="h-4 w-4" aria-hidden="true" />
+                        Import Excel
+                      </Button>
+                    </Link>
+                    <Link href="/assets/new">
+                      <Button className="gap-2">
+                        <Plus className="h-4 w-4" aria-hidden="true" />
+                        New Asset
+                      </Button>
+                    </Link>
+                    <Link href="/admin/settings/asset-categories">
+                      <Button variant="secondary" className="gap-2">
+                        <Layers className="h-4 w-4" aria-hidden="true" />
+                        Manage Categories
+                      </Button>
+                    </Link>
+                  </div>
+                </>
+              ) : (
+                <p className="mt-2 mx-auto max-w-sm text-sm text-[#4B5563]">
+                  Please contact the maintenance manager or administrator if an asset is missing.
+                </p>
               )}
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1100px] text-left text-sm">
+              <table className={`w-full text-left text-sm ${isFullFilterUser ? "min-w-[1100px]" : "min-w-[700px]"}`}>
                 <thead className="bg-gray-50 text-xs font-black uppercase text-[#4B5563]">
                   <tr>
-                    <th className="px-4 py-3">Asset / Machine</th>
-                    <th className="px-4 py-3">Main Category</th>
-                    <th className="px-4 py-3">Subcategory</th>
+                    <th className="px-4 py-3">Asset / Equipment</th>
+                    {isFullFilterUser && <th className="px-4 py-3">Main Category</th>}
+                    {isFullFilterUser && <th className="px-4 py-3">Subcategory</th>}
                     <th className="px-4 py-3">Location</th>
                     <th className="px-4 py-3">Condition</th>
-                    <th className="px-4 py-3">Criticality</th>
+                    {isFullFilterUser && <th className="px-4 py-3">Criticality</th>}
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Last Repair</th>
                     <th className="px-4 py-3 text-right">Action</th>
@@ -734,23 +764,46 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                   {assets.map((asset) => {
                     const isCritical = asset.status === "Breakdown" || asset.status === "Out of Service";
                     const lastRepair = lastRepairMap.get(asset.id) ?? null;
+                    const hasOpenRepair = openRepairSet.has(asset.id);
                     return (
-                      <tr key={asset.id} className={isCritical ? "bg-red-50" : "hover:bg-gray-50"}>
-                        <td className="px-4 py-3">
-                          <p className="font-bold text-[#111827]">{asset.asset_code}</p>
-                          <p className="text-xs text-[#4B5563]">{asset.asset_name}</p>
-                          {(asset.model || asset.serial_number) && (
-                            <p className="text-[10px] text-[#9CA3AF]">
-                              {[asset.model, asset.serial_number].filter(Boolean).join(" · ")}
+                      <tr
+                        key={asset.id}
+                        className={`transition ${isCritical ? "bg-red-50" : "hover:bg-gray-50"}`}
+                      >
+                        {/* First column: clickable identity block */}
+                        <td className="px-4 py-2.5">
+                          <Link href={`/assets/${asset.id}`} className="group/asset block">
+                            <p className="font-bold text-[#111827] transition group-hover/asset:text-[#ED1C24]">
+                              {asset.asset_code}
                             </p>
-                          )}
+                            <p className="text-xs text-[#4B5563] transition group-hover/asset:text-[#ED1C24]">
+                              {asset.asset_name}
+                            </p>
+                            <p className="text-[10px] text-[#9CA3AF]">
+                              {getMainCategoryName(asset.category)} / {asset.category}
+                            </p>
+                            {(asset.model || asset.serial_number) && (
+                              <p className="text-[10px] text-[#9CA3AF]">
+                                {[
+                                  asset.model         ? `Model: ${asset.model}`          : null,
+                                  asset.serial_number ? `Serial: ${asset.serial_number}` : null,
+                                ].filter(Boolean).join(" · ")}
+                              </p>
+                            )}
+                          </Link>
                         </td>
-                        <td className="px-4 py-3 text-sm text-[#4B5563]">{getMainCategoryName(asset.category)}</td>
-                        <td className="px-4 py-3 text-sm text-[#4B5563]">{asset.category}</td>
-                        <td className="px-4 py-3 text-sm text-[#4B5563]">
+                        {isFullFilterUser && (
+                          <td className="px-4 py-2.5 text-sm text-[#4B5563]">
+                            {getMainCategoryName(asset.category)}
+                          </td>
+                        )}
+                        {isFullFilterUser && (
+                          <td className="px-4 py-2.5 text-sm text-[#4B5563]">{asset.category}</td>
+                        )}
+                        <td className="px-4 py-2.5 text-sm text-[#4B5563]">
                           {asset.location ?? <span className="text-[#9CA3AF]">—</span>}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-4 py-2.5">
                           {asset.condition ? (
                             <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-bold ${conditionClass(asset.condition)}`}>
                               {asset.condition}
@@ -759,26 +812,34 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                             <span className="text-xs text-[#9CA3AF]">Not set</span>
                           )}
                         </td>
-                        <td className="px-4 py-3">
-                          {asset.criticality ? (
-                            <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-bold ${criticalityClass(asset.criticality)}`}>
-                              {asset.criticality}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-[#9CA3AF]">Not set</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
+                        {isFullFilterUser && (
+                          <td className="px-4 py-2.5">
+                            {asset.criticality ? (
+                              <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-bold ${criticalityClass(asset.criticality)}`}>
+                                {asset.criticality}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-[#9CA3AF]">Not set</span>
+                            )}
+                          </td>
+                        )}
+                        <td className="px-4 py-2.5">
                           <StatusBadge label={asset.status} tone={assetStatusTone(asset.status)} />
                         </td>
-                        <td className="px-4 py-3">
-                          {lastRepair ? (
-                            <span className="text-sm text-[#4B5563]">{formatDate(lastRepair)}</span>
+                        <td className="px-4 py-2.5">
+                          {hasOpenRepair ? (
+                            <span className="inline-block rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                              Open repair order
+                            </span>
+                          ) : lastRepair ? (
+                            <span className="text-xs text-[#4B5563]">
+                              Last repaired: {formatDate(lastRepair)}
+                            </span>
                           ) : (
-                            <span className="text-xs text-[#9CA3AF]">No repair history</span>
+                            <span className="text-xs text-[#9CA3AF]">No repairs yet</span>
                           )}
                         </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-right">
+                        <td className="whitespace-nowrap px-4 py-2.5 text-right">
                           <Link
                             href={`/assets/${asset.id}`}
                             className="inline-block rounded-md border border-[#E5E7EB] px-3 py-1.5 text-xs font-bold text-[#111827] hover:border-[#ED1C24] hover:text-[#ED1C24]"
@@ -791,7 +852,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                   })}
                   {!assets.length && (
                     <tr>
-                      <td className="px-4 py-10 text-center" colSpan={9}>
+                      <td className="px-4 py-10 text-center" colSpan={isFullFilterUser ? 9 : 6}>
                         <p className="text-sm font-semibold text-[#4B5563]">No assets match the current filters.</p>
                         <Link href="/assets" className="mt-2 inline-block text-xs text-[#ED1C24] hover:underline">
                           Clear filters

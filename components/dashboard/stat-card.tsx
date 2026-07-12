@@ -6,9 +6,10 @@ type StatCardProps = {
   label: string;
   mobileLabel?: string;
   value: string | number;
-  detail: string;
+  detail?: string;
   icon: LucideIcon;
   tone?: "red" | "amber" | "green" | "blue" | "gray";
+  compact?: boolean;
 };
 
 const toneStyles = {
@@ -44,13 +45,14 @@ const toneStyles = {
   },
 };
 
-export function StatCard({ label, mobileLabel, value, detail, icon: Icon, tone = "red" }: StatCardProps) {
+export function StatCard({ label, mobileLabel, value, detail, icon: Icon, tone = "red", compact = false }: StatCardProps) {
   const styles = toneStyles[tone];
 
   return (
     <div
       className={cn(
-        "group relative min-h-28 overflow-hidden rounded-md border border-[#DDE2EA] p-4 pl-5 shadow-sm transition hover:-translate-y-0.5 hover:border-[#C9D0DA] hover:shadow-md sm:min-h-32",
+        "group relative overflow-hidden rounded-md border border-[#DDE2EA] shadow-sm transition hover:-translate-y-0.5 hover:border-[#C9D0DA] hover:shadow-md",
+        compact ? "p-3 pl-4" : "min-h-28 p-4 pl-5 sm:min-h-32",
         styles.bg
       )}
     >
@@ -59,7 +61,7 @@ export function StatCard({ label, mobileLabel, value, detail, icon: Icon, tone =
 
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-xs font-semibold text-[#334155] sm:text-sm">
+          <p className={cn("truncate font-semibold text-[#334155]", compact ? "text-xs" : "text-xs sm:text-sm")}>
             {mobileLabel ? (
               <>
                 <span className="sm:hidden">{mobileLabel}</span>
@@ -69,15 +71,17 @@ export function StatCard({ label, mobileLabel, value, detail, icon: Icon, tone =
               label
             )}
           </p>
-          <p className={cn("mt-2 text-2xl font-black tracking-tight sm:text-3xl", styles.value)}>{value}</p>
+          <p className={cn("font-black tracking-tight", compact ? "mt-1 text-2xl" : "mt-2 text-2xl sm:text-3xl", styles.value)}>{value}</p>
         </div>
-        <div className={cn("rounded-lg p-2 sm:p-2.5", styles.icon)}>
-          <Icon className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
+        <div className={cn("rounded-lg", compact ? "p-1.5" : "p-2 sm:p-2.5", styles.icon)}>
+          <Icon className={compact ? "h-4 w-4" : "h-4 w-4 sm:h-5 sm:w-5"} aria-hidden="true" />
         </div>
       </div>
-      <p className="mt-2 line-clamp-2 text-[11px] font-medium leading-4 text-[#64748B] sm:mt-3 sm:text-xs sm:leading-5">
-        {detail}
-      </p>
+      {!compact && detail && (
+        <p className="mt-2 line-clamp-2 text-[11px] font-medium leading-4 text-[#64748B] sm:mt-3 sm:text-xs sm:leading-5">
+          {detail}
+        </p>
+      )}
     </div>
   );
 }

@@ -105,10 +105,10 @@ export async function createPartsRequest(
       entityId: result.partsRequestId,
       actorId: context.userId,
       recipientUserIds: managers,
-      title: "Parts request submitted",
-      message: `${result.partsRequestNumber ?? "Parts request"} is waiting for approval.`,
+      title: "Materials request submitted",
+      message: `${result.partsRequestNumber ?? "Materials request"} is waiting for approval.`,
       actionUrl: `/store/parts-requests/${result.partsRequestId}`,
-      actionLabel: "Open parts request",
+      actionLabel: "Open materials request",
       metadata: { parts_request_number: result.partsRequestNumber }
     }),
     writeAuditLog({
@@ -180,10 +180,10 @@ export async function approvePartsRequest(
       entityId: result.partsRequestId,
       actorId: context.userId,
       recipientUserIds: storeUsers,
-      title: "Parts request approved",
-      message: `${result.partsRequestNumber ?? "Parts request"} is waiting for store issue.`,
+      title: "Materials request approved",
+      message: `${result.partsRequestNumber ?? "Materials request"} is waiting for store issue.`,
       actionUrl: `/store/parts-requests/${result.partsRequestId}`,
-      actionLabel: "Open parts request",
+      actionLabel: "Open materials request",
       metadata: { parts_request_number: result.partsRequestNumber }
     }),
     writeAuditLog({
@@ -240,10 +240,10 @@ export async function rejectPartsRequest(
       entityId: result.partsRequestId,
       actorId: context.userId,
       recipientUserIds: [result.requestedBy].filter((id): id is string => Boolean(id)),
-      title: "Parts request rejected",
-      message: `${result.partsRequestNumber ?? "Parts request"} was rejected.`,
+      title: "Materials request rejected",
+      message: `${result.partsRequestNumber ?? "Materials request"} was rejected.`,
       actionUrl: `/store/parts-requests/${result.partsRequestId}`,
-      actionLabel: "Open parts request",
+      actionLabel: "Open materials request",
       metadata: { parts_request_number: result.partsRequestNumber }
     }),
     writeAuditLog({

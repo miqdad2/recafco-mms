@@ -140,18 +140,11 @@ export function getWorkOrderVisibilityFilter(
   }
 
   // ── Maintenance Manager ───────────────────────────────────────────────────
-  // Sees work orders created within their own department.
-  // "Routed to department for approval" is scoped by requested_by_department_id
-  // because the schema has no separate routing/approval-department field.
-  // Global pending-approval visibility is intentionally NOT granted here —
-  // only Super Admin and IT Admin may see all departments' queues.
+  // Sees all repair orders — responsible for reviewing, assigning, and closing
+  // all maintenance work. A manager with no department still needs full access
+  // to process the team's submissions.
   if (slug === "maintenance_manager" || perms.includes("work_orders.approve")) {
-    if (deptId) {
-      return { requested_by_department_id: deptId };
-    }
-    // No department assigned — apply least-privilege fallback.
-    // An admin should assign a department to this profile.
-    return { created_by: userId };
+    return {};
   }
 
   // ── Maintenance Data Entry ────────────────────────────────────────────────
@@ -198,7 +191,7 @@ export function getRoleDescription(context: CurrentUserContext): string {
     case "technician":
       return "My assigned jobs";
     case "maintenance_manager":
-      return "Work orders from your department";
+      return "All maintenance repair orders — full management view";
     case "maintenance_supervisor":
       return "Supervisor assignment and job verification queue";
     case "maintenance_data_entry":

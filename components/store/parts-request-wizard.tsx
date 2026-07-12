@@ -112,14 +112,14 @@ export function PartsRequestWizard({
   const selectedAsset = selectedWo?.assets ?? null;
 
   const stepLabels = isPreselected
-    ? ["Repair Context", "Requested Parts", "Review & Submit"]
-    : ["Select Repair Order", "Requested Parts", "Review & Submit"];
+    ? ["Job Card Context", "Requested Materials", "Review & Submit"]
+    : ["Select Job Card", "Requested Materials", "Review & Submit"];
 
   function validate(): boolean {
     const errs: Record<string, string> = {};
 
     if (step === 1 && !isPreselected && !selectedWoId) {
-      errs.work_order_id = "Please select a repair order.";
+      errs.work_order_id = "Please select a job card.";
     }
 
     if (step === 2) {
@@ -182,14 +182,14 @@ export function PartsRequestWizard({
           <input type="hidden" name="work_order_id" value={selectedWoId} />
         )}
 
-        {/* ── Step 1: Repair Context / Select Repair Order ───────────────── */}
+        {/* ── Step 1: Job Card Context / Select Job Card ─────────────────── */}
         <div className={step !== 1 ? "hidden" : ""}>
           <PRCard
-            title={isPreselected ? "Repair Context" : "Select Repair Order"}
+            title={isPreselected ? "Job Card Context" : "Select Job Card"}
             description={
               isPreselected
-                ? "This parts request is linked to the repair order below."
-                : "Asset details will load automatically from the linked repair order."
+                ? "This materials request is linked to the job card below."
+                : "Asset details will load automatically from the linked job card."
             }
           >
             {/* Pre-selected: show read-only context */}
@@ -197,7 +197,7 @@ export function PartsRequestWizard({
               <div className="space-y-3">
                 <div className="rounded-lg border border-[#ED1C24]/30 bg-red-50 p-4">
                   <p className="text-[10px] font-black uppercase tracking-widest text-[#ED1C24]">
-                    Repair Order
+                    Job Card
                   </p>
                   <p className="mt-1 font-bold text-[#111827]">
                     {selectedWo?.work_order_number ?? "Draft"}
@@ -233,14 +233,14 @@ export function PartsRequestWizard({
                 )}
 
                 <p className="text-xs text-[#9CA3AF]">
-                  Click Next to add the parts or materials needed for this repair order.
+                  Click Next to add the materials needed for this job card.
                 </p>
               </div>
             ) : (
               /* Normal flow: show work order dropdown */
               <div>
                 <label className="block">
-                  <PRLabel label="Repair Order" required />
+                  <PRLabel label="Job Card" required />
                   <select
                     name="work_order_id"
                     className={inp}
@@ -250,7 +250,7 @@ export function PartsRequestWizard({
                       setErrors({});
                     }}
                   >
-                    <option value="">— Select a repair order —</option>
+                    <option value="">— Select a job card —</option>
                     {workOrders.map((w) => (
                       <option key={w.id} value={w.id}>
                         {w.work_order_number ?? "Draft"} — {w.ordered_by}
@@ -267,7 +267,7 @@ export function PartsRequestWizard({
                   <div className="mt-4 space-y-3">
                     <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
                       <p className="text-[10px] font-black uppercase tracking-widest text-blue-700">
-                        Repair Order
+                        Job Card
                       </p>
                       <p className="mt-1 font-bold text-[#111827]">
                         {selectedWo.work_order_number ?? "Draft"} — {selectedWo.ordered_by}
@@ -305,7 +305,7 @@ export function PartsRequestWizard({
 
                 {!selectedWo && (
                   <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                    Select a repair order above to view its linked asset details.
+                    Select a job card above to view its linked asset details.
                   </p>
                 )}
               </div>
@@ -316,8 +316,8 @@ export function PartsRequestWizard({
         {/* ── Step 2: Requested Parts ────────────────────────────────────── */}
         <div className={step !== 2 ? "hidden" : ""}>
           <PRCard
-            title="Requested Parts"
-            description="List the parts or materials required for this repair order."
+            title="Requested Materials"
+            description="List the materials required for this job card."
           >
             {/* Compact RO context reminder */}
             {selectedWo && (
@@ -340,7 +340,7 @@ export function PartsRequestWizard({
                 <input
                   name="remarks"
                   className={inp}
-                  placeholder="General notes for this parts request…"
+                  placeholder="General notes for this materials request…"
                 />
               </label>
             </div>
@@ -432,10 +432,10 @@ export function PartsRequestWizard({
         <div className={step !== 3 ? "hidden" : ""}>
           <PRCard
             title="Review & Submit"
-            description="Confirm all details before submitting the parts request."
+            description="Confirm all details before submitting the materials request."
           >
             <div className="space-y-5">
-              <PRReviewSection title="Repair Order">
+              <PRReviewSection title="Job Card">
                 {selectedWo ? (
                   <div>
                     <p className="font-bold text-[#111827]">
@@ -466,7 +466,7 @@ export function PartsRequestWizard({
                     )}
                   </div>
                 ) : (
-                  <p className="text-sm italic text-[#9CA3AF]">No repair order selected</p>
+                  <p className="text-sm italic text-[#9CA3AF]">No job card selected</p>
                 )}
               </PRReviewSection>
 
@@ -518,7 +518,7 @@ export function PartsRequestWizard({
                 type="submit"
                 className="focus-ring w-full rounded-md bg-[#ED1C24] py-2.5 text-sm font-bold text-white transition hover:bg-[#c8181e]"
               >
-                Submit Parts Request
+                Submit Materials Request
               </button>
               <p className="mt-2 text-center text-xs text-[#9CA3AF]">
                 A reference number will be generated on submission.

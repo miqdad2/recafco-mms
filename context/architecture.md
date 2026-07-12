@@ -155,6 +155,26 @@ A future decision must define whether the workflow engine remains tracking-only 
 - Inactive: email, SMS, WhatsApp, push.
 - `realtime_events` has no consumer.
 
+## Auto-Refresh Architecture (Phase Realtime-01)
+
+Polling strategy used because it is simple, reliable, and safe for internal LAN deployment.
+
+**Client hook**: `hooks/use-auto-refresh.ts` — wraps `router.refresh()` on a configurable interval. Pauses when the tab is hidden or a form input is focused. Resumes and fires immediately when the tab becomes active again.
+
+**Client component**: `components/auto-refresh.tsx` — thin wrapper, renders nothing. Drop into any server-rendered page.
+
+**Intervals applied**:
+- Dashboard: 30 s
+- Repair Orders list: 30 s
+- Repair Order detail: 20 s (disabled when status is Closed or Cancelled)
+- Parts Requests list: 30 s
+- Technician My Jobs: 20 s
+- Notifications bell: existing SSE stream + 45 s fallback polling (unchanged)
+
+**Pages excluded** (unsaved form state risk): New Repair Order wizard, New Parts Request wizard, New Asset form, New Spare Part form, Create User drawer.
+
+**Future enhancement**: Use Server-Sent Events to push repair order and technician job status changes directly to clients, replacing the timer-based refresh. SSE infrastructure already exists at `/api/notifications/stream` and could be extended. Polling is the correct first step because it requires no schema changes, no separate process, and works identically on a single-node Windows LAN server.
+
 ## Transaction Architecture
 
 Use `withBackendTransaction(actorId, operation)` for multi-step writes such as approval plus history, inventory plus movement, purchase receipt plus stock update, and assignment plus workflow update.

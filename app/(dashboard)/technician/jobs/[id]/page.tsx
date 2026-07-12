@@ -15,6 +15,7 @@ import { createSignedFileUrl } from "@/lib/files/signed-url";
 import { canViewEntityFile } from "@/lib/security/file-access";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateTime } from "@/lib/utils";
+import { displayStatus } from "@/lib/display/work-order-labels";
 
 export default async function TechnicianJobDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const context = await requirePermission("technician.jobs.view");
@@ -78,7 +79,7 @@ export default async function TechnicianJobDetailPage({ params }: { params: Prom
 
   return (
     <>
-      <PageHeader title={wo.work_order_number ?? ""} description="Technician mobile job detail and quick actions." actions={<StatusBadge label={wo.status} tone={wo.status === "In Progress" ? "blue" : wo.status === "Completed by Technician" ? "green" : "amber"} />} />
+      <PageHeader title={wo.work_order_number ?? ""} description="Technician mobile job detail and quick actions." actions={<StatusBadge label={displayStatus(wo.status)} tone={wo.status === "In Progress" ? "blue" : wo.status === "Completed by Technician" ? "green" : "amber"} />} />
       <div className="grid gap-4 p-4 lg:grid-cols-[1fr_0.85fr] lg:p-6">
         <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
           <h2 className="text-lg font-black text-[#111827]">Job Details</h2>

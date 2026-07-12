@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ClipboardList,
   ExternalLink,
+  FileText,
   Package,
   Pencil,
   Plus,
@@ -24,6 +25,7 @@ import { createSignedFileUrl } from "@/lib/files/signed-url";
 import { canViewEntityFile } from "@/lib/security/file-access";
 import { prisma } from "@/lib/db/prisma";
 import { getAssetMaintenanceSummary } from "@/lib/backend/assets/service";
+import { computeContractStatus } from "@/lib/display/service-contract-status";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -31,9 +33,10 @@ const TERMINAL = new Set(["Closed", "Cancelled", "Rejected"]);
 
 const TABS = [
   { id: "overview",               label: "Overview" },
-  { id: "repair-orders",          label: "Repair Orders" },
+  { id: "repair-orders",          label: "Job Cards" },
   { id: "parts-used",             label: "Parts Used" },
   { id: "preventive-maintenance", label: "Preventive Maintenance" },
+  { id: "service-contracts",      label: "Service Contracts" },
   { id: "documents",              label: "Documents" },
   { id: "history",                label: "History" },
 ] as const;
@@ -119,7 +122,7 @@ export default async function AssetDetailPage({
 
   const today = new Date();
 
-  const [rawAsset, summary, rawDocuments, auditLogs] = await Promise.all([
+  const [rawAsset, summary, rawDocuments, auditLogs, assetContracts] = await Promise.all([
     prisma.assets.findUnique({
       where: { id },
       include: { departments: { select: { name: true } } },
@@ -134,6 +137,10 @@ export default async function AssetDetailPage({
       orderBy: { created_at: "desc" },
       take: 30,
       select: { id: true, action: true, summary: true, created_at: true },
+    }),
+    prisma.service_contracts.findMany({
+      where: { asset_id: id, deleted_at: null },
+      orderBy: { end_date: "asc" },
     }),
   ]);
 
@@ -277,7 +284,7 @@ export default async function AssetDetailPage({
                 className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
-                Create Repair Order
+                Create Job Card
               </Link>
             )}
             {canEdit && (
@@ -344,7 +351,7 @@ export default async function AssetDetailPage({
                 aria-hidden="true"
               />
             </div>
-            <p className="mt-2 text-xs font-semibold text-[#4B5563]">Open Repair Orders</p>
+            <p className="mt-2 text-xs font-semibold text-[#4B5563]">Open Job Cards</p>
           </div>
 
           {/* Last repair date */}
@@ -367,7 +374,7 @@ export default async function AssetDetailPage({
               <p className="text-2xl font-black text-[#111827]">{totalRepairs}</p>
               <ClipboardList className="h-5 w-5 text-[#D1D5DB]" aria-hidden="true" />
             </div>
-            <p className="mt-2 text-xs font-semibold text-[#4B5563]">Total Repair Orders</p>
+            <p className="mt-2 text-xs font-semibold text-[#4B5563]">Total Job Cards</p>
           </div>
 
           {/* Waiting for parts */}
@@ -593,7 +600,7 @@ export default async function AssetDetailPage({
                       Active
                     </p>
                     <p className="mt-0.5 text-sm font-bold text-amber-900">
-                      Open Repair Orders ({openOrders.length})
+                      Open Job Cards ({openOrders.length})
                     </p>
                   </div>
                   {canManage && (
@@ -610,7 +617,7 @@ export default async function AssetDetailPage({
                   <table className="w-full min-w-[720px] text-left text-sm">
                     <thead className="bg-amber-50 text-xs font-bold uppercase text-amber-800">
                       <tr>
-                        <th className="px-4 py-3">Repair Order No</th>
+                        <th className="px-4 py-3">Job Card No</th>
                         <th className="px-4 py-3">Date</th>
                         <th className="px-4 py-3">Issue / Problem</th>
                         <th className="px-4 py-3">Priority</th>
@@ -677,7 +684,7 @@ export default async function AssetDetailPage({
                     History
                   </p>
                   <p className="mt-0.5 text-sm font-bold text-[#111827]">
-                    All Repair Orders ({workOrders.length})
+                    All Job Cards ({workOrders.length})
                   </p>
                 </div>
                 {canManage && (
@@ -686,7 +693,7 @@ export default async function AssetDetailPage({
                     className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-1.5 text-xs font-semibold text-[#111827] hover:bg-gray-50"
                   >
                     <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-                    Create Repair Order
+                    Create Job Card
                   </Link>
                 )}
               </div>
@@ -699,7 +706,7 @@ export default async function AssetDetailPage({
                   <div>
                     <p className="text-sm font-semibold text-[#374151]">No repair history yet</p>
                     <p className="mt-0.5 text-xs text-[#6B7280]">
-                      Create the first repair order for this asset.
+                      Create the first job card for this asset.
                     </p>
                   </div>
                   {canManage && (
@@ -708,7 +715,7 @@ export default async function AssetDetailPage({
                       className="inline-flex items-center gap-2 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
                     >
                       <Plus className="h-4 w-4" aria-hidden="true" />
-                      Create Repair Order
+                      Create Job Card
                     </Link>
                   )}
                 </div>
@@ -717,7 +724,7 @@ export default async function AssetDetailPage({
                   <table className="w-full min-w-[640px] text-left text-sm">
                     <thead className="bg-gray-50 text-xs font-bold uppercase text-[#4B5563]">
                       <tr>
-                        <th className="px-4 py-3">Repair Order No</th>
+                        <th className="px-4 py-3">Job Card No</th>
                         <th className="px-4 py-3">Date</th>
                         <th className="px-4 py-3">Issue / Problem</th>
                         <th className="px-4 py-3">Status</th>
@@ -797,7 +804,7 @@ export default async function AssetDetailPage({
                 <div>
                   <p className="text-sm font-semibold text-[#374151]">No parts used yet</p>
                   <p className="mt-0.5 text-xs text-[#6B7280]">
-                    Parts used during repair orders will appear here.
+                    Parts used during job cards will appear here.
                   </p>
                 </div>
               </div>
@@ -808,7 +815,7 @@ export default async function AssetDetailPage({
                     <thead className="bg-gray-50 text-xs font-bold uppercase text-[#4B5563]">
                       <tr>
                         <th className="px-4 py-3">Date</th>
-                        <th className="px-4 py-3">Repair Order</th>
+                        <th className="px-4 py-3">Job Card</th>
                         <th className="px-4 py-3">Part / Material</th>
                         <th className="px-4 py-3">Part No.</th>
                         <th className="px-4 py-3 text-right">Qty</th>
@@ -1051,6 +1058,130 @@ export default async function AssetDetailPage({
             ) : (
               <div className="rounded-md border border-[#E5E7EB] bg-white p-5 text-sm text-[#9CA3AF] shadow-sm">
                 You do not have permission to upload files.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── SERVICE CONTRACTS ─────────────────────────────────────────────── */}
+        {activeTab === "service-contracts" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-widest text-[#ED1C24]">
+                  Service Contracts
+                </p>
+                <p className="mt-0.5 text-sm text-[#4B5563]">
+                  Contracts covering maintenance and servicing for this asset.
+                </p>
+              </div>
+              <Link
+                href={`/assets/service-contracts?asset_id=${asset.id}&open=new`}
+                className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Add Service Contract
+              </Link>
+            </div>
+
+            {assetContracts.length === 0 ? (
+              <div className="flex flex-col items-center gap-4 rounded-md border border-[#E5E7EB] bg-white py-14 text-center shadow-sm">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#F5F6F8]">
+                  <FileText className="h-6 w-6 text-[#9CA3AF]" aria-hidden="true" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-[#374151]">No service contracts yet</p>
+                  <p className="mt-0.5 text-xs text-[#6B7280]">
+                    Add a service contract to track coverage and renewal for this asset.
+                  </p>
+                </div>
+                <Link
+                  href={`/assets/service-contracts?asset_id=${asset.id}&open=new`}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
+                >
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                  Add Service Contract
+                </Link>
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="border-b border-[#E5E7EB] bg-[#F9FAFB] text-left text-xs font-bold uppercase tracking-wide text-[#4B5563]">
+                      <tr>
+                        <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3">Contract Title</th>
+                        <th className="px-4 py-3">Service Company</th>
+                        <th className="px-4 py-3">Start</th>
+                        <th className="px-4 py-3">End / Expiry</th>
+                        <th className="px-4 py-3">Renewal</th>
+                        <th className="px-4 py-3">Frequency</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#F3F4F6]">
+                      {assetContracts.map((c) => {
+                        const meta = computeContractStatus(c.end_date, c.contract_status);
+                        const fmtD = (d: Date | null) =>
+                          d
+                            ? new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(d)
+                            : "—";
+                        return (
+                          <tr key={c.id} className="hover:bg-gray-50">
+                            <td className="px-4 py-3">
+                              <span
+                                className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold ${
+                                  meta.tone === "green"
+                                    ? "border-green-200 bg-green-50 text-green-700"
+                                    : meta.tone === "amber"
+                                    ? "border-amber-200 bg-amber-50 text-amber-700"
+                                    : meta.tone === "red"
+                                    ? "border-red-200 bg-red-50 text-red-700"
+                                    : "border-gray-200 bg-gray-50 text-gray-700"
+                                }`}
+                              >
+                                {meta.label}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 font-semibold text-[#111827]">
+                              {c.contract_title}
+                            </td>
+                            <td className="px-4 py-3 text-[#111827]">{c.service_company}</td>
+                            <td className="whitespace-nowrap px-4 py-3 text-[#4B5563]">
+                              {fmtD(c.start_date)}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3">
+                              <span
+                                className={
+                                  meta.label === "Expired"
+                                    ? "font-bold text-[#ED1C24]"
+                                    : meta.label === "Expiring Soon"
+                                    ? "font-bold text-[#F59E0B]"
+                                    : "text-[#4B5563]"
+                                }
+                              >
+                                {fmtD(c.end_date)}
+                                {meta.label === "Expiring Soon" && (
+                                  <span className="ml-1 text-xs text-[#F59E0B]">
+                                    ({meta.days}d)
+                                  </span>
+                                )}
+                                {meta.label === "Expired" && (
+                                  <span className="ml-1 text-xs text-[#ED1C24]">
+                                    ({Math.abs(meta.days)}d ago)
+                                  </span>
+                                )}
+                              </span>
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3 text-[#4B5563]">
+                              {fmtD(c.renewal_date ?? null)}
+                            </td>
+                            <td className="px-4 py-3 text-[#4B5563]">{c.service_frequency}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>

@@ -99,6 +99,19 @@ Current settings:
 - New Super Admin setup
 - Local application startup
 - R2.1: `scripts/seed-demo-users.mjs` — idempotent demo user seed utility written; `seed:demo-users` npm script added; `DEMO_USER_PASSWORD` documented in `.env.example`. Script not yet executed. Database state unchanged.
+- Phase Dashboard-Manager-UX-03 — Manager dashboard action cleanup:
+  - `app/(dashboard)/dashboard/page.tsx`: added `FileText` icon import; added `MgActionRow` type with `description_of_work` and `asset_name`; added `ageLabel()` helper; added `mgActionMeta()` helper mapping status to contextual button label/style; added `ManagerActionRow` component showing Job Card No., asset name, description excerpt, status badge, age, and contextual button (Assign in red / Close in green / View neutral); refactored manager data fetch to parallel `Promise.all` returning `[counts, mgAction, mgMaterials]`; manager `mgAction` query now includes `description_of_work` and `assets.asset_name`; added `mgMaterials` query for open parts requests (Waiting for Store / Waiting for Purchase / Partially Issued, take 5); quick actions updated from 4 to 6 (Review Job Cards / Materials Requests / Assign Work / Offline Inventory / Service Contracts / Reports) using `sm:grid-cols-3` grid; KPI card "Waiting Parts" renamed to "Waiting Materials"; "Needs Your Action" now uses `ManagerActionRow`; "Materials Waiting" section conditionally rendered when `mgMaterials.length > 0`. All other role dashboards (Normal User, Technician, Store Keeper, Super Admin, Fallback) unchanged.
+
+- Phase ManagerDashboard-AssignModal-01 — Open Job Card Quick View / Assign Modal from Manager Dashboard:
+  - Reused existing `RepairOrderQuickView` component (already implemented with full status stepper, assign panel, materials summary, quick actions, sticky footer). No new modal component required.
+  - `app/(dashboard)/dashboard/page.tsx`: added `RepairOrderQuickView` + `QuickViewData` imports; added `PageProps` type with `searchParams?: Promise<{ preview?: string }>`; updated `ManagerActionRow` — row title click and Assign/View buttons use `?preview=${row.id}` (opens modal via URL param), Close button stays as full `/maintenance/work-orders/${row.id}` link; added `?preview=` fetch block before `firstName` — reads searchParams, validates UUID format, fetches `work_orders`, `parts_requests`, and `profiles` (technicians) in parallel (same query shape as work orders list page); builds `QuickViewData` with `closeHref: "/dashboard"` (modal close returns to dashboard without navigation flash); renders `{drawerData && <RepairOrderQuickView data={drawerData} />}` at bottom of JSX. Permission-gated: technician list only fetched when `canAssignModal` (approve or assign permission). All other dashboard sections (Normal User, Technician, Store Keeper, Super Admin, Fallback) unchanged.
+  - Behavior: clicking Assign/View in "Needs Your Action" opens full quick-view modal with status stepper, key details, inline assign panel, Full Details link. Assigning via modal calls `assignTechniciansModalAction` → `revalidatePath("/dashboard")` → `router.refresh()` inside modal. Close button still navigates to full detail page. ESC key, backdrop click, and Close button in modal all return to `/dashboard`.
+  - All checks pass: lint ✓, typecheck ✓, build ✓
+
+- Phase OfflineInventory-03 — Simplify to Receive/Issue only with balance tracking and over-issue prevention:
+  - `app/actions/offline-inventory.ts`: added `computeBalance()` helper that queries current balance per material server-side; `receiveOfflineMaterialAction` now blocks exact duplicates when reference_number is provided; `issueOfflineMaterialAction` now recomputes live balance and blocks if `qty > available` with specific error message.
+  - `app/(dashboard)/store/offline-inventory/page.tsx`: removed `take: 100` limit on movements query (fetches all for balance accuracy); computes per-material `BalanceItem[]` using `buildBalanceKey()` (groups by `part_id` for master parts, by `name|unit` for manual); formula simplified to `totalReceived - totalIssued`; passes `balanceItems` to shell; ledger capped at 200 for display.
+  - `components/store/offline-inventory-shell.tsx`: removed `totalReturned` prop and `RotateCcw` icon; KPI cards reduced to 3 (Total Received / Total Issued / Current Balance); added Balance/Movements tabs; Balance tab shows per-material table with Total Received, Total Issued, Balance, Last Movement, and Action column (View + Issue button per row); `IssueModal` completely rewritten to accept `availableItems` (balance > 0 only), shows "No materials available" fallback if empty, pre-fills material when Issue clicked from Balance tab row, unit is read-only from selected item, submit disabled when no material selected; Issue button in header disabled when no available balance.
 
 ## Implemented but Feature-Flagged
 
@@ -196,6 +209,206 @@ No DB schema changes. Both new-record forms converted from flat paper-style page
 - Work orders query expanded to include: `maintenance_type`, `operator_complaint`, and nested `assets` relation (asset_code, asset_name, location, category, status)
 - `created_at` serialized to ISO string for client component compatibility
 - `getWorkOrderVisibilityFilter(context)` preserved — mandatory filter unchanged
+
+All checks pass: lint ✓, typecheck ✓, build ✓
+
+### Phase Module-Rename-InventoryContracts-01 — UI Renames, Collapsible Nav, New Modules (Parts A/B/E/F) — COMPLETE
+
+No DB table deletions. No route deletions. No behavioral changes. Display-layer renames only for A/B/F. E already completed in prior session.
+
+**Part A — "Repair Orders" → "Job Cards" across all visible UI (DB tables unchanged, route unchanged):**
+- `lib/display/work-order-labels.ts`: `displayStatus`/`displayNextAction` updated — "Waiting for Parts" → "Waiting Materials", "repair order" → "job card" throughout
+- `lib/backend/work-orders/service.ts`: notification `actionLabel` "View repair order" → "View job card"
+- `components/work-orders/workflow-actions.tsx`: "Submit/Close/Cancel Repair Order" → "Job Card"; step context "Waiting for Parts" → "Waiting Materials"; "Request parts →" → "Request materials →"
+- `components/work-orders/repair-order-quick-view.tsx`: "Parts" section → "Materials"; stepper "Waiting Parts" → "Waiting Materials"; all user-visible "repair order" → "job card"
+- `components/work-orders/work-order-wizard.tsx`: "Submit Repair Order" → "Submit Job Card"; asset link prompt updated
+- `app/(dashboard)/maintenance/work-orders/page.tsx`: PageHeader "Repair Orders" → "Job Cards"; all KPI card titles; tab labels "Waiting Parts" → "Waiting Materials"; empty states; table header; pagination; quick actions; filter empty state
+- `app/(dashboard)/maintenance/work-orders/new/page.tsx`: PageHeader "New Repair Order" → "New Job Card"
+- `app/(dashboard)/maintenance/work-orders/[id]/page.tsx`: Stage "Waiting Parts" → "Waiting Materials"; all inline "repair order" → "job card" user messages
+- `app/(dashboard)/maintenance/work-orders/[id]/print/page.tsx`: print title "Maintenance Work Order" → "Maintenance Job Card"
+- `app/(dashboard)/dashboard/page.tsx`: all "Repair Orders" → "Job Cards", "Parts Requests" → "Materials Requests" in quick actions, section labels, activity lists, KPI cards
+- `app/(dashboard)/assets/[id]/page.tsx`: "Repair Orders" tab → "Job Cards"; all table headers, counts, empty states, buttons
+- `app/(dashboard)/technician/jobs/page.tsx`: description updated to "job cards"
+
+**Part B — "Parts Requests" → "Materials Requests" across all visible UI (DB tables unchanged, route unchanged):**
+- `lib/notifications/types.ts`: `NotificationCategory` "Parts Requests" → "Materials Requests"
+- `lib/notifications/events.ts`: category strings updated (2 occurrences)
+- `lib/notifications/templates.ts`: notification titles updated
+- `lib/backend/parts-requests/service.ts`: notification titles and actionLabel updated
+- `app/(dashboard)/store/parts-requests/page.tsx`: PageHeader, button, empty states
+- `app/(dashboard)/store/parts-requests/new/page.tsx`: PageHeader (both permission-denied + normal), page description
+- `app/(dashboard)/store/parts-requests/[id]/print/page.tsx`: print title "Parts Request" → "Materials Request"
+- `components/store/parts-request-wizard.tsx`: step labels, "Select Repair Order" → "Select Job Card", "Repair Order" section labels → "Job Card", submit button, all inline copy
+
+**Part E — Collapsible Sidebar (completed in prior session):**
+- `components/layout/collapsible-nav.tsx` (NEW): client component with per-group collapse state, auto-expand active group
+- `components/layout/app-layout.tsx` (REWRITTEN): grouped nav structure for all roles; new routes: `/assets/service-contracts`, `/store/offline-inventory`
+- `components/layout/nav-link.tsx`: `ArrowDownUp` icon added
+
+**Part F — Reports label updates:**
+- `app/(dashboard)/reports/page.tsx`: description, KPI card, report card titles updated
+- `app/(dashboard)/reports/work-orders/page.tsx`: mode meta labels, summary cards, table headers, empty states — all "Repair Order" → "Job Card", "Waiting for Parts" → "Waiting for Materials"
+- `app/(dashboard)/reports/spare-parts-usage/page.tsx`: page title "Spare Parts Usage" → "Materials Usage"; section heading and table header updated
+
+**DB migrations (applied in prior session):**
+- `20260712100001_offline_inventory_movements/migration.sql`: new `offline_inventory_movements` table
+- `20260712100002_service_contracts/migration.sql`: new `service_contracts` table
+- `prisma/schema.prisma`: both models added with relations
+
+**Part C list view — `/store/offline-inventory` page created:**
+- `app/(dashboard)/store/offline-inventory/page.tsx` (NEW): list page with 4 KPI cards (Total Received, Total Issued, Total Returned, Current Balance), movement ledger table (date, type, material name/part number, qty, unit, counterparty, reference, job card link, created-by), and empty state with Receive Material + Issue Material placeholder links. Permission gate: `parts.view`. Queries `offline_inventory_movements` with parts + work_orders + profiles includes.
+
+**Part D list view — `/assets/service-contracts` page created:**
+- `app/(dashboard)/assets/service-contracts/page.tsx` (NEW): list page with 3 KPI cards (Active Contracts, Expiring Soon, Expired), contracts table (status, title, asset code/name link, service company, contract number, start/end dates with colour-coded expiry, renewal date, frequency), and empty state with New Service Contract placeholder link. Permission gate: `assets.view`. Computes Active / Expiring Soon (≤30 days) / Expired from `end_date` vs today. Queries `service_contracts` with assets + profiles_created_by includes.
+
+**Phase OfflineInventory-02 — Receive & Issue modal forms COMPLETE:**
+- `app/actions/offline-inventory.ts` (NEW): `receiveOfflineMaterialAction` and `issueOfflineMaterialAction` server actions with `useActionState`-compatible signature; permission gate `parts.view`; `requirePermission` called outside try/catch so `redirect()` propagates; validates qty > 0, date required, material required, "Issued to" required for issue; sets `manual_material_name/manual_part_number` to null when a master part is selected.
+- `components/store/offline-inventory-shell.tsx` (NEW): client shell replacing all JSX in the page; manages `openModal: null | "receive" | "issue"` state; `ReceiveModal` and `IssueModal` sub-components each use `useActionState`; part selection auto-fills `unit` and `part_number` from master; `router.refresh()` + 5-second success banner after save; no manual page navigation on success.
+- `app/(dashboard)/store/offline-inventory/page.tsx` (REWRITE): server component now fetches movements + active parts + 100 most recent work orders in parallel; serializes Decimal→number and Date→ISO string before passing to shell; computes totals server-side.
+- `app/(dashboard)/store/offline-inventory/receive/page.tsx` (NEW): redirects to `/store/offline-inventory` so the URL never 404s.
+- `app/(dashboard)/store/offline-inventory/issue/page.tsx` (NEW): same redirect.
+- `lib/action-messages.ts`: added `material-received` and `material-issued` success toast entries.
+- Ledger table now includes Part No., Reference, Remarks columns as specified.
+- Balance = totalReceived + totalReturned + totalAdjust − totalIssued.
+
+**Phase ServiceContracts-02 — New Service Contract form COMPLETE:**
+- `lib/display/service-contract-status.ts` (NEW): shared pure function `computeContractStatus(endDate, contractStatus)` used in both list page and asset detail tab.
+- `app/actions/service-contracts.ts` (NEW): `createServiceContractAction` with `useActionState`-compatible signature; validates asset required, title required, company required, start/end required, end ≥ start; sets `contract_status: "Active"`; permission gate `assets.view`; `requirePermission` outside try/catch; `revalidatePath("/assets/service-contracts")` + `"/assets"` on success.
+- `components/assets/service-contracts-shell.tsx` (NEW): full client shell with `NewContractForm` sub-component using `useActionState`; modal opened by `openModal` boolean state; `autoOpen` prop opens modal on mount (used when navigating from asset detail page with `?open=new`); `preselectedAssetId` pre-selects asset in dropdown; service frequency dropdown (One-time / Monthly / Quarterly / Half-yearly / Yearly / As needed); no-assets warning shown instead of empty select; success banner + `router.refresh()` on save; table with Status, Title, Asset, Company, Start, End, Renewal, Frequency, View action columns.
+- `app/(dashboard)/assets/service-contracts/page.tsx` (REWRITE): reads `?asset_id` and `?open=new` search params; fetches contracts + non-disposed assets in parallel; serializes all Date/Decimal to plain types; computes status server-side before passing to shell.
+- `app/(dashboard)/assets/service-contracts/new/page.tsx` (NEW): redirects to `/assets/service-contracts?open=new` so the old link still works.
+- `app/(dashboard)/assets/[id]/page.tsx` (MODIFIED): added "Service Contracts" tab to TABS array; `assetContracts` fetched in `Promise.all`; Service Contracts tab content renders per-asset contract table or empty state; "Add Service Contract" link → `/assets/service-contracts?asset_id=${asset.id}&open=new` pre-selects asset and auto-opens modal; `FileText` icon and `computeContractStatus` import added.
+
+All checks pass: lint ✓, typecheck ✓, build ✓
+
+### Phase UI-ManagerAssign-01 — Inline Assignment from Quick View Modal — COMPLETE
+
+No DB schema changes. No migration changes. No data changes.
+
+**Goal:** Allow Maintenance Manager to assign work (internal technician, freelancer, or external company) directly from the Repair Order Quick View modal, without navigating to the full detail page.
+
+**`app/actions/workflow.ts`** (MODIFIED):
+- `AssignModalState` type exported: `{ ok: boolean; error?: string; workOrderId?: string; assignmentType?: string } | null`
+- `assignTechniciansModalAction(_prev, formData)` (NEW): `useActionState`-compatible server action; same permission check, same `technicianAssignmentSchema` parse, and same `assignTechnicians` service call as `assignTechniciansAction`; calls `revalidatePath` on success; returns `{ ok: true }` on success, `{ ok: false, error }` on failure; never calls `redirect()`
+
+**`components/work-orders/assignment-form-modal.tsx`** (NEW — `"use client"`):
+- Uses `useActionState(assignTechniciansModalAction, null)` from React 19
+- Same 3-type selector (Internal / Freelancer / Company) and form fields as `AssignmentForm`
+- All inputs disabled during `isPending`; submit button shows spinner + "Assigning…"
+- Error banner shown inline when `state?.ok === false`
+- `useEffect` watches `state?.ok` — calls `onSuccess()` callback when true
+- Props: `workOrderId`, `technicians`, `onSuccess`, `onCancel`
+
+**`components/work-orders/repair-order-quick-view.tsx`** (MODIFIED):
+- `QuickViewData.technicians: { id: string; full_name: string }[]` field added
+- `AssignmentFormModal` imported
+- `useState` for `showAssignPanel` (boolean) and `assignSuccess` (string | null) added
+- `handleAssignSuccess()`: closes panel, sets success message, calls `router.refresh()`
+- `showAssign` Link (navigating away) replaced with button that sets `showAssignPanel = true`
+- Inline panel rendered in a dedicated section above Quick Actions when `showAssignPanel` is true
+- Success banner shown in Quick Actions grid when `assignSuccess` is set
+- `hasQuickActions` includes `!!assignSuccess` so the section stays visible after assignment
+
+**`app/(dashboard)/maintenance/work-orders/page.tsx`** (MODIFIED):
+- `canAssignModal` computed before preview fetch: true for super_admin, `work_orders.assign`, or `work_orders.approve`
+- Preview `Promise.all` extended to a 3-tuple: adds `techsForModal` from `prisma.profiles.findMany` (active, alphabetical) when `canAssignModal`; resolves empty array otherwise
+- `drawerData.technicians` populated from `techsForModal`
+
+**Permission gates (Task 11):** `showAssign` (and therefore the "Assign Work" button and inline panel) is gated on `data.canApprove || data.canAssign` — only Maintenance Manager, Maintenance Supervisor, and System Administrator can see or use it. Normal users, technicians, store keepers see no assign button.
+
+**Post-assignment list refresh (Task 7):** `revalidatePath` in the server action + `router.refresh()` in the success callback ensures the list row status and dashboard counts update without page navigation.
+
+All checks pass: lint ✓, typecheck ✓, build ✓
+
+### Phase Workflow-Visibility-01 — Role-Based Visibility Fix — COMPLETE
+
+No DB schema changes. No migration changes. No data changes.
+
+**Root cause:** `maintenance_manager` visibility rule returned `{ requested_by_department_id: deptId }` when a department was assigned, and `{ created_by: userId }` as a fallback when none — so a manager with no department (or whose department didn't match the WO's `requested_by_department_id`) saw zero repair orders.
+
+**`lib/work-orders/visibility.ts`** (MODIFIED):
+- `maintenance_manager` (and `work_orders.approve` permission) now returns `{}` — sees ALL repair orders. This matches the business role: manager must review, assign, and close all team submissions.
+- `getRoleDescription` for `maintenance_manager` updated: "All maintenance repair orders — full management view"
+- All other role scopes unchanged: super_admin/it_admin = all; technician = assigned; data_entry = own; store_keeper = Waiting for Parts + Parts Issued; CEO/finance/purchase = their pipeline views
+
+**`app/(dashboard)/store/parts-requests/page.tsx`** (MODIFIED):
+- Added `context.permissions.includes("work_orders.approve")` to `canSeeAll` — maintenance managers now see all parts requests, not just own
+- Added `const roleSlug` variable
+- Empty state updated to be role-specific: store_keeper → "No parts requests waiting for issue."; manager/admin → "No parts requests from the team yet."; data entry → "No parts requests yet."; filter active → "No parts requests match the current filters."
+
+**`app/(dashboard)/maintenance/work-orders/page.tsx`** (MODIFIED):
+- Empty state updated to be role-specific: manager/admin roles → "No repair orders awaiting your team yet" + descriptive message; data entry/normal → "No repair orders yet" + create CTA buttons
+- Dev-only `console.log("[WO-VISIBILITY]")` added after visibility calculations: logs userId, roleSlug, scope (ALL vs filter), totalVisible, and statusSummaries breakdown. Runs only when `NODE_ENV === "development"`.
+
+**`app/(dashboard)/dashboard/page.tsx`** (MODIFIED):
+- `nuQueue[0]` ("Awaiting Review"): changed from `{ status: "Pending Approval" }` to `{ status: { in: ["Submitted", "Pending Approval"] } }` — captures WOs in both pre-review states
+- Manager queue block rewritten: uses `mgBase = { AND: [{ deleted_at: null }, visibilityFilter] }` (consistently applies visibility filter to all manager counts)
+- `mgQueue[0]` ("Awaiting Review"): changed to `{ in: ["Submitted", "Pending Approval"] }`
+- `mgAction` query: includes "Submitted" in the action status list alongside "Pending Approval", "Completed by Technician", "Verified by Supervisor"
+
+All checks pass: lint ✓, typecheck ✓, build ✓
+
+### Phase Workflow-03 — Assignment Type Support (Internal / Freelancer / External Company) — COMPLETE
+
+DB schema change: new columns on `work_order_assignments`. No table deletions. No route deletions.
+
+**`prisma/migrations/20260712000001_phase_workflow03_assignment_type/migration.sql`** (NEW):
+- `ADD COLUMN assignment_type TEXT NOT NULL DEFAULT 'INTERNAL_TECHNICIAN'`
+- `ADD COLUMN external_name TEXT`
+- `ADD COLUMN external_company TEXT`
+- `ADD COLUMN external_contact_person TEXT`
+- `ADD COLUMN external_phone TEXT`
+- `ADD COLUMN external_trade TEXT`
+- `ADD COLUMN external_expected_visit_date DATE`
+- Applied via `prisma migrate deploy`. Prisma client types updated (DLL EPERM cosmetic on Windows).
+
+**`prisma/schema.prisma`** (MODIFIED): `work_order_assignments` model extended with all 7 new columns.
+
+**`lib/backend/work-orders/validators.ts`** (REWRITTEN):
+- `ASSIGNMENT_TYPES = ["INTERNAL_TECHNICIAN", "FREELANCER", "EXTERNAL_COMPANY"] as const`
+- `technicianAssignmentSchema` extended with all new fields (externalName, externalCompany, externalContactPerson, externalPhone, externalTrade, externalExpectedVisitDate)
+
+**`lib/backend/work-orders/service.ts`** (MODIFIED):
+- `assignTechnicians`: branched by `assignmentType`; FREELANCER requires `externalName`, EXTERNAL_COMPANY requires `externalCompany`; INTERNAL_TECHNICIAN preserves existing flow; only internal assignments trigger technician notifications
+- `markExternalWorkCompleted` (NEW): `work_orders.assign` permission; validates current assignment is external; transitions to "Completed by Technician"
+- `lib/workflows/status-rules.ts`: `Assigned` transitions extended to include `"Completed by Technician"` (needed for external work completion)
+
+**`app/actions/workflow.ts`** (MODIFIED):
+- `assignTechniciansAction`: parses `assignment_type` + all external fields from FormData
+- `markExternalWorkCompletedAction` (NEW): parses `work_order_id` + `completion_notes`
+
+**`components/work-orders/assignment-form.tsx`** (NEW — `"use client"`):
+- 3-button type selector (Internal / Freelancer / Company) using `useState`
+- Conditional form sections per type; common notes textarea; dynamic submit label
+
+**`components/work-orders/workflow-actions.tsx`** (MODIFIED):
+- Added `CurrentAssignment` type and `currentAssignment` prop
+- `canMarkExternalComplete` flag: `work_orders.assign` + `Assigned|In Progress` + external assignment type
+- Old technician select replaced with `<AssignmentForm>`
+- "Mark External Work Completed" blue card added
+
+**`app/(dashboard)/maintenance/work-orders/[id]/page.tsx`** (MODIFIED):
+- Computes `primaryAssignment` and `currentAssignment` from `work_order_assignments[0]`
+- Passes `currentAssignment` to `WorkflowActions`
+- Assignment display section shows type-specific details (INTERNAL: name list; FREELANCER/EXTERNAL_COMPANY: dedicated card with trade, phone, contact, expected visit)
+
+**`app/(dashboard)/maintenance/work-orders/page.tsx`** (MODIFIED):
+- List query: `work_order_assignments` select expanded with `assignment_type`, `external_name`, `external_company`
+- `assignedDisplay`: FREELANCER → "Freelancer: {name}", EXTERNAL_COMPANY → "Company: {company}", INTERNAL → names list
+- Table header: "Technician" → "Technician / Assignment"
+- Preview query: all 6 external fields included
+- `drawerData.primary_assignment`: structured object with all external fields passed to quick view
+
+**`components/work-orders/repair-order-quick-view.tsx`** (MODIFIED):
+- `QuickViewData.primary_assignment` field added (typed with all 6 external columns)
+- "Technician" label in Key Details grid: dynamically shows "Freelancer" or "External Company" based on type
+- Display content: FREELANCER shows name + trade/phone subtitle; EXTERNAL_COMPANY shows company + contact/phone subtitle; INTERNAL shows names list
+
+**Technician My Jobs (Task 6):** No code changes needed — technician jobs query already filters by `technician_id: context.userId`; FREELANCER/EXTERNAL_COMPANY assignments have no `technician_id`, so they never appear.
+
+**Closure rule (Task 8):** Already enforced — `closeWorkOrder` uses `work_orders.approve`; `WorkflowActions` gates with `can(context, "work_orders.approve")`.
+
+**Data entry monitoring (Task 9):** Already implemented via the read-only `getStepContext()` path in `WorkflowActions` for users without action permissions.
 
 All checks pass: lint ✓, typecheck ✓, build ✓
 

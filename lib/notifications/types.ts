@@ -6,7 +6,7 @@ export type NotificationCategory =
   | "Work Orders"
   | "Approvals"
   | "Technician Jobs"
-  | "Parts Requests"
+  | "Materials Requests"
   | "Store / Inventory"
   | "Purchase"
   | "Finance"

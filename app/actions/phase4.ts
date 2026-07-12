@@ -90,6 +90,9 @@ export async function createPartsRequestAction(formData: FormData) {
       items
     });
     revalidatePath(`/maintenance/work-orders/${workOrderId}`);
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/store/parts-requests");
+    revalidatePath("/dashboard");
     targetPath = `/store/parts-requests/${result.partsRequestId}`;
   } catch (error) {
     redirect(
@@ -109,6 +112,9 @@ export async function approvePartsRequestAction(formData: FormData) {
       partsRequestId: id,
       comments: String(formData.get("comments") ?? "") || undefined
     });
+    revalidatePath(`/store/parts-requests/${result.partsRequestId}`);
+    revalidatePath("/store/parts-requests");
+    revalidatePath("/dashboard");
     targetPath = `/store/parts-requests/${result.partsRequestId}`;
   } catch (error) {
     redirect(`/store/parts-requests/${id}?error=${encodeURIComponent(safeErrorMessage(error))}`);
@@ -126,6 +132,9 @@ export async function rejectPartsRequestAction(formData: FormData) {
       partsRequestId: id,
       comments: String(formData.get("comments") ?? "") || undefined
     });
+    revalidatePath(`/store/parts-requests/${result.partsRequestId}`);
+    revalidatePath("/store/parts-requests");
+    revalidatePath("/dashboard");
     targetPath = `/store/parts-requests/${result.partsRequestId}`;
   } catch (error) {
     redirect(`/store/parts-requests/${id}?error=${encodeURIComponent(safeErrorMessage(error))}`);
@@ -172,6 +181,13 @@ export async function storeIssueAction(formData: FormData) {
     });
   }
 
+  // Look up the linked work order now so we can revalidate its detail page after issue.
+  const prLink = await prisma.parts_requests.findUnique({
+    where: { id: requestId },
+    select: { work_order_id: true },
+  });
+  const linkedWoId = prLink?.work_order_id ?? null;
+
   let targetPath = `/store/parts-requests/${requestId}`;
   try {
     const result = await issuePartsToRequest(context, {
@@ -180,6 +196,11 @@ export async function storeIssueAction(formData: FormData) {
       storeIssueComments: String(formData.get("store_issue_comments") ?? "") || null
     });
     revalidatePath(`/store/parts-requests/${requestId}`);
+    revalidatePath("/store/parts-requests");
+    revalidatePath("/store/parts");
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
+    if (linkedWoId) revalidatePath(`/maintenance/work-orders/${linkedWoId}`);
     targetPath = `/store/parts-requests/${result.partsRequestId}`;
   } catch (error) {
     redirect(`/store/parts-requests/${requestId}?error=${encodeURIComponent(safeErrorMessage(error))}`);

@@ -242,7 +242,7 @@ export function WorkOrderWizard({
               </div>
             ) : (
               <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                Please select an asset or machine to link this repair order to.
+                Please select an asset or machine to link this job card to.
               </p>
             )}
           </WizardCard>
@@ -383,7 +383,7 @@ export function WorkOrderWizard({
         <div className={step !== 3 ? "hidden" : ""}>
           <WizardCard
             title="Assignment Planning"
-            description="Select the maintenance team and schedule targets."
+            description="Select the maintenance team and optionally pre-assign a technician."
           >
             <div>
               <FieldLabel label="Worker team / trade" required />
@@ -409,36 +409,18 @@ export function WorkOrderWizard({
               )}
             </div>
 
-            <div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="block">
-                  <FieldLabel label="Assigned technician" hint="optional" />
-                  <select name="assigned_supervisor_id" defaultValue="" className={inp}>
-                    <option value="">Not yet assigned</option>
-                    {supervisors.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <div className="hidden sm:block" />
-
-              <div>
-                <label className="block">
-                  <FieldLabel label="Target start" hint="optional" />
-                  <input name="starting_datetime" type="datetime-local" className={inp} />
-                </label>
-              </div>
-
-              <div>
-                <label className="block">
-                  <FieldLabel label="Target completion" hint="optional" />
-                  <input name="ending_datetime" type="datetime-local" className={inp} />
-                </label>
-              </div>
+            <div className="mt-5 max-w-xs">
+              <label className="block">
+                <FieldLabel label="Assigned technician" hint="optional" />
+                <select name="assigned_supervisor_id" defaultValue="" className={inp}>
+                  <option value="">Not yet assigned</option>
+                  {supervisors.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
           </WizardCard>
         </div>
@@ -548,35 +530,56 @@ export function WorkOrderWizard({
               </ReviewSection>
 
               <ReviewSection title="Request Details">
-                <dl className="grid gap-1 sm:grid-cols-2">
-                  <ReviewRow label="Order taken by" value={reviewData.ordered_by} />
-                  <ReviewRow label="Date of order" value={reviewData.date_of_order} />
-                  <ReviewRow label="Job location" value={reviewData.job_location} />
-                  <ReviewRow label="Priority" value={reviewData.priority} />
-                  <ReviewRow label="Maintenance type" value={reviewData.maintenance_type} />
-                  <ReviewRow label="Running hours" value={reviewData.running_hours} />
-                  <ReviewRow label="Kilometers" value={reviewData.kilometers} />
-                </dl>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-4">
+                  {reviewData.ordered_by && (
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">Order taken by</p>
+                      <p className="mt-0.5 text-[15px] font-semibold text-[#111827]">{reviewData.ordered_by}</p>
+                    </div>
+                  )}
+                  {reviewData.date_of_order && (
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">Date of order</p>
+                      <p className="mt-0.5 text-[15px] font-semibold text-[#111827]">{reviewData.date_of_order}</p>
+                    </div>
+                  )}
+                  {reviewData.priority && (
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">Priority</p>
+                      <p className="mt-0.5 text-[15px] font-semibold text-[#111827]">{reviewData.priority}</p>
+                    </div>
+                  )}
+                  {reviewData.maintenance_type && (
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">Maintenance type</p>
+                      <p className="mt-0.5 text-[15px] font-semibold text-[#111827]">{reviewData.maintenance_type}</p>
+                    </div>
+                  )}
+                  {reviewData.job_location && (
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">Job location</p>
+                      <p className="mt-0.5 text-[15px] font-semibold text-[#111827]">{reviewData.job_location}</p>
+                    </div>
+                  )}
+                </div>
                 {reviewData.operator_complaint && (
-                  <div className="mt-3">
-                    <dt className="text-xs font-bold text-[#4B5563]">Operator complaint</dt>
-                    <dd className="mt-0.5 text-sm text-[#111827]">{reviewData.operator_complaint}</dd>
+                  <div className="mt-5 border-t border-[#F3F4F6] pt-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">Operator complaint</p>
+                    <p className="mt-1.5 text-[15px] font-semibold leading-relaxed text-[#111827]">{reviewData.operator_complaint}</p>
                   </div>
                 )}
                 {reviewData.description_of_work && (
-                  <div className="mt-3">
-                    <dt className="text-xs font-bold text-[#4B5563]">Description of work</dt>
-                    <dd className="mt-0.5 text-sm text-[#111827]">{reviewData.description_of_work}</dd>
+                  <div className="mt-4 border-t border-[#F3F4F6] pt-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">Description of work</p>
+                    <p className="mt-1.5 text-[15px] font-semibold leading-relaxed text-[#111827]">{reviewData.description_of_work}</p>
                   </div>
                 )}
               </ReviewSection>
 
               <ReviewSection title="Assignment">
-                <dl className="grid gap-1 sm:grid-cols-2">
+                <dl className="grid gap-3 sm:grid-cols-2">
                   <ReviewRow label="Worker team" value={reviewData.worker_type} />
                   <ReviewRow label="Assigned technician" value={reviewTech} />
-                  <ReviewRow label="Target start" value={reviewData.starting_datetime} />
-                  <ReviewRow label="Target completion" value={reviewData.ending_datetime} />
                 </dl>
               </ReviewSection>
 
@@ -615,7 +618,7 @@ export function WorkOrderWizard({
                 value="submit_for_approval"
                 className="focus-ring w-full rounded-md bg-[#ED1C24] py-2.5 text-sm font-bold text-white transition hover:bg-red-700"
               >
-                Submit Repair Order
+                Submit Job Card
               </button>
               <button
                 type="submit"
@@ -709,10 +712,10 @@ function ReviewSection({
 }) {
   return (
     <section>
-      <h3 className="mb-2 text-[10px] font-black uppercase tracking-widest text-[#9CA3AF]">
+      <h3 className="mb-2.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
         {title}
       </h3>
-      <div className="rounded-md border border-[#E5E7EB] p-4">{children}</div>
+      <div className="rounded-md border border-[#E5E7EB] p-4 sm:p-5">{children}</div>
     </section>
   );
 }
@@ -726,9 +729,9 @@ function ReviewRow({
 }) {
   if (!value) return null;
   return (
-    <div className="flex items-baseline justify-between gap-3 py-0.5">
-      <dt className="text-xs font-semibold text-[#4B5563]">{label}</dt>
-      <dd className="text-right text-xs text-[#111827]">{value}</dd>
+    <div className="py-1">
+      <dt className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">{label}</dt>
+      <dd className="mt-0.5 text-sm font-semibold text-[#111827]">{value}</dd>
     </div>
   );
 }

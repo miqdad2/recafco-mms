@@ -28,7 +28,7 @@ export default async function ReportsLandingPage() {
     <>
       <PageHeader
         title="Maintenance Reports"
-        description="View repair orders, asset history, spare parts usage, and maintenance performance."
+        description="View job cards, asset history, materials usage, and maintenance performance."
       />
 
       <div className="p-4 lg:p-6 space-y-6">
@@ -38,7 +38,7 @@ export default async function ReportsLandingPage() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm text-center">
               <p className="text-2xl font-black text-[#111827]">{stats.openWOs}</p>
-              <p className="mt-1 text-xs font-semibold text-[#4B5563]">Open Repair Orders</p>
+              <p className="mt-1 text-xs font-semibold text-[#4B5563]">Open Job Cards</p>
             </div>
             <div className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm text-center">
               <p className={`text-2xl font-black ${stats.overdueWOs > 0 ? "text-[#DC2626]" : "text-[#111827]"}`}>{stats.overdueWOs}</p>
@@ -63,8 +63,8 @@ export default async function ReportsLandingPage() {
             <ReportCard
               href="/reports/work-orders"
               icon={ClipboardList}
-              title="Repair Order Summary"
-              description="Track open, in-progress, waiting parts, completed, closed, and overdue repair orders."
+              title="Job Card Summary"
+              description="Track open, in-progress, waiting materials, completed, closed, and overdue job cards."
               badge={stats.overdueWOs > 0 ? `${stats.overdueWOs} overdue` : undefined}
               badgeTone="red"
             />
@@ -88,14 +88,14 @@ export default async function ReportsLandingPage() {
             <ReportCard
               href="/reports/spare-parts-usage"
               icon={Package}
-              title="Spare Parts Usage"
-              description="Track parts used across repair orders and assets."
+              title="Materials Usage"
+              description="Track materials used across job cards and assets."
             />
 
             <ReportCard
               href="/reports/low-stock"
               icon={AlertTriangle}
-              title="Low Stock Spare Parts"
+              title="Low Stock Spare Parts / Materials"
               description="Review parts below minimum stock and unavailable items."
               badge={stats.lowStockCount > 0 ? `${stats.lowStockCount} below minimum` : undefined}
               badgeTone="amber"
