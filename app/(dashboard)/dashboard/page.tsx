@@ -25,6 +25,11 @@ import { requireUser } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateTime } from "@/lib/utils";
 import { displayStatus } from "@/lib/display/work-order-labels";
+import {
+  displayPartsRequestStatus,
+  partsRequestStatusTone,
+  OPEN_PR_STATUSES,
+} from "@/lib/display/parts-request-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { AutoRefresh } from "@/components/auto-refresh";
 import {
@@ -56,14 +61,6 @@ function woTone(status: string): "green" | "amber" | "red" | "blue" | "gray" {
   if (["Waiting for Parts", "Waiting for Purchase"].includes(status)) return "amber";
   if (status === "Draft") return "gray";
   return "blue";
-}
-
-function prTone(status: string): "green" | "amber" | "red" | "blue" | "gray" {
-  if (status === "Issued") return "green";
-  if (status === "Partially Issued") return "amber";
-  if (status === "Waiting for Purchase") return "red";
-  if (status === "Waiting for Store") return "blue";
-  return "gray";
 }
 
 function ageLabel(createdAt: string): string {
@@ -174,7 +171,7 @@ function PrRow({ row }: { row: PrRow }) {
       <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[#111827]">
         {row.parts_request_number ?? "—"}
       </span>
-      <StatusBadge label={row.status} tone={prTone(row.status)} />
+      <StatusBadge label={displayPartsRequestStatus(row.status)} tone={partsRequestStatusTone(row.status)} />
       <span className="hidden shrink-0 text-xs text-[#9CA3AF] sm:block">{formatDateTime(row.created_at)}</span>
       <Link href={`/store/parts-requests/${row.id}`} className="shrink-0 rounded border border-[#E5E7EB] px-2 py-1 text-xs font-bold text-[#111827] transition hover:border-[#ED1C24] hover:text-[#ED1C24]">
         View
@@ -242,7 +239,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     Promise.all([
       safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: { in: ["Submitted", "Pending Approval"] } }] } })),
       safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: { in: ["In Progress", "Parts Issued"] } }] } })),
-      safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: { in: ["Waiting for Parts", "Waiting for Purchase"] } }] } })),
+      safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } }] } })),
       safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Rejected" }] } })),
       safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Draft" }] } })),
     ]),
@@ -267,7 +264,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: { in: ["Submitted", "Pending Approval"] } }] } })),
           safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Assigned" }] } })),
           safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: { in: ["In Progress", "Parts Issued"] } }] } })),
-          safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: { in: ["Waiting for Parts", "Waiting for Purchase"] } }] } })),
+          safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } }] } })),
           safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: { in: ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"] } }] } })),
         ]),
         // Needs Your Action rows — items awaiting manager decision
@@ -298,10 +295,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             }))
           )
           .catch((): MgActionRow[] => []),
-        // Materials Waiting — open materials requests
+        // Materials Waiting — all open materials requests (Pending Approval through Partially Issued)
         prisma.parts_requests
           .findMany({
-            where: { status: { in: ["Waiting for Store", "Waiting for Purchase", "Partially Issued"] } },
+            where: { status: { in: OPEN_PR_STATUSES } },
             select: { id: true, parts_request_number: true, status: true, created_at: true },
             orderBy: { created_at: "asc" },
             take: 5,
@@ -370,7 +367,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     Promise.all([
       safeNum(prisma.assets.count({ where: { deleted_at: null } })),
       safeNum(prisma.work_orders.count({ where: { deleted_at: null, status: { notIn: ["Closed", "Rejected", "Cancelled"] } } })),
-      safeNum(prisma.work_orders.count({ where: { deleted_at: null, status: { in: ["Waiting for Parts", "Waiting for Purchase"] } } })),
+      safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, { parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } }] } })),
       safeNum(prisma.parts.count({ where: { deleted_at: null, status: "Low Stock" } })),
       safeNum(prisma.profiles.count({ where: { deleted_at: null, is_active: true } })),
     ]),
@@ -396,13 +393,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     context.permissions.includes("work_orders.assign") ||
     context.permissions.includes("work_orders.approve");
 
-  const OPEN_PR_STATUSES = [
-    "Pending Approval",
-    "Waiting for Store",
-    "Partially Issued",
-    "Waiting for Purchase",
-  ];
-
   const [previewWO, prPreviewData, techsForModal] = previewId
     ? await Promise.all([
         prisma.work_orders.findFirst({
@@ -411,7 +401,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             id: true,
             work_order_number: true,
             status: true,
-            priority: true,
             maintenance_type: true,
             worker_type: true,
             operator_complaint: true,
@@ -442,7 +431,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 profiles: { select: { full_name: true } },
               },
             },
-            _count: { select: { work_order_required_parts: true } },
+            _count: { select: { work_order_required_parts: true, work_order_attachments: true } },
           },
         }),
         prisma.parts_requests.findMany({
@@ -468,7 +457,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         work_order_number: previewWO.work_order_number,
         status: previewWO.status,
         displayStatus: displayStatus(previewWO.status),
-        priority: previewWO.priority,
         maintenance_type: previewWO.maintenance_type,
         worker_type: previewWO.worker_type,
         operator_complaint: previewWO.operator_complaint,
@@ -518,6 +506,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           OPEN_PR_STATUSES.includes(pr.status),
         ).length,
         last_parts_request_status: prPreviewData[0]?.status ?? null,
+        attachment_count: previewWO._count.work_order_attachments,
         roleSlug: context.role?.slug ?? "",
         canApprove: isAdmin || context.permissions.includes("work_orders.approve"),
         canAssign: isAdmin || context.permissions.includes("work_orders.assign"),

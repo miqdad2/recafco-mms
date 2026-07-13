@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ArrowRight,
   Package,
+  Paperclip,
   ExternalLink,
 } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -20,7 +21,6 @@ export type QuickViewData = {
   work_order_number: string | null;
   status: string;
   displayStatus: string;
-  priority: string;
   maintenance_type: string;
   worker_type: string;
   operator_complaint: string | null;
@@ -52,6 +52,7 @@ export type QuickViewData = {
   parts_requests_count: number;
   open_parts_requests_count: number;
   last_parts_request_status: string | null;
+  attachment_count: number;
   roleSlug: string;
   canApprove: boolean;
   canAssign: boolean;
@@ -62,64 +63,42 @@ export type QuickViewData = {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DISPLAY_STAGES = [
+// Simplified 5-stage stepper for the quick view popup. The full detail page
+// keeps the more granular workflow — this is a scanning aid, not the source
+// of truth for status.
+const SIMPLE_STAGES = [
   "Submitted",
   "Manager Review",
-  "Assigned",
   "In Progress",
   "Waiting Materials",
-  "Ready to Close",
   "Closed",
 ] as const;
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
-function getStageIndex(status: string): number {
+function getSimpleStageIndex(status: string): number {
   const map: Record<string, number> = {
     Draft: 0,
     Submitted: 0,
+    Rejected: 0,
+    Reopened: 0,
     "Pending Approval": 1,
     Approved: 2,
     Assigned: 2,
-    "In Progress": 3,
-    "Parts Issued": 3,
-    "Waiting for Parts": 4,
-    "Waiting for Purchase": 4,
-    "Completed by Technician": 5,
-    "Verified by Supervisor": 5,
-    "Confirmed by Requester": 5,
-    Closed: 6,
-    Cancelled: 6,
-    Rejected: 0,
-    Reopened: 0,
+    "In Progress": 2,
+    "Parts Issued": 2,
+    "Completed by Technician": 2,
+    "Verified by Supervisor": 2,
+    "Confirmed by Requester": 2,
+    "Waiting for Parts": 3,
+    "Waiting for Purchase": 3,
+    Closed: 4,
+    Cancelled: 4,
   };
   return map[status] ?? 0;
 }
 
-function priorityTone(p: string): "red" | "amber" | "blue" | "gray" {
-  if (p === "Urgent") return "red";
-  if (p === "High") return "amber";
-  if (p === "Normal") return "blue";
-  return "gray";
-}
-
-function statusTone(s: string): "green" | "amber" | "red" | "blue" | "gray" {
-  if (
-    [
-      "Closed",
-      "Verified by Supervisor",
-      "Confirmed by Requester",
-      "Completed by Technician",
-    ].includes(s)
-  )
-    return "green";
-  if (s.includes("Waiting") || ["Submitted", "Pending Approval"].includes(s))
-    return "amber";
-  if (["Rejected", "Cancelled"].includes(s)) return "red";
-  if (["Assigned", "In Progress", "Parts Issued", "Approved"].includes(s))
-    return "blue";
-  return "gray";
-}
+type Tone = "green" | "amber" | "red" | "blue" | "gray";
 
 function formatDate(v: string | null | undefined): string {
   if (!v) return "—";
@@ -132,99 +111,102 @@ function formatDate(v: string | null | undefined): string {
   });
 }
 
-type NextAction = { title: string; description: string };
+// Simplified main status + sub-status for the quick view popup. Assigned,
+// approved, in-progress and completed-but-not-closed statuses are grouped
+// under one "In Progress" heading — users treat assignment as the start of
+// active work, not a separate stage. The exact internal status is still
+// shown as a small "Workflow stage" label so nothing is hidden.
+type StatusInfo = { main: string; sub: string; tone: Tone };
 
-function getNextAction(
+function getStatusInfo(
   status: string,
   canApprove: boolean,
   canAssign: boolean,
   canManage: boolean
-): NextAction {
+): StatusInfo {
   switch (status) {
     case "Draft":
       return {
-        title: "Draft — not yet submitted.",
-        description: canManage
-          ? "Complete the repair order details and submit for review."
+        main: "Draft",
+        sub: canManage
+          ? "Not yet submitted — complete the details and submit for review."
           : "Awaiting submission.",
+        tone: "gray",
       };
     case "Submitted":
+      return {
+        main: "Submitted",
+        sub: "Awaiting manager review.",
+        tone: "amber",
+      };
     case "Pending Approval":
       return {
-        title: "Awaiting manager review.",
-        description:
-          "The Maintenance Manager will review and assign a technician.",
+        main: "Manager Review",
+        sub: "The Maintenance Manager will review and assign a technician.",
+        tone: "amber",
       };
     case "Approved":
       return {
-        title: canAssign
-          ? "Assign a technician."
-          : "Awaiting technician assignment.",
-        description: "Job card is approved. A technician needs to be assigned.",
+        main: "In Progress",
+        sub: canAssign
+          ? "Approved — assign a technician."
+          : "Approved — awaiting technician assignment.",
+        tone: "blue",
       };
     case "Assigned":
       return {
-        title: "Technician assigned.",
-        description: "Waiting for the technician to start work.",
+        main: "In Progress",
+        sub: "Assigned to technician — waiting for work to start.",
+        tone: "blue",
       };
     case "In Progress":
-      return {
-        title: "Work in progress.",
-        description: "Technician is currently working on this repair order.",
-      };
+      return { main: "In Progress", sub: "Work started.", tone: "blue" };
     case "Parts Issued":
       return {
-        title: "Materials issued — work continuing.",
-        description:
-          "Materials have been issued from the store. Technician is continuing work.",
+        main: "In Progress",
+        sub: "Materials issued — work continuing.",
+        tone: "blue",
+      };
+    case "Completed by Technician":
+    case "Verified by Supervisor":
+    case "Confirmed by Requester":
+      return {
+        main: "In Progress",
+        sub: "Work completed — waiting for manager closure.",
+        tone: "blue",
       };
     case "Waiting for Parts":
       return {
-        title: "Waiting for materials.",
-        description:
-          "Job card is blocked until requested materials are issued.",
+        main: "Waiting Materials",
+        sub: "Blocked until requested materials are issued.",
+        tone: "amber",
       };
     case "Waiting for Purchase":
       return {
-        title: "Waiting for materials.",
-        description:
-          "Materials are being procured. Work will resume once they arrive.",
-      };
-    case "Completed by Technician":
-      return {
-        title:
-          canApprove || canAssign
-            ? "Ready to close."
-            : "Awaiting verification.",
-        description:
-          "Technician completed work. Waiting for supervisor verification and manager closure.",
-      };
-    case "Verified by Supervisor":
-      return {
-        title: canApprove ? "Verified — ready to close." : "Awaiting manager closure.",
-        description: "Work has been verified by the supervisor.",
-      };
-    case "Confirmed by Requester":
-      return {
-        title: canApprove ? "Confirmed — ready to close." : "Awaiting manager closure.",
-        description:
-          "Requester has confirmed the repair. Ready for final closure.",
+        main: "Waiting Materials",
+        sub: "Materials are being procured. Work will resume once they arrive.",
+        tone: "amber",
       };
     case "Closed":
-      return { title: "Job card closed.", description: "" };
+      return { main: "Closed", sub: "", tone: "green" };
     case "Rejected":
       return {
-        title: "Returned for fix.",
-        description: canManage
+        main: "Returned for Fix",
+        sub: canManage
           ? "Please update the repair order and resubmit."
           : "Repair order was returned for corrections.",
+        tone: "red",
       };
     case "Cancelled":
-      return { title: "Job card cancelled.", description: "" };
+      return { main: "Cancelled", sub: "Job card cancelled.", tone: "gray" };
     case "Reopened":
-      return { title: "Job card reopened.", description: "Awaiting action." };
+      return {
+        main: "In Progress",
+        sub: "Job card reopened — awaiting action.",
+        tone: "blue",
+      };
     default:
-      return { title: status, description: "" };
+      return { main: status, sub: "", tone: "gray" };
   }
 }
 
@@ -271,8 +253,8 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
 
   // Derived values
   const isTerminal = ["Closed", "Cancelled", "Rejected"].includes(data.status);
-  const stageIndex = getStageIndex(data.status);
-  const nextAction = getNextAction(
+  const stageIndex = getSimpleStageIndex(data.status);
+  const statusInfo = getStatusInfo(
     data.status,
     data.canApprove,
     data.canAssign,
@@ -308,6 +290,11 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
   const showStartWork = isTech && data.status === "Assigned";
   const showMarkComplete =
     isTech && ["In Progress", "Parts Issued"].includes(data.status);
+  // Re-assigning a technician after the initial assignment isn't a supported
+  // backend transition (Assigned → Assigned), so managers can only view the
+  // current assignment from here, not change it.
+  const showViewAssignment =
+    (data.canApprove || data.canAssign) && data.status === "Assigned";
   const showViewPRs =
     isStore &&
     ["Waiting for Parts", "Parts Issued", "Waiting for Purchase"].includes(
@@ -327,6 +314,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
     showReturnToDraft ||
     showStartWork ||
     showMarkComplete ||
+    showViewAssignment ||
     showViewPRs ||
     showRequestParts ||
     !!assignSuccess;
@@ -364,14 +352,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                 {title}
               </p>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                <StatusBadge
-                  label={data.displayStatus}
-                  tone={statusTone(data.status)}
-                />
-                <StatusBadge
-                  label={data.priority}
-                  tone={priorityTone(data.priority)}
-                />
+                <StatusBadge label={statusInfo.main} tone={statusInfo.tone} />
                 {data.maintenance_type && (
                   <StatusBadge label={data.maintenance_type} tone="gray" />
                 )}
@@ -394,10 +375,10 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
           {/* ── Scrollable body ──────────────────────────────────────────────── */}
           <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#E5E7EB]">
 
-            {/* Status stepper */}
+            {/* Status stepper — simplified 5-stage view for quick scanning */}
             <section aria-label="Repair order progress" className="px-5 py-3">
               <div className="flex flex-wrap items-center gap-y-2">
-                {DISPLAY_STAGES.map((stage, idx) => {
+                {SIMPLE_STAGES.map((stage, idx) => {
                   const isDone = stageIndex > idx;
                   const isCurrent = stageIndex === idx;
                   return (
@@ -418,7 +399,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                         )}
                         {stage}
                       </span>
-                      {idx < DISPLAY_STAGES.length - 1 && (
+                      {idx < SIMPLE_STAGES.length - 1 && (
                         <span
                           className={`mx-1 text-xs font-bold ${
                             isDone ? "text-[#16A34A]" : "text-gray-300"
@@ -434,7 +415,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
               </div>
             </section>
 
-            {/* Next Action card */}
+            {/* Current Status card */}
             <section
               className={`px-5 py-3 ${isTerminal ? "bg-gray-50" : "bg-amber-50"}`}
             >
@@ -443,22 +424,27 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                   isTerminal ? "text-[#4B5563]" : "text-amber-800"
                 }`}
               >
-                {isTerminal ? "Status" : "Next Action"}
+                Current Status
               </p>
               <p
                 className={`mt-1 text-sm font-bold ${
                   isTerminal ? "text-[#111827]" : "text-amber-900"
                 }`}
               >
-                {nextAction.title}
+                {statusInfo.main}
               </p>
-              {nextAction.description && (
+              {statusInfo.sub && (
                 <p
                   className={`mt-0.5 text-sm ${
                     isTerminal ? "text-[#4B5563]" : "text-amber-800"
                   }`}
                 >
-                  {nextAction.description}
+                  {statusInfo.sub}
+                </p>
+              )}
+              {statusInfo.main !== data.status && (
+                <p className="mt-1.5 text-[11px] font-medium text-[#9CA3AF]">
+                  Workflow stage: {data.status}
                 </p>
               )}
             </section>
@@ -469,14 +455,6 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                 Key Details
               </p>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {data.assets && (
-                  <div>
-                    <p className="text-xs text-[#9CA3AF]">Asset</p>
-                    <p className="text-sm font-semibold text-[#111827]">
-                      {data.assets.asset_code} — {data.assets.asset_name}
-                    </p>
-                  </div>
-                )}
                 <div>
                   <p className="text-xs text-[#9CA3AF]">
                     {data.primary_assignment?.assignment_type === "FREELANCER"
@@ -531,22 +509,6 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                     </p>
                   </div>
                 )}
-                {data.job_location && (
-                  <div>
-                    <p className="text-xs text-[#9CA3AF]">Location</p>
-                    <p className="text-sm text-[#111827]">{data.job_location}</p>
-                  </div>
-                )}
-                {data.department_name && (
-                  <div>
-                    <p className="text-xs text-[#9CA3AF]">Department</p>
-                    <p className="text-sm text-[#111827]">{data.department_name}</p>
-                  </div>
-                )}
-                <div>
-                  <p className="text-xs text-[#9CA3AF]">Priority</p>
-                  <p className="text-sm text-[#111827]">{data.priority}</p>
-                </div>
                 {data.maintenance_type && (
                   <div>
                     <p className="text-xs text-[#9CA3AF]">Type</p>
@@ -570,21 +532,6 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                     <p className="mt-0.5 text-xs text-[#4B5563]">
                       {data.assets.location}
                     </p>
-                  )}
-                  {(data.assets.condition || data.assets.criticality) && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {data.assets.condition && (
-                        <StatusBadge label={data.assets.condition} tone="gray" />
-                      )}
-                      {data.assets.criticality && (
-                        <StatusBadge
-                          label={data.assets.criticality}
-                          tone={
-                            data.assets.criticality === "Critical" ? "red" : "amber"
-                          }
-                        />
-                      )}
-                    </div>
                   )}
                   <div className="mt-3">
                     <Link
@@ -654,6 +601,17 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
               </div>
             </section>
 
+            {/* Attachment count summary */}
+            {data.attachment_count > 0 && (
+              <div className="border-t border-[#E5E7EB] px-5 py-3">
+                <p className="text-xs text-[#4B5563]">
+                  <Paperclip className="mr-1 inline h-3 w-3" />
+                  <span className="font-bold">{data.attachment_count}</span>{" "}
+                  document{data.attachment_count !== 1 ? "s" : ""} &amp; photo{data.attachment_count !== 1 ? "s" : ""} attached
+                </p>
+              </div>
+            )}
+
             {/* Inline assign panel — shown above Quick Actions when open */}
             {showAssignPanel && (
               <section className="px-5 py-4">
@@ -710,6 +668,14 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#16A34A] px-3 py-2.5 text-sm font-bold text-white hover:bg-[#15803d]"
                     >
                       Mark Completed <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  )}
+                  {showViewAssignment && (
+                    <Link
+                      href={`/maintenance/work-orders/${data.id}#assignment`}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-md border border-[#E5E7EB] px-3 py-2.5 text-sm font-bold text-[#111827] hover:bg-gray-50"
+                    >
+                      View Assignment <ArrowRight className="h-4 w-4" />
                     </Link>
                   )}
                   {showSubmit && (

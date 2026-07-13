@@ -11,7 +11,7 @@ import { prisma } from "@/lib/db/prisma";
 // Categories loaded from DB — see asset_categories table
 
 type AssetsPageProps = {
-  searchParams?: Promise<{ page?: string; search?: string; status?: string; category?: string; main_category?: string; location?: string; due_soon?: string; condition?: string; criticality?: string }>;
+  searchParams?: Promise<{ page?: string; search?: string; status?: string; category?: string; main_category?: string; location?: string; due_soon?: string }>;
 };
 
 const pageSize = 25;
@@ -23,8 +23,6 @@ type AssetRow = {
   category: string;
   status: string;
   location: string | null;
-  condition: string | null;
-  criticality: string | null;
   serial_number: string | null;
   model: string | null;
 };
@@ -73,8 +71,6 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   const status = String(params?.status ?? "").trim();
   const category = String(params?.category ?? "").trim();
   const location = String(params?.location ?? "").replace(/[%,()]/g, " ").trim().slice(0, 80);
-  const condition = String(params?.condition ?? "").trim();
-  const criticality = String(params?.criticality ?? "").trim();
   const dueSoonFilter = params?.due_soon === "1";
   const mainCategory = String(params?.main_category ?? "").trim();
 
@@ -381,8 +377,6 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
           : { category: { in: subcatNamesForMain(mainCategory) } }
         : {}),
     ...(location ? { location: { contains: location, mode: "insensitive" as const } } : {}),
-    ...(condition ? { condition } : {}),
-    ...(criticality ? { criticality } : {}),
     ...(dueSoonFilter ? { next_service_date: { lte: dueSoon } } : {}),
     ...(search
       ? (() => {
@@ -407,7 +401,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
       : {}),
   };
 
-  const [assets, count, categoryChips, criticalStatusCount, poorConditionCount, waitingCount] = await Promise.all([
+  const [assets, count, categoryChips, criticalStatusCount, waitingCount] = await Promise.all([
     prisma.assets.findMany({
       where,
       orderBy: dueSoonFilter ? { next_service_date: "asc" } : { asset_code: "asc" },
@@ -420,8 +414,6 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         category: true,
         status: true,
         location: true,
-        condition: true,
-        criticality: true,
         serial_number: true,
         model: true,
       },
@@ -435,7 +427,6 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
       order by count(*) desc, category asc
     `,
     prisma.assets.count({ where: { deleted_at: null, status: { in: ["Breakdown", "Out of Service"] } } }),
-    prisma.assets.count({ where: { deleted_at: null, condition: { in: ["Poor", "Out of Service"] } } }),
     prisma.assets.count({ where: { deleted_at: null, status: { in: ["Waiting for Parts", "Under Maintenance"] } } }),
   ]);
 
@@ -485,7 +476,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   // Normal users (maintenance_data_entry, viewer, etc.) get a simplified filter set.
   const isFullFilterUser =
     context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
-  const hasActiveFilters = !!(search || status || category || mainCategory || location || condition || criticality || dueSoonFilter);
+  const hasActiveFilters = !!(search || status || category || mainCategory || location || dueSoonFilter);
 
   // Subcategory filter options: if a main category is active, show its DB subcats; else show all DB subcats found in assets
   const activeMainCat = dbMainCats.find((m) => m.name === mainCategory);
@@ -521,7 +512,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
       <div className="p-4 lg:p-6 space-y-4">
 
         {/* KPI cards */}
-        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <section className="grid gap-3 sm:grid-cols-3">
           <SummaryCard
             title="Total Assets & Equipment"
             value={totalAssets}
@@ -536,14 +527,6 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             icon={ShieldAlert}
             tone={criticalStatusCount > 0 ? "red" : "gray"}
             href="/assets?status=Breakdown"
-          />
-          <SummaryCard
-            title="Poor Condition"
-            value={poorConditionCount}
-            detail="Condition rated Poor or Out of Service"
-            icon={AlertTriangle}
-            tone={poorConditionCount > 0 ? "amber" : "gray"}
-            href="/assets?condition=Poor"
           />
           <SummaryCard
             title="Under Maintenance"
@@ -602,7 +585,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         {/* Main category pills */}
         <div className="flex flex-wrap items-center gap-2">
           <Link
-            href={filterHref({ status, search, location, condition, criticality })}
+            href={filterHref({ status, search, location })}
             className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
               !mainCategory && !category
                 ? "border-[#111827] bg-[#111827] text-white"
@@ -621,7 +604,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             return (
               <Link
                 key={topLevel.id}
-                href={topLevelChipHref({ mainCategory: topLevel.name, status, search, location, condition, criticality })}
+                href={topLevelChipHref({ mainCategory: topLevel.name, status, search, location })}
                 className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
                   isActive
                     ? "border-[#111827] bg-[#111827] text-white"
@@ -668,18 +651,6 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
               <option value="">Subcategory</option>
               {subcategoryOptions.map((sub) => (
                 <option key={sub} value={sub}>{sub}</option>
-              ))}
-            </select>
-            <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="condition" defaultValue={params?.condition ?? ""}>
-              <option value="">Condition</option>
-              {["Excellent", "Good", "Fair", "Poor", "Out of Service"].map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-            <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="criticality" defaultValue={params?.criticality ?? ""}>
-              <option value="">Criticality</option>
-              {["Critical", "High", "Medium", "Low"].map((c) => (
-                <option key={c} value={c}>{c}</option>
               ))}
             </select>
           </>)}
@@ -746,15 +717,13 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className={`w-full text-left text-sm ${isFullFilterUser ? "min-w-[1100px]" : "min-w-[700px]"}`}>
+              <table className={`w-full text-left text-sm ${isFullFilterUser ? "min-w-[900px]" : "min-w-[600px]"}`}>
                 <thead className="bg-gray-50 text-xs font-black uppercase text-[#4B5563]">
                   <tr>
                     <th className="px-4 py-3">Asset / Equipment</th>
                     {isFullFilterUser && <th className="px-4 py-3">Main Category</th>}
                     {isFullFilterUser && <th className="px-4 py-3">Subcategory</th>}
                     <th className="px-4 py-3">Location</th>
-                    <th className="px-4 py-3">Condition</th>
-                    {isFullFilterUser && <th className="px-4 py-3">Criticality</th>}
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Last Repair</th>
                     <th className="px-4 py-3 text-right">Action</th>
@@ -804,26 +773,6 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                           {asset.location ?? <span className="text-[#9CA3AF]">—</span>}
                         </td>
                         <td className="px-4 py-2.5">
-                          {asset.condition ? (
-                            <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-bold ${conditionClass(asset.condition)}`}>
-                              {asset.condition}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-[#9CA3AF]">Not set</span>
-                          )}
-                        </td>
-                        {isFullFilterUser && (
-                          <td className="px-4 py-2.5">
-                            {asset.criticality ? (
-                              <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-bold ${criticalityClass(asset.criticality)}`}>
-                                {asset.criticality}
-                              </span>
-                            ) : (
-                              <span className="text-xs text-[#9CA3AF]">Not set</span>
-                            )}
-                          </td>
-                        )}
-                        <td className="px-4 py-2.5">
                           <StatusBadge label={asset.status} tone={assetStatusTone(asset.status)} />
                         </td>
                         <td className="px-4 py-2.5">
@@ -852,7 +801,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                   })}
                   {!assets.length && (
                     <tr>
-                      <td className="px-4 py-10 text-center" colSpan={isFullFilterUser ? 9 : 6}>
+                      <td className="px-4 py-10 text-center" colSpan={isFullFilterUser ? 7 : 5}>
                         <p className="text-sm font-semibold text-[#4B5563]">No assets match the current filters.</p>
                         <Link href="/assets" className="mt-2 inline-block text-xs text-[#ED1C24] hover:underline">
                           Clear filters
@@ -875,8 +824,6 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             mainCategory={params?.main_category}
             category={params?.category}
             location={params?.location}
-            condition={params?.condition}
-            criticality={params?.criticality}
             dueSoon={dueSoonFilter ? "1" : undefined}
           />
         )}
@@ -911,10 +858,10 @@ function CeoAssetKpi({
 }
 
 function filterHref({
-  category, mainCategory, status, search, location, condition, criticality,
+  category, mainCategory, status, search, location,
 }: {
   category?: string; mainCategory?: string; status?: string; search?: string;
-  location?: string; condition?: string; criticality?: string;
+  location?: string;
 }) {
   const p = new URLSearchParams();
   if (mainCategory) p.set("main_category", mainCategory);
@@ -922,35 +869,17 @@ function filterHref({
   if (status)       p.set("status", status);
   if (search)       p.set("search", search);
   if (location)     p.set("location", location);
-  if (condition)    p.set("condition", condition);
-  if (criticality)  p.set("criticality", criticality);
   const q = p.toString();
   return q ? `/assets?${q}` : "/assets";
 }
 
 function topLevelChipHref({
-  mainCategory, status, search, location, condition, criticality,
+  mainCategory, status, search, location,
 }: {
   mainCategory: string; status?: string; search?: string;
-  location?: string; condition?: string; criticality?: string;
+  location?: string;
 }) {
-  return filterHref({ mainCategory, status, search, location, condition, criticality });
-}
-
-function conditionClass(c: string): string {
-  if (c === "Poor" || c === "Out of Service") return "bg-red-100 text-[#DC2626]";
-  if (c === "Fair")      return "bg-amber-100 text-amber-800";
-  if (c === "Good")      return "bg-blue-100 text-[#2563EB]";
-  if (c === "Excellent") return "bg-green-100 text-[#16A34A]";
-  return "bg-gray-100 text-[#4B5563]";
-}
-
-function criticalityClass(c: string): string {
-  if (c === "Critical") return "bg-red-100 text-[#DC2626]";
-  if (c === "High")     return "bg-amber-100 text-amber-800";
-  if (c === "Medium")   return "bg-blue-100 text-[#2563EB]";
-  if (c === "Low")      return "bg-gray-100 text-[#4B5563]";
-  return "bg-gray-100 text-[#4B5563]";
+  return filterHref({ mainCategory, status, search, location });
 }
 
 function SummaryCard({
@@ -997,7 +926,7 @@ function formatDate(value: Date | string | null) {
 }
 
 function Pagination({
-  page, totalPages, search, status, mainCategory, category, location, condition, criticality, dueSoon,
+  page, totalPages, search, status, mainCategory, category, location, dueSoon,
 }: {
   page: number;
   totalPages: number;
@@ -1006,8 +935,6 @@ function Pagination({
   mainCategory?: string;
   category?: string;
   location?: string;
-  condition?: string;
-  criticality?: string;
   dueSoon?: string;
 }) {
   const hrefFor = (nextPage: number) => {
@@ -1018,8 +945,6 @@ function Pagination({
     if (mainCategory)  p.set("main_category", mainCategory);
     if (category)      p.set("category", category);
     if (location)      p.set("location", location);
-    if (condition)     p.set("condition", condition);
-    if (criticality)   p.set("criticality", criticality);
     if (dueSoon)       p.set("due_soon", dueSoon);
     return `/assets?${p.toString()}`;
   };

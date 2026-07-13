@@ -52,24 +52,6 @@ function statusTone(s: string): "green" | "amber" | "red" | "gray" {
   return "gray";
 }
 
-function conditionTone(c: string | null | undefined): "green" | "amber" | "red" | "blue" | "gray" {
-  if (!c) return "gray";
-  if (c === "Good") return "green";
-  if (c === "Fair") return "blue";
-  if (c === "Poor") return "amber";
-  if (c === "Critical") return "red";
-  return "gray";
-}
-
-function criticalityTone(c: string | null | undefined): "green" | "amber" | "red" | "blue" | "gray" {
-  if (!c) return "gray";
-  if (c === "Low") return "gray";
-  if (c === "Medium") return "blue";
-  if (c === "High") return "amber";
-  if (c === "Critical") return "red";
-  return "gray";
-}
-
 function woStatusTone(s: string): "green" | "amber" | "red" | "blue" | "gray" {
   if (s === "Closed") return "green";
   if (["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"].includes(s)) return "green";
@@ -264,15 +246,6 @@ export default async function AssetDetailPage({
             </div>
             <div className="mt-2.5 flex flex-wrap gap-2">
               <StatusBadge label={asset.status} tone={statusTone(asset.status)} />
-              {asset.condition && (
-                <StatusBadge label={asset.condition} tone={conditionTone(asset.condition)} />
-              )}
-              {asset.criticality && (
-                <StatusBadge
-                  label={`${asset.criticality} Criticality`}
-                  tone={criticalityTone(asset.criticality)}
-                />
-              )}
             </div>
           </div>
 
@@ -493,32 +466,6 @@ export default async function AssetDetailPage({
                 </section>
               )}
 
-              {/* Condition & risk */}
-              {(asset.condition || asset.criticality || asset.remarks) && (
-                <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-                  <p className="mb-4 text-[11px] font-black uppercase tracking-widest text-[#ED1C24]">
-                    Condition &amp; Risk
-                  </p>
-                  <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-                    {asset.condition && (
-                      <InfoRow label="Physical Condition" value={asset.condition} />
-                    )}
-                    {asset.criticality && (
-                      <InfoRow label="Criticality Level" value={asset.criticality} />
-                    )}
-                    {asset.remarks && (
-                      <div className="sm:col-span-2">
-                        <dt className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">
-                          Remarks
-                        </dt>
-                        <dd className="mt-1 whitespace-pre-wrap text-sm text-[#111827]">
-                          {asset.remarks}
-                        </dd>
-                      </div>
-                    )}
-                  </dl>
-                </section>
-              )}
             </div>
 
             {/* Right column */}

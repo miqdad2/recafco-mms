@@ -153,6 +153,19 @@ No DB schema changes. No action changes.
 
 All checks pass: lint ✓, typecheck ✓, build ✓
 
+## Phase JobCards-UX-RemoveOverdue-01 — Remove Overdue Card and Align Waiting Materials Wording — COMPLETE
+
+No DB schema changes. No backend logic changes. Display layer only.
+
+**`app/(dashboard)/maintenance/work-orders/page.tsx`**:
+- `MANAGER_TABS`: changed `{ label: "Waiting Parts", status: "Waiting for Parts" }` → `{ label: "Waiting Materials", ... }`. NORMAL_USER_TABS and DEFAULT_TABS already said "Waiting Materials". All three tab sets now consistent.
+- Non-CEO `Promise.all`: removed `overdueDate` variable declaration and `overdueCount` Prisma query (4th parallel query). Destructuring changed from `[workOrders, count, statusSummaries, overdueCount]` to `[workOrders, count, statusSummaries]`.
+- Manager/Admin KPI strip (non-normal-user section): removed "Overdue" KpiCard (was showing `overdueCount`, `AlertTriangle` icon, detail "Open for more than 7 days"); added "Ready to Close" KpiCard (shows `completedPending` — Completed by Technician / Verified by Supervisor / Confirmed by Requester count, `CheckCircle2` icon, `green` tone when > 0, `urgent` flag when > 0). Grid stays `lg:grid-cols-6` (6 cards). "Closed" card detail simplified to "Closed job cards".
+- `AlertTriangle` and CEO-branch `overdueCount` are unchanged — CEO section has its own parallel query and still shows "Overdue Critical" KPI.
+- Row-level `isOverdue` flag (using `age > OVERDUE_DAYS`) and row background coloring/age label "Overdue" in the table remain intact — useful row context, not removed.
+
+All checks pass: lint ✓, typecheck ✓, build ✓
+
 ## Implemented but Feature-Flagged
 
 Inventory check is implemented but `inventory_check_enabled = false`.
@@ -199,6 +212,210 @@ All checks pass: lint ✓, typecheck ✓, build ✓
 ## Phase Remove-SpareParts-01 — Remove Spare Parts module from visible system — COMPLETE
 
 (Documented above in Completed section)
+
+## Phase JobCards-UX-SimplifyStatus-01 — Simplify Job Cards Manager View — COMPLETE
+
+No DB schema changes. No backend logic changes. Display layer only.
+
+**`app/(dashboard)/maintenance/work-orders/page.tsx`**:
+
+- `MANAGER_TABS`: removed `{ label: "Ready to Close", status: "Ready to Close" }`. Manager tabs are now 5: All / Awaiting Review / In Progress / Waiting Materials / Closed.
+- `getStatusMap()`: restructured into three branches (isManager / isNormal / default). Manager "In Progress" now maps to `["Approved", "Assigned", "In Progress", "Parts Issued", "Completed by Technician", "Verified by Supervisor", "Confirmed by Requester", "Reopened"]` — absorbs the former "Ready to Close" bucket. Normal user and default-role "In Progress" remain `["In Progress", "Parts Issued"]` (unchanged). "Ready to Close" and "Completed by Technician" keys kept in all branches for backward-compatible URL params and DEFAULT_TABS "Completed" tab.
+- Count variables: replaced manual `countFor(statusSummaries, [...])` calls with `tabCount(statusSummaries, key, statusMap)` for Awaiting Review, In Progress, and Waiting Materials — KPI card numbers now always match what the corresponding tab shows. Removed `completedPending` variable.
+- `waitingParts` count: now excludes "Parts Issued" (was incorrectly included before); "Parts Issued" is now counted under "In Progress" where it belongs semantically.
+- Non-normal KPI section: removed "Ready to Close" card; renamed "Active Jobs" → "In Progress"; updated detail text to "Approved · assigned · in progress · ready to close"; changed grid from `lg:grid-cols-6` (6 cards) to `lg:grid-cols-5` (5 cards).
+- `QuickActions` for `maintenance_manager`: removed "Urgent" and "Ready to Close" filters; added "In Progress"; "Awaiting Review" href changed from `status: "Pending Approval"` to `status: "Awaiting Review"` (uses tab-level key, not raw DB status). Manager quick filters: Awaiting Review / In Progress / Waiting Materials / All Orders.
+- `getNextAction()` helper texts: "Job in progress" → "Work in progress"; "Close job card" → "Awaiting manager closure"; "Closed" → "Job card closed". The "Awaiting manager closure" text keeps `mine: canApprove || canAssign` so it highlights red for managers.
+- Table section header: "Repair order records" → "Job card records".
+
+All checks pass: lint ✓, typecheck ✓, build ✓
+
+## Phase MaterialsWorkflow-01 — Link Materials Requests with Job Card Waiting Materials — COMPLETE
+
+No DB schema changes. No migration changes. No backend service changes. All changes are display-layer + one new server action + one new library file.
+
+**`lib/display/parts-request-labels.ts`** (NEW):
+- `displayPartsRequestStatus(status)` — maps internal DB statuses to user-facing labels: "Pending Approval" / "Waiting for Store" / "Waiting for Purchase" → "Requested"; "Partially Issued" → "Partially Received"; "Issued" / "Closed" → "Received"; "Rejected" → "Rejected"; "Cancelled" → "Cancelled"
+- `partsRequestStatusTone(status)` — returns badge tone: green for Issued/Closed; amber for open statuses; red for Rejected/Cancelled; gray for unknown
+- `OPEN_PR_STATUSES: string[]` — exported constant `["Pending Approval", "Waiting for Store", "Waiting for Purchase", "Partially Issued"]` — single authoritative definition used across all pages and the server action
+
+**`app/actions/phase4.ts`** (MODIFIED):
+- Added `import { OPEN_PR_STATUSES }` from the new helper
+- Added `receiveMaterialFromRequestAction(formData)` — new server action:
+  - Permission check: `super_admin`, `parts_requests.approve`, or `store.issue`
+  - Validates material name (required), quantity > 0, qty ≤ totalRequested (over-receive prevention)
+  - Creates one `offline_inventory_movements` RECEIVED record (material name, qty, unit, received_from, reference_number, remarks, linked to work order)
+  - Updates `parts_requests.status` to "Issued" (fully received) or "Partially Issued" (partial)
+  - In same `prisma.$transaction`: if this request is now "Issued" and no other open sibling PRs exist for the work order, updates work order status from "Waiting for Parts" / "Waiting for Purchase" → "In Progress"
+  - Revalidates all affected paths; redirects to detail page on success; redirects with `?error=…` on failure
+
+**`app/(dashboard)/store/parts-requests/page.tsx`** (REWRITTEN — Tasks 1 & 4):
+- Removed: `Department` column; `Total` (cost) column; raw `statusTone()` local function; `CostVisibilityGuard` import; `STATUS_OPTIONS` string array
+- Added: `FILTER_STATUS_MAP` mapping display filter values → internal DB status arrays; `STATUS_FILTER_OPTIONS` array with user-facing labels; `_count: { parts_request_items: true }` to Prisma select
+- Filter dropdown now shows: Requested / Partially Received / Received / Rejected / Cancelled (user-facing). Backward-compat fallback for old raw-status URL params via `else { conditions.push({ status }) }`.
+- Table columns now: Request / Job Card / Requester / Items (count) / Status
+- Status badge uses `displayPartsRequestStatus()` + `partsRequestStatusTone()` from helper
+- Section header "Parts requests" → "Materials requests"
+- Search placeholder simplified to request number or job card number (department column removed, so no department search)
+
+**`app/(dashboard)/store/parts-requests/[id]/page.tsx`** (REWRITTEN — Tasks 1, 5 & 7):
+- Added imports: `receiveMaterialFromRequestAction`, `displayPartsRequestStatus`, `partsRequestStatusTone`, `OPEN_PR_STATUSES`
+- Added `searchParams` prop; shows inline error banner from `?error=` param
+- Page title status badge now uses `displayPartsRequestStatus()` + `partsRequestStatusTone()` (was raw status string)
+- Request Summary card: "Work order" → "Job card"
+- Added "Receive Material" panel (shown when `canReceive && isOpen`):
+  - `canReceive` = `super_admin` or `parts_requests.approve` or `store.issue`
+  - `isOpen` = `OPEN_PR_STATUSES.includes(request.status)` — panel hidden for fully received/rejected/cancelled requests (Task 7: duplicate receive prevention)
+  - Form fields: material_name (required), quantity_received (required, number, min 0.01), unit (default PCS), received_from, reference_number, remarks
+  - Submits to `receiveMaterialFromRequestAction`
+- Store Issue Panel remains below for store keepers
+
+**`app/(dashboard)/maintenance/work-orders/page.tsx`** (MODIFIED — Tasks 2 & 3):
+- Added `import { OPEN_PR_STATUSES }` from helper; removed local `OPEN_PR_STATUSES` array that was inline in the preview drawer block
+- Added 4th element to `Promise.all`: `waitingMaterialsCount` — counts work orders with `parts_requests.some { status: { in: OPEN_PR_STATUSES } }` scoped to visibility filter (independent of WO status field)
+- `waitingParts` KPI now uses `waitingMaterialsCount` instead of `tabCount(statusSummaries, "Waiting for Parts", statusMap)`
+- Tab badge for "Waiting for Parts" tab uses `waitingMaterialsCount` instead of `tabCount()` — count always matches what clicking the tab shows
+- `if (status === "Waiting for Parts")` branch now filters the list by `parts_requests.some { status: { in: OPEN_PR_STATUSES } }` instead of by WO status field — shows all job cards with open materials requests regardless of WO status
+
+**`app/(dashboard)/dashboard/page.tsx`** (MODIFIED — Task 10):
+- Added imports: `displayPartsRequestStatus`, `partsRequestStatusTone`, `OPEN_PR_STATUSES` from helper
+- Removed local `prTone()` function (replaced by imported `partsRequestStatusTone`)
+- `PrRow` component: status badge now uses `displayPartsRequestStatus(row.status)` + `partsRequestStatusTone(row.status)` instead of raw status string
+- Normal user `nuQueue[2]` ("Waiting Parts"): count changed from WO status `{ in: ["Waiting for Parts", "Waiting for Purchase"] }` → `parts_requests.some { status: { in: OPEN_PR_STATUSES } }`
+- Manager `mgQueue[3]` ("Waiting Materials"): same change — now counts job cards with open PRs
+- Manager `mgMaterials` query: status filter expanded from `["Waiting for Store", "Waiting for Purchase", "Partially Issued"]` → full `OPEN_PR_STATUSES` (adds "Pending Approval", so newly-created requests appear in the dashboard widget immediately)
+- Manager `mgMaterials` comment updated to "all open materials requests"
+- Super Admin `saCount[2]` ("Waiting Materials"): changed from `status: { in: [...] }` to `parts_requests.some { status: { in: OPEN_PR_STATUSES } }` for consistency
+- Removed inline `OPEN_PR_STATUSES` local variable (was used only for the preview drawer — now uses imported constant)
+
+All checks pass: lint ✓, typecheck ✓, build ✓
+
+## Phase MaterialsRequest-QuickReceive-01 — Receive Materials Directly from List — COMPLETE
+
+No DB schema changes. No migration changes.
+
+**`app/actions/phase4.ts`** (MODIFIED — Tasks 6, 7):
+- Added `quickReceiveMaterialsRequestAction` (new export):
+  - Permission check: `super_admin`, `parts_requests.approve`, or `store.issue`
+  - Reads `parts_request_id` (hidden field) + per-item `qty_{itemId}` + `unit_{itemId}` inputs
+  - Shared: `received_from`, `reference_number`, `remarks`
+  - Iterates `parts_request_items`, skips items with empty or zero qty
+  - Validates: each item qty must be ≤ remaining (= `quantity_requested − issued_quantity`); uses 1e-6 epsilon for float safety
+  - Throws "Enter a quantity received for at least one item." if all items skipped
+  - In `prisma.$transaction`:
+    1. Per item received: creates `offline_inventory_movements` (RECEIVED type, `manual_material_name`, `manual_part_number`, qty, unit, `counterparty`, `reference_number`, `related_work_order_id`, `purpose` = "Material receive — <PR number>", `remarks`)
+    2. Per item received: updates `parts_request_items.issued_quantity += qtyNow`
+    3. Re-fetches all items for the request after updates
+    4. Computes `allFull` (all items ≥ requested) → status = "Issued"; `anyReceived` (any item > 0) → status = "Partially Issued"
+    5. Updates `parts_requests.status` to computed value
+    6. If status = "Issued": checks sibling PRs for same WO; if no open siblings and WO is "Waiting for Parts"/"Waiting for Purchase", advances WO to "In Progress"
+  - On success: `revalidatePath()` for request detail, list, offline-inventory, work-orders, dashboard, WO detail; then redirects to `/store/parts-requests`
+  - On error: redirects to `/store/parts-requests?receive=<requestId>&receive_error=<encoded_message>`
+  - Existing `receiveMaterialFromRequestAction` untouched (still used by detail page)
+
+**`app/(dashboard)/store/parts-requests/page.tsx`** (REWRITTEN — Tasks 1–5, 8–13):
+- Added imports: `quickReceiveMaterialsRequestAction`, `X` from lucide-react, `OPEN_PR_STATUSES`
+- Added constants:
+  - `MATERIAL_UNITS = ["PCS","SET","BOX","PACK","MTR","ROLL","KG","LTR","DRUM","BAG","PAIR","NOS"]` (Task 4)
+  - `UUID_RE` for safe validation of receive param
+- Added helper: `receiveHref(requestId, { query, status, page })` — builds `?receive=<id>` URL preserving current filters
+- Added `searchParams` reading:
+  - `receiveId` = `params.receive` (UUID of request to receive)
+  - `receiveError` = decoded `params.receive_error` (shown in modal on failure)
+- Added `canReceive` permission check: `super_admin`, `parts_requests.approve`, or `store.issue`
+- Conditional fetch: when `receiveId` is set, `canReceive` is true, and UUID is valid → fetches full request (items + job card + asset + requester + request_date); sets `receiveRequest = null` if request is not open
+- Table: `min-w-[700px]` → `min-w-[860px]` (wider for extra column)
+- Added "Action" column header and action cell per row (Task 1):
+  - Open + canReceive: red "Receive" button (Requested status) or amber "Receive Remaining" button (Partially Received) → links to `receiveHref`
+  - Received: green "Received" text
+  - Other (Rejected/Cancelled): gray plain text
+- Modal (Tasks 2–5, 9, 10, 11, 12): shown when `receiveRequest` is non-null (fixed overlay, z-50)
+  - Modal header: "Receive Material" + request number + X close button (Link to `closeHref`)
+  - Error banner when `receiveError` is set
+  - Context summary: Job Card, Asset, Requested by, Request date, Status badge
+  - Items table per PR item (Task 3):
+    - Columns: Material, Part/SS, Requested, Received (already), Remaining, Receive now (number input with `max=remaining`), Unit (select with MATERIAL_UNITS)
+    - Fully-received items: row grayed out, inputs disabled
+    - If no items: shows "No materials listed for this request." (Task 12)
+  - Shared fields: Received from, Reference number, Remarks
+  - Buttons: Cancel (Link to `closeHref`), Confirm Receipt (form submit)
+  - Form submits to `quickReceiveMaterialsRequestAction` with `parts_request_id` hidden field
+- No navigation away from list: success redirects to `/store/parts-requests`, error keeps modal open via `?receive=<id>&receive_error=<msg>`
+
+**Detail page unchanged** (`app/(dashboard)/store/parts-requests/[id]/page.tsx`):
+- Still uses `receiveMaterialFromRequestAction` (single-batch receive — different use case)
+- No changes needed; existing receive panel continues to work
+
+All checks pass: lint ✓, typecheck ✓, build ✓
+
+## Phase MaterialsRequests-JobCardQuickView-01 — Job Card Number Clickable in Materials Requests — COMPLETE
+
+No DB schema changes. No migration changes. No new components.
+
+**`app/(dashboard)/store/parts-requests/page.tsx`** (MODIFIED):
+- Added `UUID_RE` for `jobPreview` param validation (shared with `receiveId`)
+- Added `jobPreviewId` / `validJobPreviewId` from searchParams
+- Added `jobCardPreviewHref(woId, { query, status, page })` helper — builds `?jobPreview=<id>` URL preserving current filters
+- `shouldFetchJobPreview = !receiveId && validJobPreviewId !== null` — mutually exclusive with receive modal
+- Added `visibilityFilter = getWorkOrderVisibilityFilter(context)` and `canAssignModal` permission check
+- Conditional `Promise.all([previewWO, prDataForWO, techsForModal])` — only fetches when `shouldFetchJobPreview`
+- Builds full `QuickViewData` `drawerData` (same shape as work-orders page). `closeHref` = `listHref({ query, status, page })` (preserves filter state on close)
+- Job Card column: each `wo.work_order_number` cell wrapped in `<Link href={jobCardPreviewHref(...)}>`
+- "Not found" fallback: shown when `validJobPreviewId` is set but `previewWO` is null (not visible or deleted)
+- `<RepairOrderQuickView data={drawerData} />` rendered at bottom of page when `drawerData` is non-null
+- Full Details button inside modal navigates to `/maintenance/work-orders/<id>`
+- Permissions: technician list only fetched when `canAssignModal`
+
+All checks pass: lint ✓, typecheck ✓, build ✓
+
+## Phase JobCards-UX-RemovePriority-01 — Remove Priority from Job Cards UI — COMPLETE
+
+No DB schema changes. No migration changes. `priority` column, Prisma field, existing data, and backend validation are all preserved. Display layer only.
+
+**`components/work-orders/repair-order-quick-view.tsx`**:
+- Removed `priority: string;` from `QuickViewData` type
+- Removed `priorityTone()` helper function
+- Removed Priority status badge from header strip
+- Removed Priority row from Key Details grid
+
+**`app/(dashboard)/maintenance/work-orders/page.tsx`**:
+- Removed `PRIORITIES` constant, `priority` from `SP` type, `priorityTone()` function
+- CEO: `priority` filter from visible `CeoFilterSection` dropdown removed; `ceoHasFilters` no longer includes `priority`; CEO internal `tabConditions` for `high_risk` tab and `highRiskCount` query kept (business logic)
+- Main list: removed `priority: true` from `findMany` select and preview WO `findFirst` select
+- Removed `priority` from `listConditions`, `hasFilters`, and `drawerData`
+- Table: `min-w-[1040px]` → `min-w-[920px]`; Priority `<th>` removed; `colSpan` 8→7; Priority `<td>` cell removed; `rowBg` no longer checks `wo.priority === "Urgent"`
+- CEO table: Priority `<th>` and `<td>` removed; `getCeoReason` changed "Urgent — high-risk open work" / "High priority open work" → "High-risk open work"; `isUrgent` flag and red border-left removed from CEO rows
+- Quick actions: removed "High Priority" and "High / Urgent" filter shortcuts
+
+**`app/(dashboard)/maintenance/work-orders/[id]/page.tsx`**:
+- Removed Priority `<StatusBadge>` from identity strip, `<InfoBlock>` from Problem Details, `<InfoLine>` from Quick Facts sidebar
+- Removed `priorityTone()` function
+
+**`app/(dashboard)/maintenance/work-orders/[id]/print/page.tsx`**:
+- Removed `["Priority", wo.priority]` from info blocks array
+
+**`components/work-orders/work-order-wizard.tsx`**:
+- Removed `PRIORITIES` constant; replaced visible Priority `<select>` in Step 2 with `<input type="hidden" name="priority" value="Normal" />` (backend schema requires a value; user never sees it)
+- Removed Priority review block from Step 5
+
+**`app/(dashboard)/reports/work-orders/page.tsx`**:
+- Removed `PriorityBadge` component entirely
+- Updated MODE_META monthly-summary description (removed "priority"); removed "priority" from all `modeVisibleFields` arrays
+- `computeModeSummary` overdue: replaced `isHighPri`/hp card with "Breakdown type" card
+- Removed `byPriority` from `computeModeGroups`; changed "By Priority" → "By Type" in technician-workload groups
+- `AdminWOTable`: removed Priority `<th>`, Priority `<td>` cell; `colSpan` 8→7
+- `ManagerWOTable` overdue, monthly-summary, technician-workload: Priority `<th>` and body cells removed
+- `colCount`: `mode === "asset-history" || mode === "waiting-parts" ? 6 : 7` → `mode === "technician-workload" ? 5 : 6`
+
+**`app/(dashboard)/store/parts-requests/page.tsx`** (type fix):
+- Removed `priority: true` from WO preview `findFirst` select
+- Removed `priority: previewWO.priority` from `drawerData` (required after `QuickViewData.priority` field removal)
+
+**`app/(dashboard)/dashboard/page.tsx`** (type fix):
+- Removed `priority: true` from WO preview `findFirst` select
+- Removed `priority: previewWO.priority` from `drawerData`
+
+All checks pass: lint ✓, typecheck ✓, build ✓
 
 ## In Progress
 
@@ -1465,3 +1682,10 @@ After the lifecycle is stable, enable inventory checking only in a controlled en
 - 2026-07-09: Production backend stabilization audit ahead of today's deploy. Fixed a real access-control gap: asset category management (`app/actions/asset-categories.ts`, its page, and the sidebar nav entry) was gated by `admin.settings.manage` (Super Admin/IT Admin only) instead of `assets.manage`, silently blocking Maintenance Manager/Supervisor/Data Entry — the roles that actually hold `assets.manage` — from managing categories; now aligned. Added the previously-uncommitted `prisma/migrations/migration_lock.toml` (provider = postgresql). Flipped `.env.example`'s `AUTH_COOKIE_SECURE` default from `true` to `false` to match today's internal-HTTP deployment. **Open risk**: the real `.env` has no `AUTH_COOKIE_SECURE` set at all — `lib/auth/session.ts` falls back to `NODE_ENV === "production"`, so a production build will default secure cookies to `true` and silently break login over internal HTTP unless this is added before go-live. Full backend review (assets, asset categories, work orders/repair orders, spare parts, parts requests, users, notifications, reports, audit logs) found the rest of the permission/transaction/audit model sound — see conversation for detailed per-module findings. `npm run lint`, `npm run typecheck`, `npm run build` all pass.
 - 2026-07-09: Fixed "Save failed" on new asset creation. Root cause: a legacy `assets_category_check` CHECK constraint (hardcoded 11-value enum: Vehicle, Bus, Car, Truck, Crane, Forklift, Generator, Factory Machine, Electrical Equipment, Building/Facility, Other) existed on the live database as untracked drift — never represented in any Prisma migration — and rejected every asset save/import using any of the Phase 11E `asset_categories` master-table categories (Production Equipment, Batching Plant, Heavy Equipment, Workshop Equipment, IT / Office Equipment, etc.), since `assets.category` is intentionally free-text and validated at the app layer, not the DB layer. Added migration `20260709120000_drop_stale_assets_category_check` (`ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_category_check`), applied via `prisma migrate deploy`, and verified with a direct create using a new-style category. Also fixed `upsertAssetAction`/`upsertPartAction` in `app/actions/maintenance.ts`, which previously swallowed the real Prisma error in a bare `catch {}` before redirecting to a generic "Save failed" toast — both now log full error detail (code/message/meta) like `upsertWorkOrderAction` already did, so future failures are diagnosable instead of a black box.
 - 2026-07-09: Found and fixed the *actual* remaining cause of "Save failed" after the category-constraint fix (dropping that constraint alone wasn't enough — a second, deeper bug was masked behind it). Root cause: `optionalDate` in `app/actions/maintenance.ts` passed raw `"YYYY-MM-DD"` strings from date inputs straight through to Prisma without converting to a `Date` object; Prisma 6 requires a full ISO-8601 datetime or a native `Date`, not a bare date-only string, and threw `Invalid value for argument 'purchase_date': premature end of input. Expected ISO-8601 DateTime.` — silently swallowed by the same bare `catch {}`. Fixed `optionalDate` (and added `requiredDate`) to parse into real `Date` objects. This same helper was also used for `workOrderSchema`'s `date_of_order` (required, on every work order) and `starting_datetime`/`ending_datetime` — meaning **work order creation had the identical latent bug** and was very likely broken in production too; fixed there as well. While verifying the work-order path, also found `components/work-orders/work-order-wizard.tsx`'s `WORKER_TYPES` used `"Welding / Fabrication"` (with spaces) while the DB's `work_orders_worker_type_check` constraint and the sibling `work-order-form.tsx` component both use `"Welding/Fabrication"` (no spaces) — selecting that option in the new-work-order wizard would have failed the CHECK constraint; aligned the wizard to the no-space form. Diagnosis method: added a `logSystemError()` call to `upsertAssetAction`'s catch block (queryable via `system_error_logs` table) since the running dev server's terminal output wasn't accessible directly — this surfaced the real Prisma error with the exact failing field/value, which a hand-rolled reproduction using only `null` date fields had been masking. Audited all CHECK constraints across every public table (`pg_constraint` query) to confirm no other stale/mismatched enum constraints remain outside this one wizard label typo. `npm run lint`, `npm run typecheck`, `npm run build` all pass; verified end-to-end with direct Prisma calls mirroring the exact real form payloads for both assets and work orders.
+- 2026-07-13: Phase MaterialsRequest-QuickReceive-01 — Receive Materials from List page. Added `quickReceiveMaterialsRequestAction` to `app/actions/phase4.ts`: per-item receive (one `offline_inventory_movements` row per item), updates `parts_request_items.issued_quantity`, promotes request status to "Partially Issued" or "Issued", unblocks linked Job Card from "Waiting Materials" / "Waiting for Purchase" to "In Progress" when all sibling requests are resolved. Float epsilon (`1e-6`) prevents over-receive false positives. Rewrote `app/(dashboard)/store/parts-requests/page.tsx`: 6-column table with Action column (Receive / Receive Remaining / status label); URL-modal pattern `?receive=<id>` with full per-item form (Requested/Received/Remaining columns, qty input capped to remaining, 12-unit dropdown, Received from / Reference number / Remarks shared fields); OPEN_PR_STATUSES guard on receive button; `FILTER_STATUS_MAP` replaces raw status strings in filter dropdown; role-specific empty states. No DB schema changes. All checks pass: lint ✓, typecheck ✓, build ✓.
+- 2026-07-13: Phase MaterialsRequests-JobCardQuickView-01 — Clickable Job Card Number with Quick View. Extended `app/(dashboard)/store/parts-requests/page.tsx`: added `id: true` to `work_orders` select in list query; `?jobPreview=<woId>` URL param triggers a conditional `Promise.all` fetch (WO detail + parts requests for that WO + optional technician list for assign modal) that assembles a `QuickViewData` payload identical to the one used by `/maintenance/work-orders`; renders existing `RepairOrderQuickView` client component at the bottom of the page (backdrop z-40, modal z-50); fallback "not found / no access" card when WO is out-of-visibility scope; Job Card column cells are `<Link href={?jobPreview=woId} scroll={false}>` styled red; `closeHref` returns to list with current filters preserved; receive modal and job preview are mutually exclusive (`shouldFetchJobPreview = !receiveId && validJobPreviewId !== null`). Full `QuickViewData` type contract satisfied: roleSlug, canApprove, canAssign, canManage, canCreateParts, primary_assignment, technicians. No DB schema changes. No new components. All checks pass: lint ✓, typecheck ✓, build ✓.
+- 2026-07-13: Phase JobCards-UX-RemovePriority-01 — Removed Priority from all visible Job Cards UI. `QuickViewData.priority` field removed from type; `priorityTone()` and `PriorityBadge` removed; Priority stripped from: quick view header, key details grid, job card detail page, edit wizard, print page, WO list table, reports table (all modes), report filter/group-by options. `priority` column, Prisma field, backend validation, and existing DB data preserved. Type errors fixed in `store/parts-requests/page.tsx` and `dashboard/page.tsx` (removed stale `priority` field from drawerData). All checks pass: lint ✓, typecheck ✓, build ✓.
+- 2026-07-13: Phase Attachments-01 — Documents and Live Photo Upload for Job Cards and Materials Requests. DB: new `parts_request_attachments` table (migration `20260713000001_phase_attachments_01`, applied via `npx prisma migrate deploy`). Schema: `parts_request_attachments` model added to `prisma/schema.prisma` with FK to `parts_requests` and optional FK to `work_orders` (files stored under work_order_id folder). `lib/files/validation.ts`: added `image/webp` to ALLOWED_PRIVATE_FILE_TYPES. `lib/files/local-storage.ts`: added `deletePrivateFileIfExists()` (non-throwing unlink). `app/actions/files.ts`: added `deleteWorkOrderAttachmentAction`, `uploadPartsRequestAttachmentAction`, `deletePartsRequestAttachmentAction` — all permission-gated, audit-logged, non-fatal on file-system errors. Job Card detail page (`/maintenance/work-orders/[id]/page.tsx`): "Documents & Photos" section with file list (category, uploader, date, View/Download/Delete), Upload File form, Take Photo form (`accept="image/*" capture="environment"`). Materials Request detail page (`/store/parts-requests/[id]/page.tsx`): same Documents & Photos section with PR-specific categories. Quick-receive modal (`/store/parts-requests/page.tsx`): optional attachment field (non-fatal; failure never blocks receipt). `app/actions/phase4.ts` (`quickReceiveMaterialsRequestAction`): optional attachment saved after main transaction in separate try/catch. `RepairOrderQuickView` + `QuickViewData`: `attachment_count: number` field added; count shown with Paperclip icon in modal when > 0. All three QuickViewData consumers updated (`/maintenance/work-orders/page.tsx`, `dashboard/page.tsx`, `store/parts-requests/page.tsx`) to pass `attachment_count` from `_count.work_order_attachments`. All checks pass: lint ✓, typecheck ✓, build ✓.
+- 2026-07-13: Phase JobCardQuickView-UX-02 — Simplified Job Card quick view popup and grouped Assigned under In Progress. `components/work-orders/repair-order-quick-view.tsx`: replaced the 7-stage `DISPLAY_STAGES` tracker with a 5-stage `SIMPLE_STAGES` stepper (Submitted / Manager Review / In Progress / Waiting Materials / Closed); replaced `getNextAction`/`statusTone` with a single `getStatusInfo()` that returns a simplified `{ main, sub, tone }` — Approved, Assigned, In Progress, Parts Issued, and Completed/Verified/Confirmed-by-* all collapse into main status "In Progress" with a status-specific sub-line (no internal status is deleted, only redisplayed); header badge and the renamed "Current Status" card now use this simplified status, with a small muted "Workflow stage: {raw status}" line shown only when it differs from the simplified label. Key Details grid trimmed to Technician/Assignment, Reported by, Created, Date of order, Type (Asset and Location removed since the Asset Profile card below already shows asset code/name/location/condition/criticality, and Department was dropped as it wasn't part of the requested field set). Added a manager-only "View Assignment" quick action (visible when status is "Assigned") linking to a new `#assignment` anchor added to the full detail page's Assignment section — no "Change Assignment" action was added because re-assigning after initial assignment isn't a supported backend transition (`Assigned → Assigned` is not in `lib/workflows/status-rules.ts`), so exposing it would silently fail. `app/(dashboard)/maintenance/work-orders/page.tsx`: `getStatusMap()` for non-manager roles (`maintenance_data_entry`, `department_requester`, and the default/other-role bucket) now includes `"Assigned"` in the `"In Progress"` bucket instead of `"Open"` — this is the single status-map source shared by the KPI card count, tab counts, tab-active highlighting, and the table's `status` filter, so Assigned job cards now consistently count and filter as In Progress everywhere on the page (previously only the Manager/Admin status map did this). Corrected the normal-user "In Progress" KPI card detail text from "Approved · assigned · in progress" (which overclaimed — Approved was never actually included) to "Assigned · in progress". No DB schema changes, no workflow transition changes, no statuses removed. All checks pass: lint ✓, typecheck ✓, db:check ✓, build ✓.
+- 2026-07-13: Phase Sidebar-UX-03 — Renamed sidebar dropdown label "Management" to "Operations". `components/layout/app-layout.tsx`: all 5 occurrences of `label: "Management"` (Super Admin, Maintenance Manager, Store Keeper, Technician, and Normal User nav-group configs) renamed to `label: "Operations"` — dropdown items, hrefs, permissions, and order left untouched. `components/layout/collapsible-nav.tsx` needed no change: its expand/active logic (`groupIsActive()`) matches on `pathname` against `group.items[].href`, not on the label string, so active-route expansion (e.g. `/assets`, `/maintenance/assignments`, `/reports`, `/notifications` keeping the dropdown open) continues to work unchanged under the new label. Role-based visibility unaffected — `canSee()` still gates on `item.permission`/`superAdminOnly`, neither of which was touched. Confirmed no other sidebar/mobile-nav code (`mobile-navigation.tsx`) referenced the old label, and no business role names ("Maintenance Manager", "System Administrator") or DB/permission strings were touched. No DB schema changes, no route renames. All checks pass: lint ✓, typecheck ✓, build ✓.
+- 2026-07-13: Phase Attachments-CreateFlow-01 — Optional Documents & Photos during Job Card and Materials Request creation. New shared files: `lib/files/attachment-constants.ts` (MAX_ATTACHMENT_ROWS=5, shared accept string, and the two category lists — Job Card default "Problem Photo", Materials Request default "Request Document"); `lib/files/attachment-form.ts` (server-only `parsePendingAttachments()` reads indexed `${prefix}_file_${i}`/`_category_${i}`/`_remarks_${i}` rows from a multipart FormData, `saveAttachmentBatch()` validates+saves each via the existing app-settings-aware `getFileSecuritySettings()` and never throws — a partial or total failure is reported back as a count mismatch, never loses the parent record); `components/files/attachment-upload-fields.tsx` (client component — up to 5 rows, each pairing a normal file input with a `capture="environment"` camera input under the same field name, category select, optional remarks, and a post-selection chip showing filename/size with a Remove button that clears the underlying input refs). Wired into both creation wizards as a new optional step before the final review step: `work-order-wizard.tsx` (6 steps now — Select Asset, Request Details, Assignment, Required Parts, **Documents & Photos**, Review & Save; all step-index comparisons renumbered) and `parts-request-wizard.tsx` (4 steps — …, Requested Materials, **Documents & Photos**, Review & Submit). Server side: `upsertWorkOrderAction` (`app/actions/maintenance.ts`) and `createPartsRequestAction` (`app/actions/phase4.ts`) now parse pending attachments up front, create the parent record first exactly as before, then save+link the files to the now-known work_order_id/parts_request_id, write one `file.upload` audit log per saved file, and on partial failure redirect with `&warning=attachments-failed` (new amber banners added to both detail pages) instead of failing the whole request — the parent record is never lost over a file error. Files are optional throughout; an empty Documents & Photos step submits zero rows. Bug fix while touching this surface: the pre-existing Receive-Material attachment field (`store/parts-requests/page.tsx`) pairs two `<input type="file">` elements under one shared `name="attachment_file"` (upload-or-camera), but the handler used `formData.get()`, which only returns the *first* DOM entry — if a user only used the camera input, the photo was silently dropped. Added `pickUploadedFile()` to `lib/files/validation.ts` (scans `getAll()` for the first non-empty entry) and applied it both to the new creation-flow code and to fix this existing call site in `quickReceiveMaterialsRequestAction`. Also added the audit log entry that flow was missing entirely (`writeAuditLog` on successful attachment save — Part H of this phase asked for "Uploaded Received Material proof" to be logged; none of `quickReceiveMaterialsRequestAction` was previously audited). Reordered the existing `PR_ATTACHMENT_CATEGORIES` array on the Materials Request detail page to the shared constant (Request Document first, matching the new default). Detail-page Documents & Photos sections (Job Card and Materials Request) already existed from Phase Attachments-01 and needed no changes — upload-more/take-photo/download/delete were already permission-gated correctly. Deliberately deferred: splitting the quick-view popup's single `attachment_count` into separate Documents/Photos counts (Part G said "if easy" — doing it without an extra query per list row across three already-large list pages wasn't, so the existing combined count was left as is). No DB schema changes — there is no `remarks` column on `work_order_attachments`/`parts_request_attachments`, so the optional Remarks field captured in the UI is preserved in the audit log metadata only, not as a queryable attachment field. All checks pass: lint ✓, typecheck ✓, db:check ✓, build ✓.

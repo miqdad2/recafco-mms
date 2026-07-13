@@ -8,6 +8,7 @@ export const ALLOWED_PRIVATE_FILE_TYPES = new Set([
   "application/pdf",
   "image/jpeg",
   "image/png",
+  "image/webp",
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/msword",
@@ -33,7 +34,7 @@ export function validatePrivateFileWithOptions(file: File, options: { maxSizeByt
   }
 
   if (!allowedTypes.has(file.type)) {
-    return "Unsupported file type. Use PDF, JPG, PNG, XLS, XLSX, DOC, or DOCX.";
+    return "Unsupported file type. Use PDF, JPG, PNG, WEBP, XLS, XLSX, DOC, or DOCX.";
   }
 
   return null;
@@ -42,4 +43,18 @@ export function validatePrivateFileWithOptions(file: File, options: { maxSizeByt
 export function safeStorageName(name: string) {
   const cleanName = name.replace(/[^a-zA-Z0-9.\-_]/g, "-").replace(/-+/g, "-");
   return cleanName || "upload.bin";
+}
+
+/**
+ * Some upload forms pair a normal file input with a camera-capture input under
+ * the same `name` (either/or — only one is ever actually filled by the user).
+ * `FormData.get()` only returns the first entry, which may be the empty one if
+ * the unused input happens to come first in the DOM. This scans every entry
+ * for that name and returns the first one that actually has content.
+ */
+export function pickUploadedFile(formData: FormData, name: string): File | null {
+  for (const entry of formData.getAll(name)) {
+    if (entry instanceof File && entry.size > 0) return entry;
+  }
+  return null;
 }

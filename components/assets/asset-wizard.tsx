@@ -17,9 +17,6 @@ const ASSET_STATUSES = [
   "Out of Service",
   "Retired",
 ];
-const ASSET_CONDITIONS = ["Excellent", "Good", "Fair", "Poor", "Out of Service"];
-const ASSET_CRITICALITIES = ["Critical", "High", "Medium", "Low"];
-
 const VEHICLE_MAIN = "Vehicles";
 const MACHINE_MAINS = [
   "Production Equipment",
@@ -33,10 +30,9 @@ const STEP_LABELS = [
   "Basic Details",
   "Identification",
   "Service & Warranty",
-  "Condition & Risk",
   "Review & Save",
 ];
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 4;
 
 type FormRecord = Record<string, string | number | null | undefined>;
 
@@ -576,52 +572,13 @@ export function AssetWizard({
           </StepCard>
         </div>
 
-        {/* ── STEP 4: Condition & Risk ─────────────────────────────────── */}
+        {/* Hidden inputs — preserve existing condition/criticality/remarks without showing them */}
+        <input type="hidden" name="condition" value={s("condition")} />
+        <input type="hidden" name="criticality" value={s("criticality")} />
+        <input type="hidden" name="remarks" value={s("remarks")} />
+
+        {/* ── STEP 4: Review & Save ────────────────────────────────────── */}
         <div className={step !== 4 ? "hidden" : ""}>
-          <StepCard
-            title="Condition & Risk"
-            description="Used for maintenance prioritisation and management reporting."
-          >
-            <WField label="Physical Condition">
-              <select
-                name="condition"
-                defaultValue={s("condition")}
-                className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
-              >
-                <option value="">Not assessed</option>
-                {ASSET_CONDITIONS.map((c) => (
-                  <option key={c}>{c}</option>
-                ))}
-              </select>
-            </WField>
-
-            <WField label="Criticality">
-              <select
-                name="criticality"
-                defaultValue={s("criticality")}
-                className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
-              >
-                <option value="">Not classified</option>
-                {ASSET_CRITICALITIES.map((c) => (
-                  <option key={c}>{c}</option>
-                ))}
-              </select>
-            </WField>
-
-            <WField label="Remarks" span2>
-              <textarea
-                name="remarks"
-                rows={4}
-                defaultValue={s("remarks")}
-                placeholder="Optional internal notes about this asset's condition or risk."
-                className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
-              />
-            </WField>
-          </StepCard>
-        </div>
-
-        {/* ── STEP 5: Review & Save ────────────────────────────────────── */}
-        <div className={step !== 5 ? "hidden" : ""}>
           <div className="rounded-lg border border-[#E5E7EB] bg-white p-5 shadow-sm">
             <div className="mb-5 border-b border-[#E5E7EB] pb-4">
               <h2 className="text-base font-bold text-[#111827]">Review & Save</h2>
@@ -712,11 +669,6 @@ export function AssetWizard({
                 <ReviewRow label="Notes" value={reviewData.notes} />
               </ReviewSection>
 
-              <ReviewSection title="Condition & Risk">
-                <ReviewRow label="Physical Condition" value={reviewData.condition} />
-                <ReviewRow label="Criticality" value={reviewData.criticality} />
-                <ReviewRow label="Remarks" value={reviewData.remarks} />
-              </ReviewSection>
             </div>
           </div>
         </div>

@@ -42,7 +42,7 @@ const MODE_META: Record<ReportMode, { label: string; description: string }> = {
   },
   "monthly-summary": {
     label: "Monthly Job Card Summary",
-    description: "Job cards this month grouped by status, priority, and maintenance type."
+    description: "Job cards this month grouped by status and maintenance type."
   },
   "technician-workload": {
     label: "Technician / Team Workload",
@@ -55,17 +55,17 @@ const MODE_META: Record<ReportMode, { label: string; description: string }> = {
 function modeVisibleFields(mode: ReportMode): string[] {
   switch (mode) {
     case "overdue":
-      return ["dateFrom", "dateTo", "priority", "assetId", "technicianId"];
+      return ["dateFrom", "dateTo", "assetId", "technicianId"];
     case "waiting-parts":
       return ["assetId", "maintenanceType"];
     case "asset-history":
       return ["assetId", "maintenanceType", "dateFrom", "dateTo"];
     case "monthly-summary":
-      return ["dateFrom", "dateTo", "status", "priority", "maintenanceType", "workerType"];
+      return ["dateFrom", "dateTo", "status", "maintenanceType", "workerType"];
     case "technician-workload":
       return ["technicianId", "dateFrom", "dateTo"];
     default:
-      return ["dateFrom", "dateTo", "priority", "status", "assetId", "technicianId"];
+      return ["dateFrom", "dateTo", "status", "assetId", "technicianId"];
   }
 }
 
@@ -80,17 +80,15 @@ function daysAgo(date: string | null | undefined): number {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function computeModeSummary(rows: any[], mode: ReportMode): SummaryCard[] {
-  const isHighPri = (r: any) => r.priority === "High" || r.priority === "Urgent";
-
   switch (mode) {
     case "overdue": {
-      const hp = rows.filter(isHighPri).length;
-      const ages = rows.map((r) => daysAgo(r.starting_datetime ?? r.created_at));
+      const breakdowns = rows.filter((r: any) => r.maintenance_type === "Breakdown").length;
+      const ages = rows.map((r: any) => daysAgo(r.starting_datetime ?? r.created_at));
       const avg = ages.length ? Math.round(ages.reduce((a, b) => a + b, 0) / ages.length) : 0;
       const oldest = ages.length ? Math.max(...ages) : 0;
       return [
         { label: "Overdue", value: rows.length, tone: rows.length > 0 ? "red" : "green" },
-        { label: "High / Urgent priority", value: hp, tone: hp > 0 ? "red" : "green" },
+        { label: "Breakdown type", value: breakdowns, tone: breakdowns > 0 ? "amber" : "green" },
         { label: "Avg. overdue (days)", value: avg, tone: avg > 14 ? "red" : avg > 7 ? "amber" : "green" },
         { label: "Oldest (days)", value: oldest, tone: oldest > 30 ? "red" : oldest > 14 ? "amber" : "green" }
       ];
@@ -181,7 +179,6 @@ function computeModeGroups(rows: any[], mode: ReportMode): GroupCardDef[] {
   const byType = () => groupBy((r) => r.maintenance_type ?? "Not recorded");
   const byMonth = () =>
     groupBy((r) => String(r.date_of_order ?? r.created_at ?? "").slice(0, 7) || "No date");
-  const byPriority = () => groupBy((r) => r.priority ?? "Not set");
 
   switch (mode) {
     case "overdue":
@@ -193,7 +190,7 @@ function computeModeGroups(rows: any[], mode: ReportMode): GroupCardDef[] {
     case "monthly-summary":
       return [{ title: "By Status", rows: byStatus() }, { title: "By Type", rows: byType() }, { title: "By Month", rows: byMonth() }];
     case "technician-workload":
-      return [{ title: "By Technician", rows: byTechnician() }, { title: "By Priority", rows: byPriority() }];
+      return [{ title: "By Technician", rows: byTechnician() }, { title: "By Type", rows: byType() }];
     default:
       return [];
   }
@@ -386,21 +383,6 @@ function GroupCard({ title, rows }: { title: string; rows: GroupRow[] }) {
   );
 }
 
-function PriorityBadge({ priority }: { priority: string | null | undefined }) {
-  if (!priority) return <span className="text-[#9CA3AF]">—</span>;
-  const toneMap: Record<string, string> = {
-    Urgent: "bg-red-100 text-red-700",
-    High: "bg-amber-100 text-amber-700",
-    Normal: "bg-blue-100 text-blue-700",
-    Low: "bg-gray-100 text-gray-500"
-  };
-  return (
-    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-bold ${toneMap[priority] ?? "bg-gray-100 text-gray-500"}`}>
-      {priority}
-    </span>
-  );
-}
-
 function StatusTag({ status }: { status: string }) {
   const toneMap: Record<string, string> = {
     Draft: "bg-gray-100 text-gray-500",
@@ -457,7 +439,6 @@ function AdminWOTable({ rows }: { rows: any[] }) {
               <th className="px-4 py-2.5">Date</th>
               <th className="px-4 py-2.5">Asset / Machine</th>
               <th className="px-4 py-2.5">Type</th>
-              <th className="px-4 py-2.5">Priority</th>
               <th className="px-4 py-2.5">Status</th>
               <th className="px-4 py-2.5">Technician</th>
               <th className="px-4 py-2.5">Action</th>
@@ -466,7 +447,7 @@ function AdminWOTable({ rows }: { rows: any[] }) {
           <tbody className="divide-y divide-[#E5E7EB]">
             {!rows.length && (
               <tr>
-                <td colSpan={8} className="px-4 py-8">
+                <td colSpan={7} className="px-4 py-8">
                   <EmptyState
                     title="No job cards found"
                     message="No job card data yet. Reports will appear after job cards are created and updated."
@@ -484,9 +465,6 @@ function AdminWOTable({ rows }: { rows: any[] }) {
                 <td className="px-4 py-2.5 text-xs text-[#4B5563]">{wo.date_of_order?.slice(0, 10) ?? "—"}</td>
                 <td className="px-4 py-2.5 text-[#4B5563]">{assetLabel(wo)}</td>
                 <td className="px-4 py-2.5 text-[#4B5563]">{wo.maintenance_type ?? "—"}</td>
-                <td className="px-4 py-2.5">
-                  <PriorityBadge priority={wo.priority} />
-                </td>
                 <td className="px-4 py-2.5">
                   <StatusTag status={wo.status ?? "—"} />
                 </td>
@@ -534,7 +512,7 @@ function ManagerWOTable({
     return (assigns[0] as any)?.profiles?.full_name ?? "Unassigned";
   };
 
-  const colCount = mode === "asset-history" || mode === "waiting-parts" ? 6 : 7;
+  const colCount = mode === "technician-workload" ? 5 : 6;
 
   return (
     <section className="rounded-md border border-[#E5E7EB] bg-white shadow-sm">
@@ -555,7 +533,6 @@ function ManagerWOTable({
                   <th className="px-4 py-2.5">Asset / Machine</th>
                   <th className="px-4 py-2.5">Status</th>
                   <th className="px-4 py-2.5">Technician</th>
-                  <th className="px-4 py-2.5">Priority</th>
                   <th className="px-4 py-2.5">Overdue (days)</th>
                   <th className="px-4 py-2.5">Action</th>
                 </>
@@ -587,7 +564,6 @@ function ManagerWOTable({
                   <th className="px-4 py-2.5">Asset / Machine</th>
                   <th className="px-4 py-2.5">Type</th>
                   <th className="px-4 py-2.5">Status</th>
-                  <th className="px-4 py-2.5">Priority</th>
                   <th className="px-4 py-2.5">Action</th>
                 </>
               )}
@@ -597,7 +573,6 @@ function ManagerWOTable({
                   <th className="px-4 py-2.5">Technician</th>
                   <th className="px-4 py-2.5">Asset / Machine</th>
                   <th className="px-4 py-2.5">Status</th>
-                  <th className="px-4 py-2.5">Priority</th>
                   <th className="px-4 py-2.5">Action</th>
                 </>
               )}
@@ -626,7 +601,6 @@ function ManagerWOTable({
                     <td className="px-4 py-2.5 text-[#4B5563]">{assetLabel(wo)}</td>
                     <td className="px-4 py-2.5"><StatusTag status={wo.status} /></td>
                     <td className="px-4 py-2.5 text-[#4B5563]">{techName(wo)}</td>
-                    <td className="px-4 py-2.5"><PriorityBadge priority={wo.priority} /></td>
                     <td className="px-4 py-2.5 font-bold text-[#DC2626]">{age(wo.starting_datetime)} days</td>
                     <td className="px-4 py-2.5">
                       <Link href={`/maintenance/work-orders/${wo.id}`} className="inline-flex items-center rounded border border-[#E5E7EB] px-3 py-1 text-xs font-bold transition hover:bg-gray-50">
@@ -682,7 +656,6 @@ function ManagerWOTable({
                     <td className="px-4 py-2.5 text-[#4B5563]">{assetLabel(wo)}</td>
                     <td className="px-4 py-2.5 text-[#4B5563]">{wo.maintenance_type ?? "—"}</td>
                     <td className="px-4 py-2.5"><StatusTag status={wo.status} /></td>
-                    <td className="px-4 py-2.5"><PriorityBadge priority={wo.priority} /></td>
                     <td className="px-4 py-2.5">
                       <Link href={`/maintenance/work-orders/${wo.id}`} className="inline-flex items-center rounded border border-[#E5E7EB] px-3 py-1 text-xs font-bold transition hover:bg-gray-50">
                         View
@@ -700,7 +673,6 @@ function ManagerWOTable({
                     <td className="px-4 py-2.5 text-[#4B5563]">{techName(wo)}</td>
                     <td className="px-4 py-2.5 text-[#4B5563]">{assetLabel(wo)}</td>
                     <td className="px-4 py-2.5"><StatusTag status={wo.status} /></td>
-                    <td className="px-4 py-2.5"><PriorityBadge priority={wo.priority} /></td>
                     <td className="px-4 py-2.5">
                       <Link href={`/maintenance/work-orders/${wo.id}`} className="inline-flex items-center rounded border border-[#E5E7EB] px-3 py-1 text-xs font-bold transition hover:bg-gray-50">
                         View

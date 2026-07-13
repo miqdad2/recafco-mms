@@ -4,6 +4,12 @@ import { useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 
 import { upsertWorkOrderAction } from "@/app/actions/maintenance";
+import { AttachmentUploadFields } from "@/components/files/attachment-upload-fields";
+import {
+  ATTACHMENT_FILE_ACCEPT,
+  JOB_CARD_ATTACHMENT_CATEGORIES,
+  MAX_ATTACHMENT_ROWS,
+} from "@/lib/files/attachment-constants";
 
 const MAINTENANCE_TYPES = [
   "Routine",
@@ -24,8 +30,7 @@ const WORKER_TYPES = [
   "Welding/Fabrication",
   "Other",
 ];
-const PRIORITIES = ["Low", "Normal", "High", "Urgent"];
-const STEP_LABELS = ["Select Asset", "Request Details", "Assignment", "Required Parts", "Review & Save"];
+const STEP_LABELS = ["Select Asset", "Request Details", "Assignment", "Required Parts", "Documents & Photos", "Review & Save"];
 const MAX_PART_ROWS = 8;
 
 type AssetOption = {
@@ -145,7 +150,7 @@ export function WorkOrderWizard({
   function handleNext() {
     if (!validate()) return;
     const next = step + 1;
-    if (next === 5) {
+    if (next === 6) {
       const form = formRef.current;
       if (form) {
         const fd = new FormData(form);
@@ -282,16 +287,8 @@ export function WorkOrderWizard({
                 </label>
               </div>
 
-              <div>
-                <label className="block">
-                  <FieldLabel label="Priority" />
-                  <select name="priority" defaultValue="Normal" className={inp}>
-                    {PRIORITIES.map((p) => (
-                      <option key={p}>{p}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
+              {/* priority defaulted to Normal — not shown to user */}
+              <input type="hidden" name="priority" value="Normal" />
 
               <div>
                 <label className="block">
@@ -502,8 +499,27 @@ export function WorkOrderWizard({
           </WizardCard>
         </div>
 
-        {/* ── Step 5: Review & Save ──────────────────────────────────────── */}
+        {/* ── Step 5: Documents & Photos ─────────────────────────────────── */}
         <div className={step !== 5 ? "hidden" : ""}>
+          <WizardCard
+            title="Documents & Photos"
+            description="Optional — upload problem photos, PDFs, Excel files, Word documents, or supporting files. On mobile, you can take a live photo."
+          >
+            <AttachmentUploadFields
+              namePrefix="doc_attachment"
+              categories={JOB_CARD_ATTACHMENT_CATEGORIES}
+              defaultCategory="Problem Photo"
+              accept={ATTACHMENT_FILE_ACCEPT}
+              maxRows={MAX_ATTACHMENT_ROWS}
+            />
+            <p className="mt-4 text-xs text-[#9CA3AF]">
+              Accepted: PDF, JPG, JPEG, PNG, WEBP, XLS, XLSX, DOC, DOCX
+            </p>
+          </WizardCard>
+        </div>
+
+        {/* ── Step 6: Review & Save ──────────────────────────────────────── */}
+        <div className={step !== 6 ? "hidden" : ""}>
           <WizardCard
             title="Review & Save"
             description="Confirm all details before saving. A reference number is generated automatically."
@@ -541,12 +557,6 @@ export function WorkOrderWizard({
                     <div>
                       <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">Date of order</p>
                       <p className="mt-0.5 text-[15px] font-semibold text-[#111827]">{reviewData.date_of_order}</p>
-                    </div>
-                  )}
-                  {reviewData.priority && (
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">Priority</p>
-                      <p className="mt-0.5 text-[15px] font-semibold text-[#111827]">{reviewData.priority}</p>
                     </div>
                   )}
                   {reviewData.maintenance_type && (
@@ -647,7 +657,7 @@ export function WorkOrderWizard({
               </button>
             )}
           </div>
-          {step < 5 && (
+          {step < 6 && (
             <button
               type="button"
               onClick={handleNext}

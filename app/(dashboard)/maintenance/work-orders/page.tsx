@@ -25,6 +25,7 @@ import { requirePermission, type CurrentUserContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts } from "@/lib/reports/data";
 import { displayStatus } from "@/lib/display/work-order-labels";
+import { OPEN_PR_STATUSES } from "@/lib/display/parts-request-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { AutoRefresh } from "@/components/auto-refresh";
 import {
@@ -36,8 +37,6 @@ import { QuickViewRow } from "@/components/work-orders/quick-view-row";
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 25;
-
-const PRIORITIES = ["Low", "Normal", "High", "Urgent"];
 
 const TERMINAL_STATUSES = [
   "Closed", "Cancelled",
@@ -57,14 +56,13 @@ const NORMAL_USER_TABS: Tab[] = [
   { label: "Closed",        status: "Closed" },
 ];
 
-// Manager/admin: "Ready to Close" surfaces tech-completed work, "Awaiting Review" surfaces pending approvals.
+// Manager/admin: five buckets — Awaiting Review, In Progress (absorbs Completed), Waiting Materials, Closed.
 const MANAGER_TABS: Tab[] = [
-  { label: "All",             status: "" },
-  { label: "Awaiting Review", status: "Awaiting Review" },
-  { label: "In Progress",     status: "In Progress" },
-  { label: "Waiting Parts",   status: "Waiting for Parts" },
-  { label: "Ready to Close",  status: "Ready to Close" },
-  { label: "Closed",          status: "Closed" },
+  { label: "All",               status: "" },
+  { label: "Awaiting Review",   status: "Awaiting Review" },
+  { label: "In Progress",       status: "In Progress" },
+  { label: "Waiting Materials", status: "Waiting for Parts" },
+  { label: "Closed",            status: "Closed" },
 ];
 
 const DEFAULT_TABS: Tab[] = [
@@ -77,27 +75,47 @@ const DEFAULT_TABS: Tab[] = [
 ];
 
 // Returns a role-appropriate mapping from tab status keys → arrays of DB status strings.
-// Normal users see "Rejected" (Returned for Fix) under Open — it is still actionable for them.
-// Managers see "Rejected" under Closed — it has been actioned.
+// Managers see "In Progress" as a broad bucket (Approved → Completed by Technician) with no separate
+// "Ready to Close" tab. Normal users and default roles keep the narrow "In Progress" (active work only).
 function getStatusMap(roleSlug: string): Record<string, string[]> {
+  const isNormal  = roleSlug === "maintenance_data_entry" || roleSlug === "department_requester";
+  const isManager = roleSlug === "maintenance_manager" || roleSlug === "super_admin";
+
   const base: Record<string, string[]> = {
     "Awaiting Review":         ["Submitted", "Pending Approval"],
-    "In Progress":             ["In Progress", "Parts Issued"],
     "Waiting for Parts":       ["Waiting for Parts", "Waiting for Purchase"],
+    // Kept for backward-compat URL params and DEFAULT_TABS "Completed" tab
     "Ready to Close":          ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"],
     "Completed by Technician": ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"],
   };
-  const isNormal = roleSlug === "maintenance_data_entry" || roleSlug === "department_requester";
+
+  if (isManager) {
+    return {
+      ...base,
+      // Manager "In Progress" absorbs Approved/Assigned/active/completed so no separate Ready to Close bucket.
+      "In Progress": ["Approved", "Assigned", "In Progress", "Parts Issued",
+                      "Completed by Technician", "Verified by Supervisor", "Confirmed by Requester",
+                      "Reopened"],
+      "Closed": ["Closed", "Cancelled", "Rejected"],
+    };
+  }
+
   if (isNormal) {
     return {
       ...base,
-      "Open":   ["Draft", "Submitted", "Pending Approval", "Approved", "Assigned", "Completed by Technician", "Rejected", "Reopened"],
+      // Assigned jobs are treated as active work, not "Open" — a technician has
+      // already been assigned, so the job is in progress from the user's view.
+      "In Progress": ["Assigned", "In Progress", "Parts Issued"],
+      "Open":   ["Draft", "Submitted", "Pending Approval", "Approved",
+                 "Completed by Technician", "Rejected", "Reopened"],
       "Closed": ["Closed", "Cancelled"],
     };
   }
+
   return {
     ...base,
-    "Open":   ["Draft", "Submitted", "Pending Approval", "Approved", "Assigned", "Reopened"],
+    "In Progress": ["Assigned", "In Progress", "Parts Issued"],
+    "Open":   ["Draft", "Submitted", "Pending Approval", "Approved", "Reopened"],
     "Closed": ["Closed", "Cancelled", "Rejected"],
   };
 }
@@ -120,7 +138,6 @@ type SP = {
   page?: string;
   search?: string;
   status?: string;
-  priority?: string;
   dept?: string;
   worker_type?: string;
   date_from?: string;
@@ -209,13 +226,13 @@ function getNextAction(status: string, context: CurrentUserContext): { label: st
     case "Approved":                 return { label: "Assign technician",   mine: canAssign };
     case "Assigned":                 return { label: "Technician to start", mine: false };
     case "In Progress":
-    case "Parts Issued":             return { label: "Job in progress",     mine: false };
+    case "Parts Issued":             return { label: "Work in progress",         mine: false };
     case "Waiting for Parts":
-    case "Waiting for Purchase":     return { label: "Waiting for materials", mine: false };
+    case "Waiting for Purchase":     return { label: "Waiting for materials",    mine: false };
     case "Completed by Technician":
     case "Verified by Supervisor":
-    case "Confirmed by Requester":   return { label: "Close job card",      mine: canApprove || canAssign };
-    case "Closed":                   return { label: "Closed",              mine: false };
+    case "Confirmed by Requester":   return { label: "Awaiting manager closure", mine: canApprove || canAssign };
+    case "Closed":                   return { label: "Job card closed",          mine: false };
     case "Rejected":                 return { label: "Rejected",            mine: false };
     case "Cancelled":                return { label: "Cancelled",           mine: false };
     default:                         return { label: status,                mine: false };
@@ -223,13 +240,6 @@ function getNextAction(status: string, context: CurrentUserContext): { label: st
 }
 
 // ── Tone helpers ──────────────────────────────────────────────────────────────
-
-function priorityTone(p: string): "red" | "amber" | "blue" | "gray" {
-  if (p === "Urgent") return "red";
-  if (p === "High")   return "amber";
-  if (p === "Normal") return "blue";
-  return "gray";
-}
 
 function statusTone(s: string): "green" | "amber" | "red" | "blue" | "gray" {
   if (["Closed", "Verified by Supervisor", "Confirmed by Requester"].includes(s)) return "green";
@@ -266,7 +276,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   const page       = Math.max(1, Number(sp.page ?? 1) || 1);
   const search     = (sp.search ?? "").replace(/[%,()]/g, " ").trim().slice(0, 80);
   const status     = (sp.status ?? "").trim();
-  const priority   = (sp.priority ?? "").trim();
   const deptId     = /^[0-9a-f-]{36}$/i.test(sp.dept ?? "") ? sp.dept! : "";
   const workerType = (sp.worker_type ?? "").trim();
   const dateFrom   = (sp.date_from ?? "").trim();
@@ -304,7 +313,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       { operator_complaint: { contains: search, mode: "insensitive" } },
       { assets: { asset_name: { contains: search, mode: "insensitive" } } },
     ] });
-    if (priority) tabConditions.push({ priority });
     if (deptId)   tabConditions.push({ requested_by_department_id: deptId });
     if (dateFrom || dateTo) tabConditions.push({
       created_at: {
@@ -355,7 +363,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
     ]);
 
     const ceoTotalPages  = Math.max(1, Math.ceil(ceoCount / PAGE_SIZE));
-    const ceoHasFilters  = !!(search || priority || deptId || dateFrom || dateTo || costMin || ceoTab);
+    const ceoHasFilters  = !!(search || deptId || dateFrom || dateTo || costMin || ceoTab);
 
     return (
       <>
@@ -492,11 +500,13 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
     { deleted_at: null },
     visibilityFilter,
   ];
-  if (status) {
+  if (status === "Waiting for Parts") {
+    // Show job cards that have at least one open materials request (not just those with WO status "Waiting for Parts")
+    listConditions.push({ parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } });
+  } else if (status) {
     const statusList = expandStatuses(status, statusMap);
     listConditions.push(statusList.length === 1 ? { status } : { status: { in: statusList } });
   }
-  if (priority)   listConditions.push({ priority });
   if (deptId)     listConditions.push({ requested_by_department_id: deptId });
   if (workerType) listConditions.push({ worker_type: workerType });
   if (dateFilter) listConditions.push({ date_of_order: dateFilter });
@@ -514,10 +524,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   if (needsAction) listConditions.push(getNeedsActionFilter(context));
   const where: Prisma.work_ordersWhereInput = { AND: listConditions };
 
-  const overdueDate = new Date();
-  overdueDate.setDate(overdueDate.getDate() - OVERDUE_DAYS);
-
-  const [workOrders, count, statusSummaries, overdueCount] =
+  const [workOrders, count, statusSummaries, waitingMaterialsCount] =
     await Promise.all([
       prisma.work_orders.findMany({
         where,
@@ -532,7 +539,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           ordered_by: true,
           maintenance_type: true,
           worker_type: true,
-          priority: true,
           status: true,
           job_location: true,
           created_by: true,
@@ -554,12 +560,13 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         where: visibilityOnlyWhere,
         _count: { _all: true },
       }),
+      // Count job cards with at least one open materials request (independent of WO status field)
       prisma.work_orders.count({
         where: {
           AND: [
-            visibilityOnlyWhere,
-            { date_of_order: { lt: overdueDate } },
-            { status: { notIn: TERMINAL_STATUSES } },
+            { deleted_at: null },
+            visibilityFilter,
+            { parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } },
           ],
         },
       }),
@@ -586,7 +593,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             id: true,
             work_order_number: true,
             status: true,
-            priority: true,
             maintenance_type: true,
             worker_type: true,
             operator_complaint: true,
@@ -617,7 +623,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                 profiles: { select: { full_name: true } },
               },
             },
-            _count: { select: { work_order_required_parts: true } },
+            _count: { select: { work_order_required_parts: true, work_order_attachments: true } },
           },
         }),
         prisma.parts_requests.findMany({
@@ -636,13 +642,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       ])
     : [null, [] as Array<{ status: string }>, [] as Array<{ id: string; full_name: string }>];
 
-  const OPEN_PR_STATUSES = [
-    "Pending Approval",
-    "Waiting for Store",
-    "Partially Issued",
-    "Waiting for Purchase",
-  ];
-
   const isAdmin = context.role?.slug === "super_admin";
   const drawerData: QuickViewData | null = previewWO
     ? {
@@ -650,7 +649,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         work_order_number: previewWO.work_order_number,
         status: previewWO.status,
         displayStatus: displayStatus(previewWO.status),
-        priority: previewWO.priority,
         maintenance_type: previewWO.maintenance_type,
         worker_type: previewWO.worker_type,
         operator_complaint: previewWO.operator_complaint,
@@ -690,6 +688,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           OPEN_PR_STATUSES.includes(pr.status)
         ).length,
         last_parts_request_status: prData[0]?.status ?? null,
+        attachment_count: previewWO._count.work_order_attachments,
         roleSlug: context.role?.slug ?? "",
         canApprove:
           isAdmin || context.permissions.includes("work_orders.approve"),
@@ -705,14 +704,14 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       }
     : null;
 
-  const totalWOs        = statusSummaries.reduce((n, s) => n + s._count._all, 0);
-  const submittedCount = countFor(statusSummaries, ["Submitted", "Pending Approval"]);
-  const activeJobs      = countFor(statusSummaries, ["Approved", "Assigned", "In Progress"]);
-  const waitingParts    = countFor(statusSummaries, ["Waiting for Parts", "Parts Issued"]);
-  const completedPending = countFor(statusSummaries, ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"]);
-  const closed          = countFor(statusSummaries, ["Closed"]);
+  const totalWOs       = statusSummaries.reduce((n, s) => n + s._count._all, 0);
+  const submittedCount = tabCount(statusSummaries, "Awaiting Review", statusMap);
+  const activeJobs     = tabCount(statusSummaries, "In Progress",     statusMap);
+  // Waiting Materials KPI counts job cards with open materials requests, not just WO status field
+  const waitingParts   = waitingMaterialsCount;
+  const closed         = countFor(statusSummaries, ["Closed"]);
 
-  const hasFilters = search || status || priority || deptId || workerType || dateFrom || dateTo || needsAction;
+  const hasFilters = search || status || deptId || workerType || dateFrom || dateTo || needsAction;
 
   const activeTabs: Tab[] = isNormalUser
     ? NORMAL_USER_TABS
@@ -840,7 +839,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               href={buildHref({ status: "In Progress" })}
               tone="blue"
               icon={Wrench}
-              detail="Approved · assigned · in progress"
+              detail="Assigned · in progress"
             />
             <KpiCard
               title="Waiting Materials"
@@ -852,7 +851,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             />
           </section>
         ) : (
-          <section className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+          <section className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
             <KpiCard
               title="Total Job Cards"
               value={totalWOs}
@@ -871,12 +870,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               urgent={submittedCount > 0}
             />
             <KpiCard
-              title="Active Jobs"
+              title="In Progress"
               value={activeJobs}
               href={buildHref({ status: "In Progress" })}
               tone="blue"
               icon={Wrench}
-              detail="Approved · assigned · in progress"
+              detail="Approved · assigned · in progress · ready to close"
             />
             <KpiCard
               title="Waiting Materials"
@@ -887,21 +886,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               detail="Materials needed or store issue pending"
             />
             <KpiCard
-              title="Overdue"
-              value={overdueCount}
-              href={buildHref({})}
-              tone={overdueCount > 0 ? "red" : "gray"}
-              icon={AlertTriangle}
-              detail={`Open for more than ${OVERDUE_DAYS} days`}
-              urgent={overdueCount > 0}
-            />
-            <KpiCard
               title="Closed"
               value={closed}
               href={buildHref({ status: "Closed" })}
               tone="green"
               icon={CheckCircle2}
-              detail={`${completedPending} completed · awaiting closure`}
+              detail="Closed job cards"
             />
           </section>
         )}
@@ -917,9 +907,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           <div className="flex min-w-max">
             {activeTabs.map((tab) => {
               const isActive = tab.status === "" ? !status : tabIsActive(status, tab.status, statusMap);
-              const itemCount = tab.status
-                ? tabCount(statusSummaries, tab.status, statusMap)
-                : totalWOs;
+              const itemCount =
+                tab.status === "Waiting for Parts"
+                  ? waitingMaterialsCount
+                  : tab.status
+                    ? tabCount(statusSummaries, tab.status, statusMap)
+                    : totalWOs;
               return (
                 <Link
                   key={tab.status || "all"}
@@ -946,7 +939,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         <section className="overflow-hidden rounded-b-md border border-t-0 border-[#E5E7EB] bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
             <div>
-              <p className="text-xs font-black uppercase text-[#4B5563]">Repair order records</p>
+              <p className="text-xs font-black uppercase text-[#4B5563]">Job card records</p>
               <p className="mt-0.5 text-sm font-semibold text-[#111827]">
                 {count.toLocaleString()} {hasFilters ? "matching" : "total"} job cards
                 {hasFilters && (
@@ -959,13 +952,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1040px] text-left text-sm">
+            <table className="w-full min-w-[920px] text-left text-sm">
               <thead className="bg-gray-50 text-xs font-black uppercase text-[#4B5563]">
                 <tr>
                   <th className="px-4 py-3">Job Card</th>
                   <th className="px-4 py-3">Asset / Machine</th>
                   <th className="px-4 py-3">Issue / Problem</th>
-                  <th className="px-4 py-3">Priority</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Technician / Assignment</th>
                   <th className="px-4 py-3">Age</th>
@@ -993,7 +985,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
                     const rowBg = (() => {
                       if (wo.status === "Rejected" || wo.status === "Cancelled") return "bg-red-50/50 hover:bg-red-50";
-                      if (isOverdue || wo.priority === "Urgent") return "bg-red-50/30 hover:bg-red-50";
+                      if (isOverdue) return "bg-red-50/30 hover:bg-red-50";
                       if (["Waiting for Parts", "Waiting for Purchase"].includes(wo.status)) return "bg-amber-50/40 hover:bg-amber-50";
                       if (["Assigned", "In Progress", "Parts Issued", "Approved"].includes(wo.status)) return "bg-blue-50/30 hover:bg-blue-50";
                       if (["Closed", "Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"].includes(wo.status)) return "bg-green-50/30 hover:bg-green-50";
@@ -1041,11 +1033,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                           ) : (
                             <span className="text-xs text-[#9CA3AF]">—</span>
                           )}
-                        </td>
-
-                        {/* Priority */}
-                        <td className="px-4 py-3">
-                          <StatusBadge label={wo.priority} tone={priorityTone(wo.priority)} />
                         </td>
 
                         {/* Status */}
@@ -1108,7 +1095,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                   })
                 ) : (
                   <tr>
-                    <td colSpan={8} className="px-4 py-10">
+                    <td colSpan={7} className="px-4 py-10">
                       <EmptyState
                         title="No job cards match your filters"
                         message="Clear the filters or adjust your search to see job cards. You can also create a new job card."
@@ -1176,22 +1163,19 @@ function QuickActions({ context }: { context: CurrentUserContext }) {
       { label: "Submitted",          href: buildHref({ status: "Submitted" }),          primary: true },
       { label: "In Progress",        href: buildHref({ status: "In Progress" }) },
       { label: "Needs My Action",    href: buildHref({ needs_action: "1" }) },
-      { label: "High Priority",      href: buildHref({ priority: "High" }) },
       { label: "All Job Cards",       href: "/maintenance/work-orders" },
     ];
   } else if (slug === "ceo_management") {
     actions = [
       { label: "CEO Approvals",     href: "/ceo/approvals",                           primary: true },
-      { label: "High / Urgent",     href: buildHref({ priority: "Urgent" }) },
       { label: "Overdue Items",     href: buildHref({ needs_action: "1" }) },
       { label: "Pending Approval",  href: buildHref({ status: "Pending Approval" }) },
     ];
   } else if (slug === "maintenance_manager" || p.includes("work_orders.approve")) {
     actions = [
-      { label: "Awaiting Review",   href: buildHref({ status: "Pending Approval" }),   primary: true },
-      { label: "Urgent",            href: buildHref({ priority: "Urgent" }) },
+      { label: "Awaiting Review",   href: buildHref({ status: "Awaiting Review" }),    primary: true },
+      { label: "In Progress",       href: buildHref({ status: "In Progress" }) },
       { label: "Waiting Materials", href: buildHref({ status: "Waiting for Parts" }) },
-      { label: "Ready to Close",    href: buildHref({ status: "Completed by Technician" }) },
       { label: "All Orders",        href: "/maintenance/work-orders" },
     ];
   } else if (slug === "maintenance_supervisor" || p.includes("work_orders.assign")) {
@@ -1261,25 +1245,13 @@ function QuickActions({ context }: { context: CurrentUserContext }) {
 function FilterSection({ sp }: { sp: SP }) {
   return (
     <form method="GET" action="/maintenance/work-orders" className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        {/* Search — 2 cols */}
-        <div className="sm:col-span-2 xl:col-span-2">
-          <input
-            name="search"
-            defaultValue={sp.search ?? ""}
-            placeholder="Repair order no., asset name, requester, location…"
-            className="focus-ring w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
-          />
-        </div>
-
-        <select
-          name="priority"
-          defaultValue={sp.priority ?? ""}
-          className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
-        >
-          <option value="">All priorities</option>
-          {PRIORITIES.map((pr) => <option key={pr} value={pr}>{pr}</option>)}
-        </select>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_160px_160px_auto]">
+        <input
+          name="search"
+          defaultValue={sp.search ?? ""}
+          placeholder="Job card no., asset name, requester, location…"
+          className="focus-ring w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
+        />
 
         <input
           name="date_from"
@@ -1378,8 +1350,7 @@ function getCeoReason(wo: CeoWO, overdueThreshold: Date): string {
   const age = ageInDays(wo.created_at);
   if (!TERMINAL_STATUSES.includes(wo.status) && wo.created_at < overdueThreshold)
     return `Overdue ${age} days`;
-  if (wo.priority === "Urgent") return "Urgent — high-risk open work";
-  if (wo.priority === "High")   return "High priority open work";
+  if (wo.priority === "Urgent" || wo.priority === "High") return "High-risk open work";
   return "Executive visibility";
 }
 
@@ -1452,12 +1423,6 @@ function CeoFilterSection({
           />
         </div>
 
-        {/* Priority / Risk */}
-        <select name="priority" defaultValue={sp.priority ?? ""} className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
-          <option value="">All priorities</option>
-          {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
-
         {/* Department */}
         <select name="dept" defaultValue={sp.dept ?? ""} className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
           <option value="">All departments</option>
@@ -1519,7 +1484,6 @@ function CeoWorkOrderTable({
             <th className="px-4 py-3">Asset / Vehicle</th>
             <th className="px-4 py-3">Reason / Description</th>
             <th className="px-4 py-3">Why CEO Sees This</th>
-            <th className="px-4 py-3">Risk / Priority</th>
             <th className="px-4 py-3">Current Stage</th>
             <th className="px-4 py-3">Age</th>
             {canSeeCosts && <th className="px-4 py-3">Cost</th>}
@@ -1528,7 +1492,6 @@ function CeoWorkOrderTable({
         </thead>
         <tbody className="divide-y divide-[#E5E7EB]">
           {workOrders.map((wo) => {
-            const isUrgent     = wo.priority === "Urgent";
             const isTerminal   = TERMINAL_STATUSES.includes(wo.status);
             const age          = ageInDays(wo.created_at);
             const isOverdue    = !isTerminal && wo.created_at < overdueThreshold;
@@ -1537,10 +1500,7 @@ function CeoWorkOrderTable({
             const costNum      = canSeeCosts ? Number(wo.total_work_order_cost ?? 0) : 0;
 
             return (
-              <tr
-                key={wo.id}
-                className={`transition hover:bg-gray-50 ${isUrgent ? "border-l-4 border-l-[#ED1C24]" : ""}`}
-              >
+              <tr key={wo.id} className="transition hover:bg-gray-50">
                 {/* Reference */}
                 <td className="px-4 py-3.5">
                   <Link
@@ -1590,11 +1550,6 @@ function CeoWorkOrderTable({
                   }`}>
                     {reason}
                   </span>
-                </td>
-
-                {/* Priority */}
-                <td className="px-4 py-3.5">
-                  <StatusBadge label={wo.priority} tone={priorityTone(wo.priority)} />
                 </td>
 
                 {/* Stage */}

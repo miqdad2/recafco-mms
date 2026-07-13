@@ -12,6 +12,8 @@ import { createMaintenanceWorkflowInstanceForWorkOrder } from "@/lib/backend/wor
 import { notifyByEvent } from "@/lib/notifications/service";
 import { emitRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { prisma } from "@/lib/db/prisma";
+import { parsePendingAttachments, saveAttachmentBatch } from "@/lib/files/attachment-form";
+import { MAX_ATTACHMENT_ROWS } from "@/lib/files/attachment-constants";
 
 const optionalString = z.preprocess((value) => {
   if (typeof value !== "string") return value;
@@ -374,6 +376,8 @@ export async function upsertWorkOrderAction(formData: FormData) {
   const materialRows = parseMaterialRows(formData);
   const attachmentRows = parseAttachmentRows(formData);
   const requiredPartRows = parseRequiredPartRows(formData);
+  // Documents & Photos step — optional, files ride along in this same multipart submission.
+  const pendingAttachments = parsePendingAttachments(formData, "doc_attachment", MAX_ATTACHMENT_ROWS);
   const totalLabor = laborRows.reduce((sum, row) => sum + (row?.hours ?? 0) * (row?.rate ?? 0), 0);
   const totalMaterials = materialRows.reduce((sum, row) => sum + (row?.quantity ?? 0) * (row?.unit_price ?? 0), 0);
 
@@ -494,6 +498,37 @@ export async function upsertWorkOrderAction(formData: FormData) {
   if (attachmentRows.length) await prisma.work_order_attachments.createMany({ data: attachmentRows.map((row) => ({ ...row!, work_order_id, uploaded_by: context.userId })) });
   if (requiredPartRows.length) await prisma.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id, created_by: context.userId })) });
 
+  // Documents & Photos from the wizard — uploaded only now that the work order exists.
+  // A partial or total upload failure never rolls back the work order itself.
+  let attachmentUploadFailed = false;
+  if (pendingAttachments.length) {
+    const savedAttachments = await saveAttachmentBatch("work-order-files", work_order_id, pendingAttachments);
+    if (savedAttachments.length) {
+      await prisma.work_order_attachments.createMany({
+        data: savedAttachments.map((a) => ({
+          work_order_id,
+          attachment_type: a.category,
+          file_name: a.file.name,
+          file_path: a.path,
+          content_type: a.file.type,
+          file_size: a.file.size,
+          uploaded_by: context.userId,
+        })),
+      });
+      for (const a of savedAttachments) {
+        await writeAuditLog({
+          actorId: context.userId,
+          action: "file.upload",
+          entityType: "work_order",
+          entityId: work_order_id,
+          summary: `Uploaded ${a.category} file to work order during creation`,
+          metadata: { fileName: a.file.name, bucket: "work-order-files", remarks: a.remarks },
+        });
+      }
+    }
+    if (savedAttachments.length < pendingAttachments.length) attachmentUploadFailed = true;
+  }
+
   const auditStatus = id
     ? (existingStatus === "Rejected" ? "Rejected→Draft" : "(preserved)")
     : createStatus;
@@ -546,7 +581,9 @@ export async function upsertWorkOrderAction(formData: FormData) {
   revalidatePath("/maintenance/work-orders");
   revalidatePath("/dashboard");
   revalidatePath("/technician/jobs");
-  redirect(`/maintenance/work-orders/${data.id}?success=work-order-saved`);
+  redirect(
+    `/maintenance/work-orders/${data.id}?success=work-order-saved${attachmentUploadFailed ? "&warning=attachments-failed" : ""}`
+  );
 }
 
 // ── Record a material / part used on an existing work order ───────────────────

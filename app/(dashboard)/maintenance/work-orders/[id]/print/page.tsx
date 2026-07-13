@@ -119,7 +119,6 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
             ["End", formatDateTime(wo.ending_datetime)],
             ["Maintenance type", wo.maintenance_type],
             ["Worker type", wo.worker_type],
-            ["Priority", wo.priority],
             ["Running hours", wo.running_hours],
             ["Kilometers", wo.kilometers]
           ]}

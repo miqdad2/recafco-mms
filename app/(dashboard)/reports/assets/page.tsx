@@ -27,14 +27,12 @@ export default async function CriticalAssetReportPage({
   const viewParam = (rawParams["view"] as string | undefined) ?? "critical";
   const showAll = viewParam === "register";
 
-  // Critical: breakdown status, critical criticality, or poor condition
+  // Critical: breakdown or active maintenance status
   const criticalRows = allRows.filter(
     (a) =>
       a.status === "Breakdown" ||
       a.status === "Waiting for Parts" ||
-      a.status === "Under Maintenance" ||
-      a.criticality === "Critical" ||
-      a.condition === "Poor"
+      a.status === "Under Maintenance"
   );
 
   const displayRows = showAll ? allRows : criticalRows;
@@ -54,7 +52,7 @@ export default async function CriticalAssetReportPage({
     <>
       <PageHeader
         title="Critical Asset Report"
-        description="Monitor critical, poor condition, breakdown, and repeated-issue assets."
+        description="Monitor breakdown, under-maintenance, and repeated-issue assets."
         actions={<ExportButton kind="assets" searchParams={params} />}
       />
 
@@ -121,8 +119,6 @@ export default async function CriticalAssetReportPage({
                   <th className="px-4 py-2.5">Asset</th>
                   <th className="px-4 py-2.5">Category</th>
                   <th className="px-4 py-2.5">Location</th>
-                  <th className="px-4 py-2.5">Condition</th>
-                  <th className="px-4 py-2.5">Criticality</th>
                   <th className="px-4 py-2.5">Status</th>
                   <th className="px-4 py-2.5">Open ROs</th>
                   <th className="px-4 py-2.5">Last Repair</th>
@@ -132,13 +128,13 @@ export default async function CriticalAssetReportPage({
               <tbody className="divide-y divide-[#E5E7EB]">
                 {!displayRows.length && (
                   <tr>
-                    <td colSpan={9} className="px-4 py-8">
+                    <td colSpan={7} className="px-4 py-8">
                       <EmptyState
                         title={showAll ? "No assets found" : "No critical assets found"}
                         message={
                           showAll
                             ? "No assets have been added yet. Import assets to see them here."
-                            : "No assets are currently in critical condition, breakdown status, or poor condition."
+                            : "No assets are currently in breakdown, under maintenance, or waiting for parts."
                         }
                       />
                     </td>
@@ -149,19 +145,6 @@ export default async function CriticalAssetReportPage({
                     (wo) => !["Closed", "Cancelled", "Rejected"].includes(wo.status)
                   ).length;
                   const allWOs = asset.work_orders;
-                  const criticalityColor =
-                    asset.criticality === "Critical"
-                      ? "text-[#DC2626] font-bold"
-                      : asset.criticality === "High"
-                        ? "text-amber-600 font-bold"
-                        : "text-[#4B5563]";
-
-                  const conditionColor =
-                    asset.condition === "Poor" || asset.condition === "Out of Service"
-                      ? "text-[#DC2626] font-bold"
-                      : asset.condition === "Fair"
-                        ? "text-amber-600"
-                        : "text-[#4B5563]";
 
                   const statusColor =
                     asset.status === "Breakdown"
@@ -182,8 +165,6 @@ export default async function CriticalAssetReportPage({
                       </td>
                       <td className="px-4 py-2.5 text-xs text-[#4B5563]">{asset.category}</td>
                       <td className="px-4 py-2.5 text-xs text-[#4B5563]">{asset.location ?? "—"}</td>
-                      <td className={`px-4 py-2.5 text-xs ${conditionColor}`}>{asset.condition ?? "—"}</td>
-                      <td className={`px-4 py-2.5 text-xs ${criticalityColor}`}>{asset.criticality ?? "—"}</td>
                       <td className="px-4 py-2.5">
                         <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-bold ${statusColor}`}>
                           {asset.status}

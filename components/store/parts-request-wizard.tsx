@@ -4,6 +4,12 @@ import { useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 
 import { createPartsRequestAction } from "@/app/actions/phase4";
+import { AttachmentUploadFields } from "@/components/files/attachment-upload-fields";
+import {
+  ATTACHMENT_FILE_ACCEPT,
+  MAX_ATTACHMENT_ROWS,
+  PARTS_REQUEST_ATTACHMENT_CATEGORIES,
+} from "@/lib/files/attachment-constants";
 
 const MAX_ITEM_ROWS = 8;
 
@@ -112,8 +118,8 @@ export function PartsRequestWizard({
   const selectedAsset = selectedWo?.assets ?? null;
 
   const stepLabels = isPreselected
-    ? ["Job Card Context", "Requested Materials", "Review & Submit"]
-    : ["Select Job Card", "Requested Materials", "Review & Submit"];
+    ? ["Job Card Context", "Requested Materials", "Documents & Photos", "Review & Submit"]
+    : ["Select Job Card", "Requested Materials", "Documents & Photos", "Review & Submit"];
 
   function validate(): boolean {
     const errs: Record<string, string> = {};
@@ -144,7 +150,7 @@ export function PartsRequestWizard({
   function handleNext() {
     if (!validate()) return;
     const next = step + 1;
-    if (next === 3) {
+    if (next === 4) {
       const form = formRef.current;
       if (form) {
         const fd = new FormData(form);
@@ -428,8 +434,27 @@ export function PartsRequestWizard({
           </PRCard>
         </div>
 
-        {/* ── Step 3: Review & Submit ────────────────────────────────────── */}
+        {/* ── Step 3: Documents & Photos ─────────────────────────────────── */}
         <div className={step !== 3 ? "hidden" : ""}>
+          <PRCard
+            title="Documents & Photos"
+            description="Optional — upload request documents, supplier references, material photos, PDFs, Excel files, or supporting files."
+          >
+            <AttachmentUploadFields
+              namePrefix="pr_attachment"
+              categories={PARTS_REQUEST_ATTACHMENT_CATEGORIES}
+              defaultCategory="Request Document"
+              accept={ATTACHMENT_FILE_ACCEPT}
+              maxRows={MAX_ATTACHMENT_ROWS}
+            />
+            <p className="mt-4 text-xs text-[#9CA3AF]">
+              Accepted: PDF, JPG, JPEG, PNG, WEBP, XLS, XLSX, DOC, DOCX
+            </p>
+          </PRCard>
+        </div>
+
+        {/* ── Step 4: Review & Submit ────────────────────────────────────── */}
+        <div className={step !== 4 ? "hidden" : ""}>
           <PRCard
             title="Review & Submit"
             description="Confirm all details before submitting the materials request."
@@ -541,7 +566,7 @@ export function PartsRequestWizard({
               </button>
             )}
           </div>
-          {step < 3 && (
+          {step < 4 && (
             <button
               type="button"
               onClick={handleNext}

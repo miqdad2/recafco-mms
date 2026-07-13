@@ -1,6 +1,6 @@
 import "server-only";
 
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "fs/promises";
 import path from "path";
 
 import { safeStorageName, type PrivateFileBucket } from "@/lib/files/validation";
@@ -34,4 +34,12 @@ export async function savePrivateFile(bucket: PrivateFileBucket, folder: string,
 
 export async function readPrivateFile(bucket: PrivateFileBucket, storagePath: string) {
   return readFile(resolveUploadPath(bucket, storagePath));
+}
+
+export async function deletePrivateFileIfExists(bucket: PrivateFileBucket, storagePath: string) {
+  try {
+    await unlink(resolveUploadPath(bucket, storagePath));
+  } catch {
+    // file may already be deleted or never written — safe to ignore
+  }
 }

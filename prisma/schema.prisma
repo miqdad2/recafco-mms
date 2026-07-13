@@ -503,6 +503,7 @@ model parts_requests {
   work_orders                                    work_orders           @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   purchase_requests                              purchase_requests[]
   approvals                                      approvals[]
+  parts_request_attachments                      parts_request_attachments[]
 
   @@index([request_date, status, department_id], map: "idx_parts_requests_report_filters")
   @@index([status], map: "idx_parts_requests_status")
@@ -694,6 +695,23 @@ model work_order_attachments {
   work_orders     work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
+model parts_request_attachments {
+  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parts_request_id  String         @db.Uuid
+  work_order_id     String?        @db.Uuid
+  attachment_type   String
+  file_name         String
+  file_path         String
+  content_type      String?
+  file_size         Int?
+  uploaded_by       String?        @db.Uuid
+  created_at        DateTime       @default(now()) @db.Timestamptz(6)
+  parts_requests    parts_requests @relation(fields: [parts_request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  work_orders       work_orders?   @relation(fields: [work_order_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([parts_request_id], map: "idx_pr_attachments_parts_request")
+}
+
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model work_order_labor {
   id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -799,6 +817,7 @@ model work_orders {
   approvals                       approvals[]
   inventory_movements             inventory_movements[]
   parts_requests                  parts_requests[]
+  parts_request_attachments       parts_request_attachments[]
   purchase_requests               purchase_requests[]
   work_order_assignments          work_order_assignments[]
   work_order_attachments          work_order_attachments[]

@@ -18,7 +18,7 @@ import type { LucideIcon } from "lucide-react";
 
 import { addWorkOrderMaterialAction } from "@/app/actions/maintenance";
 import { respondToClarificationAction } from "@/app/actions/workflow";
-import { uploadWorkOrderFileAction } from "@/app/actions/files";
+import { uploadWorkOrderFileAction, deleteWorkOrderAttachmentAction } from "@/app/actions/files";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
@@ -202,16 +202,23 @@ export default async function WorkOrderDetailPage({
     (isCreator || canManage || context.role?.slug === "super_admin");
   const canCreatePartsRequest = hasPermission(context, "parts_requests.create");
   const canUploadFiles = hasPermission(context, "files.upload");
+  const canDeleteFiles =
+    context.role?.slug === "super_admin" ||
+    (hasPermission(context, "files.upload") &&
+      (hasPermission(context, "work_orders.manage") || hasPermission(context, "technician.jobs.update")));
 
+  const canViewFiles = await canViewEntityFile(context, "work-order-files", wo.id);
   const signedAttachments = await Promise.all(
     wo.work_order_attachments.map(async (attachment) => ({
       id: attachment.id,
       label: attachment.attachment_type,
       fileName: attachment.file_name,
-      signedUrl:
-        (await canViewEntityFile(context, "work-order-files", wo.id))
-          ? await createSignedFileUrl("work-order-files", attachment.file_path)
-          : null,
+      contentType: attachment.content_type ?? "",
+      fileSize: attachment.file_size ?? 0,
+      signedUrl: canViewFiles
+        ? await createSignedFileUrl("work-order-files", attachment.file_path)
+        : null,
+      uploadedByName: actorName(attachment.uploaded_by),
       createdAt: attachment.created_at.toISOString(),
     }))
   );
@@ -286,6 +293,17 @@ export default async function WorkOrderDetailPage({
             </p>
           </div>
         ) : null}
+        {warningMessage === "attachments-failed" ? (
+          <div className="rounded-md border border-[#F59E0B] bg-amber-50 p-4">
+            <p className="text-sm font-black text-[#92400E]">
+              Job Card created, but some attachments failed to upload
+            </p>
+            <p className="mt-1 text-sm leading-5 text-[#4B5563]">
+              The job card was saved successfully. You can upload the missing files again from
+              Documents &amp; Photos below.
+            </p>
+          </div>
+        ) : null}
         {successMessage === "clarification-responded" ? (
           <div className="rounded-md border border-[#16A34A] bg-green-50 p-4">
             <p className="text-sm font-black text-[#16A34A]">Response submitted</p>
@@ -354,7 +372,6 @@ export default async function WorkOrderDetailPage({
         <section className="rounded-md border border-[#DDE2EA] bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge label={displayStatus(wo.status)} tone={statusTone(wo.status)} />
-            <StatusBadge label={wo.priority} tone={priorityTone(wo.priority)} />
             <StatusBadge label={wo.worker_type} tone="gray" />
           </div>
           <h2 className="mt-2 text-xl font-black text-[#111827]">{summaryTitle}</h2>
@@ -446,19 +463,6 @@ export default async function WorkOrderDetailPage({
                     />
                   </div>
 
-                  {(wo.assets.condition || wo.assets.criticality) ? (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {wo.assets.condition ? (
-                        <StatusBadge label={wo.assets.condition} tone="gray" />
-                      ) : null}
-                      {wo.assets.criticality ? (
-                        <StatusBadge
-                          label={wo.assets.criticality}
-                          tone={wo.assets.criticality === "Critical" ? "red" : "amber"}
-                        />
-                      ) : null}
-                    </div>
-                  ) : null}
 
                   {(wo.assets.brand || wo.assets.model || wo.assets.serial_number) ? (
                     <p className="mt-3 text-xs text-[#4B5563]">
@@ -513,7 +517,6 @@ export default async function WorkOrderDetailPage({
                 ) : null}
                 <div className="grid gap-3 md:grid-cols-3">
                   {wo.maintenance_type ? <InfoBlock label="Maintenance type" value={wo.maintenance_type} /> : null}
-                  {wo.priority ? <InfoBlock label="Priority" value={wo.priority} /> : null}
                   {wo.ordered_by ? <InfoBlock label="Reported by" value={wo.ordered_by} /> : null}
                   {wo.date_of_order ? <InfoBlock label="Date of order" value={formatDateValue(wo.date_of_order)} /> : null}
                   {wo.job_location ? <InfoBlock label="Job location" value={wo.job_location} /> : null}
@@ -543,7 +546,7 @@ export default async function WorkOrderDetailPage({
                   ) : null}
 
                   {wo.work_order_assignments.length ? (
-                    <div>
+                    <div id="assignment">
                       <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Assignment</p>
                       <div className="mt-2 space-y-2">
                         {wo.work_order_assignments.map((a) => {
@@ -804,73 +807,140 @@ export default async function WorkOrderDetailPage({
               </div>
             </section>
 
-            {/* 5 — Attachments & Photos (merged) */}
+            {/* 5 — Documents & Photos */}
             <section id="attachments" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
-              <SectionHeader eyebrow="Photos &amp; Documents" title="Attachments &amp; Photos" icon={Paperclip} />
+              <SectionHeader eyebrow="Files" title="Documents &amp; Photos" icon={Paperclip} />
 
+              {/* File list */}
               <div className="mt-5">
                 {signedAttachments.length > 0 ? (
                   <div className="divide-y divide-[#E5E7EB]">
-                    {signedAttachments.map((file) => (
-                      <div
-                        key={file.id}
-                        className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"
-                      >
-                        <div className="flex items-start gap-3">
-                          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gray-100 text-[#111827]">
-                            <Paperclip className="h-4 w-4" aria-hidden="true" />
-                          </span>
-                          <div>
-                            <p className="text-sm font-bold text-[#111827]">{file.label}</p>
-                            <p className="text-sm text-[#4B5563]">{file.fileName}</p>
+                    {signedAttachments.map((file) => {
+                      const isPhoto = file.contentType.startsWith("image/");
+                      return (
+                        <div
+                          key={file.id}
+                          className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div className="flex items-start gap-3 min-w-0">
+                            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gray-100 text-[#111827]">
+                              <Paperclip className="h-4 w-4" aria-hidden="true" />
+                            </span>
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-[#111827]">{file.label}</p>
+                              <p className="truncate text-sm text-[#4B5563]">{file.fileName}</p>
+                              <p className="mt-0.5 text-xs text-[#9CA3AF]">
+                                {isPhoto ? "Photo" : "Document"} · Uploaded by {file.uploadedByName} · {file.createdAt.slice(0, 10)}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-3">
+                            {file.signedUrl ? (
+                              <>
+                                <Link className="text-sm font-bold text-[#ED1C24] hover:underline" href={file.signedUrl} target="_blank">
+                                  View
+                                </Link>
+                                <Link className="text-sm font-bold text-[#4B5563] hover:underline" href={`${file.signedUrl}?download=1`} download>
+                                  Download
+                                </Link>
+                              </>
+                            ) : (
+                              <span className="text-sm text-[#9CA3AF]">Access restricted</span>
+                            )}
+                            {canDeleteFiles && (
+                              <form action={deleteWorkOrderAttachmentAction}>
+                                <input type="hidden" name="attachment_id" value={file.id} />
+                                <input type="hidden" name="work_order_id" value={wo.id} />
+                                <input type="hidden" name="return_to" value={`/maintenance/work-orders/${wo.id}`} />
+                                <button type="submit" className="text-sm text-red-500 hover:text-red-700 hover:underline">
+                                  Delete
+                                </button>
+                              </form>
+                            )}
                           </div>
                         </div>
-                        {file.signedUrl ? (
-                          <Link className="shrink-0 text-sm font-bold text-[#ED1C24]" href={file.signedUrl} target="_blank">
-                            View file
-                          </Link>
-                        ) : (
-                          <span className="text-sm text-[#4B5563]">Signed link unavailable</span>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : (
                   <p className="text-sm text-[#4B5563]">No files uploaded yet.</p>
                 )}
               </div>
 
-              {canUploadFiles ? (
-                <div className="mt-5 border-t border-[#E5E7EB] pt-4">
-                  <p className="mb-3 text-xs font-black uppercase tracking-wide text-[#4B5563]">Upload file or photo</p>
-                  <form
-                    action={uploadWorkOrderFileAction}
-                    className="grid gap-3 sm:grid-cols-[180px_1fr_auto]"
-                  >
-                    <input type="hidden" name="work_order_id" value={wo.id} />
-                    <input type="hidden" name="return_to" value={`/maintenance/work-orders/${wo.id}`} />
-                    <select
-                      name="attachment_type"
-                      className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
-                    >
-                      {["Complaint Photo", "Before Repair Photo", "After Repair Photo", "Damaged Part Photo", "Meter Photo", "Document"].map((opt) => (
-                        <option key={opt} value={opt}>{opt}</option>
-                      ))}
-                    </select>
-                    <input
-                      required
-                      type="file"
-                      name="file"
-                      className="focus-ring rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-[#111827] file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-white"
-                      accept=".pdf,.jpg,.jpeg,.png,.xls,.xlsx,.doc,.docx"
-                    />
-                    <Button type="submit">Upload</Button>
-                  </form>
-                  <p className="mt-3 text-xs text-[#4B5563]">
-                    Accepted formats: PDF, JPG, PNG, XLS, XLSX, DOC, DOCX.
+              {/* Upload forms */}
+              {canUploadFiles && (
+                <div className="mt-5 space-y-4 border-t border-[#E5E7EB] pt-4">
+                  <p className="text-xs text-[#4B5563]">
+                    Upload PDFs, Excel files, Word documents, or photos. On mobile, you can take a live photo.
+                  </p>
+
+                  {/* Upload File */}
+                  <div>
+                    <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Upload File</p>
+                    <form action={uploadWorkOrderFileAction} className="grid gap-3 sm:grid-cols-[200px_1fr_auto]">
+                      <input type="hidden" name="work_order_id" value={wo.id} />
+                      <input type="hidden" name="return_to" value={`/maintenance/work-orders/${wo.id}#attachments`} />
+                      <select name="attachment_type" className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
+                        {[
+                          "Problem Photo",
+                          "Before Repair Photo",
+                          "After Repair Photo",
+                          "Technician Work Photo",
+                          "Inspection Report",
+                          "Service Report",
+                          "Quotation",
+                          "Invoice",
+                          "Other Document",
+                        ].map((opt) => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                      </select>
+                      <input
+                        required
+                        type="file"
+                        name="file"
+                        className="focus-ring rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-[#111827] file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-white"
+                        accept=".pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.doc,.docx"
+                      />
+                      <Button type="submit">Upload File</Button>
+                    </form>
+                  </div>
+
+                  {/* Take Photo — camera-targeted on mobile */}
+                  <div>
+                    <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Take Photo</p>
+                    <form action={uploadWorkOrderFileAction} className="grid gap-3 sm:grid-cols-[200px_1fr_auto]">
+                      <input type="hidden" name="work_order_id" value={wo.id} />
+                      <input type="hidden" name="return_to" value={`/maintenance/work-orders/${wo.id}#attachments`} />
+                      <select name="attachment_type" className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
+                        {[
+                          "Problem Photo",
+                          "Before Repair Photo",
+                          "After Repair Photo",
+                          "Technician Work Photo",
+                          "Inspection Report",
+                          "Other Document",
+                        ].map((opt) => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                      </select>
+                      <input
+                        required
+                        type="file"
+                        name="file"
+                        accept="image/*"
+                        capture="environment"
+                        className="focus-ring rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-[#111827] file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-white"
+                      />
+                      <Button type="submit">Take Photo</Button>
+                    </form>
+                  </div>
+
+                  <p className="text-xs text-[#9CA3AF]">
+                    Accepted: PDF, JPG, PNG, WEBP, XLS, XLSX, DOC, DOCX · Max 10 MB per file
                   </p>
                 </div>
-              ) : null}
+              )}
             </section>
           </main>
 
@@ -884,7 +954,6 @@ export default async function WorkOrderDetailPage({
               <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Quick Facts</p>
               <dl className="mt-3 space-y-3 text-sm">
                 <InfoLine label="Status" value={<StatusBadge label={displayStatus(wo.status)} tone={statusTone(wo.status)} />} />
-                <InfoLine label="Priority" value={<StatusBadge label={wo.priority} tone={priorityTone(wo.priority)} />} />
                 {wo.maintenance_type ? <InfoLine label="Type" value={wo.maintenance_type} /> : null}
                 {wo.ordered_by ? <InfoLine label="Reported by" value={wo.ordered_by} /> : null}
                 <InfoLine label="Created" value={formatDateValue(wo.created_at)} />
@@ -1206,13 +1275,6 @@ function Table({
 }
 
 // ── Utility functions ─────────────────────────────────────────────────────────
-
-function priorityTone(priority: string): BadgeTone {
-  if (priority === "Urgent") return "red";
-  if (priority === "High") return "amber";
-  if (priority === "Low") return "gray";
-  return "blue";
-}
 
 function statusTone(status: string): BadgeTone {
   if (

@@ -8,7 +8,7 @@ import { z } from "zod";
 import { writeAuditLog } from "@/lib/audit/log";
 import { requireUser } from "@/lib/auth/context";
 import { getFileSecuritySettings } from "@/lib/files/settings";
-import { savePrivateFile } from "@/lib/files/local-storage";
+import { savePrivateFile, deletePrivateFileIfExists } from "@/lib/files/local-storage";
 import {
   safeStorageName,
   validatePrivateFileWithOptions,
@@ -415,4 +415,141 @@ export async function uploadPurchaseFileAction(formData: FormData) {
 
   revalidatePath(`/purchase/requests/${purchaseRequestId}`);
   redirect(`/purchase/requests/${purchaseRequestId}`);
+}
+
+// ─── Delete work order attachment ─────────────────────────────────────────────
+
+export async function deleteWorkOrderAttachmentAction(formData: FormData) {
+  const attachmentId = uuid.parse(formData.get("attachment_id"));
+  const workOrderId = uuid.parse(formData.get("work_order_id"));
+  const context = await canUploadWorkOrder(workOrderId);
+
+  const attachment = await prisma.work_order_attachments.findFirst({
+    where: { id: attachmentId, work_order_id: workOrderId },
+    select: { id: true, file_path: true, attachment_type: true, file_name: true },
+  });
+
+  if (!attachment) redirect(`/maintenance/work-orders/${workOrderId}?error=not-found`);
+
+  await prisma.work_order_attachments.delete({ where: { id: attachmentId } });
+  await deletePrivateFileIfExists("work-order-files", attachment.file_path);
+
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "file.deleted",
+    entityType: "work_order",
+    entityId: workOrderId,
+    summary: `Deleted ${attachment.attachment_type} file from work order`,
+    metadata: { fileName: attachment.file_name, bucket: "work-order-files" },
+  });
+
+  revalidatePath(`/maintenance/work-orders/${workOrderId}`);
+  revalidatePath(`/technician/jobs/${workOrderId}`);
+  redirect(String(formData.get("return_to") || `/maintenance/work-orders/${workOrderId}`));
+}
+
+// ─── Upload parts request attachment ─────────────────────────────────────────
+
+export async function uploadPartsRequestAttachmentAction(formData: FormData) {
+  const context = await requireUser();
+  const partsRequestId = uuid.parse(formData.get("parts_request_id"));
+
+  const canUpload =
+    canByPermission(context.permissions, context.role?.slug, "files.upload") &&
+    (canByPermission(context.permissions, context.role?.slug, "parts_requests.approve") ||
+      canByPermission(context.permissions, context.role?.slug, "store.issue") ||
+      canByPermission(context.permissions, context.role?.slug, "work_orders.manage") ||
+      canByPermission(context.permissions, context.role?.slug, "parts_requests.create"));
+
+  if (!canUpload) redirect(`/store/parts-requests/${partsRequestId}?error=upload-permission`);
+
+  const pr = await prisma.parts_requests.findUnique({
+    where: { id: partsRequestId },
+    select: { id: true, work_order_id: true },
+  });
+  if (!pr) redirect(`/store/parts-requests?error=not-found`);
+
+  // Own-request check for users who can only create (not approve/issue)
+  const canApproveOrIssue =
+    canByPermission(context.permissions, context.role?.slug, "parts_requests.approve") ||
+    canByPermission(context.permissions, context.role?.slug, "store.issue");
+  if (!canApproveOrIssue) {
+    const isOwner = await prisma.parts_requests.findFirst({
+      where: { id: partsRequestId, OR: [{ created_by: context.userId }, { requested_by: context.userId }] },
+      select: { id: true },
+    });
+    if (!isOwner) redirect(`/store/parts-requests/${partsRequestId}?error=upload-permission`);
+  }
+
+  const attachmentType = text.parse(formData.get("attachment_type") || "Other Document");
+  const file = fileFrom(formData);
+  if (!file) redirect(`/store/parts-requests/${partsRequestId}?error=no-file`);
+
+  // Store in work-order-files bucket under the linked work_order_id so the
+  // existing file-serving access check (entityId = work_order_id) applies.
+  const result = await uploadPrivateFile("work-order-files", pr.work_order_id, file);
+  if (result.error || !result.path)
+    redirect(`/store/parts-requests/${partsRequestId}?error=file-upload-failed`);
+
+  await prisma.parts_request_attachments.create({
+    data: {
+      parts_request_id: partsRequestId,
+      work_order_id: pr.work_order_id,
+      attachment_type: attachmentType,
+      file_name: file.name,
+      file_path: result.path!,
+      content_type: file.type,
+      file_size: file.size,
+      uploaded_by: context.userId,
+    },
+  });
+
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "file.upload",
+    entityType: "parts_request",
+    entityId: partsRequestId,
+    summary: `Uploaded ${attachmentType} to materials request`,
+    metadata: { fileName: file.name, bucket: "work-order-files" },
+  });
+
+  revalidatePath(`/store/parts-requests/${partsRequestId}`);
+  revalidatePath(`/store/parts-requests`);
+  redirect(`/store/parts-requests/${partsRequestId}`);
+}
+
+// ─── Delete parts request attachment ─────────────────────────────────────────
+
+export async function deletePartsRequestAttachmentAction(formData: FormData) {
+  const context = await requireUser();
+  const attachmentId = uuid.parse(formData.get("attachment_id"));
+  const partsRequestId = uuid.parse(formData.get("parts_request_id"));
+
+  const canDelete =
+    canByPermission(context.permissions, context.role?.slug, "parts_requests.approve") ||
+    canByPermission(context.permissions, context.role?.slug, "store.issue") ||
+    canByPermission(context.permissions, context.role?.slug, "work_orders.manage");
+
+  if (!canDelete) redirect(`/store/parts-requests/${partsRequestId}?error=delete-permission`);
+
+  const attachment = await prisma.parts_request_attachments.findFirst({
+    where: { id: attachmentId, parts_request_id: partsRequestId },
+    select: { id: true, file_path: true, attachment_type: true, file_name: true },
+  });
+  if (!attachment) redirect(`/store/parts-requests/${partsRequestId}?error=not-found`);
+
+  await prisma.parts_request_attachments.delete({ where: { id: attachmentId } });
+  await deletePrivateFileIfExists("work-order-files", attachment.file_path);
+
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "file.deleted",
+    entityType: "parts_request",
+    entityId: partsRequestId,
+    summary: `Deleted ${attachment.attachment_type} file from materials request`,
+    metadata: { fileName: attachment.file_name, bucket: "work-order-files" },
+  });
+
+  revalidatePath(`/store/parts-requests/${partsRequestId}`);
+  redirect(`/store/parts-requests/${partsRequestId}`);
 }

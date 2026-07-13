@@ -74,7 +74,7 @@ const navigationGroups: NavGroup[] = [
     ]
   },
   {
-    label: "Management",
+    label: "Operations",
     items: [
       { href: "/assets",                        label: "Assets & Equipment", iconKey: "Gauge",      permission: "assets.view" },
       { href: "/maintenance/assignments",        label: "Technician",          iconKey: "Wrench",     permission: "work_orders.assign" },
@@ -108,7 +108,7 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
     ]
   },
   {
-    label: "Management",
+    label: "Operations",
     items: [
       { href: "/assets",                  label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
       { href: "/maintenance/assignments", label: "Technician",          iconKey: "Wrench",    permission: "work_orders.assign" },
@@ -135,7 +135,7 @@ const storeKeeperNavigationGroups: NavGroup[] = [
     ]
   },
   {
-    label: "Management",
+    label: "Operations",
     items: [
       { href: "/notifications", label: "Notifications", iconKey: "Bell",    permission: "notifications.view" }
     ]
@@ -159,7 +159,7 @@ const technicianNavigationGroups: NavGroup[] = [
     ]
   },
   {
-    label: "Management",
+    label: "Operations",
     items: [
       { href: "/technician/jobs", label: "Technician",    iconKey: "Wrench", permission: "technician.jobs.view" },
       { href: "/notifications",   label: "Notifications", iconKey: "Bell",   permission: "notifications.view" }
@@ -186,7 +186,7 @@ const normalUserNavigationGroups: NavGroup[] = [
     ]
   },
   {
-    label: "Management",
+    label: "Operations",
     items: [
       { href: "/assets",        label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
       { href: "/reports",       label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
