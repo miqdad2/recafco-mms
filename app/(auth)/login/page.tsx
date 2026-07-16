@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { LockKeyhole, Mail, ShieldCheck } from "lucide-react";
 
 import { signInAction } from "@/app/actions/auth";
@@ -44,7 +43,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         <div>
           <h1 className="text-2xl font-bold text-[#111827]">Sign in</h1>
           <p className="mt-1 text-sm leading-5 text-[#4B5563]">Use your RECAFCO account to continue.</p>
-          <p className="mt-1 text-xs font-medium text-[#64748B]">Demo access is managed by the system administrator.</p>
+          <p className="mt-1 text-xs font-medium text-[#64748B]">Access is managed by the system administrator.</p>
         </div>
       </div>
       {errorMessage ? (
@@ -64,13 +63,11 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         <label className="block">
           <span className="text-sm font-semibold text-[#111827]">Password</span>
           <PasswordInput />
+          <span className="mt-1.5 block text-xs text-[#9CA3AF]">Need password reset? Contact the system administrator.</span>
         </label>
         <SubmitButton className="min-h-12 w-full" idleLabel="Sign in" pendingLabel="Signing in" />
       </form>
-      <div className="mt-5 flex items-center justify-between gap-3 border-t border-[#E5E7EB] pt-4">
-        <Link className="focus-ring rounded-md text-sm font-bold text-[#ED1C24] underline-offset-4 hover:text-[#c9151c] hover:underline" href="/forgot-password">
-          Forgot password
-        </Link>
+      <div className="mt-5 flex items-center justify-center gap-3 border-t border-[#E5E7EB] pt-4">
         <div className="flex items-center gap-1.5 text-xs font-semibold text-[#4B5563]">
           <ShieldCheck className="h-4 w-4 text-[#16A34A]" aria-hidden="true" />
           Protected access

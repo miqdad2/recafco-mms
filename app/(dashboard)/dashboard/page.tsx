@@ -39,6 +39,14 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────
 type WoRow = { id: string; work_order_number: string | null; status: string; updated_at: string };
+type NuJobCardRow = {
+  id: string;
+  work_order_number: string | null;
+  status: string;
+  created_at: string;
+  asset_name: string | null;
+  issue_summary: string | null;
+};
 type PrRow = { id: string; parts_request_number: string | null; status: string; created_at: string };
 type MgActionRow = {
   id: string;
@@ -61,6 +69,18 @@ function woTone(status: string): "green" | "amber" | "red" | "blue" | "gray" {
   if (["Waiting for Parts", "Waiting for Purchase"].includes(status)) return "amber";
   if (status === "Draft") return "gray";
   return "blue";
+}
+
+// Simplified, employee-facing status wording for the normal-user "Latest Job Cards" list only.
+// Internal status strings and the shared displayStatus() mapping used elsewhere are unchanged.
+function employeeStatusLabel(status: string): string {
+  if (["Submitted", "Pending Approval"].includes(status)) return "Awaiting Review";
+  if (["Waiting for Parts", "Waiting for Purchase"].includes(status)) return "Waiting Materials";
+  if (status === "Rejected") return "Returned for Fix";
+  if (status === "Closed") return "Closed";
+  if (status === "Draft") return "Draft";
+  if (status === "Cancelled") return "Cancelled";
+  return "In Progress";
 }
 
 function ageLabel(createdAt: string): string {
@@ -90,8 +110,8 @@ function mgActionMeta(status: string): { label: string; style: string } {
 }
 
 // ── Shared components ─────────────────────────────────────────────────
-function QuickAction({ label, href, icon: Icon, iconBg, iconColor }: {
-  label: string; href: string; icon: LucideIcon; iconBg: string; iconColor: string;
+function QuickAction({ label, subtitle, href, icon: Icon, iconBg, iconColor }: {
+  label: string; subtitle?: string; href: string; icon: LucideIcon; iconBg: string; iconColor: string;
 }) {
   return (
     <Link
@@ -101,7 +121,12 @@ function QuickAction({ label, href, icon: Icon, iconBg, iconColor }: {
       <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${iconBg}`}>
         <Icon className={`h-4 w-4 ${iconColor}`} aria-hidden="true" />
       </span>
-      <span className="text-sm font-bold text-[#111827]">{label}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-bold text-[#111827]">{label}</span>
+        {subtitle && (
+          <span className="block truncate text-[11px] font-medium text-[#9CA3AF]">{subtitle}</span>
+        )}
+      </span>
       <ArrowRight className="ml-auto h-4 w-4 shrink-0 text-[#D1D5DB] transition group-hover:translate-x-0.5 group-hover:text-[#6B7280]" aria-hidden="true" />
     </Link>
   );
@@ -113,16 +138,43 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 function WoRow({ row }: { row: WoRow }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5">
-      <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[#111827]">
+    <Link
+      href={`?preview=${row.id}`}
+      className="group flex cursor-pointer items-center gap-3 px-4 py-2.5 transition hover:bg-[#F8FAFC]"
+    >
+      <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[#111827] group-hover:text-[#ED1C24]">
         {row.work_order_number ?? <span className="text-xs italic text-[#9CA3AF]">Draft</span>}
       </span>
       <StatusBadge label={displayStatus(row.status)} tone={woTone(row.status)} />
       <span className="hidden shrink-0 text-xs text-[#9CA3AF] sm:block">{formatDateTime(row.updated_at)}</span>
-      <Link href={`/maintenance/work-orders/${row.id}`} className="shrink-0 rounded border border-[#E5E7EB] px-2 py-1 text-xs font-bold text-[#111827] transition hover:border-[#ED1C24] hover:text-[#ED1C24]">
+      <span className="shrink-0 rounded border border-[#E5E7EB] px-2 py-1 text-xs font-bold text-[#111827] transition group-hover:border-[#ED1C24] group-hover:text-[#ED1C24]">
         View
-      </Link>
-    </div>
+      </span>
+    </Link>
+  );
+}
+
+function NuJobCardRow({ row }: { row: NuJobCardRow }) {
+  const subtitle = [row.asset_name, row.issue_summary].filter(Boolean).join(" · ");
+  return (
+    <Link
+      href={`?preview=${row.id}`}
+      className="group flex items-center gap-3 px-4 py-3 transition hover:bg-[#F8FAFC]"
+    >
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="truncate text-sm font-semibold text-[#111827] group-hover:text-[#ED1C24]">
+          {row.work_order_number ?? <span className="text-xs italic text-[#9CA3AF]">Draft</span>}
+        </p>
+        {subtitle && <p className="truncate text-xs text-[#6B7280]">{subtitle}</p>}
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-1 sm:flex-row sm:items-center sm:gap-3">
+        <StatusBadge label={employeeStatusLabel(row.status)} tone={woTone(row.status)} />
+        <span className="hidden shrink-0 text-xs text-[#9CA3AF] sm:block">{formatDateTime(row.created_at)}</span>
+        <span className="shrink-0 rounded border border-[#E5E7EB] px-2 py-1 text-xs font-bold text-[#111827] transition group-hover:border-[#ED1C24] group-hover:text-[#ED1C24]">
+          View
+        </span>
+      </div>
+    </Link>
   );
 }
 
@@ -180,8 +232,8 @@ function PrRow({ row }: { row: PrRow }) {
   );
 }
 
-function ActivityList({ title, viewAllHref, empty, children }: {
-  title: string; viewAllHref: string; empty: boolean; children: React.ReactNode;
+function ActivityList({ title, viewAllHref, empty, emptyState, children }: {
+  title: string; viewAllHref: string; empty: boolean; emptyState?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
     <section className="space-y-2">
@@ -191,7 +243,7 @@ function ActivityList({ title, viewAllHref, empty, children }: {
       </div>
       <div className="divide-y divide-[#EEF2F6] overflow-hidden rounded-md border border-[#DDE2EA] bg-white shadow-sm">
         {empty
-          ? <p className="py-8 text-center text-sm text-[#4B5563]">Nothing here yet.</p>
+          ? (emptyState ?? <p className="py-8 text-center text-sm text-[#4B5563]">Nothing here yet.</p>)
           : children
         }
       </div>
@@ -246,13 +298,30 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     prisma.work_orders
       .findMany({
         where: { AND: [{ deleted_at: null }, visibilityFilter] },
-        select: { id: true, work_order_number: true, status: true, updated_at: true },
+        select: {
+          id: true,
+          work_order_number: true,
+          status: true,
+          created_at: true,
+          operator_complaint: true,
+          description_of_work: true,
+          assets: { select: { asset_name: true } },
+        },
         orderBy: { updated_at: "desc" },
         take: 5,
       })
-      .then((rows): WoRow[] => rows.map((r) => ({ ...r, updated_at: r.updated_at.toISOString() })))
-      .catch((): WoRow[] => []),
-  ]) : [null, [] as WoRow[]];
+      .then((rows): NuJobCardRow[] =>
+        rows.map((r) => ({
+          id:                r.id,
+          work_order_number: r.work_order_number,
+          status:            r.status,
+          created_at:        r.created_at.toISOString(),
+          asset_name:        r.assets?.asset_name ?? null,
+          issue_summary:     r.operator_complaint ?? r.description_of_work ?? null,
+        }))
+      )
+      .catch((): NuJobCardRow[] => []),
+  ]) : [null, [] as NuJobCardRow[]];
 
   // ── Manager data ─────────────────────────────────────────────────
   const mgBase = { AND: [{ deleted_at: null }, visibilityFilter] };
@@ -505,7 +574,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         open_parts_requests_count: prPreviewData.filter((pr) =>
           OPEN_PR_STATUSES.includes(pr.status),
         ).length,
-        last_parts_request_status: prPreviewData[0]?.status ?? null,
+        last_parts_request_status: prPreviewData[0]
+          ? displayPartsRequestStatus(prPreviewData[0].status)
+          : null,
         attachment_count: previewWO._count.work_order_attachments,
         roleSlug: context.role?.slug ?? "",
         canApprove: isAdmin || context.permissions.includes("work_orders.approve"),
@@ -548,26 +619,49 @@ export default async function DashboardPage({ searchParams }: PageProps) {
 
             {/* Quick Actions */}
             <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
-              <QuickAction label="Create Job Card"       href="/maintenance/work-orders/new"  icon={PlusCircle}   iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
-              <QuickAction label="Request Materials"     href="/store/parts-requests/new"      icon={ShoppingCart} iconBg="bg-violet-50" iconColor="text-violet-600" />
-              <QuickAction label="Assets & Equipment"   href="/assets"                         icon={Gauge}        iconBg="bg-blue-50"   iconColor="text-blue-600" />
-              <QuickAction label="Offline Inventory"    href="/store/offline-inventory"        icon={Package}      iconBg="bg-green-50"  iconColor="text-green-600" />
+              <QuickAction label="Create Job Card"           href="/maintenance/work-orders/new"  icon={PlusCircle}   iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
+              <QuickAction label="Request Materials"         href="/store/parts-requests/new"      icon={ShoppingCart} iconBg="bg-violet-50" iconColor="text-violet-600" />
+              <QuickAction label="Assets & Equipment"        href="/assets"                         icon={Gauge}        iconBg="bg-blue-50"   iconColor="text-blue-600" />
+              <QuickAction
+                label="Offline Inventory Control"
+                subtitle="Check received, issued, and available materials."
+                href="/store/offline-inventory"
+                icon={Package}
+                iconBg="bg-green-50"
+                iconColor="text-green-600"
+              />
             </div>
 
             {/* KPI Queue */}
             <section className="space-y-2">
               <SectionLabel>My Job Cards</SectionLabel>
               <KpiRow cols="sm:grid-cols-4" cards={[
-                { label: "Awaiting Review",  value: nuQueue[0], icon: Clock,         tone: nuQueue[0] > 0 ? "blue"  : "gray",  href: "/maintenance/work-orders?status=Pending+Approval" },
-                { label: "In Progress",      value: nuQueue[1], icon: Wrench,        tone: nuQueue[1] > 0 ? "blue"  : "gray",  href: "/maintenance/work-orders?status=In+Progress" },
-                { label: "Waiting Parts",    value: nuQueue[2], icon: AlertTriangle, tone: nuQueue[2] > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Waiting+for+Parts" },
-                { label: "Returned for Fix", value: nuQueue[3], icon: AlertTriangle, tone: nuQueue[3] > 0 ? "red"   : "gray",  href: "/maintenance/work-orders?status=Rejected" },
+                { label: "Awaiting Review",   value: nuQueue[0], icon: Clock,         tone: nuQueue[0] > 0 ? "blue"  : "gray",  href: "/maintenance/work-orders?status=Pending+Approval" },
+                { label: "In Progress",       value: nuQueue[1], icon: Wrench,        tone: nuQueue[1] > 0 ? "blue"  : "gray",  href: "/maintenance/work-orders?status=In+Progress" },
+                { label: "Waiting Materials", value: nuQueue[2], icon: AlertTriangle, tone: nuQueue[2] > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Waiting+for+Parts" },
+                { label: "Returned for Fix",  value: nuQueue[3], icon: AlertTriangle, tone: nuQueue[3] > 0 ? "red"   : "gray",  href: "/maintenance/work-orders?status=Rejected" },
               ]} />
             </section>
 
             {/* Latest Updates */}
-            <ActivityList title="Latest Job Cards" viewAllHref="/maintenance/work-orders" empty={nuRecent.length === 0}>
-              {nuRecent.map((row) => <WoRow key={row.id} row={row} />)}
+            <ActivityList
+              title="Latest Job Cards"
+              viewAllHref="/maintenance/work-orders"
+              empty={nuRecent.length === 0}
+              emptyState={
+                <div className="flex flex-col items-center gap-3 px-4 py-10 text-center">
+                  <p className="text-sm font-semibold text-[#111827]">No Job Cards yet.</p>
+                  <p className="text-xs text-[#6B7280]">Create your first Job Card to start tracking maintenance work.</p>
+                  <Link
+                    href="/maintenance/work-orders/new"
+                    className="mt-1 rounded-md bg-[#ED1C24] px-4 py-2 text-xs font-bold text-white transition hover:bg-red-700"
+                  >
+                    Create Job Card
+                  </Link>
+                </div>
+              }
+            >
+              {nuRecent.map((row) => <NuJobCardRow key={row.id} row={row} />)}
             </ActivityList>
           </>
         )}
@@ -580,7 +674,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               <QuickAction label="Review Job Cards"   href="/maintenance/work-orders?status=Pending+Approval" icon={ClipboardList} iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
               <QuickAction label="Materials Requests" href="/store/parts-requests"                            icon={ShoppingCart}  iconBg="bg-violet-50" iconColor="text-violet-600" />
               <QuickAction label="Assign Work"        href="/maintenance/work-orders?status=Pending+Approval" icon={Users}         iconBg="bg-blue-50"   iconColor="text-blue-600" />
-              <QuickAction label="Offline Inventory"  href="/store/offline-inventory"                         icon={Package}       iconBg="bg-amber-50"  iconColor="text-amber-600" />
+              <QuickAction label="Maintenance Store"  href="/store/offline-inventory"                         icon={Package}       iconBg="bg-amber-50"  iconColor="text-amber-600" />
               <QuickAction label="Service Contracts"  href="/assets/service-contracts"                        icon={FileText}      iconBg="bg-green-50"  iconColor="text-green-600" />
               <QuickAction label="Reports"            href="/reports"                                          icon={BarChart3}     iconBg="bg-gray-100"  iconColor="text-[#4B5563]" />
             </div>
@@ -642,7 +736,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           <>
             <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
               <QuickAction label="Materials Requests"   href="/store/parts-requests"     icon={ShoppingCart}  iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
-              <QuickAction label="Offline Inventory"  href="/store/offline-inventory"  icon={Package}       iconBg="bg-blue-50"   iconColor="text-blue-600" />
+              <QuickAction label="Maintenance Store"  href="/store/offline-inventory"  icon={Package}       iconBg="bg-blue-50"   iconColor="text-blue-600" />
               <QuickAction label="Notifications"       href="/notifications"            icon={Bell}          iconBg="bg-green-50"  iconColor="text-green-600" />
               <QuickAction label="Job Cards"           href="/maintenance/work-orders"  icon={ClipboardList} iconBg="bg-violet-50" iconColor="text-violet-600" />
             </div>
@@ -669,7 +763,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
               <QuickAction label="Create Job Card"     href="/maintenance/work-orders/new" icon={PlusCircle}  iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
               <QuickAction label="Assets & Equipment"  href="/assets"                      icon={Gauge}       iconBg="bg-blue-50"   iconColor="text-blue-600" />
-              <QuickAction label="Offline Inventory"   href="/store/offline-inventory"     icon={Package}     iconBg="bg-green-50"  iconColor="text-green-600" />
+              <QuickAction label="Maintenance Store"   href="/store/offline-inventory"     icon={Package}     iconBg="bg-green-50"  iconColor="text-green-600" />
               <QuickAction label="Users"               href="/admin/users"                 icon={Users}       iconBg="bg-violet-50" iconColor="text-violet-600" />
             </div>
 
@@ -702,7 +796,30 @@ export default async function DashboardPage({ searchParams }: PageProps) {
 
       </div>
 
-      {drawerData && <RepairOrderQuickView data={drawerData} />}
+      {previewId && (
+        drawerData ? (
+          <RepairOrderQuickView data={drawerData} />
+        ) : (
+          <>
+            {/* Backdrop */}
+            <div className="fixed inset-0 z-40 bg-black/50" aria-hidden="true" />
+            {/* Not-found / no-access card */}
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-2xl">
+                <p className="font-bold text-[#111827]">Job Card not found or no longer available.</p>
+                <div className="mt-4">
+                  <Link
+                    href="/dashboard"
+                    className="inline-block rounded-md border border-[#E5E7EB] px-4 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
+                  >
+                    Close
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </>
+        )
+      )}
     </>
   );
 }

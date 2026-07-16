@@ -402,7 +402,7 @@ export async function markExternalWorkCompleted(context: CurrentUserContext, wor
       where: { work_order_id: workOrderId, assignment_type: { in: ["FREELANCER", "EXTERNAL_COMPANY"] } }
     });
     if (!assignment) {
-      throw new AppError("This repair order does not have an external assignment.", { code: "VALIDATION_ERROR" });
+      throw new AppError("This Job Card does not have an external assignment.", { code: "VALIDATION_ERROR" });
     }
 
     if (notes?.trim()) {

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Inter } from "next/font/google";
 import { Suspense } from "react";
 import {
   LogOut,
@@ -19,6 +20,8 @@ import { initials } from "@/lib/utils";
 import type { PermissionKey } from "@/types/database";
 
 const SETTINGS_ID = "00000000-0000-0000-0000-000000000001";
+
+const sidebarFont = Inter({ subsets: ["latin"], weight: ["400", "500", "600", "700"] });
 
 type NavItem = {
   href: string;
@@ -67,10 +70,10 @@ const navigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
-      { href: "/maintenance/work-orders",  label: "Job Cards",               iconKey: "ClipboardList", permission: "work_orders.view" },
-      { href: "/store/parts-requests",     label: "Materials Requests",       iconKey: "ShoppingCart",  permission: "parts_requests.view" },
-      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",  permission: "parts.view" },
-      { href: "/assets/service-contracts", label: "Service Contracts",        iconKey: "FileText",      permission: "assets.view" }
+      { href: "/maintenance/work-orders",  label: "Job Cards",                 iconKey: "ClipboardList", permission: "work_orders.view" },
+      { href: "/store/parts-requests",     label: "Materials Requests",        iconKey: "ShoppingCart",  permission: "parts_requests.view" },
+      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
+      { href: "/assets/service-contracts", label: "Service Contracts",         iconKey: "FileText",      permission: "assets.view" }
     ]
   },
   {
@@ -101,10 +104,10 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
-      { href: "/maintenance/work-orders",  label: "Job Cards",               iconKey: "ClipboardList", permission: "work_orders.view" },
-      { href: "/store/parts-requests",     label: "Materials Requests",       iconKey: "ShoppingCart",  permission: "parts_requests.view" },
-      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",  permission: "parts.view" },
-      { href: "/assets/service-contracts", label: "Service Contracts",        iconKey: "FileText",      permission: "assets.view" }
+      { href: "/maintenance/work-orders",  label: "Job Cards",                 iconKey: "ClipboardList", permission: "work_orders.view" },
+      { href: "/store/parts-requests",     label: "Materials Requests",        iconKey: "ShoppingCart",  permission: "parts_requests.view" },
+      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
+      { href: "/assets/service-contracts", label: "Service Contracts",         iconKey: "FileText",      permission: "assets.view" }
     ]
   },
   {
@@ -130,7 +133,7 @@ const storeKeeperNavigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
-      { href: "/store/parts-requests",    label: "Materials Requests",       iconKey: "ShoppingCart", permission: "store.issue" },
+      { href: "/store/parts-requests",    label: "Materials Requests",        iconKey: "ShoppingCart", permission: "store.issue" },
       { href: "/store/offline-inventory", label: "Offline Inventory Control", iconKey: "ArrowDownUp",  permission: "parts.view" }
     ]
   },
@@ -179,10 +182,10 @@ const normalUserNavigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
-      { href: "/maintenance/work-orders",  label: "Job Cards",               iconKey: "ClipboardList", permission: "work_orders.view" },
-      { href: "/store/parts-requests",     label: "Materials Requests",       iconKey: "ShoppingCart",  permission: "parts_requests.view" },
-      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",  permission: "parts.view" },
-      { href: "/assets/service-contracts", label: "Service Contracts",        iconKey: "FileText",      permission: "assets.view" }
+      { href: "/maintenance/work-orders",  label: "Job Cards",                 iconKey: "ClipboardList", permission: "work_orders.view" },
+      { href: "/store/parts-requests",     label: "Materials Requests",        iconKey: "ShoppingCart",  permission: "parts_requests.view" },
+      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
+      { href: "/assets/service-contracts", label: "Service Contracts",         iconKey: "FileText",      permission: "assets.view" }
     ]
   },
   {
@@ -256,11 +259,13 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen overflow-x-clip bg-[#F3F5F8] pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0">
-      <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 flex-col border-r border-black/20 bg-[#111827] text-white lg:flex">
+      <aside
+        className={`${sidebarFont.className} fixed inset-y-0 left-0 z-20 hidden w-64 flex-col border-r border-white/10 bg-[#081225] text-[#E8EDF5] lg:flex`}
+      >
         <div className="flex flex-none items-center gap-3 border-b border-white/10 px-4 py-4">
           <BrandLogo variant="dark" size="sm" subtitle="Maintenance & Asset Management" />
         </div>
-        <nav className="flex-1 overflow-y-auto px-3 py-3" aria-label="Main navigation">
+        <nav className="flex-1 overflow-y-auto px-3 py-4" aria-label="Main navigation">
           <CollapsibleNav groups={visibleGroups} />
         </nav>
       </aside>

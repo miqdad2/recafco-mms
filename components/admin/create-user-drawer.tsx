@@ -16,12 +16,12 @@ const ACCOUNT_TYPES = [
 ] as const;
 
 const ACCOUNT_TYPE_HELP: Record<string, string> = {
-  maintenance_data_entry: "Creates and manages repair orders. Can submit requests and track progress.",
-  maintenance_manager:    "Reviews and approves repair orders, assigns technicians, and closes completed work.",
+  maintenance_data_entry: "Creates and manages Job Cards. Can submit requests and track progress.",
+  maintenance_manager:    "Reviews and approves Job Cards, assigns technicians, and closes completed work.",
   technician:             "Receives job assignments, logs work updates, and marks work as completed.",
   store_keeper:           "Manages spare parts inventory, handles parts requests, and processes store issues.",
   system_admin:           "Full system access including user management, settings, and all records.",
-  viewer_auditor:         "Read-only access to repair orders, assets, and reports. Cannot create or modify records.",
+  viewer_auditor:         "Read-only access to Job Cards, assets, and reports. Cannot create or modify records.",
 };
 
 export function CreateUserDrawer({ initialOpen = false }: { initialOpen?: boolean }) {

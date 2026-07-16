@@ -63,7 +63,7 @@ export default async function CriticalAssetReportPage({
         {/* Top breakdown assets */}
         {report.topBreakdownAssets.length > 0 && (
           <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-            <h2 className="text-sm font-bold text-[#111827]">Assets with Most Breakdown Repair Orders</h2>
+            <h2 className="text-sm font-bold text-[#111827]">Assets with Most Breakdown Job Cards</h2>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
               {report.topBreakdownAssets.map((asset) => (
                 <Link

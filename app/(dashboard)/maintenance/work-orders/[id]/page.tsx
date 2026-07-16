@@ -247,7 +247,7 @@ export default async function WorkOrderDetailPage({
 
   // Truncate complaint for the summary heading (full text lives in Problem Details)
   const summaryTitle = (() => {
-    const raw = wo.operator_complaint || wo.description_of_work || "Repair order";
+    const raw = wo.operator_complaint || wo.description_of_work || "Job Card";
     return raw.length > 120 ? raw.slice(0, 120) + "…" : raw;
   })();
 
@@ -300,7 +300,7 @@ export default async function WorkOrderDetailPage({
             </p>
             <p className="mt-1 text-sm leading-5 text-[#4B5563]">
               The job card was saved successfully. You can upload the missing files again from
-              Documents &amp; Photos below.
+              Attachments below.
             </p>
           </div>
         ) : null}
@@ -433,7 +433,7 @@ export default async function WorkOrderDetailPage({
                 : "border-[#E5E7EB] bg-gray-50 text-[#4B5563]"
             }`}
           >
-            This repair order is {displayStatus(wo.status).toLowerCase()}.
+            This Job Card is {displayStatus(wo.status).toLowerCase()}.
           </div>
         )}
 
@@ -807,9 +807,9 @@ export default async function WorkOrderDetailPage({
               </div>
             </section>
 
-            {/* 5 — Documents & Photos */}
+            {/* 5 — Attachments */}
             <section id="attachments" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
-              <SectionHeader eyebrow="Files" title="Documents &amp; Photos" icon={Paperclip} />
+              <SectionHeader eyebrow="Files" title="Attachments" icon={Paperclip} />
 
               {/* File list */}
               <div className="mt-5">
@@ -971,7 +971,7 @@ export default async function WorkOrderDetailPage({
               </dl>
             </section>
 
-            <QrLinkCard title="Repair order QR" href={`/maintenance/work-orders/${wo.id}`} />
+            <QrLinkCard title="Job Card QR" href={`/maintenance/work-orders/${wo.id}`} />
           </aside>
         </div>
 

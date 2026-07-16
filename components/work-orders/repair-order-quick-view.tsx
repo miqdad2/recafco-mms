@@ -193,8 +193,8 @@ function getStatusInfo(
       return {
         main: "Returned for Fix",
         sub: canManage
-          ? "Please update the repair order and resubmit."
-          : "Repair order was returned for corrections.",
+          ? "Please update the Job Card and resubmit."
+          : "Job Card was returned for corrections.",
         tone: "red",
       };
     case "Cancelled":
@@ -263,7 +263,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
 
   const title = (() => {
     const raw =
-      data.operator_complaint || data.description_of_work || "Repair order";
+      data.operator_complaint || data.description_of_work || "Job Card";
     return raw.length > 120 ? raw.slice(0, 120) + "…" : raw;
   })();
 
@@ -346,7 +346,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                 id="qv-heading"
                 className="text-xs font-black uppercase tracking-wide text-[#ED1C24]"
               >
-                {data.work_order_number ?? "Repair Order"}
+                {data.work_order_number ?? "Job Card"}
               </p>
               <p className="mt-1 line-clamp-2 text-sm font-bold leading-5 text-[#111827]">
                 {title}
@@ -376,7 +376,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
           <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#E5E7EB]">
 
             {/* Status stepper — simplified 5-stage view for quick scanning */}
-            <section aria-label="Repair order progress" className="px-5 py-3">
+            <section aria-label="Job Card progress" className="px-5 py-3">
               <div className="flex flex-wrap items-center gap-y-2">
                 {SIMPLE_STAGES.map((stage, idx) => {
                   const isDone = stageIndex > idx;
@@ -651,7 +651,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       href={`/maintenance/work-orders/${data.id}`}
                       className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#16A34A] px-3 py-2.5 text-sm font-bold text-white hover:bg-[#15803d]"
                     >
-                      Close Repair Order <ArrowRight className="h-4 w-4" />
+                      Close Job Card <ArrowRight className="h-4 w-4" />
                     </Link>
                   )}
                   {showStartWork && (
@@ -683,7 +683,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       href={`/maintenance/work-orders/${data.id}`}
                       className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2.5 text-sm font-bold text-white hover:bg-[#c8181e]"
                     >
-                      Submit Repair Order <ArrowRight className="h-4 w-4" />
+                      Submit Job Card <ArrowRight className="h-4 w-4" />
                     </Link>
                   )}
                   {showReturnToDraft && (

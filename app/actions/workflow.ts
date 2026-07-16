@@ -153,7 +153,7 @@ export async function assignTechniciansModalAction(
   const context = await requirePermission("work_orders.assign");
   const workOrderId = formData.get("work_order_id") as string | null;
   if (!workOrderId || !/^[0-9a-f-]{36}$/i.test(workOrderId)) {
-    return { ok: false, error: "Invalid repair order ID." };
+    return { ok: false, error: "Invalid Job Card ID." };
   }
   const assignmentType = (formData.get("assignment_type") as string) || "INTERNAL_TECHNICIAN";
   try {

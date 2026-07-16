@@ -96,7 +96,7 @@ export function PartsRequestForm(props: PartsRequestFormProps) {
                   <th className={cellClass}>Sr. No.</th>
                   <th className={cellClass}>Description</th>
                   <th className={cellClass}>P/NA</th>
-                  <th className={cellClass}>SS-Rec.Code</th>
+                  <th className={cellClass}>SS Rec. Code</th>
                   <th className={cellClass}>Qty.</th>
                   <th className={cellClass}>Remarks</th>
                   <th className={cellClass}>Unit price</th>
@@ -111,7 +111,7 @@ export function PartsRequestForm(props: PartsRequestFormProps) {
                     </td>
                     <td className={cellClass}><input className={inputClass} name={`part_number_${index}`} /></td>
                     <td className={cellClass}><input className={inputClass} name={`ss_rec_code_${index}`} /></td>
-                    <td className={cellClass}><input className={inputClass} name={`quantity_requested_${index}`} type="number" step="0.01" min="0" /></td>
+                    <td className={cellClass}><input className={inputClass} name={`quantity_requested_${index}`} type="number" step="1" min="1" /></td>
                     <td className={cellClass}><input className={inputClass} name={`remarks_${index}`} /></td>
                     <td className={cellClass}><input className={inputClass} name={`unit_price_${index}`} type="number" step="0.01" min="0" /></td>
                   </tr>
@@ -178,7 +178,7 @@ function EmbeddedPartsRequestForm({ workOrderId, parts }: { workOrderId: string;
               <th className="border border-[#E5E7EB] px-3 py-2">Description</th>
               <th className="border border-[#E5E7EB] px-3 py-2">Stock part</th>
               <th className="border border-[#E5E7EB] px-3 py-2">P/NA</th>
-              <th className="border border-[#E5E7EB] px-3 py-2">SS rec code</th>
+              <th className="border border-[#E5E7EB] px-3 py-2">SS Rec. Code</th>
               <th className="border border-[#E5E7EB] px-3 py-2">Qty</th>
               <th className="border border-[#E5E7EB] px-3 py-2">Unit price</th>
               <th className="border border-[#E5E7EB] px-3 py-2">Remarks</th>
@@ -202,7 +202,7 @@ function EmbeddedPartsRequestForm({ workOrderId, parts }: { workOrderId: string;
                 </td>
                 <td className="border border-[#E5E7EB] p-2"><input className="focus-ring w-full rounded-md border border-[#E5E7EB] px-2 py-2" name={`part_number_${index}`} /></td>
                 <td className="border border-[#E5E7EB] p-2"><input className="focus-ring w-full rounded-md border border-[#E5E7EB] px-2 py-2" name={`ss_rec_code_${index}`} /></td>
-                <td className="border border-[#E5E7EB] p-2"><input className="focus-ring w-full rounded-md border border-[#E5E7EB] px-2 py-2" name={`quantity_requested_${index}`} type="number" min="0" step="0.01" /></td>
+                <td className="border border-[#E5E7EB] p-2"><input className="focus-ring w-full rounded-md border border-[#E5E7EB] px-2 py-2" name={`quantity_requested_${index}`} type="number" min="1" step="1" /></td>
                 <td className="border border-[#E5E7EB] p-2"><input className="focus-ring w-full rounded-md border border-[#E5E7EB] px-2 py-2" name={`unit_price_${index}`} type="number" min="0" step="0.01" /></td>
                 <td className="border border-[#E5E7EB] p-2"><input className="focus-ring w-full rounded-md border border-[#E5E7EB] px-2 py-2" name={`remarks_${index}`} /></td>
               </tr>

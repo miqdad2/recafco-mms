@@ -5,8 +5,8 @@ import { Camera, Paperclip, Plus, Upload, X } from "lucide-react";
 
 const inp =
   "focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm";
-const fileInputCls =
-  "focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm file:mr-2 file:rounded file:border-0 file:bg-[#111827] file:px-2 file:py-1 file:text-xs file:font-bold file:text-white";
+const actionBtnCls =
+  "focus-ring inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-xs font-bold text-[#111827] transition hover:border-[#111827] hover:bg-[#F9FAFB]";
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -17,7 +17,7 @@ function formatBytes(bytes: number) {
 type SelectedFile = { name: string; size: number };
 
 /**
- * Optional multi-row Documents & Photos picker used inside creation wizards.
+ * Optional multi-row Attachments picker used inside creation wizards.
  * Files are NOT uploaded here — they ride along as real File objects inside the
  * parent <form>'s multipart submission, and the server action uploads them only
  * after the parent record (Job Card / Materials Request) has been created.
@@ -70,20 +70,65 @@ export function AttachmentUploadFields({
           className={`rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3 ${i >= rowCount ? "hidden" : ""}`}
         >
           <div className="grid gap-2 sm:grid-cols-[180px_1fr]">
-            <select
-              name={`${namePrefix}_category_${i}`}
-              defaultValue={defaultCategory}
-              className={inp}
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold text-[#4B5563]">Category</span>
+              <select
+                name={`${namePrefix}_category_${i}`}
+                defaultValue={defaultCategory}
+                className={inp}
+              >
+                {categories.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold text-[#4B5563]">Remarks (optional)</span>
+              <input
+                name={`${namePrefix}_remarks_${i}`}
+                placeholder="Remarks (optional)"
+                className={inp}
+              />
+            </label>
+          </div>
+
+          {/* Hidden file inputs — triggered by the Upload File / Take Photo buttons below.
+              Both share one `name` so the server picks whichever one was actually filled. */}
+          <input
+            ref={(el) => { fileRefs.current[`${i}-file`] = el; }}
+            type="file"
+            name={`${namePrefix}_file_${i}`}
+            accept={accept}
+            onChange={(e) => onPick(i, "file", e.target.files?.[0] ?? null)}
+            className="hidden"
+          />
+          <input
+            ref={(el) => { fileRefs.current[`${i}-camera`] = el; }}
+            type="file"
+            name={`${namePrefix}_file_${i}`}
+            accept="image/*"
+            capture="environment"
+            onChange={(e) => onPick(i, "camera", e.target.files?.[0] ?? null)}
+            className="hidden"
+          />
+
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={() => fileRefs.current[`${i}-file`]?.click()}
+              className={actionBtnCls}
             >
-              {categories.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-            <input
-              name={`${namePrefix}_remarks_${i}`}
-              placeholder="Remarks (optional)"
-              className={inp}
-            />
+              <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+              Upload File
+            </button>
+            <button
+              type="button"
+              onClick={() => fileRefs.current[`${i}-camera`]?.click()}
+              className={actionBtnCls}
+            >
+              <Camera className="h-3.5 w-3.5" aria-hidden="true" />
+              Take Photo
+            </button>
           </div>
 
           {selected[i] ? (
@@ -103,36 +148,6 @@ export function AttachmentUploadFields({
               </button>
             </div>
           ) : null}
-
-          <div className={`mt-2 grid gap-2 sm:grid-cols-2 ${selected[i] ? "hidden" : ""}`}>
-            <label className="block">
-              <span className="mb-1 flex items-center gap-1 text-[11px] font-semibold text-[#4B5563]">
-                <Upload className="h-3 w-3" aria-hidden="true" /> Upload File
-              </span>
-              <input
-                ref={(el) => { fileRefs.current[`${i}-file`] = el; }}
-                type="file"
-                name={`${namePrefix}_file_${i}`}
-                accept={accept}
-                onChange={(e) => onPick(i, "file", e.target.files?.[0] ?? null)}
-                className={fileInputCls}
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 flex items-center gap-1 text-[11px] font-semibold text-[#4B5563]">
-                <Camera className="h-3 w-3" aria-hidden="true" /> Take Photo
-              </span>
-              <input
-                ref={(el) => { fileRefs.current[`${i}-camera`] = el; }}
-                type="file"
-                name={`${namePrefix}_file_${i}`}
-                accept="image/*"
-                capture="environment"
-                onChange={(e) => onPick(i, "camera", e.target.files?.[0] ?? null)}
-                className={fileInputCls}
-              />
-            </label>
-          </div>
         </div>
       ))}
 

@@ -118,8 +118,8 @@ export default async function AssetRepairHistoryPage({
         <ReportSummaryGrid
           cards={[
             { label: "Assets Tracked", value: stats.totalAssets, tone: "blue" },
-            { label: "Total Repair Orders", value: stats.totalRepairs, tone: "blue" },
-            { label: "Assets with Open ROs", value: stats.withOpenRepairs, tone: stats.withOpenRepairs > 0 ? "amber" : "green" }
+            { label: "Total Job Cards", value: stats.totalRepairs, tone: "blue" },
+            { label: "Assets with Open Job Cards", value: stats.withOpenRepairs, tone: stats.withOpenRepairs > 0 ? "amber" : "green" }
           ]}
         />
 
@@ -150,7 +150,7 @@ export default async function AssetRepairHistoryPage({
                     <td colSpan={9} className="px-4 py-8">
                       <EmptyState
                         title="No repair history found"
-                        message="No repair orders have been created yet. Asset repair history will appear here after repair orders are submitted."
+                        message="No Job Cards have been created yet. Asset repair history will appear here after Job Cards are submitted."
                       />
                     </td>
                   </tr>
@@ -197,7 +197,7 @@ export default async function AssetRepairHistoryPage({
                           href={`/maintenance/work-orders?assetId=${asset.id}`}
                           className="inline-flex items-center rounded border border-[#E5E7EB] px-2.5 py-1 text-xs font-bold transition hover:bg-gray-50"
                         >
-                          Repair Orders
+                          Job Cards
                         </Link>
                       </div>
                     </td>

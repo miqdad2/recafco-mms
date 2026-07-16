@@ -193,7 +193,7 @@ export const storageFlow: FlowStep[] = [
 ];
 
 export const workflowArchitecture: FlowStep[] = [
-  { title: "Work Order Created", description: "Data Entry captures paper-form details.", tone: "blue" },
+  { title: "Job Card Created", description: "Data Entry captures paper-form details.", tone: "blue" },
   { title: "Approval", description: "Maintenance Manager approves or rejects.", tone: "amber" },
   { title: "Assignment", description: "Supervisor assigns technicians.", tone: "blue" },
   { title: "Technician Execution", description: "Mobile job start, notes, labor, photos, and completion.", tone: "green" },

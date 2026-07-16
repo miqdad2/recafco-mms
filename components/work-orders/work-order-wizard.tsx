@@ -30,7 +30,7 @@ const WORKER_TYPES = [
   "Welding/Fabrication",
   "Other",
 ];
-const STEP_LABELS = ["Select Asset", "Request Details", "Assignment", "Required Parts", "Documents & Photos", "Review & Save"];
+const STEP_LABELS = ["Select Asset", "Request Details", "Assignment", "Required Parts", "Attachments", "Review & Save"];
 const MAX_PART_ROWS = 8;
 
 type AssetOption = {
@@ -141,6 +141,17 @@ export function WorkOrderWizard({
       const fd = new FormData(form);
       if (!fd.get("worker_type")?.toString().trim())
         errs.worker_type = "Please select a worker team.";
+    }
+
+    if (step === 4 && form) {
+      const fd = new FormData(form);
+      for (let i = 0; i < MAX_PART_ROWS; i++) {
+        if (!fd.get(`req_part_description_${i}`)?.toString().trim()) continue;
+        const qty = Number(fd.get(`req_part_quantity_${i}`));
+        if (!Number.isInteger(qty) || qty <= 0) {
+          errs.required_parts = "Quantity must be a whole number greater than 0.";
+        }
+      }
     }
 
     setErrors(errs);
@@ -463,7 +474,9 @@ export function WorkOrderWizard({
                         <input
                           name={`req_part_quantity_${i}`}
                           type="number"
-                          step="0.01"
+                          min="1"
+                          step="1"
+                          inputMode="numeric"
                           defaultValue="1"
                           className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
                         />
@@ -486,6 +499,11 @@ export function WorkOrderWizard({
                 </tbody>
               </table>
             </div>
+
+            {errors.required_parts && (
+              <p className="mt-2 text-xs text-[#DC2626]">{errors.required_parts}</p>
+            )}
+
             {numPartRows < MAX_PART_ROWS && (
               <button
                 type="button"
@@ -499,10 +517,10 @@ export function WorkOrderWizard({
           </WizardCard>
         </div>
 
-        {/* ── Step 5: Documents & Photos ─────────────────────────────────── */}
+        {/* ── Step 5: Attachments ─────────────────────────────────── */}
         <div className={step !== 5 ? "hidden" : ""}>
           <WizardCard
-            title="Documents & Photos"
+            title="Attachments"
             description="Optional — upload problem photos, PDFs, Excel files, Word documents, or supporting files. On mobile, you can take a live photo."
           >
             <AttachmentUploadFields

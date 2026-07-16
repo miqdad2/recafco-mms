@@ -25,8 +25,26 @@ const SUPERVISOR_STAGES = [
  * counts, KPI cards, and detail/print pages all enforce the same scope.
  *
  * Returns `{}` for full-access roles — do NOT short-circuit before calling.
+ *
+ * Non-negotiable guarantee (JobCard-Creation-Visibility-HardFix-01 Task 3):
+ * a user can always see a Job Card they personally created, regardless of
+ * role, department, team, assigned technician, or status — this wraps the
+ * role-specific scope below in `OR created_by = me` for every role that
+ * doesn't already have full access.
  */
 export function getWorkOrderVisibilityFilter(
+  context: CurrentUserContext
+): Prisma.work_ordersWhereInput {
+  const roleScope = getRoleScopeFilter(context);
+
+  // {} already means "sees everything" — OR-ing would be a no-op, and for
+  // every other role OR-ing in their own creations only ever widens scope,
+  // never narrows it, so this is always safe to apply.
+  if (Object.keys(roleScope).length === 0) return roleScope;
+  return { OR: [roleScope, { created_by: context.userId }] };
+}
+
+function getRoleScopeFilter(
   context: CurrentUserContext
 ): Prisma.work_ordersWhereInput {
   const slug = context.role?.slug ?? "";
@@ -179,19 +197,19 @@ export function getRoleDescription(context: CurrentUserContext): string {
   switch (context.role?.slug) {
     case "super_admin":
     case "it_admin":
-      return "All company maintenance work orders — full system view";
+      return "All company Job Cards — full system view";
     case "ceo_management":
-      return "High-priority work orders and items pending executive approval";
+      return "High-priority Job Cards and items pending executive approval";
     case "finance_manager":
-      return "Work orders in the finance and purchase approval pipeline";
+      return "Job Cards in the finance and purchase approval pipeline";
     case "purchase_officer":
-      return "Work orders with active purchase requests";
+      return "Job Cards with active purchase requests";
     case "store_keeper":
-      return "Work orders waiting for parts issue or store action";
+      return "Job Cards waiting for parts issue or store action";
     case "technician":
       return "My assigned jobs";
     case "maintenance_manager":
-      return "All maintenance repair orders — full management view";
+      return "All maintenance Job Cards — full management view";
     case "maintenance_supervisor":
       return "Supervisor assignment and job verification queue";
     case "maintenance_data_entry":
@@ -199,8 +217,8 @@ export function getRoleDescription(context: CurrentUserContext): string {
     case "department_requester":
       return "My submitted maintenance requests";
     case "viewer_auditor":
-      return "Read-only view of all maintenance work orders";
+      return "Read-only view of all maintenance Job Cards";
     default:
-      return "Work orders visible to your role";
+      return "Job Cards visible to your role";
   }
 }

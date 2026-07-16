@@ -778,7 +778,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                         <td className="px-4 py-2.5">
                           {hasOpenRepair ? (
                             <span className="inline-block rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">
-                              Open repair order
+                              Open Job Card
                             </span>
                           ) : lastRepair ? (
                             <span className="text-xs text-[#4B5563]">

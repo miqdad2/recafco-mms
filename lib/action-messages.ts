@@ -28,22 +28,33 @@ const SUCCESS_MAP: Record<string, ToastMessage> = {
   // Generic saves
   saved:                  { tone: "success", title: "Saved" },
   "1":                    { tone: "success", title: "Saved" }, // legacy ?saved=1
-  // Work orders / assets / parts / inventory
-  "work-order-saved":       { tone: "success", title: "Work order saved" },
+  // Job Cards / assets / parts / inventory
+  "work-order-saved":       { tone: "success", title: "Job Card saved" },
   "asset-saved":            { tone: "success", title: "Asset saved" },
   "part-saved":             { tone: "success", title: "Part saved" },
-  "material-received":      { tone: "success", title: "Material received", description: "Movement recorded in the offline inventory ledger." },
-  "material-issued":        { tone: "success", title: "Material issued",   description: "Movement recorded in the offline inventory ledger." },
+  "opening-stock-saved":    { tone: "success", title: "Opening stock recorded", description: "Movement recorded in the Maintenance Store ledger." },
+  "material-received":      { tone: "success", title: "Material received", description: "Movement recorded in the Maintenance Store ledger." },
+  "material-issued":        { tone: "success", title: "Material issued",   description: "Movement recorded in the Maintenance Store ledger." },
   "settings-saved":       { tone: "success", title: "Settings saved" },
   "department-saved":     { tone: "success", title: "Department saved" },
   approved:               { tone: "success", title: "Approved" },
   rejected:               { tone: "warning", title: "Returned for fix" },
   assigned:               { tone: "success", title: "Technician assigned" },
-  closed:                 { tone: "success", title: "Repair order closed" },
+  closed:                 { tone: "success", title: "Job Card closed" },
   submitted:              { tone: "success", title: "Submitted for review" },
   completed:              { tone: "success", title: "Marked as completed" },
-  cancelled:              { tone: "warning", title: "Repair order cancelled" },
+  cancelled:              { tone: "warning", title: "Job Card cancelled" },
 };
+
+// Success codes with their own bigger, dedicated UI (e.g. a full modal) instead
+// of the generic small toast — resolveToastMessage returns null for these so
+// ActionToast stays silent and doesn't double up with that page's own UI.
+const SUPPRESSED_SUCCESS_CODES = new Set<string>([
+  "job-card-created",
+  "materials-request-created",
+  "material-request-received",
+  "material-request-issued",
+]);
 
 const ERROR_MAP: Record<string, ToastMessage> = {
   // User management
@@ -74,7 +85,7 @@ const ERROR_MAP: Record<string, ToastMessage> = {
   "rate-limited":               { tone: "error",   title: "Too many attempts",              description: "Please wait before trying again." },
   "inactive-profile":           { tone: "error",   title: "Account inactive",               description: "Contact your administrator." },
   "no-account":                 { tone: "error",   title: "No login account found" },
-  // Repair order form validation
+  // Job Card form validation
   "missing-complaint":          { tone: "error",   title: "Operator complaint required",    description: "Please describe the fault or issue reported before submitting." },
   "missing-description":        { tone: "error",   title: "Description of work required",   description: "Please add a description of the work to be carried out before submitting." },
   "missing-ordered-by":         { tone: "error",   title: "\"Order taken by\" is required" },
@@ -86,7 +97,7 @@ const ERROR_MAP: Record<string, ToastMessage> = {
   "invalid-status":             { tone: "error",   title: "Status change not allowed",      description: "This transition is not permitted by the workflow rules." },
   "clarification-question-too-short": { tone: "error", title: "Clarification question too short", description: "Please provide at least 10 characters." },
   "clarification-response-too-short": { tone: "error", title: "Response too short",         description: "Please provide at least 10 characters." },
-  "cancel-reason-required":           { tone: "error", title: "Cancellation reason required", description: "Please state why this repair order is being cancelled." },
+  "cancel-reason-required":           { tone: "error", title: "Cancellation reason required", description: "Please state why this Job Card is being cancelled." },
 };
 
 export function resolveToastMessage(params: {
@@ -95,6 +106,7 @@ export function resolveToastMessage(params: {
   saved?: string | null;
 }): ToastMessage | null {
   if (params.success) {
+    if (SUPPRESSED_SUCCESS_CODES.has(params.success)) return null;
     return SUCCESS_MAP[params.success] ?? { tone: "success", title: "Done" };
   }
   if (params.error) {

@@ -109,6 +109,7 @@ export function PartsRequestWizard({
   const [numItemRows, setNumItemRows] = useState(3);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [reviewData, setReviewData] = useState<Record<string, string>>({});
+  const [reviewFiles, setReviewFiles] = useState<Record<string, File>>({});
 
   // Resolve the selected work order: use preselected prop if provided, else find in list
   const selectedWo: WorkOrderOption | null = isPreselected
@@ -118,8 +119,8 @@ export function PartsRequestWizard({
   const selectedAsset = selectedWo?.assets ?? null;
 
   const stepLabels = isPreselected
-    ? ["Job Card Context", "Requested Materials", "Documents & Photos", "Review & Submit"]
-    : ["Select Job Card", "Requested Materials", "Documents & Photos", "Review & Submit"];
+    ? ["Job Card Context", "Requested Materials", "Attachments", "Review & Submit"]
+    : ["Select Job Card", "Requested Materials", "Attachments", "Review & Submit"];
 
   function validate(): boolean {
     const errs: Record<string, string> = {};
@@ -134,9 +135,13 @@ export function PartsRequestWizard({
         const fd = new FormData(form);
         let hasItem = false;
         for (let i = 0; i < MAX_ITEM_ROWS; i++) {
-          if (fd.get(`description_${i}`)?.toString().trim()) {
+          const hasDescription = fd.get(`description_${i}`)?.toString().trim();
+          if (hasDescription) {
             hasItem = true;
-            break;
+            const qty = Number(fd.get(`quantity_requested_${i}`));
+            if (!Number.isInteger(qty) || qty <= 0) {
+              errs.items = "Quantity must be a whole number greater than 0.";
+            }
           }
         }
         if (!hasItem) errs.items = "Please add at least one part or material.";
@@ -155,10 +160,16 @@ export function PartsRequestWizard({
       if (form) {
         const fd = new FormData(form);
         const obj: Record<string, string> = {};
+        const files: Record<string, File> = {};
         fd.forEach((v, k) => {
-          if (String(v).trim()) obj[k] = String(v);
+          if (v instanceof File) {
+            if (v.size > 0) files[k] = v;
+          } else if (String(v).trim()) {
+            obj[k] = String(v);
+          }
         });
         setReviewData(obj);
+        setReviewFiles(files);
       }
     }
     setStep(next);
@@ -177,6 +188,16 @@ export function PartsRequestWizard({
     unitPrice: reviewData[`unit_price_${i}`] ?? "",
     remarks: reviewData[`remarks_${i}`] ?? "",
   })).filter((it) => it.desc);
+
+  const reviewAttachments = Array.from({ length: MAX_ATTACHMENT_ROWS }, (_, i) => {
+    const file = reviewFiles[`pr_attachment_file_${i}`];
+    if (!file) return null;
+    return {
+      category: reviewData[`pr_attachment_category_${i}`] || PARTS_REQUEST_ATTACHMENT_CATEGORIES[0],
+      fileName: file.name,
+      remarks: reviewData[`pr_attachment_remarks_${i}`] ?? "",
+    };
+  }).filter((a): a is { category: string; fileName: string; remarks: string } => a !== null);
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -393,7 +414,8 @@ export function PartsRequestWizard({
                         <input
                           name={`quantity_requested_${i}`}
                           type="number"
-                          step="0.001"
+                          step="1"
+                          min="1"
                           defaultValue="1"
                           className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
                         />
@@ -421,6 +443,10 @@ export function PartsRequestWizard({
               <p className="mt-2 text-xs text-[#DC2626]">{errors.items}</p>
             )}
 
+            <p className="mt-2 text-xs text-[#9CA3AF]">
+              SS Rec. Code is reserved for SAP material/reference mapping.
+            </p>
+
             {numItemRows < MAX_ITEM_ROWS && (
               <button
                 type="button"
@@ -434,10 +460,10 @@ export function PartsRequestWizard({
           </PRCard>
         </div>
 
-        {/* ── Step 3: Documents & Photos ─────────────────────────────────── */}
+        {/* ── Step 3: Attachments ─────────────────────────────────── */}
         <div className={step !== 3 ? "hidden" : ""}>
           <PRCard
-            title="Documents & Photos"
+            title="Attachments"
             description="Optional — upload request documents, supplier references, material photos, PDFs, Excel files, or supporting files."
           >
             <AttachmentUploadFields
@@ -504,6 +530,7 @@ export function PartsRequestWizard({
                           <th className="px-3 py-1.5">#</th>
                           <th className="px-3 py-1.5">Part / Material</th>
                           <th className="px-3 py-1.5">Part No.</th>
+                          <th className="px-3 py-1.5">SS Rec. Code</th>
                           <th className="px-3 py-1.5">Qty</th>
                           <th className="px-3 py-1.5">Unit</th>
                         </tr>
@@ -514,6 +541,7 @@ export function PartsRequestWizard({
                             <td className="px-3 py-1.5 text-[#9CA3AF]">{i + 1}</td>
                             <td className="px-3 py-1.5 text-[#111827]">{it.desc}</td>
                             <td className="px-3 py-1.5 text-[#4B5563]">{it.partNo || "—"}</td>
+                            <td className="px-3 py-1.5 text-[#4B5563]">{it.ssCode || "—"}</td>
                             <td className="px-3 py-1.5 text-[#4B5563]">{it.qty}</td>
                             <td className="px-3 py-1.5 text-[#4B5563]">
                               {reviewData[`unit_of_measure_${i}`] || "PCS"}
@@ -536,6 +564,22 @@ export function PartsRequestWizard({
                   </p>
                 </div>
               )}
+
+              <PRReviewSection title="Attachments">
+                {reviewAttachments.length > 0 ? (
+                  <ul className="divide-y divide-[#F3F4F6]">
+                    {reviewAttachments.map((a, i) => (
+                      <li key={i} className="flex flex-col gap-0.5 py-2 first:pt-0 last:pb-0">
+                        <span className="text-xs font-bold uppercase tracking-wide text-[#9CA3AF]">{a.category}</span>
+                        <span className="text-sm font-semibold text-[#111827]">{a.fileName}</span>
+                        {a.remarks && <span className="text-xs text-[#4B5563]">{a.remarks}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm italic text-[#9CA3AF]">No attachments added.</p>
+                )}
+              </PRReviewSection>
             </div>
 
             <div className="mt-6 border-t border-[#E5E7EB] pt-5">

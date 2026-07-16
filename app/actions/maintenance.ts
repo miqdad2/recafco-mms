@@ -175,7 +175,7 @@ function parseRequiredPartRows(formData: FormData) {
       return {
         description,
         part_number: rowValue(formData, "req_part_part_number", index) || null,
-        quantity_required: qty > 0 ? qty : 1,
+        quantity_required: qty,
         unit_of_measure: rowValue(formData, "req_part_uom", index) || "PCS",
         notes: rowValue(formData, "req_part_notes", index) || null,
         availability_status: "unchecked"
@@ -376,7 +376,10 @@ export async function upsertWorkOrderAction(formData: FormData) {
   const materialRows = parseMaterialRows(formData);
   const attachmentRows = parseAttachmentRows(formData);
   const requiredPartRows = parseRequiredPartRows(formData);
-  // Documents & Photos step — optional, files ride along in this same multipart submission.
+  if (requiredPartRows.some((row) => row && (!Number.isInteger(row.quantity_required) || row.quantity_required <= 0))) {
+    redirect(`${formBackHref}?error=${encodeURIComponent("Quantity must be a whole number greater than 0.")}`);
+  }
+  // Attachments step — optional, files ride along in this same multipart submission.
   const pendingAttachments = parsePendingAttachments(formData, "doc_attachment", MAX_ATTACHMENT_ROWS);
   const totalLabor = laborRows.reduce((sum, row) => sum + (row?.hours ?? 0) * (row?.rate ?? 0), 0);
   const totalMaterials = materialRows.reduce((sum, row) => sum + (row?.quantity ?? 0) * (row?.unit_price ?? 0), 0);
@@ -498,7 +501,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
   if (attachmentRows.length) await prisma.work_order_attachments.createMany({ data: attachmentRows.map((row) => ({ ...row!, work_order_id, uploaded_by: context.userId })) });
   if (requiredPartRows.length) await prisma.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id, created_by: context.userId })) });
 
-  // Documents & Photos from the wizard — uploaded only now that the work order exists.
+  // Attachments from the wizard — uploaded only now that the work order exists.
   // A partial or total upload failure never rolls back the work order itself.
   let attachmentUploadFailed = false;
   if (pendingAttachments.length) {
@@ -581,9 +584,38 @@ export async function upsertWorkOrderAction(formData: FormData) {
   revalidatePath("/maintenance/work-orders");
   revalidatePath("/dashboard");
   revalidatePath("/technician/jobs");
-  redirect(
-    `/maintenance/work-orders/${data.id}?success=work-order-saved${attachmentUploadFailed ? "&warning=attachments-failed" : ""}`
-  );
+
+  if (id) {
+    // Edits keep landing on the full detail page — only the create flow below
+    // moves to the list + quick-view, so this behavior is unchanged.
+    redirect(
+      `/maintenance/work-orders/${data.id}?success=work-order-saved${attachmentUploadFailed ? "&warning=attachments-failed" : ""}`
+    );
+  }
+
+  // New Job Card: redirect to the list — never the full detail page — and show
+  // the bigger "Job Card Created" success modal there (JobCard-Creation-
+  // Visibility-HardFix-01 Task 5/7). `created` and `preview` carry the same id:
+  // `preview` drives the existing quick-view/drawerData fetch (unchanged
+  // mechanism shared with dashboard row clicks etc.), `created` is the
+  // explicit marker this task's spec asks for and a redundant fallback source
+  // for the id if `preview` is ever absent/stripped. `scope=created` is now
+  // mostly a debug/log marker — getWorkOrderVisibilityFilter() itself
+  // guarantees created_by visibility unconditionally (Task 3), so this URL can
+  // never resolve to an empty-because-of-scope list or a 404 detail page.
+  const createRedirectUrl =
+    `/maintenance/work-orders?scope=created&success=job-card-created&created=${data.id}&preview=${data.id}&jc=${encodeURIComponent(data.work_order_number ?? "")}${attachmentUploadFailed ? "&warning=attachments-failed" : ""}`;
+
+  console.log("[maintenance.upsertWorkOrderAction] Job Card created:", {
+    id: data.id,
+    work_order_number: data.work_order_number,
+    created_by: context.userId,
+    status: createStatus,
+    department_id: parsed.data.requested_by_department_id ?? null,
+    redirectUrl: createRedirectUrl,
+  });
+
+  redirect(createRedirectUrl);
 }
 
 // ── Record a material / part used on an existing work order ───────────────────

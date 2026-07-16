@@ -23,8 +23,8 @@ import { canViewEntityFile } from "@/lib/security/file-access";
 import {
   displayPartsRequestStatus,
   partsRequestStatusTone,
-  OPEN_PR_STATUSES,
 } from "@/lib/display/parts-request-labels";
+import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { PARTS_REQUEST_ATTACHMENT_CATEGORIES } from "@/lib/files/attachment-constants";
 
 export default async function PartsRequestDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams?: Promise<Record<string, string | undefined>> }) {
@@ -76,12 +76,12 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
   }));
 
   const canApprove = context.role?.slug === "super_admin" || context.permissions.includes("parts_requests.approve");
-  const canReceive =
-    context.role?.slug === "super_admin" ||
-    context.permissions.includes("parts_requests.approve") ||
-    context.permissions.includes("store.issue");
+  const canReceive = canReceiveIssueMaterials(context);
 
-  const isOpen = OPEN_PR_STATUSES.includes(request.status);
+  // The single-material receive panel below only applies while the request
+  // is still "Requested" — once received, use the list's Issue popup instead
+  // (MaterialsRequest-DataEntryReceiveIssue-01 Task 2/5).
+  const isOpen = displayPartsRequestStatus(request.status) === "Requested";
 
   const canUploadFiles =
     context.role?.slug === "super_admin" ||
@@ -160,7 +160,7 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
           </p>
           <p className="mt-1 text-sm leading-5 text-[#4B5563]">
             The request was saved successfully. You can upload the missing files again from
-            Documents &amp; Photos below.
+            Attachments below.
           </p>
         </div>
       )}
@@ -277,7 +277,7 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
           <PartsRequestItemsTable items={items ?? []} context={context} />
         </section>
 
-        {/* ── Documents & Photos ───────────────────────────────────── */}
+        {/* ── Attachments ───────────────────────────────────── */}
         <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm lg:col-span-2">
           <div className="flex items-center gap-3">
             <span className="flex h-8 w-8 items-center justify-center rounded-md bg-[#111827] text-white">
@@ -285,7 +285,7 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
             </span>
             <div>
               <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Files</p>
-              <h2 className="text-lg font-bold text-[#111827]">Documents &amp; Photos</h2>
+              <h2 className="text-lg font-bold text-[#111827]">Attachments</h2>
             </div>
           </div>
 

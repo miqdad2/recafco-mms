@@ -126,6 +126,8 @@ model offline_inventory_movements {
   part_id               String?   @db.Uuid
   manual_material_name  String?
   manual_part_number    String?
+  ss_rec_code           String?
+  category              String?
   quantity              Decimal   @db.Decimal(12, 3)
   unit                  String    @default("PCS")
   reference_number      String?
@@ -133,6 +135,7 @@ model offline_inventory_movements {
   purpose               String?
   receiver_name         String?
   related_work_order_id String?   @db.Uuid
+  parts_request_id      String?   @db.Uuid
   remarks               String?
   adjustment_reason     String?
   created_by            String    @db.Uuid
@@ -140,14 +143,16 @@ model offline_inventory_movements {
   updated_at            DateTime  @default(now()) @db.Timestamptz(6)
   deleted_at            DateTime? @db.Timestamptz(6)
 
-  parts       parts?       @relation(fields: [part_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
-  work_orders work_orders? @relation(fields: [related_work_order_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
-  profiles    profiles     @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  parts          parts?          @relation(fields: [part_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  work_orders    work_orders?    @relation(fields: [related_work_order_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  parts_requests parts_requests? @relation(fields: [parts_request_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  profiles       profiles        @relation(fields: [created_by], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@index([movement_type], map: "idx_oim_movement_type")
   @@index([movement_date(sort: Desc)], map: "idx_oim_movement_date")
   @@index([part_id], map: "idx_oim_part_id")
   @@index([related_work_order_id], map: "idx_oim_work_order")
+  @@index([parts_request_id], map: "idx_oim_parts_request_id")
   @@index([created_by], map: "idx_oim_created_by")
   @@index([deleted_at], map: "idx_oim_deleted_at")
 }
@@ -504,6 +509,7 @@ model parts_requests {
   purchase_requests                              purchase_requests[]
   approvals                                      approvals[]
   parts_request_attachments                      parts_request_attachments[]
+  offline_inventory_movements                    offline_inventory_movements[]
 
   @@index([request_date, status, department_id], map: "idx_parts_requests_report_filters")
   @@index([status], map: "idx_parts_requests_status")

@@ -25,7 +25,7 @@ import { requirePermission, type CurrentUserContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts } from "@/lib/reports/data";
 import { displayStatus } from "@/lib/display/work-order-labels";
-import { OPEN_PR_STATUSES } from "@/lib/display/parts-request-labels";
+import { OPEN_PR_STATUSES, displayPartsRequestStatus } from "@/lib/display/parts-request-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { AutoRefresh } from "@/components/auto-refresh";
 import {
@@ -33,6 +33,7 @@ import {
   type QuickViewData,
 } from "@/components/work-orders/repair-order-quick-view";
 import { QuickViewRow } from "@/components/work-orders/quick-view-row";
+import { JobCardCreatedModal } from "@/components/work-orders/job-card-created-modal";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -47,76 +48,64 @@ const OVERDUE_DAYS = 7;
 
 type Tab = { label: string; status: string };
 
-// Normal users: no "Completed" tab — internal sub-statuses are folded into Open/Closed.
-const NORMAL_USER_TABS: Tab[] = [
-  { label: "All",           status: "" },
-  { label: "Open",          status: "Open" },
-  { label: "In Progress",   status: "In Progress" },
-  { label: "Waiting Materials", status: "Waiting for Parts" },
-  { label: "Closed",        status: "Closed" },
-];
-
-// Manager/admin: five buckets — Awaiting Review, In Progress (absorbs Completed), Waiting Materials, Closed.
-const MANAGER_TABS: Tab[] = [
-  { label: "All",               status: "" },
+// One shared tab set for every role — Task 3 (JobCards-UX-SimplifyFilters-01).
+// "My Job Cards" replaces the old "All"/"My Job Cards" split: the label is the
+// same for everyone, but what it shows still depends on that role's own
+// visibility scope (a Data Entry user's "My Job Cards" is only what they
+// created; a Manager's is everything they're allowed to see) — Task 7.
+const JOB_CARD_TABS: Tab[] = [
+  { label: "My Job Cards",      status: "" },
   { label: "Awaiting Review",   status: "Awaiting Review" },
   { label: "In Progress",       status: "In Progress" },
   { label: "Waiting Materials", status: "Waiting for Parts" },
   { label: "Closed",            status: "Closed" },
 ];
 
-const DEFAULT_TABS: Tab[] = [
-  { label: "All",           status: "" },
-  { label: "Open",          status: "Open" },
-  { label: "In Progress",   status: "In Progress" },
-  { label: "Waiting Materials", status: "Waiting for Parts" },
-  { label: "Completed",     status: "Completed by Technician" },
-  { label: "Closed",        status: "Closed" },
-];
+// Single, role-independent mapping from tab status keys → the DB status
+// strings each bucket covers — Task 7's employee-friendly grouping:
+//   Awaiting Review   — not yet reviewed by a manager (includes Draft, since
+//                        a draft is also "not yet moving" from the employee's
+//                        point of view and has nowhere else sensible to go)
+//   In Progress       — approved through post-completion, pending closure
+//                        ("Ready to Close" is intentionally folded in here,
+//                        not shown as its own tab, per Task 7)
+//   Waiting Materials — blocked on parts/purchase
+//   Closed            — fully resolved (Cancelled and Rejected/"Returned for
+//                        Fix" fold in here too — Task 7 says Returned for Fix
+//                        should not be its own tab; it still shows as its own
+//                        status badge in the table)
+// Any status not listed here (there are none left unmapped) falls back to a
+// single-value filter, so old bookmarked/dashboard links (?status=Draft,
+// ?status=Rejected, etc.) keep working unchanged.
+// Task 9 — wording for a status tab that has zero matching Job Cards, used
+// only when no other filter (search/date/etc.) is also in play.
+const TAB_EMPTY_STATE: Record<string, { title: string; message: string }> = {
+  "Awaiting Review": {
+    title: "No Job Cards awaiting review.",
+    message: "New submitted Job Cards will appear here.",
+  },
+  "In Progress": {
+    title: "No Job Cards in progress.",
+    message: "Job Cards being worked on will appear here.",
+  },
+  "Waiting for Parts": {
+    title: "No Job Cards waiting for materials.",
+    message: "Job Cards blocked by materials will appear here.",
+  },
+  Closed: {
+    title: "No closed Job Cards yet.",
+    message: "Closed Job Cards will appear here.",
+  },
+};
 
-// Returns a role-appropriate mapping from tab status keys → arrays of DB status strings.
-// Managers see "In Progress" as a broad bucket (Approved → Completed by Technician) with no separate
-// "Ready to Close" tab. Normal users and default roles keep the narrow "In Progress" (active work only).
-function getStatusMap(roleSlug: string): Record<string, string[]> {
-  const isNormal  = roleSlug === "maintenance_data_entry" || roleSlug === "department_requester";
-  const isManager = roleSlug === "maintenance_manager" || roleSlug === "super_admin";
-
-  const base: Record<string, string[]> = {
-    "Awaiting Review":         ["Submitted", "Pending Approval"],
-    "Waiting for Parts":       ["Waiting for Parts", "Waiting for Purchase"],
-    // Kept for backward-compat URL params and DEFAULT_TABS "Completed" tab
-    "Ready to Close":          ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"],
-    "Completed by Technician": ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"],
-  };
-
-  if (isManager) {
-    return {
-      ...base,
-      // Manager "In Progress" absorbs Approved/Assigned/active/completed so no separate Ready to Close bucket.
-      "In Progress": ["Approved", "Assigned", "In Progress", "Parts Issued",
-                      "Completed by Technician", "Verified by Supervisor", "Confirmed by Requester",
-                      "Reopened"],
-      "Closed": ["Closed", "Cancelled", "Rejected"],
-    };
-  }
-
-  if (isNormal) {
-    return {
-      ...base,
-      // Assigned jobs are treated as active work, not "Open" — a technician has
-      // already been assigned, so the job is in progress from the user's view.
-      "In Progress": ["Assigned", "In Progress", "Parts Issued"],
-      "Open":   ["Draft", "Submitted", "Pending Approval", "Approved",
-                 "Completed by Technician", "Rejected", "Reopened"],
-      "Closed": ["Closed", "Cancelled"],
-    };
-  }
-
+function getStatusMap(): Record<string, string[]> {
   return {
-    ...base,
-    "In Progress": ["Assigned", "In Progress", "Parts Issued"],
-    "Open":   ["Draft", "Submitted", "Pending Approval", "Approved", "Reopened"],
-    "Closed": ["Closed", "Cancelled", "Rejected"],
+    "Awaiting Review":   ["Draft", "Submitted", "Pending Approval"],
+    "In Progress":       ["Approved", "Assigned", "In Progress", "Parts Issued",
+                           "Completed by Technician", "Verified by Supervisor", "Confirmed by Requester",
+                           "Reopened"],
+    "Waiting for Parts": ["Waiting for Parts", "Waiting for Purchase"],
+    "Closed":            ["Closed", "Cancelled", "Rejected"],
   };
 }
 
@@ -146,6 +135,11 @@ type SP = {
   ceo_tab?: string;
   cost_min?: string;
   preview?: string;
+  success?: string;
+  warning?: string;
+  jc?: string;
+  scope?: string;
+  created?: string;
 };
 
 type PageProps = {
@@ -263,6 +257,39 @@ function ageInDays(createdAt: Date): number {
 
 function countFor(summaries: StatusSummary[], statuses: string[]): number {
   return summaries.filter((s) => statuses.includes(s.status)).reduce((n, s) => n + s._count._all, 0);
+}
+
+// ── Dev-only debug panel — Task 8 (JobCard-Creation-Visibility-HardFix-01) ────
+// Shown only when NODE_ENV !== "production" and the list rendered empty, to
+// help diagnose "created but not visible" reports without a debugger attached.
+function DebugPanel({
+  userId,
+  roleSlug,
+  scope,
+  totalInDb,
+  createdByUser,
+  resultCount,
+}: {
+  userId: string;
+  roleSlug: string;
+  scope: string;
+  totalInDb: number | null;
+  createdByUser: number | null;
+  resultCount: number;
+}) {
+  return (
+    <div className="mx-auto mt-8 max-w-md rounded-md border border-dashed border-amber-300 bg-amber-50 p-3 text-left text-xs text-amber-900">
+      <p className="mb-1.5 font-black uppercase tracking-wide">Debug (dev only)</p>
+      <dl className="space-y-0.5 font-mono">
+        <div className="flex justify-between gap-3"><dt>userId</dt><dd className="truncate">{userId}</dd></div>
+        <div className="flex justify-between gap-3"><dt>role</dt><dd>{roleSlug || "(none)"}</dd></div>
+        <div className="flex justify-between gap-3"><dt>scope</dt><dd>{scope}</dd></div>
+        <div className="flex justify-between gap-3"><dt>total in DB</dt><dd>{totalInDb ?? "—"}</dd></div>
+        <div className="flex justify-between gap-3"><dt>created by user</dt><dd>{createdByUser ?? "—"}</dd></div>
+        <div className="flex justify-between gap-3"><dt>query result count</dt><dd>{resultCount}</dd></div>
+      </dl>
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -483,7 +510,13 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       : undefined;
 
   // ── Visibility filter: scope every query to what this role may see ────────
+  // getWorkOrderVisibilityFilter() itself now guarantees "OR I created it" for
+  // every role (JobCard-Creation-Visibility-HardFix-01 Task 3) — no per-page
+  // widening needed any more. scope=created (set on the post-create redirect,
+  // see upsertWorkOrderAction) is kept only as a marker for the debug log and
+  // for a "My Job Cards" default, not as a visibility mechanism.
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
+  const scopeCreated = sp.scope === "created";
 
   // Combines deleted_at guard + role visibility — used for KPI/summary queries
   const visibilityOnlyWhere: Prisma.work_ordersWhereInput = {
@@ -492,7 +525,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
   const roleSlug = context.role?.slug ?? "";
   const isNormalUser = ["maintenance_data_entry", "department_requester"].includes(roleSlug);
-  const statusMap = getStatusMap(roleSlug);
+  const statusMap = getStatusMap();
 
   // Full WHERE for the list: visibility + user-applied filters stacked as AND
   // to prevent key conflicts when the visibility filter itself uses `status`.
@@ -575,8 +608,13 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE));
 
   // ── Quick-view preview data ───────────────────────────────────────────────
+  // `created` (set on the post-create redirect) is a fallback source for the
+  // id in case `preview` is ever missing — Task 6/7 (JobCard-Creation-
+  // Visibility-HardFix-01): the success modal must never depend on a single
+  // query param surviving the round trip.
+  const rawPreviewParam = sp.preview || sp.created;
   const previewId =
-    sp.preview && /^[0-9a-f-]{36}$/i.test(sp.preview) ? sp.preview : null;
+    rawPreviewParam && /^[0-9a-f-]{36}$/i.test(rawPreviewParam) ? rawPreviewParam : null;
 
   const canAssignModal =
     context.role?.slug === "super_admin" ||
@@ -687,7 +725,9 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         open_parts_requests_count: prData.filter((pr) =>
           OPEN_PR_STATUSES.includes(pr.status)
         ).length,
-        last_parts_request_status: prData[0]?.status ?? null,
+        last_parts_request_status: prData[0]
+          ? displayPartsRequestStatus(prData[0].status)
+          : null,
         attachment_count: previewWO._count.work_order_attachments,
         roleSlug: context.role?.slug ?? "",
         canApprove:
@@ -704,6 +744,22 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       }
     : null;
 
+  // ── Job Card creation success modal ───────────────────────────────────────
+  // A newly created Job Card redirects here with ?success=job-card-created — the
+  // modal must render purely off that param, independent of whether the preview
+  // fetch (drawerData) actually found the record, so a visibility/timing edge
+  // case never hides the confirmation (Job Cards-CreateSuccess-UX-02 Task 2).
+  const showCreatedModal = sp.success === "job-card-created";
+  const createdDismissHref = buildHref({
+    ...sp,
+    preview: undefined,
+    success: undefined,
+    warning: undefined,
+    jc: undefined,
+    scope: undefined,
+    created: undefined,
+  });
+
   const totalWOs       = statusSummaries.reduce((n, s) => n + s._count._all, 0);
   const submittedCount = tabCount(statusSummaries, "Awaiting Review", statusMap);
   const activeJobs     = tabCount(statusSummaries, "In Progress",     statusMap);
@@ -712,42 +768,84 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   const closed         = countFor(statusSummaries, ["Closed"]);
 
   const hasFilters = search || status || deptId || workerType || dateFrom || dateTo || needsAction;
+  // Non-tab filters — used to decide whether a zero-result table gets the
+  // tab-specific empty state (Task 9) or the generic "adjust your filters" one.
+  const hasNonTabFilters = Boolean(search || deptId || workerType || dateFrom || dateTo || needsAction);
 
-  const activeTabs: Tab[] = isNormalUser
-    ? NORMAL_USER_TABS
-    : (roleSlug === "maintenance_manager" || roleSlug === "super_admin")
-      ? MANAGER_TABS
-      : DEFAULT_TABS;
+  const activeTabs: Tab[] = JOB_CARD_TABS;
+  // The specific status tab currently selected, if any — used to word the
+  // list header simply, e.g. "9 awaiting review job cards" (Task 8). Stays
+  // null for "My Job Cards" (status === "") and for raw/unmapped status
+  // values reached via an old bookmark or dashboard link.
+  const activeTab = status ? JOB_CARD_TABS.find((t) => t.status === status) ?? null : null;
 
-  // ── Dev-only debug log — visibility scope and record counts ─────────────
+  // ── Debug log — visibility scope, search params, and record counts ──────
+  // Task 8 (JobCard-CreateSuccess-UX-02): kept lightweight and dev-only so it
+  // never becomes noisy in production, but always covers the fields needed to
+  // diagnose a "created but not visible" report — role/department, the exact
+  // where-clause scope, searchParams, result counts, and the preview fetch.
   if (process.env.NODE_ENV === "development") {
     console.log("[WO-VISIBILITY]", {
       userId: context.userId,
       roleSlug,
+      departmentId: context.department?.id ?? "(none)",
+      searchParams: sp,
+      scopeCreated,
       scope: Object.keys(visibilityFilter).length === 0 ? "ALL" : JSON.stringify(visibilityFilter),
       totalVisible: totalWOs,
       statusSummaries: statusSummaries.map((s) => `${s.status}:${s._count._all}`).join(", "),
+      previewId,
+      previewFound: !!drawerData,
     });
   }
 
   // ── Onboarding empty state — no job cards in scope ───────────────────────
   if (totalWOs === 0) {
-    const isManagerRole =
-      roleSlug === "maintenance_manager" ||
-      roleSlug === "super_admin" ||
-      roleSlug === "it_admin" ||
-      roleSlug === "viewer_auditor";
+    const isManagerRole = roleSlug === "maintenance_manager";
 
-    const emptyTitle = isManagerRole
-      ? "No job cards awaiting your team yet"
-      : "No job cards yet";
+    // Dev-only debug counts for the panel below — Task 8. Only queried when
+    // actually needed (empty state, non-production) so this never adds cost
+    // to the normal path.
+    let debugTotalInDb: number | null = null;
+    let debugCreatedByUser: number | null = null;
+    if (process.env.NODE_ENV !== "production") {
+      [debugTotalInDb, debugCreatedByUser] = await Promise.all([
+        prisma.work_orders.count({ where: { deleted_at: null } }),
+        prisma.work_orders.count({ where: { deleted_at: null, created_by: context.userId } }),
+      ]);
+    }
 
-    const emptyMessage = isManagerRole
-      ? "Job cards will appear here as the team creates and submits them."
-      : "Create the first job card by selecting an asset or machine. All job history will be saved under the selected asset. Materials can be requested from inside a job card after it is created.";
+    // Three distinct personas — Task 9 (JobCard-Creation-Visibility-HardFix-01).
+    // Never shows the old "awaiting your team" framing right after a create
+    // redirect; the success modal (rendered below, independent of this branch)
+    // is the actual confirmation the user needs at that moment.
+    let emptyTitle: string;
+    let emptyMessage: string;
+    if (isNormalUser) {
+      emptyTitle = "No Job Cards created yet.";
+      emptyMessage = "Your submitted Job Cards will appear here.";
+    } else if (isManagerRole) {
+      emptyTitle = "No Job Cards awaiting review.";
+      emptyMessage = "New submitted Job Cards will appear here.";
+    } else {
+      emptyTitle = "No Job Cards found.";
+      emptyMessage = "Create a Job Card to start tracking maintenance work.";
+    }
+    const showCreateButtons = !isManagerRole;
 
     return (
       <>
+        {showCreatedModal && (
+          <JobCardCreatedModal
+            jobCardId={previewId}
+            jobCardNumber={drawerData?.work_order_number ?? sp.jc ?? null}
+            isDraft={drawerData?.status === "Draft"}
+            assetName={drawerData?.assets?.asset_name ?? null}
+            issue={drawerData?.operator_complaint ?? null}
+            attachmentWarning={sp.warning === "attachments-failed"}
+            dismissHref={createdDismissHref}
+          />
+        )}
         <PageHeader
           title="Job Cards"
           description="Track job cards, technician work, waiting materials, and repair history."
@@ -770,7 +868,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               <h2 className="text-lg font-black text-[#111827]">{emptyTitle}</h2>
               <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">{emptyMessage}</p>
             </div>
-            {!isManagerRole && (
+            {showCreateButtons && (
               <div className="flex flex-col gap-3 sm:flex-row">
                 <Link
                   href="/maintenance/work-orders/new"
@@ -788,6 +886,16 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               </div>
             )}
           </div>
+          {process.env.NODE_ENV !== "production" && (
+            <DebugPanel
+              userId={context.userId}
+              roleSlug={roleSlug}
+              scope={scopeCreated ? "created" : "normal"}
+              totalInDb={debugTotalInDb}
+              createdByUser={debugCreatedByUser}
+              resultCount={totalWOs}
+            />
+          )}
         </div>
       </>
     );
@@ -796,7 +904,19 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   return (
     <>
       <AutoRefresh intervalMs={30000} />
-      {drawerData && <RepairOrderQuickView data={drawerData} />}
+      {showCreatedModal ? (
+        <JobCardCreatedModal
+          jobCardId={previewId}
+          jobCardNumber={drawerData?.work_order_number ?? sp.jc ?? null}
+          isDraft={drawerData?.status === "Draft"}
+          assetName={drawerData?.assets?.asset_name ?? null}
+          issue={drawerData?.operator_complaint ?? null}
+          attachmentWarning={sp.warning === "attachments-failed"}
+          dismissHref={createdDismissHref}
+        />
+      ) : (
+        drawerData && <RepairOrderQuickView data={drawerData} />
+      )}
       <PageHeader
         title="Job Cards"
         description="Track job cards, technician work, waiting materials, and repair history."
@@ -811,8 +931,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         }
       />
 
-      <div className="space-y-4 p-4 lg:p-6">
-
+      <div className="space-y-3 p-4 lg:p-6">
         {/* ── Operational KPI cards ─────────────────────────────────────────── */}
         {isNormalUser ? (
           <section className="grid gap-3 grid-cols-2 sm:grid-cols-4">
@@ -896,13 +1015,10 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           </section>
         )}
 
-        {/* ── Role-based quick actions ──────────────────────────────────────── */}
-        <QuickActions context={context} />
-
         {/* ── Filters ───────────────────────────────────────────────────────── */}
         <FilterSection sp={sp} />
 
-        {/* ── Workflow tabs ─────────────────────────────────────────────────── */}
+        {/* ── Status tabs ──────────────────────────────────────────────────── */}
         <div className="overflow-x-auto rounded-t-md border border-[#E5E7EB] bg-white shadow-sm">
           <div className="flex min-w-max">
             {activeTabs.map((tab) => {
@@ -917,18 +1033,20 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                 <Link
                   key={tab.status || "all"}
                   href={tabHref(sp, tab.status)}
-                  className={`flex items-center gap-1.5 whitespace-nowrap px-3 py-2.5 text-xs font-bold transition ${
+                  className={`flex min-h-[48px] cursor-pointer items-center gap-2 whitespace-nowrap border-b-2 px-4 text-sm font-bold transition ${
                     isActive
-                      ? "border-b-2 border-[#ED1C24] text-[#ED1C24]"
-                      : "border-b-2 border-transparent text-[#4B5563] hover:text-[#111827]"
+                      ? "border-[#ED1C24] bg-red-50/60 text-[#ED1C24]"
+                      : "border-transparent text-[#111827] hover:bg-gray-50"
                   }`}
                 >
                   {tab.label}
-                  {itemCount > 0 && (
-                    <span className={`rounded-full px-1.5 py-0.5 text-xs ${isActive ? "bg-[#ED1C24] text-white" : "bg-gray-100 text-[#4B5563]"}`}>
-                      {itemCount}
-                    </span>
-                  )}
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs font-bold ${
+                      isActive ? "bg-[#ED1C24] text-white" : "bg-gray-100 text-[#4B5563]"
+                    }`}
+                  >
+                    {itemCount}
+                  </span>
                 </Link>
               );
             })}
@@ -939,9 +1057,9 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         <section className="overflow-hidden rounded-b-md border border-t-0 border-[#E5E7EB] bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
             <div>
-              <p className="text-xs font-black uppercase text-[#4B5563]">Job card records</p>
+              <p className="text-xs font-black uppercase text-[#4B5563]">Job Card Records</p>
               <p className="mt-0.5 text-sm font-semibold text-[#111827]">
-                {count.toLocaleString()} {hasFilters ? "matching" : "total"} job cards
+                {count.toLocaleString()} {activeTab ? `${activeTab.label.toLowerCase()} ` : hasFilters ? "matching " : "total "}job cards
                 {hasFilters && (
                   <Link href="/maintenance/work-orders" className="ml-2 text-xs font-bold text-[#ED1C24] underline">
                     Clear filters
@@ -1096,24 +1214,34 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                 ) : (
                   <tr>
                     <td colSpan={7} className="px-4 py-10">
-                      <EmptyState
-                        title="No job cards match your filters"
-                        message="Clear the filters or adjust your search to see job cards. You can also create a new job card."
-                        action={
-                          <div className="flex gap-3">
-                            <Link href="/maintenance/work-orders">
-                              <Button variant="secondary">Clear filters</Button>
-                            </Link>
-                            <Link
-                              href="/maintenance/work-orders/new"
-                              className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
-                            >
-                              <Plus className="h-4 w-4" aria-hidden="true" />
-                              New Job Card
-                            </Link>
-                          </div>
-                        }
-                      />
+                      {/* Tab-specific empty state when a status tab alone yields
+                          nothing (Task 9); falls back to the generic filters
+                          message once search/date/other filters are also involved. */}
+                      {!hasNonTabFilters && activeTab && TAB_EMPTY_STATE[activeTab.status] ? (
+                        <EmptyState
+                          title={TAB_EMPTY_STATE[activeTab.status].title}
+                          message={TAB_EMPTY_STATE[activeTab.status].message}
+                        />
+                      ) : (
+                        <EmptyState
+                          title="No job cards match your filters"
+                          message="Clear the filters or adjust your search to see job cards. You can also create a new job card."
+                          action={
+                            <div className="flex gap-3">
+                              <Link href="/maintenance/work-orders">
+                                <Button variant="secondary">Clear filters</Button>
+                              </Link>
+                              <Link
+                                href="/maintenance/work-orders/new"
+                                className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
+                              >
+                                <Plus className="h-4 w-4" aria-hidden="true" />
+                                New Job Card
+                              </Link>
+                            </div>
+                          }
+                        />
+                      )}
                     </td>
                   </tr>
                 )}
@@ -1149,98 +1277,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Section components
 // ─────────────────────────────────────────────────────────────────────────────
-
-function QuickActions({ context }: { context: CurrentUserContext }) {
-  const slug = context.role?.slug;
-  const p = context.permissions;
-
-  type QA = { label: string; href: string; primary?: boolean };
-
-  let actions: QA[] = [];
-
-  if (slug === "super_admin" || slug === "it_admin") {
-    actions = [
-      { label: "Submitted",          href: buildHref({ status: "Submitted" }),          primary: true },
-      { label: "In Progress",        href: buildHref({ status: "In Progress" }) },
-      { label: "Needs My Action",    href: buildHref({ needs_action: "1" }) },
-      { label: "All Job Cards",       href: "/maintenance/work-orders" },
-    ];
-  } else if (slug === "ceo_management") {
-    actions = [
-      { label: "CEO Approvals",     href: "/ceo/approvals",                           primary: true },
-      { label: "Overdue Items",     href: buildHref({ needs_action: "1" }) },
-      { label: "Pending Approval",  href: buildHref({ status: "Pending Approval" }) },
-    ];
-  } else if (slug === "maintenance_manager" || p.includes("work_orders.approve")) {
-    actions = [
-      { label: "Awaiting Review",   href: buildHref({ status: "Awaiting Review" }),    primary: true },
-      { label: "In Progress",       href: buildHref({ status: "In Progress" }) },
-      { label: "Waiting Materials", href: buildHref({ status: "Waiting for Parts" }) },
-      { label: "All Orders",        href: "/maintenance/work-orders" },
-    ];
-  } else if (slug === "maintenance_supervisor" || p.includes("work_orders.assign")) {
-    actions = [
-      { label: "Ready to Assign",   href: buildHref({ status: "Approved" }),           primary: true },
-      { label: "Assigned Jobs",     href: buildHref({ status: "Assigned" }) },
-      { label: "In Progress",       href: buildHref({ status: "In Progress" }) },
-      { label: "Need Verification", href: buildHref({ status: "Completed by Technician" }) },
-    ];
-  } else if (slug === "maintenance_data_entry" || (p.includes("work_orders.manage") && !p.includes("work_orders.approve"))) {
-    actions = [
-      { label: "Awaiting Review",   href: buildHref({ status: "Awaiting Review" }),    primary: true },
-      { label: "In Progress",        href: buildHref({ status: "In Progress" }) },
-      { label: "Waiting Materials",  href: buildHref({ status: "Waiting for Parts" }) },
-      { label: "Returned for Fix",   href: buildHref({ status: "Rejected" }) },
-      { label: "All Job Cards",      href: "/maintenance/work-orders" },
-    ];
-  } else if (slug === "technician") {
-    actions = [
-      { label: "My Jobs",           href: "/technician/jobs",                          primary: true },
-      { label: "New Assignments",   href: buildHref({ status: "Assigned" }) },
-      { label: "In Progress",        href: buildHref({ status: "In Progress" }) },
-      { label: "Waiting Materials",  href: buildHref({ status: "Waiting for Parts" }) },
-    ];
-  } else if (slug === "store_keeper") {
-    actions = [
-      { label: "Waiting Materials",  href: buildHref({ status: "Waiting for Parts" }), primary: true },
-      { label: "Parts Issued",      href: buildHref({ status: "Parts Issued" }) },
-    ];
-  } else if (slug === "purchase_officer") {
-    actions = [
-      { label: "Parts On Order",    href: buildHref({ status: "Waiting for Purchase" }), primary: true },
-      { label: "Active Jobs",       href: buildHref({ status: "In Progress" }) },
-    ];
-  } else if (slug === "finance_manager") {
-    actions = [
-      { label: "Finance Approvals", href: "/finance/approvals",                        primary: true },
-    ];
-  }
-
-  if (actions.length === 0) return null;
-
-  return (
-    <section className="rounded-md border border-[#E5E7EB] bg-white px-4 py-3 shadow-sm">
-      <p className="mb-2.5 text-xs font-black uppercase text-[#4B5563]">
-        Quick Filters
-      </p>
-      <div className="flex flex-wrap gap-2">
-        {actions.map((a) => (
-          <Link
-            key={a.href + a.label}
-            href={a.href}
-            className={`rounded-md px-3 py-1.5 text-xs font-bold transition ${
-              a.primary
-                ? "bg-[#ED1C24] text-white hover:bg-[#c8181e]"
-                : "border border-[#E5E7EB] text-[#111827] hover:border-[#ED1C24] hover:bg-red-50 hover:text-[#ED1C24]"
-            }`}
-          >
-            {a.label}
-          </Link>
-        ))}
-      </div>
-    </section>
-  );
-}
 
 function FilterSection({ sp }: { sp: SP }) {
   return (

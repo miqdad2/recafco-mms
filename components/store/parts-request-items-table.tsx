@@ -7,7 +7,7 @@ export function PartsRequestItemsTable({ items, context }: { items: Array<Record
     <div className="overflow-x-auto">
       <table className="w-full min-w-[900px] text-left text-sm">
         <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
-          <tr><th className="px-3 py-2">Description</th><th className="px-3 py-2">Part No.</th><th className="px-3 py-2">SS rec</th><th className="px-3 py-2">Requested</th><th className="px-3 py-2">Unit price</th><th className="px-3 py-2">Total</th><th className="px-3 py-2">Issued</th><th className="px-3 py-2">Availability</th></tr>
+          <tr><th className="px-3 py-2">Description</th><th className="px-3 py-2">Part No.</th><th className="px-3 py-2">SS Rec. Code</th><th className="px-3 py-2">Requested</th><th className="px-3 py-2">Unit price</th><th className="px-3 py-2">Total</th><th className="px-3 py-2">Issued</th><th className="px-3 py-2">Availability</th></tr>
         </thead>
         <tbody className="divide-y divide-[#E5E7EB]">
           {items.map((item) => (

@@ -212,8 +212,8 @@ export const systemModules: SystemModule[] = [
 // WorkflowDiagram renders consecutive nodes with arrows between them (xl: 4 per row).
 
 export const workflowNodes: WorkflowNode[] = [
-  { id: "wo-create",        title: "Work Order Created",      role: "Maintenance Data Entry",   description: "Creates the request with asset and complaint details.",                href: "/maintenance/work-orders/new", icon: "ClipboardList",  tone: "blue"  },
-  { id: "wo-approval",      title: "Work Order Approval",     role: "Maintenance Manager",       description: "Reviews and approves or rejects the work order.",                     href: "/maintenance/approvals",       icon: "ClipboardCheck", tone: "amber" },
+  { id: "wo-create",        title: "Job Card Created",        role: "Maintenance Data Entry",   description: "Creates the request with asset and complaint details.",                href: "/maintenance/work-orders/new", icon: "ClipboardList",  tone: "blue"  },
+  { id: "wo-approval",      title: "Job Card Approval",       role: "Maintenance Manager",       description: "Reviews and approves or rejects the Job Card.",                       href: "/maintenance/approvals",       icon: "ClipboardCheck", tone: "amber" },
   { id: "inventory-check",  title: "Inventory Check",         role: "Store Keeper",              description: "Checks stock availability for all required parts before technician starts.", href: "/store/parts-requests",    icon: "Warehouse",      tone: "green" },
   { id: "assignment",       title: "Team Assignment",         role: "Maintenance Supervisor",    description: "Assigns approved jobs to a team and individual technicians.",         href: "/maintenance/assignments",     icon: "Users",          tone: "blue"  },
   { id: "technician",       title: "Technician Execution",    role: "Technician",                description: "Starts work, adds notes, labor hours, and completion details.",       href: "/technician/jobs",             icon: "Wrench",         tone: "green" },

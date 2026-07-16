@@ -2,7 +2,11 @@ import type { Prisma } from "@prisma/client";
 import Link from "next/link";
 import { Plus, X } from "lucide-react";
 
-import { quickReceiveMaterialsRequestAction } from "@/app/actions/phase4";
+import {
+  receiveMaterialsForRequestAction,
+  issueMaterialsForRequestAction,
+} from "@/app/actions/phase4";
+import { computeBalance } from "@/app/actions/offline-inventory";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -10,6 +14,13 @@ import {
   RepairOrderQuickView,
   type QuickViewData,
 } from "@/components/work-orders/repair-order-quick-view";
+import { MaterialsRequestCreatedModal } from "@/components/store/materials-request-created-modal";
+import { MaterialsReceivedModal } from "@/components/store/materials-received-modal";
+import { MaterialIssuedModal, type IssuedItem } from "@/components/store/material-issued-modal";
+import {
+  MaterialsRequestQuickView,
+  type MaterialsRequestQuickViewData,
+} from "@/components/store/materials-request-quick-view";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import {
@@ -19,6 +30,10 @@ import {
 } from "@/lib/display/parts-request-labels";
 import { displayStatus } from "@/lib/display/work-order-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import {
+  getPartsRequestVisibilityFilter,
+  canReceiveIssueMaterials,
+} from "@/lib/parts-requests/visibility";
 import { cn } from "@/lib/utils";
 import { AutoRefresh } from "@/components/auto-refresh";
 
@@ -29,21 +44,23 @@ const MATERIAL_UNITS = [
   "KG", "LTR", "DRUM", "BAG", "PAIR", "NOS",
 ];
 
-// Virtual filter value → internal DB status array
+// Virtual filter value → internal DB status array.
+// Mirrors the simple 4-state display model in lib/display/parts-request-labels.ts
+// (MaterialsRequest-DataEntryReceiveIssue-01 Task 2): Requested / Received / Issued / Cancelled.
 const FILTER_STATUS_MAP: Record<string, string[]> = {
-  requested:            ["Pending Approval", "Waiting for Store", "Waiting for Purchase"],
-  "Partially Received": ["Partially Issued"],
-  Received:             ["Issued", "Closed"],
-  Rejected:             ["Rejected"],
-  Cancelled:            ["Cancelled"],
+  Requested: ["Draft", "Submitted", "Pending Approval", "Waiting for Purchase"],
+  Received:  ["Waiting for Store", "Partially Issued"],
+  Issued:    ["Issued", "Closed"],
+  Rejected:  ["Rejected"],
+  Cancelled: ["Cancelled"],
 };
 
 const STATUS_FILTER_OPTIONS = [
-  { label: "Requested",          value: "requested" },
-  { label: "Partially Received", value: "Partially Received" },
-  { label: "Received",           value: "Received" },
-  { label: "Rejected",           value: "Rejected" },
-  { label: "Cancelled",          value: "Cancelled" },
+  { label: "Requested", value: "Requested" },
+  { label: "Received",  value: "Received" },
+  { label: "Issued",    value: "Issued" },
+  { label: "Rejected",  value: "Rejected" },
+  { label: "Cancelled", value: "Cancelled" },
 ];
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -75,6 +92,18 @@ function receiveHref(
   return `/store/parts-requests?${p.toString()}`;
 }
 
+function issueHref(
+  requestId: string,
+  { query, status, page }: { query: string; status: string; page: number }
+) {
+  const p = new URLSearchParams();
+  if (query) p.set("q", query);
+  if (status) p.set("status", status);
+  if (page > 1) p.set("page", String(page));
+  p.set("issueMr", requestId);
+  return `/store/parts-requests?${p.toString()}`;
+}
+
 function jobCardPreviewHref(
   woId: string,
   { query, status, page }: { query: string; status: string; page: number }
@@ -84,6 +113,18 @@ function jobCardPreviewHref(
   if (status) p.set("status", status);
   if (page > 1) p.set("page", String(page));
   p.set("jobPreview", woId);
+  return `/store/parts-requests?${p.toString()}`;
+}
+
+function previewHref(
+  requestId: string,
+  { query, status, page }: { query: string; status: string; page: number }
+) {
+  const p = new URLSearchParams();
+  if (query) p.set("q", query);
+  if (status) p.set("status", status);
+  if (page > 1) p.set("page", String(page));
+  p.set("preview", requestId);
   return `/store/parts-requests?${p.toString()}`;
 }
 
@@ -102,23 +143,17 @@ export default async function PartsRequestsPage({
   searchParams?: Promise<SearchParams>;
 }) {
   const context = await requirePermission("parts_requests.view");
-  const roleSlug = context.role?.slug ?? "";
 
   const canCreate =
     context.role?.slug === "super_admin" ||
     context.permissions.includes("parts_requests.create") ||
     context.permissions.includes("work_orders.manage");
 
-  const canSeeAll =
-    context.role?.slug === "super_admin" ||
-    context.permissions.includes("store.issue") ||
-    context.permissions.includes("work_orders.approve") ||
-    context.permissions.includes("work_orders.manage");
-
-  const canReceive =
-    context.role?.slug === "super_admin" ||
-    context.permissions.includes("parts_requests.approve") ||
-    context.permissions.includes("store.issue");
+  const canReceive = canReceiveIssueMaterials(context);
+  // Manager/Super Admin may receive more than the requested quantity
+  // (Task 4's explicit exception); Data Entry is capped at what's remaining.
+  const isManagerOrAdmin =
+    context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
 
   const params = (await searchParams) ?? {};
   const query = single(params.q)?.trim() ?? "";
@@ -129,17 +164,34 @@ export default async function PartsRequestsPage({
     receiveId && params.receive_error
       ? decodeURIComponent(String(single(params.receive_error) ?? ""))
       : null;
+  const issueMrId = single(params.issueMr)?.trim() ?? null;
+  const issueError =
+    issueMrId && params.issue_error
+      ? decodeURIComponent(String(single(params.issue_error) ?? ""))
+      : null;
   const jobPreviewId = single(params.jobPreview)?.trim() ?? null;
   const validJobPreviewId =
     jobPreviewId && UUID_RE.test(jobPreviewId) ? jobPreviewId : null;
+  const previewId = single(params.preview)?.trim() ?? null;
+  const validPreviewId = previewId && UUID_RE.test(previewId) ? previewId : null;
+  const successCode = single(params.success)?.trim() ?? "";
+  const showCreatedModal = successCode === "materials-request-created";
+  const createdId = single(params.created)?.trim() ?? null;
+  const validCreatedId = createdId && UUID_RE.test(createdId) ? createdId : null;
+  const mrNumber = single(params.mr) ? decodeURIComponent(String(single(params.mr))) : null;
+  const attachmentWarning = single(params.warning) === "attachments-failed";
+  const showReceivedModal = successCode === "material-request-received";
+  const receivedId = single(params.received)?.trim() ?? null;
+  const validReceivedId = receivedId && UUID_RE.test(receivedId) ? receivedId : null;
+  const showIssuedModal = successCode === "material-request-issued";
+  const issuedReqId = single(params.issued)?.trim() ?? null;
+  const validIssuedReqId = issuedReqId && UUID_RE.test(issuedReqId) ? issuedReqId : null;
+
+  // ── Visibility: a user can always see requests they created/requested ────
+  const partsRequestVisibility = getPartsRequestVisibilityFilter(context);
 
   // ── List query ───────────────────────────────────────────────────────────
-  const conditions: Prisma.parts_requestsWhereInput[] = [];
-  if (!canSeeAll) {
-    conditions.push({
-      OR: [{ created_by: context.userId }, { requested_by: context.userId }],
-    });
-  }
+  const conditions: Prisma.parts_requestsWhereInput[] = [partsRequestVisibility];
   if (status) {
     const mapped = FILTER_STATUS_MAP[status];
     if (mapped) {
@@ -183,8 +235,8 @@ export default async function PartsRequestsPage({
   // ── Receive modal data ────────────────────────────────────────────────────
   const foundReceive =
     receiveId && canReceive && UUID_RE.test(receiveId)
-      ? await prisma.parts_requests.findUnique({
-          where: { id: receiveId },
+      ? await prisma.parts_requests.findFirst({
+          where: { AND: [{ id: receiveId }, partsRequestVisibility] },
           select: {
             id: true,
             parts_request_number: true,
@@ -210,14 +262,173 @@ export default async function PartsRequestsPage({
         })
       : null;
 
+  // Receive only applies while the request is still in the "Requested"
+  // state — once it's Received/Issued, the Issue popup takes over.
   const receiveRequest =
-    foundReceive && OPEN_PR_STATUSES.includes(foundReceive.status)
+    foundReceive && displayPartsRequestStatus(foundReceive.status) === "Requested"
       ? foundReceive
       : null;
 
+  // ── Issue modal data ───────────────────────────────────────────────────────
+  // Materials available to issue are derived from what was actually received
+  // against this request (the offline_inventory_movements ledger), not from
+  // parts_request_items, since items don't carry a unit — the ledger does.
+  const foundIssue =
+    issueMrId && canReceive && UUID_RE.test(issueMrId)
+      ? await prisma.parts_requests.findFirst({
+          where: { AND: [{ id: issueMrId }, partsRequestVisibility] },
+          select: {
+            id: true,
+            parts_request_number: true,
+            status: true,
+            work_orders: { select: { work_order_number: true } },
+          },
+        })
+      : null;
+
+  const issueRequest =
+    foundIssue && displayPartsRequestStatus(foundIssue.status) === "Received"
+      ? foundIssue
+      : null;
+
+  const receivedLinesRaw = issueRequest
+    ? await prisma.offline_inventory_movements.findMany({
+        where: { parts_request_id: issueRequest.id, movement_type: "RECEIVED", deleted_at: null },
+        select: {
+          part_id: true,
+          manual_material_name: true,
+          manual_part_number: true,
+          ss_rec_code: true,
+          unit: true,
+        },
+        distinct: ["part_id", "manual_material_name", "unit"],
+      })
+    : [];
+
+  const issueLines = await Promise.all(
+    receivedLinesRaw.map(async (line) => ({
+      key: line.part_id ?? `${line.manual_material_name ?? ""}|${line.unit}`,
+      materialName: line.manual_material_name,
+      partNumber: line.manual_part_number,
+      ssRecCode: line.ss_rec_code,
+      unit: line.unit,
+      available: await computeBalance({
+        partId: line.part_id,
+        manualName: line.manual_material_name,
+        unit: line.unit,
+      }),
+    }))
+  );
+
+  // ── Materials Request created-success modal data ──────────────────────────
+  // Best-effort enrichment only — the modal itself must render from query
+  // params alone even if this fetch finds nothing (MaterialsRequest-
+  // CreateSuccess-UX-01 Task 4). Scoped by the same visibility filter as the
+  // list so a tampered `created` id can never leak someone else's request.
+  const createdRequest =
+    showCreatedModal && validCreatedId
+      ? await prisma.parts_requests.findFirst({
+          where: { AND: [{ id: validCreatedId }, partsRequestVisibility] },
+          select: {
+            id: true,
+            parts_request_number: true,
+            work_orders: { select: { id: true, work_order_number: true } },
+            assets: { select: { asset_name: true, asset_code: true } },
+            _count: { select: { parts_request_items: true } },
+          },
+        })
+      : null;
+
+  // ── Materials Received success modal data ──────────────────────────────────
+  // Same best-effort-enrichment pattern as the created modal above. "Items
+  // Received" counts lines with a positive received quantity — since this
+  // modal only ever appears immediately after the request's first-ever
+  // receive (Requested -> Received), that's exactly what was just received.
+  const receivedRequest =
+    showReceivedModal && validReceivedId
+      ? await prisma.parts_requests.findFirst({
+          where: { AND: [{ id: validReceivedId }, partsRequestVisibility] },
+          select: {
+            id: true,
+            parts_request_number: true,
+            work_orders: { select: { id: true, work_order_number: true } },
+            assets: { select: { asset_name: true } },
+            _count: { select: { parts_request_items: { where: { issued_quantity: { gt: 0 } } } } },
+          },
+        })
+      : null;
+
+  // ── Material Issued success modal data ──────────────────────────────────────
+  // Same best-effort-enrichment pattern as the created/received modals above.
+  // A request can only be issued once (status moves straight to "Issued" and
+  // the Action column no longer offers an Issue button), so every ISSUED
+  // movement linked to this request id is exactly what was just issued.
+  const issuedRequest =
+    showIssuedModal && validIssuedReqId
+      ? await prisma.parts_requests.findFirst({
+          where: { AND: [{ id: validIssuedReqId }, partsRequestVisibility] },
+          select: {
+            id: true,
+            parts_request_number: true,
+            work_orders: { select: { id: true, work_order_number: true } },
+            assets: { select: { asset_name: true } },
+          },
+        })
+      : null;
+
+  const issuedMovements = issuedRequest
+    ? await prisma.offline_inventory_movements.findMany({
+        where: { parts_request_id: issuedRequest.id, movement_type: "ISSUED", deleted_at: null },
+        select: {
+          manual_material_name: true,
+          quantity: true,
+          unit: true,
+          parts: { select: { part_name: true } },
+        },
+        orderBy: { created_at: "asc" },
+      })
+    : [];
+
+  const issuedItems: IssuedItem[] = issuedMovements.map((m) => ({
+    materialName: m.parts?.part_name ?? m.manual_material_name ?? null,
+    quantity: Number(m.quantity),
+    unit: m.unit,
+  }));
+
+  // ── Materials Request quick view data ──────────────────────────────────────
+  // Opens via ?preview=<id> when a request number is clicked — Task 7.
+  // Mutually exclusive with the receive modal and the created-success modal.
+  const shouldFetchPreview =
+    !receiveId && !issueMrId && !showCreatedModal && !showReceivedModal && !showIssuedModal && validPreviewId !== null;
+  const previewRequest = shouldFetchPreview
+    ? await prisma.parts_requests.findFirst({
+        where: { AND: [{ id: validPreviewId! }, partsRequestVisibility] },
+        select: {
+          id: true,
+          parts_request_number: true,
+          status: true,
+          remarks: true,
+          work_orders: { select: { id: true, work_order_number: true } },
+          assets: { select: { asset_name: true, asset_code: true } },
+          profiles_parts_requests_requested_byToprofiles: { select: { full_name: true } },
+          parts_request_items: {
+            select: {
+              id: true,
+              description: true,
+              part_number: true,
+              ss_rec_code: true,
+              quantity_requested: true,
+              issued_quantity: true,
+            },
+            orderBy: { created_at: "asc" },
+          },
+        },
+      })
+    : null;
+
   // ── Job Card quick view data ──────────────────────────────────────────────
-  // Only fetch when no receive modal is active (mutually exclusive modals)
-  const shouldFetchJobPreview = !receiveId && validJobPreviewId !== null;
+  // Only fetch when no receive/issue modal is active (mutually exclusive modals)
+  const shouldFetchJobPreview = !receiveId && !issueMrId && !showIssuedModal && validJobPreviewId !== null;
 
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
   const canAssignModal =
@@ -343,7 +554,9 @@ export default async function PartsRequestsPage({
         open_parts_requests_count: prDataForWO.filter((pr) =>
           OPEN_PR_STATUSES.includes(pr.status)
         ).length,
-        last_parts_request_status: prDataForWO[0]?.status ?? null,
+        last_parts_request_status: prDataForWO[0]
+          ? displayPartsRequestStatus(prDataForWO[0].status)
+          : null,
         attachment_count: previewWO._count.work_order_attachments,
         roleSlug: context.role?.slug ?? "",
         canApprove: isAdmin || context.permissions.includes("work_orders.approve"),
@@ -360,9 +573,99 @@ export default async function PartsRequestsPage({
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const closeHref = listHref({ query, status, page });
 
+  // ── Created-success modal props ───────────────────────────────────────────
+  const createdDismissHref = listHref({ query: "", status: "", page: 1 });
+  const createdJobCardHref = createdRequest?.work_orders
+    ? jobCardPreviewHref(createdRequest.work_orders.id, { query: "", status: "", page: 1 })
+    : null;
+
+  // ── Received-success modal props ──────────────────────────────────────────
+  const receivedDismissHref = listHref({ query: "", status: "", page: 1 });
+  const receivedJobCardHref = receivedRequest?.work_orders
+    ? jobCardPreviewHref(receivedRequest.work_orders.id, { query: "", status: "", page: 1 })
+    : null;
+  // Opens the Issue Material popup directly for this same request (Task 2) —
+  // only when we actually resolved the request id from the re-fetch above.
+  const receivedIssueHref = receivedRequest
+    ? issueHref(receivedRequest.id, { query: "", status: "", page: 1 })
+    : validReceivedId
+      ? issueHref(validReceivedId, { query: "", status: "", page: 1 })
+      : null;
+
+  // ── Material Issued success modal props ───────────────────────────────────
+  const issuedDismissHref = listHref({ query: "", status: "", page: 1 });
+  const issuedJobCardHref = issuedRequest?.work_orders
+    ? jobCardPreviewHref(issuedRequest.work_orders.id, { query: "", status: "", page: 1 })
+    : null;
+
+  // ── Materials Request quick view props ────────────────────────────────────
+  const previewCloseHref = listHref({ query, status, page });
+  const previewQuickViewData: MaterialsRequestQuickViewData | null = previewRequest
+    ? {
+        id: previewRequest.id,
+        parts_request_number: previewRequest.parts_request_number,
+        displayStatus: displayPartsRequestStatus(previewRequest.status),
+        tone: partsRequestStatusTone(previewRequest.status),
+        work_order_number: previewRequest.work_orders?.work_order_number ?? null,
+        asset_name: previewRequest.assets?.asset_name ?? null,
+        asset_code: previewRequest.assets?.asset_code ?? null,
+        requested_by_name:
+          previewRequest.profiles_parts_requests_requested_byToprofiles?.full_name ?? null,
+        remarks: previewRequest.remarks,
+        items: previewRequest.parts_request_items.map((item) => ({
+          id: item.id,
+          description: item.description,
+          part_number: item.part_number,
+          ss_rec_code: item.ss_rec_code,
+          quantity_requested: Number(item.quantity_requested),
+          issued_quantity: Number(item.issued_quantity),
+        })),
+        closeHref: previewCloseHref,
+        jobCardPreviewHref: previewRequest.work_orders
+          ? jobCardPreviewHref(previewRequest.work_orders.id, { query, status, page })
+          : null,
+        detailHref: `/store/parts-requests/${previewRequest.id}`,
+      }
+    : null;
+
   return (
     <>
       <AutoRefresh intervalMs={30000} />
+      {showCreatedModal && (
+        <MaterialsRequestCreatedModal
+          requestId={createdRequest?.id ?? null}
+          requestNumber={createdRequest?.parts_request_number ?? mrNumber}
+          jobCardNumber={createdRequest?.work_orders?.work_order_number ?? null}
+          jobCardPreviewHref={createdJobCardHref}
+          assetName={createdRequest?.assets?.asset_name ?? null}
+          itemCount={createdRequest ? createdRequest._count.parts_request_items : null}
+          attachmentWarning={attachmentWarning}
+          dismissHref={createdDismissHref}
+        />
+      )}
+      {showReceivedModal && (
+        <MaterialsReceivedModal
+          requestNumber={receivedRequest?.parts_request_number ?? null}
+          jobCardNumber={receivedRequest?.work_orders?.work_order_number ?? null}
+          jobCardPreviewHref={receivedJobCardHref}
+          assetName={receivedRequest?.assets?.asset_name ?? null}
+          itemsReceivedCount={receivedRequest ? receivedRequest._count.parts_request_items : null}
+          attachmentWarning={attachmentWarning}
+          issueHref={receivedIssueHref}
+          dismissHref={receivedDismissHref}
+        />
+      )}
+      {showIssuedModal && (
+        <MaterialIssuedModal
+          requestNumber={issuedRequest?.parts_request_number ?? null}
+          jobCardNumber={issuedRequest?.work_orders?.work_order_number ?? null}
+          jobCardPreviewHref={issuedJobCardHref}
+          assetName={issuedRequest?.assets?.asset_name ?? null}
+          issuedItems={issuedItems}
+          attachmentWarning={attachmentWarning}
+          dismissHref={issuedDismissHref}
+        />
+      )}
       <PageHeader
         title="Materials Requests"
         description="Materials request queue for approval and follow-up."
@@ -439,16 +742,16 @@ export default async function PartsRequestsPage({
                 <tbody className="divide-y divide-[#E5E7EB]">
                   {requests.map((request) => {
                     const displaySt = displayPartsRequestStatus(request.status);
-                    const isOpen = OPEN_PR_STATUSES.includes(request.status);
                     const woId = request.work_orders?.id ?? null;
                     const woNumber = request.work_orders?.work_order_number ?? null;
                     return (
                       <tr key={request.id} className="hover:bg-gray-50">
-                        {/* Request number */}
+                        {/* Request number — opens the quick view (Task 7) */}
                         <td className="px-4 py-3">
                           <Link
                             className="font-bold hover:text-[#ED1C24]"
-                            href={`/store/parts-requests/${request.id}`}
+                            href={previewHref(request.id, { query, status, page })}
+                            scroll={false}
                           >
                             {request.parts_request_number}
                           </Link>
@@ -488,25 +791,30 @@ export default async function PartsRequestsPage({
                           />
                         </td>
 
-                        {/* Action */}
+                        {/* Action — Task 3: Requested -> Receive, Received -> Issue,
+                            Issued/Cancelled/Rejected -> plain status text */}
                         <td className="px-4 py-3">
-                          {canReceive && isOpen ? (
+                          {canReceive && displaySt === "Requested" ? (
                             <Link
                               href={receiveHref(request.id, { query, status, page })}
-                              className={cn(
-                                "inline-flex min-h-[30px] items-center rounded-md px-3 py-1 text-xs font-semibold",
-                                displaySt === "Partially Received"
-                                  ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
-                                  : "bg-[#ED1C24] text-white hover:bg-[#c9151c]"
-                              )}
+                              className="inline-flex min-h-[30px] items-center rounded-md bg-[#ED1C24] px-3 py-1 text-xs font-semibold text-white hover:bg-[#c9151c]"
                             >
-                              {displaySt === "Partially Received"
-                                ? "Receive Remaining"
-                                : "Receive"}
+                              Receive
                             </Link>
-                          ) : displaySt === "Received" ? (
+                          ) : canReceive && displaySt === "Received" ? (
+                            <Link
+                              href={issueHref(request.id, { query, status, page })}
+                              className="inline-flex min-h-[30px] items-center rounded-md bg-[#111827] px-3 py-1 text-xs font-semibold text-white hover:bg-[#2b2b2b]"
+                            >
+                              Issue
+                            </Link>
+                          ) : displaySt === "Issued" ? (
                             <span className="text-xs font-semibold text-green-700">
-                              Received
+                              Issued
+                            </span>
+                          ) : displaySt === "Cancelled" ? (
+                            <span className="text-xs font-semibold text-[#4B5563]">
+                              Cancelled
                             </span>
                           ) : (
                             <span className="text-xs text-[#4B5563]">{displaySt}</span>
@@ -524,19 +832,12 @@ export default async function PartsRequestsPage({
                 title={
                   query || status
                     ? "No materials requests match the current filters."
-                    : roleSlug === "store_keeper"
-                      ? "No materials requests waiting for issue."
-                      : roleSlug === "maintenance_manager" ||
-                          roleSlug === "super_admin"
-                        ? "No materials requests from the team yet."
-                        : "No materials requests yet."
+                    : "No Materials Requests found."
                 }
                 message={
                   query || status
                     ? "Try clearing the search or status filter."
-                    : canCreate
-                      ? "Materials requests are created from inside a job card."
-                      : "Materials requests submitted by the team will appear here."
+                    : "Create a Materials Request from a Job Card or use New Materials Request to request materials."
                 }
               />
             </div>
@@ -599,19 +900,49 @@ export default async function PartsRequestsPage({
         )
       )}
 
+      {/* ── Materials Request quick view modal ───────────────────────
+          Opens via ?preview=<id> when a request number is clicked (Task 7).
+          Mutually exclusive with receive modal and the created-success modal.
+      ────────────────────────────────────────────────────────────── */}
+      {!receiveId && !showCreatedModal && validPreviewId && (
+        previewQuickViewData ? (
+          <MaterialsRequestQuickView data={previewQuickViewData} />
+        ) : (
+          <>
+            <div className="fixed inset-0 z-40 bg-black/50" aria-hidden="true" />
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-2xl">
+                <p className="font-bold text-[#111827]">Materials Request not found</p>
+                <p className="mt-1 text-sm text-[#4B5563]">
+                  This request is not available or you do not have access to it.
+                </p>
+                <div className="mt-4">
+                  <Link
+                    href={previewCloseHref}
+                    className="inline-block rounded-md border border-[#E5E7EB] px-4 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
+                  >
+                    Close
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </>
+        )
+      )}
+
       {/* ── Receive Material modal ───────────────────────────────────
           Opens via ?receive=<prId>. Receive takes precedence over job preview.
           Closes via Cancel/X links back to the list without receive param.
       ────────────────────────────────────────────────────────────── */}
       {receiveRequest && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 px-4 py-8">
-          <div className="mx-auto w-full max-w-2xl">
-            <div className="rounded-lg bg-white shadow-xl">
+          <div className="mx-auto w-full max-w-[800px]">
+            <div className="overflow-x-hidden rounded-lg bg-white shadow-xl">
               {/* Modal header */}
               <div className="flex items-start justify-between border-b border-[#E5E7EB] px-6 py-4">
                 <div>
                   <h2 className="text-lg font-bold text-[#111827]">
-                    Receive Material
+                    Receive Materials
                   </h2>
                   <p className="text-sm text-[#4B5563]">
                     {receiveRequest.parts_request_number ?? "Materials Request"}
@@ -633,8 +964,14 @@ export default async function PartsRequestsPage({
                 </div>
               )}
 
-              {/* Context summary */}
+              {/* Context summary — Task 4: request number, linked Job Card, asset, items count */}
               <dl className="grid grid-cols-2 gap-x-4 gap-y-2 px-6 pt-4 text-sm sm:grid-cols-3">
+                <div>
+                  <dt className="text-xs text-[#4B5563]">Materials Request</dt>
+                  <dd className="font-semibold">
+                    {receiveRequest.parts_request_number ?? "-"}
+                  </dd>
+                </div>
                 <div>
                   <dt className="text-xs text-[#4B5563]">Job Card</dt>
                   <dd className="font-semibold">
@@ -642,9 +979,17 @@ export default async function PartsRequestsPage({
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-[#4B5563]">Asset</dt>
+                  <dt className="text-xs text-[#4B5563]">Asset / Equipment</dt>
                   <dd className="font-semibold">
-                    {receiveRequest.assets?.asset_code ?? "-"}
+                    {receiveRequest.assets?.asset_name
+                      ? `${receiveRequest.assets.asset_name}${receiveRequest.assets.asset_code ? ` (${receiveRequest.assets.asset_code})` : ""}`
+                      : "-"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-[#4B5563]">Requested items</dt>
+                  <dd className="font-semibold">
+                    {receiveRequest.parts_request_items.length}
                   </dd>
                 </div>
                 <div>
@@ -653,16 +998,6 @@ export default async function PartsRequestsPage({
                     {receiveRequest
                       .profiles_parts_requests_requested_byToprofiles
                       ?.full_name ?? "-"}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-[#4B5563]">Request date</dt>
-                  <dd className="font-semibold">
-                    {receiveRequest.request_date
-                      ? new Date(receiveRequest.request_date).toLocaleDateString(
-                          "en-GB"
-                        )
-                      : "-"}
                   </dd>
                 </div>
                 <div>
@@ -678,7 +1013,7 @@ export default async function PartsRequestsPage({
 
               {/* Form */}
               <form
-                action={quickReceiveMaterialsRequestAction}
+                action={receiveMaterialsForRequestAction}
                 className="px-6 pb-6 pt-4"
               >
                 <input
@@ -694,15 +1029,20 @@ export default async function PartsRequestsPage({
                   </p>
                 ) : (
                   <div className="mt-2 overflow-x-auto rounded-md border border-[#E5E7EB]">
+                    <p className="border-b border-[#E5E7EB] bg-gray-50 px-3 py-2 text-xs text-[#4B5563]">
+                      {isManagerOrAdmin
+                        ? "As Manager/Admin, you may receive more than the requested quantity if needed."
+                        : "Quantity received cannot exceed the requested quantity."}
+                    </p>
                     <table className="w-full min-w-[580px] text-sm">
                       <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
                         <tr>
-                          <th className="px-3 py-2 text-left">Material</th>
+                          <th className="px-3 py-2 text-left">Material Name</th>
                           <th className="px-3 py-2 text-left">Part / SS</th>
                           <th className="px-3 py-2 text-right">Requested</th>
                           <th className="px-3 py-2 text-right">Received</th>
                           <th className="px-3 py-2 text-right">Remaining</th>
-                          <th className="px-3 py-2 text-left">Receive now</th>
+                          <th className="px-3 py-2 text-left">Quantity Received</th>
                           <th className="px-3 py-2 text-left">Unit</th>
                         </tr>
                       </thead>
@@ -741,11 +1081,11 @@ export default async function PartsRequestsPage({
                                   type="number"
                                   name={`qty_${item.id}`}
                                   className="focus-ring w-24 rounded-md border border-[#DDE2EA] px-2 py-1 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-[#9CA3AF]"
-                                  min="0.01"
-                                  max={qtyRemaining.toFixed(2)}
-                                  step="0.01"
+                                  min="1"
+                                  max={isManagerOrAdmin ? undefined : Math.floor(qtyRemaining)}
+                                  step="1"
                                   placeholder="0"
-                                  disabled={done}
+                                  disabled={!isManagerOrAdmin && done}
                                 />
                               </td>
                               <td className="px-3 py-2">
@@ -753,7 +1093,7 @@ export default async function PartsRequestsPage({
                                   name={`unit_${item.id}`}
                                   className="focus-ring rounded-md border border-[#DDE2EA] px-2 py-1 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-[#9CA3AF]"
                                   defaultValue="PCS"
-                                  disabled={done}
+                                  disabled={!isManagerOrAdmin && done}
                                 >
                                   {MATERIAL_UNITS.map((u) => (
                                     <option key={u} value={u}>
@@ -806,12 +1146,14 @@ export default async function PartsRequestsPage({
                 </div>
 
                 {/* Attachment / Photo (optional) */}
-                <div className="mt-4 rounded-md border border-[#E5E7EB] bg-gray-50 p-3">
-                  <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Attachment / Photo — optional</p>
-                  <div className="grid gap-2 sm:grid-cols-[180px_1fr]">
+                <div className="mt-4 w-full max-w-full overflow-x-hidden rounded-md border border-[#E5E7EB] bg-gray-50 p-3">
+                  <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Attachment / Photo — Optional</p>
+
+                  <div className="mb-3 min-w-0 w-full">
+                    <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Document type</label>
                     <select
                       name="attachment_type"
-                      className="focus-ring rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
+                      className="focus-ring w-full min-w-0 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
                     >
                       {[
                         "Received Material Photo",
@@ -824,29 +1166,45 @@ export default async function PartsRequestsPage({
                         <option key={opt} value={opt}>{opt}</option>
                       ))}
                     </select>
-                    <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                      <input
-                        type="file"
-                        name="attachment_file"
-                        accept=".pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.doc,.docx"
-                        className="focus-ring rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm file:mr-2 file:rounded file:border-0 file:bg-[#111827] file:px-2 file:py-1 file:text-xs file:font-bold file:text-white"
-                      />
-                      <input
-                        type="file"
-                        name="attachment_file"
-                        accept="image/*"
-                        capture="environment"
-                        className="focus-ring rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm file:mr-2 file:rounded file:border-0 file:bg-[#4B5563] file:px-2 file:py-1 file:text-xs file:font-bold file:text-white sm:w-auto"
-                        placeholder="Take Photo"
-                        aria-label="Take photo with camera"
-                      />
+                  </div>
+
+                  <div className="grid w-full max-w-full grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="min-w-0 w-full">
+                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Upload File</label>
+                      <div className="w-full max-w-full overflow-hidden rounded-md border border-[#E5E7EB] bg-white p-2">
+                        <input
+                          type="file"
+                          name="attachment_file"
+                          accept=".pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.doc,.docx"
+                          className="focus-ring block w-full max-w-full min-w-0 truncate text-sm file:mr-2 file:rounded file:border-0 file:bg-[#111827] file:px-2 file:py-1 file:text-xs file:font-bold file:text-white"
+                        />
+                      </div>
+                    </div>
+                    <div className="min-w-0 w-full">
+                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Take Photo</label>
+                      <div className="w-full max-w-full overflow-hidden rounded-md border border-[#E5E7EB] bg-white p-2">
+                        <input
+                          type="file"
+                          name="attachment_file"
+                          accept="image/*"
+                          capture="environment"
+                          aria-label="Take photo with camera"
+                          className="focus-ring block w-full max-w-full min-w-0 truncate text-sm file:mr-2 file:rounded file:border-0 file:bg-[#4B5563] file:px-2 file:py-1 file:text-xs file:font-bold file:text-white"
+                        />
+                      </div>
+                      <p className="mt-1 text-[11px] text-[#9CA3AF]">Use camera to capture received material photo.</p>
                     </div>
                   </div>
-                  <p className="mt-1 text-xs text-[#9CA3AF]">Upload a delivery note, invoice, or take a photo of the received materials.</p>
+
+                  <p className="mt-2 text-xs text-[#9CA3AF]">
+                    Upload a delivery note, invoice, supporting file, or take a photo of the received materials.
+                    <br />
+                    Accepted: PDF, JPG, JPEG, PNG, WEBP, XLS, XLSX, DOC, DOCX
+                  </p>
                 </div>
 
                 {/* Buttons */}
-                <div className="mt-5 flex justify-end gap-3">
+                <div className="mt-5 flex flex-wrap justify-end gap-3">
                   <Link
                     href={closeHref}
                     className="rounded-md border border-[#DDE2EA] px-4 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
@@ -857,7 +1215,206 @@ export default async function PartsRequestsPage({
                     type="submit"
                     className="rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white hover:bg-[#c9151c]"
                   >
-                    Confirm Receipt
+                    Confirm Received
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Issue Material modal ───────────────────────────────────────
+          Opens via ?issueMr=<prId>, only for requests that have been
+          Received. Task 6/7.
+      ────────────────────────────────────────────────────────────── */}
+      {issueRequest && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 px-4 py-8">
+          <div className="mx-auto w-full max-w-[800px]">
+            <div className="overflow-x-hidden rounded-lg bg-white shadow-xl">
+              <div className="flex items-start justify-between border-b border-[#E5E7EB] px-6 py-4">
+                <div>
+                  <h2 className="text-lg font-bold text-[#111827]">Issue Material</h2>
+                  <p className="text-sm text-[#4B5563]">
+                    {issueRequest.parts_request_number ?? "Materials Request"}
+                  </p>
+                </div>
+                <Link
+                  href={closeHref}
+                  aria-label="Close"
+                  className="rounded-md p-1 text-[#4B5563] hover:bg-gray-100 hover:text-[#111827]"
+                >
+                  <X className="h-5 w-5" />
+                </Link>
+              </div>
+
+              {issueError && (
+                <div className="mx-6 mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
+                  {issueError}
+                </div>
+              )}
+
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 px-6 pt-4 text-sm sm:grid-cols-3">
+                <div>
+                  <dt className="text-xs text-[#4B5563]">Materials Request</dt>
+                  <dd className="font-semibold">
+                    {issueRequest.parts_request_number ?? "-"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-[#4B5563]">Related Job Card</dt>
+                  <dd className="font-semibold">
+                    {issueRequest.work_orders?.work_order_number ?? "-"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-[#4B5563]">Status</dt>
+                  <dd>
+                    <StatusBadge
+                      label={displayPartsRequestStatus(issueRequest.status)}
+                      tone={partsRequestStatusTone(issueRequest.status)}
+                    />
+                  </dd>
+                </div>
+              </dl>
+
+              <form action={issueMaterialsForRequestAction} className="px-6 pb-6 pt-4">
+                <input type="hidden" name="parts_request_id" value={issueRequest.id} />
+
+                {issueLines.length === 0 ? (
+                  <p className="py-4 text-sm text-[#4B5563]">
+                    No received materials found for this request.
+                  </p>
+                ) : (
+                  <div className="mt-2 overflow-x-auto rounded-md border border-[#E5E7EB]">
+                    <table className="w-full min-w-[520px] text-sm">
+                      <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Material</th>
+                          <th className="px-3 py-2 text-right">Available balance</th>
+                          <th className="px-3 py-2 text-left">Quantity to Issue</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#E5E7EB]">
+                        {issueLines.map((line) => {
+                          const noBalance = line.available <= 0;
+                          return (
+                            <tr key={line.key} className={noBalance ? "bg-gray-50 text-[#9CA3AF]" : undefined}>
+                              <td className="px-3 py-2 font-semibold">
+                                {line.materialName ?? line.partNumber ?? "-"}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums">
+                                {line.available} {line.unit}
+                              </td>
+                              <td className="px-3 py-2">
+                                <input
+                                  type="number"
+                                  name={`issueQty_${line.key}`}
+                                  className="focus-ring w-24 rounded-md border border-[#DDE2EA] px-2 py-1 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-[#9CA3AF]"
+                                  min="1"
+                                  max={line.available}
+                                  step="1"
+                                  placeholder="0"
+                                  disabled={noBalance}
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                <div className="mt-4">
+                  <label className="mb-1 block text-xs font-semibold text-[#4B5563]">
+                    Issued to
+                  </label>
+                  <input
+                    className="focus-ring w-full rounded-md border border-[#DDE2EA] px-3 py-2 text-sm"
+                    name="issued_to"
+                    placeholder="Technician / requester (optional)"
+                  />
+                </div>
+                <div className="mt-3">
+                  <label className="mb-1 block text-xs font-semibold text-[#4B5563]">
+                    Remarks
+                  </label>
+                  <textarea
+                    className="focus-ring w-full rounded-md border border-[#DDE2EA] px-3 py-2 text-sm"
+                    name="remarks"
+                    rows={2}
+                    placeholder="Optional notes"
+                  />
+                </div>
+
+                {/* Attachment / Photo (optional) */}
+                <div className="mt-4 w-full max-w-full overflow-x-hidden rounded-md border border-[#E5E7EB] bg-gray-50 p-3">
+                  <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Attachment / Photo — Optional</p>
+
+                  <div className="mb-3 min-w-0 w-full">
+                    <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Document type</label>
+                    <select
+                      name="attachment_type"
+                      className="focus-ring w-full min-w-0 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
+                    >
+                      {[
+                        "Material Issue Photo",
+                        "Handover Note",
+                        "Other Document",
+                      ].map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid w-full max-w-full grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="min-w-0 w-full">
+                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Upload File</label>
+                      <div className="w-full max-w-full overflow-hidden rounded-md border border-[#E5E7EB] bg-white p-2">
+                        <input
+                          type="file"
+                          name="attachment_file"
+                          accept=".pdf,.jpg,.jpeg,.png,.webp,.xls,.xlsx,.doc,.docx"
+                          className="focus-ring block w-full max-w-full min-w-0 truncate text-sm file:mr-2 file:rounded file:border-0 file:bg-[#111827] file:px-2 file:py-1 file:text-xs file:font-bold file:text-white"
+                        />
+                      </div>
+                    </div>
+                    <div className="min-w-0 w-full">
+                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Take Photo</label>
+                      <div className="w-full max-w-full overflow-hidden rounded-md border border-[#E5E7EB] bg-white p-2">
+                        <input
+                          type="file"
+                          name="attachment_file"
+                          accept="image/*"
+                          capture="environment"
+                          aria-label="Take photo with camera"
+                          className="focus-ring block w-full max-w-full min-w-0 truncate text-sm file:mr-2 file:rounded file:border-0 file:bg-[#4B5563] file:px-2 file:py-1 file:text-xs file:font-bold file:text-white"
+                        />
+                      </div>
+                      <p className="mt-1 text-[11px] text-[#9CA3AF]">Use camera to capture issued material photo.</p>
+                    </div>
+                  </div>
+
+                  <p className="mt-2 text-xs text-[#9CA3AF]">
+                    Upload a handover note, supporting file, or take a photo of the issued materials.
+                    <br />
+                    Accepted: PDF, JPG, JPEG, PNG, WEBP, XLS, XLSX, DOC, DOCX
+                  </p>
+                </div>
+
+                <div className="mt-5 flex flex-wrap justify-end gap-3">
+                  <Link
+                    href={closeHref}
+                    className="rounded-md border border-[#DDE2EA] px-4 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
+                  >
+                    Cancel
+                  </Link>
+                  <button
+                    type="submit"
+                    className="rounded-md bg-[#111827] px-4 py-2 text-sm font-bold text-white hover:bg-[#2b2b2b]"
+                  >
+                    Confirm Issue
                   </button>
                 </div>
               </form>

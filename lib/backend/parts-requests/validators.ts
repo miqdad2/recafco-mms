@@ -9,7 +9,7 @@ export const partsRequestItemSchema = z.object({
   description: z.string().min(1),
   part_number: z.string().nullable(),
   ss_rec_code: z.string().nullable(),
-  quantity_requested: z.number().nonnegative(),
+  quantity_requested: z.number().int().positive(),
   unit_price: z.number().nonnegative(),
   remarks: z.string().nullable()
 });

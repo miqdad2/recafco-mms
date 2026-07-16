@@ -4,6 +4,12 @@ import { revalidatePath } from "next/cache";
 
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { normalizeCategory } from "@/components/store/offline-inventory-types";
+import { pickUploadedFile, validatePrivateFileWithOptions } from "@/lib/files/validation";
+import { getFileSecuritySettings } from "@/lib/files/settings";
+import { savePrivateFile } from "@/lib/files/local-storage";
+import { writeAuditLog } from "@/lib/audit/log";
+import { requireOfflineInventoryManage } from "@/lib/store/offline-inventory-data";
 
 export type OfflineMovementState =
   | { ok: true }
@@ -11,9 +17,24 @@ export type OfflineMovementState =
   | null;
 
 function parseQty(raw: string): number {
-  const n = parseFloat(raw);
-  if (isNaN(n) || n <= 0) throw new Error("Quantity must be greater than 0.");
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error("Quantity must be a whole number greater than 0.");
+  }
   return n;
+}
+
+function parseOpeningQty(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error("Opening quantity must be a whole number greater than 0.");
+  }
+  return n;
+}
+
+function todayDateOnly(): Date {
+  const d = new Date();
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
 }
 
 function toNullable(s: string): string | null {
@@ -21,8 +42,10 @@ function toNullable(s: string): string | null {
   return v === "" ? null : v;
 }
 
-// Compute available balance for a specific material (server-side, always fresh)
-async function computeBalance(opts: {
+// Compute available balance for a specific material (server-side, always fresh).
+// Exported for reuse by app/actions/phase4.ts's Materials-Request issue flow,
+// which must check the same Maintenance Store ledger balance before issuing.
+export async function computeBalance(opts: {
   partId: string | null;
   manualName: string | null;
   unit: string;
@@ -45,10 +68,138 @@ async function computeBalance(opts: {
   let balance = 0;
   for (const m of movements) {
     const qty = Number(m.quantity);
-    if (m.movement_type === "RECEIVED") balance += qty;
+    if (m.movement_type === "RECEIVED" || m.movement_type === "OPENING_STOCK") balance += qty;
     else if (m.movement_type === "ISSUED") balance -= qty;
   }
   return balance;
+}
+
+// Task 11 — exact-duplicate guard, only when a reference number is supplied.
+// Matches on movement type, material identity (part or manual name+part
+// number+SS Rec. Code), quantity, unit, reference number, and movement date.
+async function findDuplicateMovement(opts: {
+  movementType: "RECEIVED" | "ISSUED";
+  partId: string | null;
+  manualName: string | null;
+  manualPartNumber: string | null;
+  ssRecCode: string | null;
+  qty: number;
+  unit: string;
+  refNum: string;
+  movementDate: string;
+}) {
+  const matFilter = opts.partId
+    ? { part_id: opts.partId }
+    : {
+        part_id: null as null,
+        manual_material_name: { equals: opts.manualName ?? "", mode: "insensitive" as const },
+        manual_part_number: opts.manualPartNumber,
+        ss_rec_code: opts.ssRecCode,
+      };
+
+  return prisma.offline_inventory_movements.findFirst({
+    where: {
+      movement_type: opts.movementType,
+      reference_number: opts.refNum,
+      quantity: opts.qty,
+      unit: opts.unit,
+      movement_date: new Date(opts.movementDate),
+      deleted_at: null,
+      ...matFilter,
+    },
+    select: { id: true },
+  });
+}
+
+// Task 6 — block a duplicate Opening Stock entry for the same material identity
+// (name + part number + SS Rec. Code + unit), regardless of quantity/date, unless
+// the current user is Super Admin.
+async function findDuplicateOpeningStock(opts: {
+  manualName: string;
+  manualPartNumber: string | null;
+  ssRecCode: string | null;
+  unit: string;
+}) {
+  return prisma.offline_inventory_movements.findFirst({
+    where: {
+      movement_type: "OPENING_STOCK",
+      manual_material_name: { equals: opts.manualName, mode: "insensitive" },
+      manual_part_number: opts.manualPartNumber,
+      ss_rec_code: opts.ssRecCode,
+      unit: { equals: opts.unit, mode: "insensitive" },
+      deleted_at: null,
+    },
+    select: { id: true },
+  });
+}
+
+// ── Add Opening Stock ─────────────────────────────────────────────────────────
+
+export async function addOpeningStockAction(
+  _prev: OfflineMovementState,
+  formData: FormData
+): Promise<OfflineMovementState> {
+  const context = await requireOfflineInventoryManage();
+
+  try {
+    const manualName    = toNullable(String(formData.get("manual_material_name") ?? ""));
+    const category      = toNullable(String(formData.get("category") ?? ""));
+    const manualPartNum = toNullable(String(formData.get("manual_part_number") ?? ""));
+    const ssRecCode     = toNullable(String(formData.get("ss_rec_code") ?? ""));
+    const qty           = parseOpeningQty(String(formData.get("quantity") ?? ""));
+    const unit          = toNullable(String(formData.get("unit") ?? "")) ?? "PCS";
+    const location      = toNullable(String(formData.get("location") ?? ""));
+    const referenceNote = toNullable(String(formData.get("reference_note") ?? ""));
+    const remarks       = toNullable(String(formData.get("remarks") ?? ""));
+
+    if (!manualName) {
+      return { ok: false, error: "Material Name is required." };
+    }
+    if (!category) {
+      return { ok: false, error: "Category is required." };
+    }
+
+    const isSuperAdmin = context.role?.slug === "super_admin";
+    if (!isSuperAdmin) {
+      const dupe = await findDuplicateOpeningStock({
+        manualName,
+        manualPartNumber: manualPartNum,
+        ssRecCode,
+        unit,
+      });
+      if (dupe) {
+        return {
+          ok: false,
+          error:
+            "This material already has an opening stock entry. Use Add Received Material to increase balance, or edit the existing record if allowed.",
+        };
+      }
+    }
+
+    await prisma.offline_inventory_movements.create({
+      data: {
+        movement_type:         "OPENING_STOCK",
+        movement_date:         todayDateOnly(),
+        part_id:               null,
+        manual_material_name:  manualName,
+        manual_part_number:    manualPartNum,
+        ss_rec_code:           ssRecCode,
+        category:              normalizeCategory(category),
+        quantity:              qty,
+        unit,
+        counterparty:          location,
+        reference_number:      referenceNote,
+        remarks,
+        created_by:            context.userId,
+      },
+    });
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Failed to save." };
+  }
+
+  revalidatePath("/store/offline-inventory");
+  revalidatePath("/store/offline-inventory/movements");
+  return { ok: true };
 }
 
 // ── Receive Material ──────────────────────────────────────────────────────────
@@ -57,8 +208,8 @@ export async function receiveOfflineMaterialAction(
   _prev: OfflineMovementState,
   formData: FormData
 ): Promise<OfflineMovementState> {
-  // requirePermission may call redirect() — must be outside try/catch
-  const context = await requirePermission("parts.view");
+  // requireOfflineInventoryManage may call redirect() — must be outside try/catch
+  const context = await requireOfflineInventoryManage();
 
   try {
     const movementDate  = toNullable(String(formData.get("movement_date") ?? ""));
@@ -66,7 +217,9 @@ export async function receiveOfflineMaterialAction(
     const isManual      = partIdRaw === "" || partIdRaw === "__manual__";
     const partId        = isManual ? null : partIdRaw;
     const manualName    = toNullable(String(formData.get("manual_material_name") ?? ""));
+    const category      = toNullable(String(formData.get("category") ?? ""));
     const manualPartNum = toNullable(String(formData.get("manual_part_number") ?? ""));
+    const ssRecCode     = toNullable(String(formData.get("ss_rec_code") ?? ""));
     const qty           = parseQty(String(formData.get("quantity") ?? ""));
     const unit          = toNullable(String(formData.get("unit") ?? "")) ?? "PCS";
     const counterparty  = toNullable(String(formData.get("counterparty") ?? ""));
@@ -80,36 +233,26 @@ export async function receiveOfflineMaterialAction(
     if (!partId && !manualName) {
       return { ok: false, error: "Select an existing material or enter a material name." };
     }
+    if (!category) {
+      return { ok: false, error: "Category is required." };
+    }
 
-    // Block exact duplicate when a reference number is provided
     if (refNum) {
-      const matFilter = partId
-        ? { part_id: partId }
-        : {
-            part_id: null as null,
-            manual_material_name: {
-              equals: manualName ?? "",
-              mode: "insensitive" as const,
-            },
-          };
-
-      const dupe = await prisma.offline_inventory_movements.findFirst({
-        where: {
-          movement_type:    "RECEIVED",
-          reference_number: refNum,
-          quantity:         qty,
-          movement_date:    new Date(movementDate),
-          deleted_at:       null,
-          ...matFilter,
-        },
-        select: { id: true },
+      const dupe = await findDuplicateMovement({
+        movementType: "RECEIVED",
+        partId,
+        manualName,
+        manualPartNumber: isManual ? manualPartNum : null,
+        ssRecCode,
+        qty,
+        unit,
+        refNum,
+        movementDate,
       });
-
       if (dupe) {
         return {
           ok: false,
-          error:
-            "This inventory movement already exists for the same reference number, material, quantity, and date.",
+          error: "This store movement already exists for the same reference number.",
         };
       }
     }
@@ -121,6 +264,8 @@ export async function receiveOfflineMaterialAction(
         part_id:               partId,
         manual_material_name:  isManual ? manualName : null,
         manual_part_number:    isManual ? manualPartNum : null,
+        ss_rec_code:           ssRecCode,
+        category:              normalizeCategory(category),
         quantity:              qty,
         unit,
         counterparty,
@@ -130,6 +275,49 @@ export async function receiveOfflineMaterialAction(
         created_by:            context.userId,
       },
     });
+
+    // Optional attachment — only linkable when a Related Job Card was selected,
+    // since there is no attachments table for offline_inventory_movements itself
+    // (no DB schema changes in this phase). Failure here never loses the receipt.
+    if (woIdRaw) {
+      const attachmentFile = pickUploadedFile(formData, "attachment_file");
+      if (attachmentFile) {
+        const attachmentType =
+          toNullable(String(formData.get("attachment_type") ?? "")) ?? "Received Material Photo";
+        const settings = await getFileSecuritySettings();
+        const validationError = validatePrivateFileWithOptions(attachmentFile, {
+          maxSizeBytes: settings.maxUploadSizeBytes,
+          allowedTypes: settings.allowedFileTypes,
+        });
+        if (!validationError) {
+          try {
+            const filePath = await savePrivateFile("work-order-files", woIdRaw, attachmentFile);
+            await prisma.work_order_attachments.create({
+              data: {
+                work_order_id: woIdRaw,
+                attachment_type: attachmentType,
+                file_name: attachmentFile.name,
+                file_path: filePath,
+                content_type: attachmentFile.type,
+                file_size: attachmentFile.size,
+                uploaded_by: context.userId,
+              },
+            });
+            await writeAuditLog({
+              actorId: context.userId,
+              action: "file.upload",
+              entityType: "work_order",
+              entityId: woIdRaw,
+              summary: `Uploaded ${attachmentType} proof on offline inventory receipt`,
+              metadata: { fileName: attachmentFile.name, bucket: "work-order-files" },
+            });
+            revalidatePath(`/maintenance/work-orders/${woIdRaw}`);
+          } catch {
+            // Non-fatal — the material receipt above is already saved.
+          }
+        }
+      }
+    }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Failed to save." };
   }
@@ -144,7 +332,7 @@ export async function issueOfflineMaterialAction(
   _prev: OfflineMovementState,
   formData: FormData
 ): Promise<OfflineMovementState> {
-  const context = await requirePermission("parts.view");
+  const context = await requireOfflineInventoryManage();
 
   try {
     const movementDate = toNullable(String(formData.get("movement_date") ?? ""));
@@ -152,13 +340,16 @@ export async function issueOfflineMaterialAction(
     const isManual     = partIdRaw === "" || partIdRaw === "__manual__";
     const partId       = isManual ? null : partIdRaw;
     const manualName   = toNullable(String(formData.get("manual_material_name") ?? ""));
+    const manualPartNum = toNullable(String(formData.get("manual_part_number") ?? ""));
+    const ssRecCode    = toNullable(String(formData.get("ss_rec_code") ?? ""));
+    const category     = toNullable(String(formData.get("category") ?? ""));
     const qty          = parseQty(String(formData.get("quantity") ?? ""));
     const unit         = toNullable(String(formData.get("unit") ?? "")) ?? "PCS";
     const counterparty = toNullable(String(formData.get("counterparty") ?? ""));
     const purpose      = toNullable(String(formData.get("purpose") ?? ""));
     const receiverName = toNullable(String(formData.get("receiver_name") ?? ""));
-    const woIdRaw      = toNullable(String(formData.get("related_work_order_id") ?? ""));
-    const remarks      = toNullable(String(formData.get("remarks") ?? ""));
+    const woIdRaw       = toNullable(String(formData.get("related_work_order_id") ?? ""));
+    const remarks       = toNullable(String(formData.get("remarks") ?? ""));
 
     if (!movementDate) {
       return { ok: false, error: "Movement date is required." };
@@ -178,7 +369,7 @@ export async function issueOfflineMaterialAction(
     if (qty > available) {
       return {
         ok: false,
-        error: `Cannot issue ${qty} ${unit}. Available balance is ${available} ${unit}.`,
+        error: `Cannot issue this quantity. Available balance is ${available} ${unit}.`,
       };
     }
 
@@ -188,6 +379,9 @@ export async function issueOfflineMaterialAction(
         movement_date:         new Date(movementDate),
         part_id:               partId,
         manual_material_name:  isManual ? manualName : null,
+        manual_part_number:    isManual ? manualPartNum : null,
+        ss_rec_code:           ssRecCode,
+        category:              normalizeCategory(category),
         quantity:              qty,
         unit,
         counterparty,
@@ -204,4 +398,61 @@ export async function issueOfflineMaterialAction(
 
   revalidatePath("/store/offline-inventory");
   return { ok: true };
+}
+
+// ── Material detail — recent movements for the View modal ─────────────────────
+
+export type MaterialMovementRow = {
+  id: string;
+  movement_type: string;
+  movement_date: string;
+  quantity: number;
+  unit: string;
+  counterparty: string | null;
+  reference_number: string | null;
+  work_order_number: string | null;
+  created_by_name: string;
+};
+
+// `key` is the same BalanceItem.key produced by buildBalanceKey() in
+// lib/store/offline-inventory-data.ts — "part:<id>" or "manual:<name>|<unit>".
+export async function getMaterialRecentMovementsAction(key: string): Promise<MaterialMovementRow[]> {
+  await requirePermission("parts.view");
+
+  const where = key.startsWith("part:")
+    ? { part_id: key.slice("part:".length), deleted_at: null }
+    : (() => {
+        const rest = key.slice("manual:".length);
+        const sepIndex = rest.lastIndexOf("|");
+        const name = sepIndex === -1 ? rest : rest.slice(0, sepIndex);
+        const unit = sepIndex === -1 ? "" : rest.slice(sepIndex + 1);
+        return {
+          part_id: null,
+          manual_material_name: { equals: name, mode: "insensitive" as const },
+          unit: { equals: unit, mode: "insensitive" as const },
+          deleted_at: null,
+        };
+      })();
+
+  const rows = await prisma.offline_inventory_movements.findMany({
+    where,
+    include: {
+      work_orders: { select: { work_order_number: true } },
+      profiles: { select: { full_name: true } },
+    },
+    orderBy: [{ movement_date: "desc" }, { created_at: "desc" }],
+    take: 10,
+  });
+
+  return rows.map((r) => ({
+    id: r.id,
+    movement_type: r.movement_type,
+    movement_date: r.movement_date.toISOString(),
+    quantity: Number(r.quantity),
+    unit: r.unit,
+    counterparty: r.counterparty,
+    reference_number: r.reference_number,
+    work_order_number: r.work_orders?.work_order_number ?? null,
+    created_by_name: r.profiles.full_name,
+  }));
 }

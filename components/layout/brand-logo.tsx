@@ -10,14 +10,14 @@ type BrandLogoProps = {
 };
 
 export function BrandLogo({ variant = "dark", size = "sm", showText = true, subtitle }: BrandLogoProps) {
-  const imageSize = size === "lg" ? 104 : 54;
+  const imageSize = size === "lg" ? 96 : 54;
 
   return (
     <div className="flex items-center gap-3">
       <div
         className={cn(
           "relative shrink-0 overflow-hidden rounded-md bg-white shadow-sm",
-          size === "lg" ? "h-28 w-32 border border-white/20" : "h-14 w-16 border border-gray-200"
+          size === "lg" ? "h-[88px] w-[104px] border border-white/20" : "h-14 w-16 border border-gray-200"
         )}
       >
         <Image

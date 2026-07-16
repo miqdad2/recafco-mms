@@ -371,7 +371,7 @@ export default async function UserDetailPage({
                       </p>
                       <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-[#6B7280]">
                         {impact.workOrdersCreated > 0 && (
-                          <span>{impact.workOrdersCreated} repair order{impact.workOrdersCreated !== 1 ? "s" : ""}</span>
+                          <span>{impact.workOrdersCreated} Job Card{impact.workOrdersCreated !== 1 ? "s" : ""}</span>
                         )}
                         {impact.approvalsDecided > 0 && (
                           <span>{impact.approvalsDecided} approval{impact.approvalsDecided !== 1 ? "s" : ""}</span>

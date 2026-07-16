@@ -4,10 +4,13 @@ type FieldProps = {
   defaultValue?: string | number | null;
   type?: string;
   required?: boolean;
+  min?: string | number;
+  step?: string | number;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
   children?: React.ReactNode;
 };
 
-export function Field({ label, name, defaultValue, type = "text", required, children }: FieldProps) {
+export function Field({ label, name, defaultValue, type = "text", required, min, step, inputMode, children }: FieldProps) {
   return (
     <label className="block">
       <span className="text-sm font-semibold text-[#111827]">{label}</span>
@@ -18,6 +21,9 @@ export function Field({ label, name, defaultValue, type = "text", required, chil
           name={name}
           defaultValue={defaultValue ?? ""}
           required={required}
+          min={min}
+          step={step}
+          inputMode={inputMode}
         />
       )}
     </label>

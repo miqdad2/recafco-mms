@@ -100,7 +100,7 @@ export function WorkOrderForm({
                   </div>
                   <Link href={`/assets/${preselectedAsset.id}`} className="shrink-0 text-xs font-bold text-[#ED1C24] hover:underline">View asset profile →</Link>
                 </div>
-                <p className="mt-3 text-xs font-semibold text-[#059669]">Asset selected — repair order will be linked to this machine.</p>
+                <p className="mt-3 text-xs font-semibold text-[#059669]">Asset selected — Job Card will be linked to this machine.</p>
                 <input type="hidden" name="asset_id" value={preselectedAsset.id} />
               </div>
             ) : (
@@ -122,7 +122,7 @@ export function WorkOrderForm({
                     </option>
                   ))}
                 </select>
-                <p className="mt-1.5 text-xs text-[#6B7280]">Can be set now or linked later from the repair order record.</p>
+                <p className="mt-1.5 text-xs text-[#6B7280]">Can be set now or linked later from the Job Card record.</p>
               </div>
             )}
           </div>
@@ -133,7 +133,7 @@ export function WorkOrderForm({
             <div className="border-b border-[#E5E7EB] bg-[#F8FAFC] px-4 py-3">
               <FormDocumentHeader
                 variant="form"
-                title="Repair Order"
+                title="Job Card"
                 departmentName="Maintenance Department"
                 referenceLabel="Ref:"
                 referenceNumber="REC/MD/JOB/Sr.No"
@@ -339,7 +339,7 @@ export function WorkOrderForm({
                       <tr key={index}>
                         <td className={cellClass}><input className={inputClass} name={`req_part_description_${index}`} placeholder="e.g. oil filter, gasket…" /></td>
                         <td className={cellClass}><input className={inputClass} name={`req_part_part_number_${index}`} /></td>
-                        <td className={cellClass}><input className={inputClass} name={`req_part_quantity_${index}`} type="number" step="0.01" defaultValue="1" /></td>
+                        <td className={cellClass}><input className={inputClass} name={`req_part_quantity_${index}`} type="number" min="1" step="1" inputMode="numeric" defaultValue="1" /></td>
                         <td className={cellClass}><input className={inputClass} name={`req_part_uom_${index}`} defaultValue="PCS" /></td>
                         <td className={cellClass}><input className={inputClass} name={`req_part_notes_${index}`} /></td>
                       </tr>
@@ -367,7 +367,7 @@ export function WorkOrderForm({
             {/* Other forms panel */}
             <section className="rounded-md border border-[#DDE2EA] bg-white p-4 shadow-sm">
               <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Other Forms</p>
-              <p className="mt-0.5 mb-3 text-xs text-[#4B5563]">Currently filling: Repair Order</p>
+              <p className="mt-0.5 mb-3 text-xs text-[#4B5563]">Currently filling: Job Card</p>
               <Link
                 href="/store/parts-requests/new"
                 className="flex flex-col gap-0.5 rounded-md border border-[#E5E7EB] bg-[#F8FAFC] p-3 transition hover:border-[#ED1C24] hover:bg-red-50"
@@ -404,9 +404,9 @@ export function WorkOrderForm({
               {/* Action buttons */}
               <div className="space-y-3 border-t border-[#E5E7EB] pt-3">
                 <div>
-                  <p className="mb-2 text-xs text-[#4B5563]">Submit sends this repair order for assignment.</p>
+                  <p className="mb-2 text-xs text-[#4B5563]">Submit sends this Job Card for assignment.</p>
                   <Button type="submit" name="intent" value="submit_for_approval" className="w-full">
-                    Submit Repair Order
+                    Submit Job Card
                   </Button>
                 </div>
                 <div className="border-t border-[#E5E7EB] pt-3">
@@ -426,7 +426,7 @@ export function WorkOrderForm({
   return (
     <form action={upsertWorkOrderAction} className="space-y-5">
       {workOrder?.id ? <input type="hidden" name="id" value={workOrder.id} /> : null}
-      <FormSection title="Repair Order Header" description="Primary paper-form details and asset reference.">
+      <FormSection title="Job Card Header" description="Primary paper-form details and asset reference.">
         <Field label="Ordered by" name="ordered_by" defaultValue={workOrder?.ordered_by} required />
         <Field label="Requested by department" name="requested_by_department_id">
           <select className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="requested_by_department_id" defaultValue={workOrder?.requested_by_department_id ?? ""}>
@@ -534,7 +534,7 @@ export function WorkOrderForm({
             <div className="grid gap-3 md:grid-cols-5">
               <Field label="Description / part name" name={`req_part_description_${index}`} defaultValue={requiredPartRows[index]?.description} />
               <Field label="Part number" name={`req_part_part_number_${index}`} defaultValue={requiredPartRows[index]?.part_number} />
-              <Field label="Quantity" name={`req_part_quantity_${index}`} type="number" defaultValue={requiredPartRows[index]?.quantity_required ?? "1"} />
+              <Field label="Quantity" name={`req_part_quantity_${index}`} type="number" min="1" step="1" inputMode="numeric" defaultValue={requiredPartRows[index]?.quantity_required ?? "1"} />
               <Field label="Unit" name={`req_part_uom_${index}`} defaultValue={requiredPartRows[index]?.unit_of_measure ?? "PCS"} />
               <Field label="Notes" name={`req_part_notes_${index}`} defaultValue={requiredPartRows[index]?.notes} />
             </div>
@@ -567,7 +567,7 @@ export function WorkOrderForm({
         ))}
       </FormSection>
 
-      <Button type="submit">Save repair order</Button>
+      <Button type="submit">Save Job Card</Button>
     </form>
   );
 }

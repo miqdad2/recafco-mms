@@ -518,7 +518,7 @@ function ManagerWOTable({
     <section className="rounded-md border border-[#E5E7EB] bg-white shadow-sm">
       <div className="flex items-center justify-between border-b border-[#E5E7EB] px-5 py-3">
         <div>
-          <h2 className="text-sm font-bold text-[#111827]">Repair Order List — {deptName}</h2>
+          <h2 className="text-sm font-bold text-[#111827]">Job Card List — {deptName}</h2>
           <p className="text-xs text-[#4B5563]">{rows.length} record{rows.length !== 1 ? "s" : ""}</p>
         </div>
       </div>
