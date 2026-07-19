@@ -43,6 +43,14 @@ const requiredDate = z.preprocess((value) => {
   return Number.isNaN(date.getTime()) ? undefined : date;
 }, z.date());
 
+// Same bounds as the Excel importer's model-year validation (1970 to next
+// year), so manual entry and bulk import agree on what a valid year is.
+const optionalYear = z.preprocess((value) => {
+  if (value === null || value === undefined || value === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}, z.number().int().min(1970).max(new Date().getFullYear() + 1).optional());
+
 const assetSchema = z.object({
   id: optionalUuid,
   asset_code: z.string().trim().min(2).max(60),
@@ -52,6 +60,7 @@ const assetSchema = z.object({
   location: optionalString,
   brand: optionalString,
   model: optionalString,
+  model_year: optionalYear,
   serial_number: optionalString,
   plate_number: optionalString,
   chassis_number: optionalString,

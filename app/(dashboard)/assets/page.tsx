@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { isVehicleCategory } from "@/lib/assets/categories";
 // Categories loaded from DB — see asset_categories table
 
 type AssetsPageProps = {
@@ -468,6 +469,15 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
     const mainName = getMainCategoryName(chip.category);
     catOverviewMap.set(mainName, (catOverviewMap.get(mainName) ?? 0) + Number(chip.count));
   }
+
+  // Fleet view total — the fixed VEHICLE_CATEGORIES list (Car/Pickup/Bus/Truck
+  // from the Vehicles main category, plus Loader/Forklift/Crane from Heavy
+  // Equipment), independent of and never merged into the main category cards
+  // above (Assets Category Count Clarity Unit 1, Task 3/5).
+  const fleetViewCount = categoryChips.reduce(
+    (sum, chip) => sum + (isVehicleCategory(chip.category) ? Number(chip.count) : 0),
+    0
+  );
   // Admin actions only for super_admin and managers with explicit assets.manage permission.
   // maintenance_data_entry is excluded even if the role carries assets.manage in DB.
   const canManage =
@@ -492,13 +502,13 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         actions={
           canManage ? (
             <>
-              <Link href="/assets/import">
+              <Link href="/assets/import" title="Upload many assets or vehicles from Excel.">
                 <Button variant="secondary" className="gap-2">
                   <Upload className="h-4 w-4" aria-hidden="true" />
                   Import Excel
                 </Button>
               </Link>
-              <Link href="/assets/new">
+              <Link href="/assets/new" title="Add one asset or vehicle manually.">
                 <Button className="gap-2">
                   <Plus className="h-4 w-4" aria-hidden="true" />
                   New Asset
@@ -555,10 +565,23 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             {dbMainCats.map((cat) => {
               const catCount = catOverviewMap.get(cat.name) ?? 0;
               const isSelected = mainCategory === cat.name;
+              const isVehiclesCard = cat.name === "Vehicles";
+              // The "Vehicles" card routes to the dedicated fleet view instead
+              // of filtering the general list — the other main category cards
+              // are unaffected (Vehicle Asset View Unit 1 Task 2). Its count
+              // here still reflects only the DB "Vehicles" main category
+              // (Car/Pickup/Bus/Truck/Trailer) — it is deliberately not
+              // inflated to match the fleet view's broader count, which also
+              // includes Loader/Forklift/Crane from Heavy Equipment (Vehicle
+              // View Category Cleanup Unit 1 Task 6; Assets Category Count
+              // Clarity Unit 1 Task 1/5 — this card must stay accurate to the
+              // DB main category, the broader fleet total lives in the
+              // separate shortcut card below instead).
+              const cardHref = isVehiclesCard ? "/assets/vehicles" : filterHref({ mainCategory: cat.name });
               return (
                 <Link
                   key={cat.id}
-                  href={filterHref({ mainCategory: cat.name })}
+                  href={cardHref}
                   className={`group flex items-center justify-between rounded-md border px-4 py-3 shadow-sm transition hover:border-[#ED1C24] hover:shadow-md ${
                     isSelected ? "border-[#ED1C24] bg-red-50" : "border-[#E5E7EB] bg-white"
                   }`}
@@ -568,7 +591,9 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                       {cat.name}
                     </p>
                     <p className="mt-0.5 text-xs text-[#9CA3AF]">
-                      {catCount === 0 ? "No assets yet" : `${catCount} asset${catCount !== 1 ? "s" : ""}`}
+                      {isVehiclesCard
+                        ? "Cars, pickups, buses, trucks"
+                        : catCount === 0 ? "No assets yet" : `${catCount} asset${catCount !== 1 ? "s" : ""}`}
                     </p>
                   </div>
                   <span className={`ml-3 shrink-0 text-xl font-black ${catCount > 0 ? "text-[#111827]" : "text-[#D1D5DB]"}`}>
@@ -578,6 +603,28 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
               );
             })}
           </div>
+
+          {/* Fleet View shortcut — separate from the main category cards on
+              purpose (Task 3). Its count is the fixed VEHICLE_CATEGORIES
+              total (fleetViewCount), never folded into the Vehicles or Heavy
+              Equipment card counts above. */}
+          <Link
+            href="/assets/vehicles"
+            className="mt-2 flex items-center justify-between rounded-md border border-[#ED1C24]/30 bg-red-50 px-4 py-3 shadow-sm transition hover:border-[#ED1C24] hover:shadow-md"
+          >
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-[#111827]">Vehicles &amp; Mobile Equipment</p>
+              <p className="mt-0.5 text-xs text-[#4B5563]">
+                Cars, pickups, buses, trucks, loaders, forklifts, and cranes
+              </p>
+              <p className="mt-0.5 text-xs font-semibold text-[#ED1C24]">Open fleet view</p>
+            </div>
+            <span className="ml-3 shrink-0 text-xl font-black text-[#111827]">{fleetViewCount}</span>
+          </Link>
+
+          <p className="mt-2 text-xs text-[#9CA3AF]">
+            Category cards show main asset categories. Fleet view includes vehicles and mobile equipment such as loaders, forklifts, and cranes.
+          </p>
         </section>
 
         {totalAssets > 0 && (<>
@@ -689,13 +736,13 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                     Import assets from Excel or create the first asset.
                   </p>
                   <div className="mt-6 flex flex-wrap justify-center gap-3">
-                    <Link href="/assets/import">
+                    <Link href="/assets/import" title="Upload many assets or vehicles from Excel.">
                       <Button variant="secondary" className="gap-2">
                         <Upload className="h-4 w-4" aria-hidden="true" />
                         Import Excel
                       </Button>
                     </Link>
-                    <Link href="/assets/new">
+                    <Link href="/assets/new" title="Add one asset or vehicle manually.">
                       <Button className="gap-2">
                         <Plus className="h-4 w-4" aria-hidden="true" />
                         New Asset

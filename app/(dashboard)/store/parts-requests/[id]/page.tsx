@@ -12,8 +12,11 @@ import {
 } from "@/app/actions/files";
 import { PartsRequestItemsTable } from "@/components/store/parts-request-items-table";
 import { StoreIssuePanel } from "@/components/store/store-issue-panel";
+import { BackLink } from "@/components/ui/back-link";
 import { Button } from "@/components/ui/button";
 import { CostVisibilityGuard } from "@/components/ui/cost-visibility-guard";
+import { EmptyState } from "@/components/ui/empty-state";
+import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
@@ -24,8 +27,30 @@ import {
   displayPartsRequestStatus,
   partsRequestStatusTone,
 } from "@/lib/display/parts-request-labels";
-import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
+import { canReceiveIssueMaterials, getPartsRequestVisibilityFilter } from "@/lib/parts-requests/visibility";
 import { PARTS_REQUEST_ATTACHMENT_CATEGORIES } from "@/lib/files/attachment-constants";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function notFoundResponse() {
+  return (
+    <>
+      <PageHeader
+        title="Materials Request not found"
+        breadcrumb={
+          <PageBreadcrumb items={[{ label: "Materials Requests", href: "/store/parts-requests" }, { label: "Request Details" }]} />
+        }
+      />
+      <div className="p-4 lg:p-6">
+        <EmptyState
+          title="Materials Request not found"
+          message="This Materials Request may have been deleted, moved, or you may not have permission to view it."
+          action={<BackLink href="/store/parts-requests" label="Back to Materials Requests" />}
+        />
+      </div>
+    </>
+  );
+}
 
 export default async function PartsRequestDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams?: Promise<Record<string, string | undefined>> }) {
   const context = await requirePermission("parts_requests.view");
@@ -34,38 +59,51 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
   const errorMsg = sp.error ? decodeURIComponent(sp.error) : null;
   const warningMsg = sp.warning ?? null;
 
-  const [request, rawItems, rawAttachments] = await Promise.all([
-    prisma.parts_requests.findUnique({
-      where: { id },
-      include: {
-        work_orders: { select: { id: true, work_order_number: true } },
-        assets: { select: { asset_code: true, asset_name: true } },
-        departments: { select: { name: true } }
-      }
-    }),
+  // Same visibility rule the list page uses (Route Detail Fix Unit 1 Task 6)
+  // — a previous hand-rolled check here used `parts_requests.approve` instead
+  // of `work_orders.approve`, which could disagree with the list page for a
+  // role that has one permission but not the other. Sharing the exact same
+  // function guarantees the two can never drift apart again.
+  const visibilityFilter = getPartsRequestVisibilityFilter(context);
+  const includeShape = {
+    work_orders: { select: { id: true, work_order_number: true } },
+    assets: { select: { asset_code: true, asset_name: true } },
+    departments: { select: { name: true } },
+  };
+
+  // Look up by id first; `id` is `@db.Uuid` so only attempt that lookup when
+  // the param is actually UUID-shaped. Otherwise fall back to a request-number
+  // match (accepting the dash-separated URL form of "REC/STORE/PR/0006").
+  const isUuid = UUID_RE.test(id);
+  let request = isUuid
+    ? await prisma.parts_requests.findFirst({
+        where: { AND: [{ id }, visibilityFilter] },
+        include: includeShape,
+      })
+    : null;
+  if (!request) {
+    request = await prisma.parts_requests.findFirst({
+      where: {
+        AND: [
+          { parts_request_number: { equals: id.replace(/-/g, "/"), mode: "insensitive" } },
+          visibilityFilter,
+        ],
+      },
+      include: includeShape,
+    });
+  }
+
+  if (!request) return notFoundResponse();
+
+  const [rawItems, rawAttachments] = await Promise.all([
     prisma.parts_request_items.findMany({
-      where: { parts_request_id: id }
+      where: { parts_request_id: request.id },
     }),
     prisma.parts_request_attachments.findMany({
-      where: { parts_request_id: id },
+      where: { parts_request_id: request.id },
       orderBy: { created_at: "desc" },
     }),
   ]);
-  if (!request) return <PageHeader title="Materials request not found" />;
-
-  const canSeeAll =
-    context.role?.slug === "super_admin" ||
-    context.permissions.includes("store.issue") ||
-    context.permissions.includes("work_orders.manage") ||
-    context.permissions.includes("parts_requests.approve");
-
-  const isOwner =
-    request.created_by === context.userId ||
-    request.requested_by === context.userId;
-
-  if (!canSeeAll && !isOwner) {
-    return <PageHeader title="Materials request not found" description="This request does not exist or you do not have access." />;
-  }
 
   const items = rawItems.map((item) => ({
     ...item,
@@ -135,8 +173,12 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
       <PageHeader
         title={request.parts_request_number ?? ""}
         description="Materials request detail, approval, and receipt."
+        breadcrumb={
+          <PageBreadcrumb items={[{ label: "Materials Requests", href: "/store/parts-requests" }, { label: "Request Details" }]} />
+        }
         actions={
           <>
+            <BackLink href="/store/parts-requests" label="Back to Materials Requests" />
             <Link href={`/store/parts-requests/${request.id}/print`}>
               <Button variant="secondary">Print</Button>
             </Link>
@@ -185,12 +227,12 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
               <h2 className="text-lg font-bold">Maintenance Manager Approval</h2>
               <div className="mt-4 grid gap-3">
                 <form action={approvePartsRequestAction} className="space-y-2">
-                  <input type="hidden" name="parts_request_id" value={id} />
+                  <input type="hidden" name="parts_request_id" value={request.id} />
                   <textarea className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="comments" placeholder="Approval comments" />
                   <Button type="submit" className="w-full">Approve</Button>
                 </form>
                 <form action={rejectPartsRequestAction} className="space-y-2">
-                  <input type="hidden" name="parts_request_id" value={id} />
+                  <input type="hidden" name="parts_request_id" value={request.id} />
                   <textarea className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="comments" placeholder="Rejection reason" required />
                   <Button type="submit" variant="danger" className="w-full">Reject</Button>
                 </form>
@@ -204,7 +246,7 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
               <h2 className="text-lg font-bold">Receive Material</h2>
               <p className="mt-1 text-sm text-[#4B5563]">Record materials received against this request.</p>
               <form action={receiveMaterialFromRequestAction} className="mt-4 space-y-3">
-                <input type="hidden" name="parts_request_id" value={id} />
+                <input type="hidden" name="parts_request_id" value={request.id} />
                 <div>
                   <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Material name *</label>
                   <input
@@ -268,7 +310,7 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
           )}
 
           {/* Store Issue Panel — kept for store keepers */}
-          <StoreIssuePanel requestId={id} status={request.status} items={items ?? []} context={context} />
+          <StoreIssuePanel requestId={request.id} status={request.status} items={items ?? []} context={context} />
         </section>
 
         {/* ── Items table ──────────────────────────────────────────── */}
@@ -321,7 +363,7 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
                         {canDeleteFiles && (
                           <form action={deletePartsRequestAttachmentAction}>
                             <input type="hidden" name="attachment_id" value={file.id} />
-                            <input type="hidden" name="parts_request_id" value={id} />
+                            <input type="hidden" name="parts_request_id" value={request.id} />
                             <button type="submit" className="text-sm text-red-500 hover:text-red-700 hover:underline">Delete</button>
                           </form>
                         )}
@@ -346,7 +388,7 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
               <div>
                 <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Upload File</p>
                 <form action={uploadPartsRequestAttachmentAction} className="grid gap-3 sm:grid-cols-[200px_1fr_auto]">
-                  <input type="hidden" name="parts_request_id" value={id} />
+                  <input type="hidden" name="parts_request_id" value={request.id} />
                   <select name="attachment_type" className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
                     {PARTS_REQUEST_ATTACHMENT_CATEGORIES.map((opt) => (
                       <option key={opt} value={opt}>{opt}</option>
@@ -367,7 +409,7 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
               <div>
                 <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Take Photo</p>
                 <form action={uploadPartsRequestAttachmentAction} className="grid gap-3 sm:grid-cols-[200px_1fr_auto]">
-                  <input type="hidden" name="parts_request_id" value={id} />
+                  <input type="hidden" name="parts_request_id" value={request.id} />
                   <select name="attachment_type" className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
                     {["Received Material Photo", "Material Photo", "Delivery Note", "Other Document"].map((opt) => (
                       <option key={opt} value={opt}>{opt}</option>

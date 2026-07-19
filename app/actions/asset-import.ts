@@ -4,6 +4,7 @@ import ExcelJS from "exceljs";
 import { prisma } from "@/lib/db/prisma";
 import { requirePermission } from "@/lib/auth/context";
 import { writeAuditLog } from "@/lib/audit/log";
+import { logSystemError } from "@/lib/errors/logging";
 
 export type CategoryStatus = "matched" | "new";
 
@@ -22,6 +23,15 @@ export type ImportPreviewRow = {
   condition: string;
   criticality: string;
   remarks: string;
+  // Vehicle fields — Vehicle Import Unit 1. All optional; existing
+  // non-vehicle imports simply leave these blank.
+  chassisNumber: string;
+  engineNumber: string;
+  registrationExpiryDate: string; // normalized "YYYY-MM-DD" when valid, otherwise the raw offending text
+  insuranceExpiryDate: string; // normalized "YYYY-MM-DD" when valid, otherwise the raw offending text
+  currentKilometerReading: string; // normalized numeric text when valid, otherwise the raw offending text
+  assignedOperatorDriver: string;
+  modelYear: string; // normalized 4-digit year text when valid, otherwise the raw offending text
   valid: boolean;
   errors: string[];
   category_status?: CategoryStatus; // "matched" = known DB category; "new" = will be created on import
@@ -73,8 +83,130 @@ function cellStr(cell: ExcelJS.Cell): string {
   return String(v).trim();
 }
 
+// Normalizes a plate number for duplicate comparison: trims, collapses
+// repeated whitespace, and lowercases. Used for both within-file and
+// against-database duplicate checks — never used for display.
+function normalizePlateNumber(raw: string): string {
+  return raw.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+// ─── Vehicle field parsing helpers (Vehicle Import Unit 1) ──────────────────
+// These never throw and never hand an unvalidated value to Prisma — every
+// caller gets either a safely-parsed value or an `invalid` flag plus the raw
+// text to show back to the user in a row-level error.
+
+const EXCEL_EPOCH_MS = Date.UTC(1899, 11, 30); // Excel day-0, compensating for its 1900 leap-year bug
+
+function excelSerialToDate(serial: number): Date | null {
+  if (!Number.isFinite(serial)) return null;
+  const d = new Date(EXCEL_EPOCH_MS + serial * 86400000);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function toIsoDateOnly(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+// Parses "YYYY-MM-DD", "DD/MM/YYYY", or "DD-MM-YYYY" into a UTC-midnight
+// Date, validating the calendar date actually exists (e.g. rejects 31/02/2026).
+function parseDateText(raw: string): Date | null {
+  const text = raw.trim();
+  if (!text) return null;
+
+  let y: number, mo: number, d: number;
+  let m = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) {
+    y = Number(m[1]); mo = Number(m[2]); d = Number(m[3]);
+  } else {
+    m = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+    if (!m) return null;
+    d = Number(m[1]); mo = Number(m[2]); y = Number(m[3]);
+  }
+
+  const date = new Date(Date.UTC(y, mo - 1, d));
+  const valid =
+    date.getUTCFullYear() === y &&
+    date.getUTCMonth() === mo - 1 &&
+    date.getUTCDate() === d;
+  return valid ? date : null;
+}
+
+type DateCellResult = { date: Date | null; display: string; invalid: boolean };
+
+// Reads a date-typed Excel cell safely: native Date objects (normal case for
+// date-formatted cells), raw serial numbers (cells with no date formatting
+// applied), formula results, and free-text YYYY-MM-DD / DD/MM/YYYY / DD-MM-YYYY.
+// Empty cell -> not invalid, date: null. Anything unparseable -> invalid: true.
+function parseDateCell(cell: ExcelJS.Cell): DateCellResult {
+  let v: unknown = cell.value;
+  if (v && typeof v === "object" && "result" in v) {
+    v = (v as ExcelJS.CellFormulaValue).result ?? null;
+  }
+
+  if (v === null || v === undefined || v === "") {
+    return { date: null, display: "", invalid: false };
+  }
+  if (v instanceof Date) {
+    return Number.isNaN(v.getTime())
+      ? { date: null, display: String(v), invalid: true }
+      : { date: v, display: toIsoDateOnly(v), invalid: false };
+  }
+  if (typeof v === "number") {
+    const d = excelSerialToDate(v);
+    return d
+      ? { date: d, display: toIsoDateOnly(d), invalid: false }
+      : { date: null, display: String(v), invalid: true };
+  }
+
+  const text = String(v).trim();
+  if (!text) return { date: null, display: "", invalid: false };
+  const parsed = parseDateText(text);
+  return parsed
+    ? { date: parsed, display: toIsoDateOnly(parsed), invalid: false }
+    : { date: null, display: text, invalid: true };
+}
+
+type YearCellResult = {
+  year: number | null;
+  display: string;
+  invalid: boolean;
+  reason?: "format" | "range";
+};
+
+// model_year is a distinct optional 4-digit integer column — never confused
+// with the existing free-text `model` (model name/designation) field.
+function parseModelYear(raw: string): YearCellResult {
+  const text = raw.trim();
+  if (!text) return { year: null, display: "", invalid: false };
+  if (!/^\d{4}$/.test(text)) {
+    return { year: null, display: text, invalid: true, reason: "format" };
+  }
+  const year = Number(text);
+  const minYear = 1970;
+  const maxYear = new Date().getFullYear() + 1;
+  if (year < minYear || year > maxYear) {
+    return { year: null, display: text, invalid: true, reason: "range" };
+  }
+  return { year, display: text, invalid: false };
+}
+
+type KmCellResult = { value: number | null; display: string; invalid: boolean };
+
+// Current kilometer reading feeds a Decimal(12,2) column — reject anything
+// that isn't a plain non-negative number rather than letting Prisma throw.
+function parseKilometerReading(raw: string): KmCellResult {
+  const text = raw.trim();
+  if (!text) return { value: null, display: "", invalid: false };
+  const normalized = text.replace(/,/g, "");
+  const num = Number(normalized);
+  if (!Number.isFinite(num) || num < 0) {
+    return { value: null, display: text, invalid: true };
+  }
+  return { value: num, display: normalized, invalid: false };
+}
+
 function normalizeHeader(h: string): string {
-  return h.toLowerCase().replace(/[\s/_\-]/g, "");
+  return h.toLowerCase().replace(/[\s/_\-.]/g, "");
 }
 
 const HEADER_MAP: Record<string, RowField> = {
@@ -114,6 +246,40 @@ const HEADER_MAP: Record<string, RowField> = {
   additionalremarks: "remarks",
   comments:        "remarks",
   internalcomments: "remarks",
+  // ── Vehicle fields — Vehicle Import Unit 1 ──────────────────────────────
+  chassisnumber:   "chassisNumber",
+  chassisno:       "chassisNumber",
+  chassis:         "chassisNumber",
+  vin:             "chassisNumber",
+  enginenumber:    "engineNumber",
+  engineno:        "engineNumber",
+  engine:          "engineNumber",
+  registrationexpirydate:  "registrationExpiryDate",
+  registrationexpiry:      "registrationExpiryDate",
+  registrationexpirydt:    "registrationExpiryDate",
+  istimaraexpiry:          "registrationExpiryDate",
+  vehicleregistrationexpiry: "registrationExpiryDate",
+  insuranceexpirydate:     "insuranceExpiryDate",
+  insuranceexpiry:         "insuranceExpiryDate",
+  insuranceexpirydt:       "insuranceExpiryDate",
+  insurancevaliduntil:     "insuranceExpiryDate",
+  currentkilometerreading: "currentKilometerReading",
+  currentkm:               "currentKilometerReading",
+  currentkilometers:       "currentKilometerReading",
+  kmreading:               "currentKilometerReading",
+  kilometerreading:        "currentKilometerReading",
+  odometer:                "currentKilometerReading",
+  mileage:                 "currentKilometerReading",
+  assigneddriver:          "assignedOperatorDriver",
+  assignedoperator:        "assignedOperatorDriver",
+  assignedoperatordriver:  "assignedOperatorDriver",
+  driver:                  "assignedOperatorDriver",
+  operatordriver:          "assignedOperatorDriver",
+  modelyear:               "modelYear",
+  year:                    "modelYear",
+  vehicleyear:             "modelYear",
+  manufacturingyear:       "modelYear",
+  mfgyear:                 "modelYear",
 };
 
 // Subcategory headers take priority over a plain "Category" / "Type" column.
@@ -122,10 +288,50 @@ const SUBCATEGORY_HEADER_NAMES = new Set([
   "subcategory", "subcat", "sub", "assetsubcategory", "subtype",
 ]);
 
+// ── Worksheet selection — Asset Import Parse Fix Unit 1 ──────────────────────
+// The prepared vehicle workbooks ship with reference/notes sheets alongside
+// the actual data sheet (e.g. "Import Notes", "Classification Summary"). The
+// importer must pick the real data sheet by name when possible, rather than
+// always assuming index 0 is correct or failing outright when more than one
+// sheet is present.
+const IGNORED_SHEET_NAMES = new Set(["import notes", "classification summary", "summary", "notes"]);
+
+function selectImportWorksheet(
+  wb: ExcelJS.Workbook,
+): { worksheet: ExcelJS.Worksheet | null; selectedName: string | null } {
+  const byName = (name: string) =>
+    wb.worksheets.find((w) => w.name.trim().toLowerCase() === name) ?? null;
+
+  const finalImport = byName("final import");
+  if (finalImport) return { worksheet: finalImport, selectedName: finalImport.name };
+
+  const assetsSheet = byName("assets");
+  if (assetsSheet) return { worksheet: assetsSheet, selectedName: assetsSheet.name };
+
+  // No preferred name matched — use the first sheet that isn't a known
+  // notes/summary sheet (handles both single-sheet workbooks and multi-sheet
+  // workbooks that don't use the "Final Import" / "Assets" naming convention).
+  const firstUsable = wb.worksheets.find(
+    (w) => !IGNORED_SHEET_NAMES.has(w.name.trim().toLowerCase()),
+  );
+  if (firstUsable) return { worksheet: firstUsable, selectedName: firstUsable.name };
+
+  // Every sheet matched an ignored name (unlikely, but fall back to the
+  // literal first sheet rather than reporting no worksheet at all).
+  const first = wb.worksheets[0] ?? null;
+  return { worksheet: first, selectedName: first?.name ?? null };
+}
+
+const REQUIRED_HEADER_LABELS: Record<string, string> = {
+  asset_code: "Asset Code",
+  asset_name: "Asset Name",
+  category: "Category",
+};
+
 export async function parseAssetExcelAction(
   formData: FormData,
 ): Promise<{ rows: ImportPreviewRow[]; error?: string }> {
-  await requirePermission("assets.manage");
+  const context = await requirePermission("assets.manage");
 
   const file = formData.get("file") as File | null;
   if (!file || file.size === 0) return { rows: [], error: "No file provided." };
@@ -142,12 +348,33 @@ export async function parseAssetExcelAction(
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await wb.xlsx.load(Buffer.from(new Uint8Array(arrayBuffer)) as any);
-  } catch {
-    return { rows: [], error: "Could not parse Excel file. Ensure it is a valid .xlsx file." };
+  } catch (loadError) {
+    // The real ExcelJS failure reason was previously swallowed entirely —
+    // log it for diagnosis and surface a short, safe summary of it instead
+    // of only ever showing the same generic message (Asset Import Parse Fix
+    // Unit 1 Task 3).
+    const reason = loadError instanceof Error ? loadError.message : "Unknown error";
+    await logSystemError({
+      source: "asset-import.parseAssetExcelAction",
+      severity: "warning",
+      message: `Workbook load failed: ${reason}`,
+      userId: context.userId,
+      route: "/assets/import",
+      metadata: { fileName: file.name, fileSize: file.size },
+    });
+    return {
+      rows: [],
+      error: `Could not read workbook. Please save it again as .xlsx and retry. (${reason.slice(0, 200)})`,
+    };
   }
 
-  const ws = wb.worksheets[0];
-  if (!ws) return { rows: [], error: "No worksheet found in the file." };
+  const { worksheet: ws, selectedName } = selectImportWorksheet(wb);
+  if (!ws) {
+    return {
+      rows: [],
+      error: "Could not find a valid import sheet. Expected a sheet named Final Import or a first sheet with asset headers.",
+    };
+  }
 
   let headerRowNum = -1;
   const colMap: Record<number, RowField> = {};
@@ -170,24 +397,42 @@ export async function parseAssetExcelAction(
   });
 
   if (headerRowNum === -1) {
-    return { rows: [], error: "Could not find a valid header row. Expected columns: Asset Code, Asset Name, Category." };
+    return {
+      rows: [],
+      error: `Excel sheet "${selectedName}" was found, but required headers are missing: Asset Code, Asset Name, Category. (${ws.rowCount} row${ws.rowCount === 1 ? "" : "s"} found in this sheet)`,
+    };
+  }
+
+  if (ws.rowCount <= headerRowNum) {
+    return { rows: [], error: `The workbook contains no data rows below the header row in sheet "${selectedName}".` };
   }
 
   const vals = Object.values(colMap);
-  if (!vals.includes("asset_code") || !vals.includes("asset_name") || !vals.includes("category")) {
-    return { rows: [], error: "Missing required columns: Asset Code, Asset Name, Category." };
+  const missingRequired = Object.keys(REQUIRED_HEADER_LABELS).filter((key) => !vals.includes(key as RowField));
+  if (missingRequired.length > 0) {
+    const missingLabels = missingRequired.map((key) => REQUIRED_HEADER_LABELS[key]).join(", ");
+    return {
+      rows: [],
+      error: `Excel sheet "${selectedName}" was found, but required headers are missing: ${missingLabels}.`,
+    };
   }
 
   const [existingAssetList, dbCategoryList] = await Promise.all([
-    prisma.assets.findMany({ where: { deleted_at: null }, select: { asset_code: true } }),
+    prisma.assets.findMany({ where: { deleted_at: null }, select: { asset_code: true, plate_number: true } }),
     prisma.asset_categories.findMany({ select: { name: true } }),
   ]);
 
   const existingCodes = new Set(existingAssetList.map((a) => a.asset_code.toLowerCase()));
+  const existingPlates = new Set(
+    existingAssetList
+      .map((a) => (a.plate_number ? normalizePlateNumber(a.plate_number) : ""))
+      .filter((p) => p.length > 0)
+  );
   const dbCategoryNames = new Set(dbCategoryList.map((c) => c.name.toLowerCase()));
 
   const rows: ImportPreviewRow[] = [];
   const seenCodes = new Set<string>();
+  const seenPlates = new Set<string>();
 
   ws.eachRow({ includeEmpty: false }, (row, rowNum) => {
     if (rowNum <= headerRowNum) return;
@@ -200,11 +445,25 @@ export async function parseAssetExcelAction(
       return "";
     };
 
+    const getCell = (field: RowField): ExcelJS.Cell | null => {
+      for (const [colStr, f] of Object.entries(colMap)) {
+        if (f === field) return row.getCell(Number(colStr));
+      }
+      return null;
+    };
+
     // Subcategory column wins over plain Category/Type column when both are present
     const subCatVal = subCatColNums.length > 0
       ? cellStr(row.getCell(subCatColNums[0]))
       : "";
     const resolvedCategory = subCatVal || get("category");
+
+    const regExpCell = getCell("registrationExpiryDate");
+    const regExpParsed = regExpCell ? parseDateCell(regExpCell) : { date: null, display: "", invalid: false };
+    const insExpCell = getCell("insuranceExpiryDate");
+    const insExpParsed = insExpCell ? parseDateCell(insExpCell) : { date: null, display: "", invalid: false };
+    const yearParsed = parseModelYear(get("modelYear"));
+    const kmParsed = parseKilometerReading(get("currentKilometerReading"));
 
     const r: ImportPreviewRow = {
       rowNumber:       rowNum,
@@ -221,6 +480,13 @@ export async function parseAssetExcelAction(
       condition:       get("condition"),
       criticality:     get("criticality"),
       remarks:         get("remarks"),
+      chassisNumber:   get("chassisNumber"),
+      engineNumber:    get("engineNumber"),
+      registrationExpiryDate:  regExpParsed.display,
+      insuranceExpiryDate:     insExpParsed.display,
+      currentKilometerReading: kmParsed.display,
+      assignedOperatorDriver:  get("assignedOperatorDriver"),
+      modelYear:       yearParsed.display,
       valid:           true,
       errors:          [],
     };
@@ -236,6 +502,36 @@ export async function parseAssetExcelAction(
     if (r.asset_code && seenCodes.has(r.asset_code.toLowerCase()))
       r.errors.push("Duplicate code in this file");
     if (r.asset_code) seenCodes.add(r.asset_code.toLowerCase());
+
+    // Vehicle field validation — Vehicle Import Unit 1
+    if (regExpParsed.invalid)
+      r.errors.push("Invalid Registration Expiry Date. Use YYYY-MM-DD or a valid Excel date.");
+    if (insExpParsed.invalid)
+      r.errors.push("Invalid Insurance Expiry Date. Use YYYY-MM-DD or a valid Excel date.");
+    if (yearParsed.invalid) {
+      r.errors.push(
+        yearParsed.reason === "range"
+          ? "Invalid Model Year. Year must be between 1970 and next year."
+          : "Invalid Model Year. Expected a 4-digit year."
+      );
+    }
+    if (kmParsed.invalid)
+      r.errors.push("Invalid Current Kilometer Reading. Expected a number.");
+
+    // Plate number duplicate checking (owner_number does not exist in this
+    // schema/importer, so the duplicate key is plate_number alone).
+    if (r.plate_number) {
+      const normalizedPlate = normalizePlateNumber(r.plate_number);
+      if (normalizedPlate) {
+        if (seenPlates.has(normalizedPlate)) {
+          r.errors.push("Duplicate Plate Number in uploaded file.");
+        } else if (existingPlates.has(normalizedPlate)) {
+          r.errors.push("Plate Number already exists in Assets & Equipment.");
+        }
+        seenPlates.add(normalizedPlate);
+      }
+    }
+
     if (r.errors.length > 0) r.valid = false;
 
     r.category_status = r.category && dbCategoryNames.has(r.category.toLowerCase()) ? "matched" : "new";
@@ -261,12 +557,17 @@ export async function importAssetsAction(rows: ImportPreviewRow[]): Promise<Impo
   }
 
   const [existingAssets, allDepartments, allCategories] = await Promise.all([
-    prisma.assets.findMany({ where: { deleted_at: null }, select: { asset_code: true } }),
+    prisma.assets.findMany({ where: { deleted_at: null }, select: { asset_code: true, plate_number: true } }),
     prisma.departments.findMany({ select: { id: true, name: true } }),
     prisma.asset_categories.findMany({ select: { id: true, name: true, parent_id: true } }),
   ]);
 
   const existingCodes = new Set(existingAssets.map((a) => a.asset_code.toLowerCase()));
+  const existingPlates = new Set(
+    existingAssets
+      .map((a) => (a.plate_number ? normalizePlateNumber(a.plate_number) : ""))
+      .filter((p) => p.length > 0)
+  );
   // Case-insensitive department name → id map (built once, used for every row)
   const deptByName = new Map(allDepartments.map((d) => [d.name.toLowerCase(), d.id]));
   // Known categories by lower-case name → id
@@ -282,6 +583,7 @@ export async function importAssetsAction(rows: ImportPreviewRow[]): Promise<Impo
   let skipped = 0;
   const failures: ImportResult["failures"] = [];
   const seenCodes = new Set<string>();
+  const seenPlates = new Set<string>();
 
   for (const row of rows) {
     const code = row.asset_code?.trim();
@@ -303,7 +605,60 @@ export async function importAssetsAction(rows: ImportPreviewRow[]): Promise<Impo
       skipped++;
       continue;
     }
+
+    // Vehicle field re-validation — defense in depth. The preview step
+    // already filters these out of `validRows` before this action is ever
+    // called, but this action is independently invokable, so every value is
+    // re-parsed from scratch rather than trusted from the client payload.
+    const normalizedPlate = row.plate_number ? normalizePlateNumber(row.plate_number) : "";
+    if (normalizedPlate) {
+      if (seenPlates.has(normalizedPlate)) {
+        failures.push({ rowNumber: row.rowNumber, asset_code: code, reason: "Duplicate Plate Number in uploaded file" });
+        skipped++;
+        continue;
+      }
+      if (existingPlates.has(normalizedPlate)) {
+        failures.push({ rowNumber: row.rowNumber, asset_code: code, reason: "Plate Number already exists in Assets & Equipment" });
+        skipped++;
+        continue;
+      }
+    }
+
+    const regExpDate = row.registrationExpiryDate ? parseDateText(row.registrationExpiryDate) : null;
+    if (row.registrationExpiryDate && !regExpDate) {
+      failures.push({ rowNumber: row.rowNumber, asset_code: code, reason: "Invalid Registration Expiry Date" });
+      skipped++;
+      continue;
+    }
+    const insExpDate = row.insuranceExpiryDate ? parseDateText(row.insuranceExpiryDate) : null;
+    if (row.insuranceExpiryDate && !insExpDate) {
+      failures.push({ rowNumber: row.rowNumber, asset_code: code, reason: "Invalid Insurance Expiry Date" });
+      skipped++;
+      continue;
+    }
+    let modelYear: number | null = null;
+    if (row.modelYear) {
+      const parsedYear = parseModelYear(row.modelYear);
+      if (parsedYear.invalid) {
+        failures.push({ rowNumber: row.rowNumber, asset_code: code, reason: "Invalid Model Year" });
+        skipped++;
+        continue;
+      }
+      modelYear = parsedYear.year;
+    }
+    let currentKm: number | null = null;
+    if (row.currentKilometerReading) {
+      const parsedKm = parseKilometerReading(row.currentKilometerReading);
+      if (parsedKm.invalid) {
+        failures.push({ rowNumber: row.rowNumber, asset_code: code, reason: "Invalid Current Kilometer Reading" });
+        skipped++;
+        continue;
+      }
+      currentKm = parsedKm.value;
+    }
+
     seenCodes.add(code.toLowerCase());
+    if (normalizedPlate) seenPlates.add(normalizedPlate);
 
     const department_id = row.department_name
       ? (deptByName.get(row.department_name.toLowerCase()) ?? null)
@@ -336,8 +691,15 @@ export async function importAssetsAction(rows: ImportPreviewRow[]): Promise<Impo
           location:      row.location || null,
           brand:         row.brand || null,
           model:         row.model || null,
+          model_year:    modelYear,
           serial_number: row.serial_number || null,
           plate_number:  row.plate_number || null,
+          chassis_number: row.chassisNumber || null,
+          engine_number:  row.engineNumber || null,
+          registration_expiry_date: regExpDate,
+          insurance_expiry_date:    insExpDate,
+          current_kilometer_reading: currentKm,
+          assigned_operator_driver:  row.assignedOperatorDriver || null,
           status:        row.status || "Active",
           condition:     normalizedCondition || null,
           criticality:   normalizedCriticality || null,

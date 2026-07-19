@@ -5,6 +5,7 @@ import { Check, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 
 import { upsertWorkOrderAction } from "@/app/actions/maintenance";
 import { AttachmentUploadFields } from "@/components/files/attachment-upload-fields";
+import { AssetSearchPicker, type AssetPickerOption } from "@/components/assets/asset-search-picker";
 import {
   ATTACHMENT_FILE_ACCEPT,
   JOB_CARD_ATTACHMENT_CATEGORIES,
@@ -33,18 +34,7 @@ const WORKER_TYPES = [
 const STEP_LABELS = ["Select Asset", "Request Details", "Assignment", "Required Parts", "Attachments", "Review & Save"];
 const MAX_PART_ROWS = 8;
 
-type AssetOption = {
-  id: string;
-  asset_code: string;
-  asset_name: string;
-  category: string | null;
-  location: string | null;
-  status: string;
-  brand: string | null;
-  model: string | null;
-  plate_number: string | null;
-  serial_number: string | null;
-};
+type AssetOption = AssetPickerOption;
 
 type ProfileOption = { id: string; name: string };
 
@@ -211,56 +201,23 @@ export function WorkOrderWizard({
             description="All repair records will be linked to this asset."
           >
             <div>
-              <label className="block">
-                <FieldLabel label="Asset / Machine" required />
-                <select
-                  name="asset_id"
-                  className={inp}
+              <FieldLabel label="Asset / Machine" required />
+              <input type="hidden" name="asset_id" value={selectedAssetId} />
+              <div className="mt-1">
+                <AssetSearchPicker
+                  assets={assets}
                   value={selectedAssetId}
-                  onChange={(e) => {
-                    setSelectedAssetId(e.target.value);
+                  onChange={(id) => {
+                    setSelectedAssetId(id);
                     setErrors({});
                   }}
-                >
-                  <option value="">— Select asset or machine —</option>
-                  {assets.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.asset_code} — {a.asset_name}
-                      {a.plate_number ? ` / ${a.plate_number}` : ""}
-                      {a.category ? ` [${a.category}]` : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  required
+                />
+              </div>
               {errors.asset_id && (
-                <p className="mt-1 text-xs text-[#DC2626]">{errors.asset_id}</p>
+                <p className="mt-2 text-xs text-[#DC2626]">{errors.asset_id}</p>
               )}
             </div>
-
-            {selectedAsset ? (
-              <div className="mt-4 rounded-lg border border-green-200 bg-green-50 p-4">
-                <p className="text-[10px] font-black uppercase tracking-widest text-green-700">
-                  Selected Asset
-                </p>
-                <p className="mt-1 text-base font-black text-[#111827]">
-                  {selectedAsset.asset_code} — {selectedAsset.asset_name}
-                </p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {selectedAsset.category && <AssetChip>{selectedAsset.category}</AssetChip>}
-                  {selectedAsset.location && <AssetChip>{selectedAsset.location}</AssetChip>}
-                  {(selectedAsset.brand || selectedAsset.model) && (
-                    <AssetChip>
-                      {[selectedAsset.brand, selectedAsset.model].filter(Boolean).join(" / ")}
-                    </AssetChip>
-                  )}
-                  <AssetStatusBadge status={selectedAsset.status} />
-                </div>
-              </div>
-            ) : (
-              <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                Please select an asset or machine to link this job card to.
-              </p>
-            )}
           </WizardCard>
         </div>
 
@@ -764,22 +721,3 @@ function ReviewRow({
   );
 }
 
-function AssetChip({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="rounded-full border border-[#E5E7EB] bg-white px-2.5 py-0.5 text-xs font-semibold text-[#4B5563]">
-      {children}
-    </span>
-  );
-}
-
-function AssetStatusBadge({ status }: { status: string }) {
-  const cls =
-    status === "Breakdown"
-      ? "bg-red-100 text-red-700"
-      : status === "Active" || status === "In Use"
-      ? "bg-green-100 text-green-700"
-      : "bg-gray-100 text-gray-700";
-  return (
-    <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${cls}`}>{status}</span>
-  );
-}

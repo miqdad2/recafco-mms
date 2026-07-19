@@ -119,3 +119,25 @@ export function getMainCategory(category: string): MainCategory {
 export function isMainCategory(value: string): value is MainCategory {
   return (MAIN_CATEGORIES as readonly string[]).includes(value);
 }
+
+// Vehicle Asset View Unit 1 — a fixed, business-defined subset of leaf
+// categories treated as "vehicles" for the dedicated /assets/vehicles view
+// and the asset detail page's Vehicle Information section. Deliberately NOT
+// "everything under the Vehicles main category" (excludes Trailer) and NOT
+// "everything under Heavy Equipment" (excludes Excavator/Generator) — this
+// list is the exact 7 categories approved for the vehicle rollout.
+export const VEHICLE_CATEGORIES = [
+  "Car",
+  "Pickup",
+  "Bus",
+  "Truck",
+  "Loader",
+  "Forklift",
+  "Crane",
+] as const;
+
+export type VehicleCategory = (typeof VEHICLE_CATEGORIES)[number];
+
+export function isVehicleCategory(category: string): boolean {
+  return (VEHICLE_CATEGORIES as readonly string[]).includes(category);
+}

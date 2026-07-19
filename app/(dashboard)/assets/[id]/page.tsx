@@ -1,6 +1,5 @@
 import Link from "next/link";
 import {
-  ArrowLeft,
   Calendar,
   CheckCircle2,
   ClipboardList,
@@ -26,6 +25,10 @@ import { canViewEntityFile } from "@/lib/security/file-access";
 import { prisma } from "@/lib/db/prisma";
 import { getAssetMaintenanceSummary } from "@/lib/backend/assets/service";
 import { computeContractStatus } from "@/lib/display/service-contract-status";
+import { isVehicleCategory } from "@/lib/assets/categories";
+import { getExpiryStatus } from "@/lib/assets/vehicle-status";
+import { BackLink } from "@/components/ui/back-link";
+import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -185,15 +188,14 @@ export default async function AssetDetailPage({
     }))
   );
 
-  // Vehicle / machine detection
-  const isVehicle = !!(
-    asset.plate_number ||
-    asset.chassis_number ||
-    asset.engine_number ||
-    rawAsset.registration_expiry_date ||
-    rawAsset.insurance_expiry_date
-  );
+  // Vehicle / machine detection — Vehicle Asset View Unit 1 Task 6: the
+  // Vehicle Information section is gated by category membership (Car,
+  // Pickup, Bus, Truck, Loader, Forklift, Crane), not merely by whether any
+  // vehicle-shaped field happens to be filled in on a non-vehicle asset.
+  const isVehicle = isVehicleCategory(asset.category);
   const hasMachineHours = !!(asset.current_running_hours || rawAsset.next_service_running_hours);
+  const insuranceStatus = getExpiryStatus(rawAsset.insurance_expiry_date);
+  const registrationStatus = getExpiryStatus(rawAsset.registration_expiry_date);
 
   // PM status
   const pmOverdue = rawAsset.next_service_date && rawAsset.next_service_date < today;
@@ -212,13 +214,24 @@ export default async function AssetDetailPage({
     <>
       {/* ── Asset Identity Header ──────────────────────────────────────────── */}
       <div className="border-b border-[#DDE2EA] bg-white px-4 pb-0 pt-4 sm:px-6 sm:pt-5">
-        <Link
-          href="/assets"
-          className="mb-3 inline-flex items-center gap-1.5 text-xs font-semibold text-[#6B7280] hover:text-[#111827]"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-          Back to Assets
-        </Link>
+        <PageBreadcrumb
+          items={
+            isVehicle
+              ? [
+                  { label: "Assets & Equipment", href: "/assets" },
+                  { label: "Vehicles", href: "/assets/vehicles" },
+                  { label: "Asset Details" },
+                ]
+              : [{ label: "Assets & Equipment", href: "/assets" }, { label: "Asset Details" }]
+          }
+        />
+        <div className="mb-3">
+          <BackLink
+            href={isVehicle ? "/assets/vehicles" : "/assets"}
+            label={isVehicle ? "Back to Vehicles" : "Back to Assets & Equipment"}
+            variant="text"
+          />
+        </div>
 
         <div className="flex flex-col gap-4 border-l-4 border-[#ED1C24] pl-4 sm:flex-row sm:items-start sm:justify-between">
           {/* Identity */}
@@ -405,41 +418,73 @@ export default async function AssetDetailPage({
                 </dl>
               </section>
 
-              {/* Vehicle-specific fields */}
+              {/* Vehicle Information — Vehicle Asset View Unit 1 Task 6 */}
               {isVehicle && (
                 <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
                   <p className="mb-4 text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
-                    Vehicle Details
+                    Vehicle Information
                   </p>
                   <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-                    {asset.plate_number && (
-                      <InfoRow label="Plate Number" value={asset.plate_number} />
-                    )}
-                    {asset.chassis_number && (
-                      <InfoRow label="Chassis Number" value={asset.chassis_number} />
-                    )}
-                    {asset.engine_number && (
-                      <InfoRow label="Engine Number" value={asset.engine_number} />
-                    )}
-                    {rawAsset.registration_expiry_date && (
-                      <InfoRow
-                        label="Registration Expiry"
-                        value={shortDate(rawAsset.registration_expiry_date)}
-                      />
-                    )}
-                    {rawAsset.insurance_expiry_date && (
-                      <InfoRow
-                        label="Insurance Expiry"
-                        value={shortDate(rawAsset.insurance_expiry_date)}
-                      />
-                    )}
-                    {asset.current_kilometer_reading && (
-                      <InfoRow
-                        label="Current KM Reading"
-                        value={`${asset.current_kilometer_reading} km`}
-                      />
-                    )}
+                    <InfoRow label="Plate Number" value={asset.plate_number} />
+                    <InfoRow label="Chassis Number" value={asset.chassis_number} />
+                    <InfoRow label="Engine Number" value={asset.engine_number} />
+                    <InfoRow label="Brand" value={asset.brand} />
+                    <InfoRow label="Model" value={asset.model} />
+                    <InfoRow label="Model Year" value={asset.model_year ? String(asset.model_year) : null} />
+                    <InfoRow
+                      label="Insurance Expiry Date"
+                      value={rawAsset.insurance_expiry_date ? shortDate(rawAsset.insurance_expiry_date) : null}
+                    />
+                    <InfoRow
+                      label="Registration Expiry Date"
+                      value={rawAsset.registration_expiry_date ? shortDate(rawAsset.registration_expiry_date) : null}
+                    />
+                    <InfoRow
+                      label="Current Kilometer Reading"
+                      value={asset.current_kilometer_reading ? `${asset.current_kilometer_reading} km` : null}
+                    />
+                    <InfoRow label="Assigned Operator / Driver" value={asset.assigned_operator_driver} />
                   </dl>
+                  {asset.remarks && (
+                    <div className="mt-4 border-t border-[#E5E7EB] pt-4">
+                      <InfoRow label="Remarks" value={asset.remarks} />
+                    </div>
+                  )}
+
+                  {/* Renewal Status */}
+                  <div className="mt-5 border-t border-[#E5E7EB] pt-4">
+                    <p className="mb-3 text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
+                      Renewal Status
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-md border border-[#E5E7EB] bg-gray-50 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-semibold text-[#4B5563]">Insurance</p>
+                          <StatusBadge label={insuranceStatus.status} tone={insuranceStatus.tone} />
+                        </div>
+                        <p className="mt-1.5 text-sm font-semibold text-[#111827]">
+                          {insuranceStatus.daysRemaining === null
+                            ? "No expiry date on record"
+                            : insuranceStatus.daysRemaining < 0
+                              ? `${Math.abs(insuranceStatus.daysRemaining)} days overdue`
+                              : `${insuranceStatus.daysRemaining} days remaining`}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-[#E5E7EB] bg-gray-50 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-semibold text-[#4B5563]">Registration</p>
+                          <StatusBadge label={registrationStatus.status} tone={registrationStatus.tone} />
+                        </div>
+                        <p className="mt-1.5 text-sm font-semibold text-[#111827]">
+                          {registrationStatus.daysRemaining === null
+                            ? "No expiry date on record"
+                            : registrationStatus.daysRemaining < 0
+                              ? `${Math.abs(registrationStatus.daysRemaining)} days overdue`
+                              : `${registrationStatus.daysRemaining} days remaining`}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
                 </section>
               )}
 

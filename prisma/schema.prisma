@@ -79,6 +79,7 @@ model assets {
   location                   String?
   brand                      String?
   model                      String?
+  model_year                 Int?
   serial_number              String?
   plate_number               String?
   chassis_number             String?

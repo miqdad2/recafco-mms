@@ -1,5 +1,7 @@
 import { PartsRequestWizard } from "@/components/store/parts-request-wizard";
 import type { WorkOrderOption } from "@/components/store/parts-request-wizard";
+import { BackLink } from "@/components/ui/back-link";
+import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
 import { requireUser } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
@@ -22,6 +24,10 @@ export default async function NewPartsRequestPage({
         <PageHeader
           title="New Materials Request"
           description="You do not have permission to create materials requests."
+          breadcrumb={
+            <PageBreadcrumb items={[{ label: "Materials Requests", href: "/store/parts-requests" }, { label: "New Materials Request" }]} />
+          }
+          actions={<BackLink href="/store/parts-requests" label="Back to Materials Requests" />}
         />
         <div className="p-4 lg:p-6" />
       </>
@@ -116,7 +122,14 @@ export default async function NewPartsRequestPage({
 
   return (
     <>
-      <PageHeader title="New Materials Request" description={pageDescription} />
+      <PageHeader
+        title="New Materials Request"
+        description={pageDescription}
+        breadcrumb={
+          <PageBreadcrumb items={[{ label: "Materials Requests", href: "/store/parts-requests" }, { label: "New Materials Request" }]} />
+        }
+        actions={<BackLink href="/store/parts-requests" label="Back to Materials Requests" />}
+      />
       <div className="p-4 lg:p-6">
         <PartsRequestWizard
           workOrders={workOrders}

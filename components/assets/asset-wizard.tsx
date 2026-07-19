@@ -7,6 +7,7 @@ import { Check, ChevronLeft, ChevronRight } from "lucide-react";
 import { upsertAssetAction } from "@/app/actions/maintenance";
 import type { CategoryOption } from "@/components/assets/category-select-pair";
 import { Button } from "@/components/ui/button";
+import { isVehicleCategory } from "@/lib/assets/categories";
 
 const ASSET_STATUSES = [
   "Active",
@@ -17,7 +18,6 @@ const ASSET_STATUSES = [
   "Out of Service",
   "Retired",
 ];
-const VEHICLE_MAIN = "Vehicles";
 const MACHINE_MAINS = [
   "Production Equipment",
   "Heavy Equipment",
@@ -247,7 +247,13 @@ export function AssetWizard({
 
   const [selectedSubcat, setSelectedSubcat] = useState(initialSubcat);
 
-  const isVehicle = selectedMain === VEHICLE_MAIN;
+  // Vehicle field visibility is keyed off the actual selected subcategory
+  // (the value that gets saved as `assets.category`), using the same
+  // canonical 7-category list as the /assets/vehicles page and the asset
+  // detail page — so Loader/Forklift/Crane (nested under "Heavy Equipment",
+  // not "Vehicles") correctly reveal these fields too, not just Car/Pickup/
+  // Bus/Truck under the "Vehicles" main category.
+  const isVehicle = isVehicleCategory(selectedSubcat);
   const isMachineType = MACHINE_MAINS.includes(selectedMain);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -441,10 +447,27 @@ export function AssetWizard({
               />
             </WField>
 
+            {isVehicle && (
+              <div className="sm:col-span-2">
+                <p className="mb-3 mt-2 text-xs font-black uppercase tracking-widest text-[#ED1C24]">
+                  Vehicle Information
+                </p>
+              </div>
+            )}
             {isVehicle ? (
               <>
                 <WField label="Plate Number">
                   <TInput name="plate_number" defaultValue={s("plate_number")} />
+                  <p className="mt-1 text-xs text-[#9CA3AF]">The vehicle&apos;s registration/traffic plate number.</p>
+                </WField>
+                <WField label="Model Year">
+                  <TInput
+                    name="model_year"
+                    type="number"
+                    defaultValue={s("model_year")}
+                    placeholder="e.g. 2022"
+                  />
+                  <p className="mt-1 text-xs text-[#9CA3AF]">Year of manufacture — different from Model above.</p>
                 </WField>
                 <WField label="Chassis Number">
                   <TInput name="chassis_number" defaultValue={s("chassis_number")} />
@@ -456,6 +479,7 @@ export function AssetWizard({
             ) : (
               <>
                 <input type="hidden" name="plate_number" value="" />
+                <input type="hidden" name="model_year" value="" />
                 <input type="hidden" name="chassis_number" value="" />
                 <input type="hidden" name="engine_number" value="" />
               </>
@@ -486,12 +510,18 @@ export function AssetWizard({
 
             {isVehicle ? (
               <>
+                <div className="sm:col-span-2">
+                  <p className="mb-3 mt-2 text-xs font-black uppercase tracking-widest text-[#ED1C24]">
+                    Vehicle Information
+                  </p>
+                </div>
                 <WField label="Registration Expiry Date">
                   <TInput
                     name="registration_expiry_date"
                     type="date"
                     defaultValue={dateVal("registration_expiry_date")}
                   />
+                  <p className="mt-1 text-xs text-[#9CA3AF]">Used for renewal tracking on the Vehicles page.</p>
                 </WField>
                 <WField label="Insurance Expiry Date">
                   <TInput
@@ -499,6 +529,7 @@ export function AssetWizard({
                     type="date"
                     defaultValue={dateVal("insurance_expiry_date")}
                   />
+                  <p className="mt-1 text-xs text-[#9CA3AF]">Used for renewal tracking on the Vehicles page.</p>
                 </WField>
                 <WField label="Current KM Reading">
                   <TInput
@@ -608,6 +639,7 @@ export function AssetWizard({
                 {isVehicle && (
                   <>
                     <ReviewRow label="Plate Number" value={reviewData.plate_number} />
+                    <ReviewRow label="Model Year" value={reviewData.model_year} />
                     <ReviewRow label="Chassis Number" value={reviewData.chassis_number} />
                     <ReviewRow label="Engine Number" value={reviewData.engine_number} />
                   </>

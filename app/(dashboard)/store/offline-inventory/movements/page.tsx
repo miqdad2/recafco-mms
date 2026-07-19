@@ -1,8 +1,10 @@
 import Link from "next/link";
-import { ArrowLeft, Package } from "lucide-react";
+import { Package } from "lucide-react";
 
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { BackLink } from "@/components/ui/back-link";
+import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
@@ -94,15 +96,10 @@ export default async function MovementHistoryPage({
       <PageHeader
         title="Movement History"
         description="View all materials received and issued by the Maintenance Store."
-        actions={
-          <Link
-            href="/store/offline-inventory"
-            className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
-          >
-            <ArrowLeft className="h-4 w-4" aria-hidden />
-            Back to Offline Inventory Control
-          </Link>
+        breadcrumb={
+          <PageBreadcrumb items={[{ label: "Offline Inventory Control", href: "/store/offline-inventory" }, { label: "Movement History" }]} />
         }
+        actions={<BackLink href="/store/offline-inventory" label="Back to Offline Inventory Control" />}
       />
 
       <div className="space-y-4 p-4 lg:p-6">

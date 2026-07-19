@@ -1,4 +1,6 @@
 import { AssetWizard } from "@/components/assets/asset-wizard";
+import { BackLink } from "@/components/ui/back-link";
+import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
@@ -25,6 +27,7 @@ export default async function EditAssetPage({ params }: { params: Promise<{ id: 
     assigned_operator_driver: rawAsset.assigned_operator_driver,
     brand: rawAsset.brand,
     model: rawAsset.model,
+    model_year: rawAsset.model_year,
     serial_number: rawAsset.serial_number,
     plate_number: rawAsset.plate_number,
     chassis_number: rawAsset.chassis_number,
@@ -47,7 +50,14 @@ export default async function EditAssetPage({ params }: { params: Promise<{ id: 
 
   return (
     <>
-      <PageHeader title="Edit Asset" description="Update asset master fields and next service details." />
+      <PageHeader
+        title="Edit Asset"
+        description="Update asset master fields and next service details."
+        breadcrumb={
+          <PageBreadcrumb items={[{ label: "Assets & Equipment", href: "/assets" }, { label: "Edit Asset" }]} />
+        }
+        actions={<BackLink href={`/assets/${id}`} label="Back to Asset Details" />}
+      />
       <div className="p-4 lg:p-6">
         <AssetWizard
           asset={asset}

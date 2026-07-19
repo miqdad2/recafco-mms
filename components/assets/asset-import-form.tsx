@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef } from "react";
+import { Fragment, useState, useRef } from "react";
 import Link from "next/link";
 import { Upload, FileSpreadsheet, CheckCircle2, XCircle, AlertTriangle, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,21 @@ function rowLabel(row: ImportPreviewRow): string {
   if (isDupFile(row)) return "Dup (file)";
   if (isDupDb(row)) return "Dup (DB)";
   return row.errors[0] ?? "Invalid";
+}
+
+// Compact vehicle-field summary — only rendered when at least one of these
+// is present, so plain equipment rows never grow an extra line.
+function vehicleFieldParts(row: ImportPreviewRow): string[] {
+  const parts: string[] = [];
+  if (row.plate_number) parts.push(`Plate: ${row.plate_number}`);
+  if (row.chassisNumber) parts.push(`Chassis: ${row.chassisNumber}`);
+  if (row.engineNumber) parts.push(`Engine: ${row.engineNumber}`);
+  if (row.modelYear) parts.push(`Year: ${row.modelYear}`);
+  if (row.registrationExpiryDate) parts.push(`Reg. Expiry: ${row.registrationExpiryDate}`);
+  if (row.insuranceExpiryDate) parts.push(`Insurance Expiry: ${row.insuranceExpiryDate}`);
+  if (row.currentKilometerReading) parts.push(`KM: ${row.currentKilometerReading}`);
+  if (row.assignedOperatorDriver) parts.push(`Driver: ${row.assignedOperatorDriver}`);
+  return parts;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -178,6 +193,10 @@ export function AssetImportForm() {
 
     return (
       <div className="space-y-4">
+        <p className="text-sm text-[#374151]">
+          Review the preview carefully. Rows with errors will not be imported until fixed.
+        </p>
+
         {/* 5-stat summary strip */}
         <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <div className="rounded-md border border-[#E5E7EB] bg-white p-4 text-center shadow-sm">
@@ -229,39 +248,56 @@ export function AssetImportForm() {
                 {rows.map((r) => {
                   const tone = rowTone(r);
                   const rowClass = tone === "valid" ? "hover:bg-gray-50" : tone === "dup" ? "bg-amber-50" : "bg-red-50";
+                  const vehicleParts = vehicleFieldParts(r);
                   return (
-                    <tr key={r.rowNumber} className={rowClass}>
-                      <td className="px-3 py-2 text-[#9CA3AF]">{r.rowNumber}</td>
-                      <td className="px-3 py-2 font-mono font-bold text-[#111827]">{r.asset_code || <span className="text-[#ED1C24]">—</span>}</td>
-                      <td className="px-3 py-2 max-w-[12rem] truncate">{r.asset_name || <span className="text-[#ED1C24]">—</span>}</td>
-                      <td className="px-3 py-2">
-                        <span>{r.category || <span className="text-[#ED1C24]">—</span>}</span>
-                        {r.category && r.category_status === "new" && (
-                          <span className="ml-1.5 inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">New</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-[#4B5563]">{r.department_name || <span className="text-[#9CA3AF]">—</span>}</td>
-                      <td className="px-3 py-2">{r.status || "Active"}</td>
-                      <td className="px-3 py-2 text-[#4B5563]">{r.condition || <span className="text-[#9CA3AF]">—</span>}</td>
-                      <td className="px-3 py-2 text-[#4B5563]">{r.criticality || <span className="text-[#9CA3AF]">—</span>}</td>
-                      <td className="px-3 py-2">
-                        {tone === "valid" && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-bold text-green-700">
-                            <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> Ready
-                          </span>
-                        )}
-                        {tone === "dup" && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800" title={r.errors.join("; ")}>
-                            <AlertTriangle className="h-3 w-3" aria-hidden="true" /> {rowLabel(r)}
-                          </span>
-                        )}
-                        {tone === "invalid" && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-bold text-[#ED1C24]" title={r.errors.join("; ")}>
-                            <XCircle className="h-3 w-3" aria-hidden="true" /> {r.errors[0]}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
+                    <Fragment key={r.rowNumber}>
+                      <tr className={rowClass}>
+                        <td className="px-3 py-2 text-[#9CA3AF]">{r.rowNumber}</td>
+                        <td className="px-3 py-2 font-mono font-bold text-[#111827]">{r.asset_code || <span className="text-[#ED1C24]">—</span>}</td>
+                        <td className="px-3 py-2 max-w-[12rem] truncate">{r.asset_name || <span className="text-[#ED1C24]">—</span>}</td>
+                        <td className="px-3 py-2">
+                          <span>{r.category || <span className="text-[#ED1C24]">—</span>}</span>
+                          {r.category && r.category_status === "new" && (
+                            <span className="ml-1.5 inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">New</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-[#4B5563]">{r.department_name || <span className="text-[#9CA3AF]">—</span>}</td>
+                        <td className="px-3 py-2">{r.status || "Active"}</td>
+                        <td className="px-3 py-2 text-[#4B5563]">{r.condition || <span className="text-[#9CA3AF]">—</span>}</td>
+                        <td className="px-3 py-2 text-[#4B5563]">{r.criticality || <span className="text-[#9CA3AF]">—</span>}</td>
+                        <td className="px-3 py-2">
+                          {tone === "valid" && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-bold text-green-700">
+                              <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> Ready
+                            </span>
+                          )}
+                          {tone === "dup" && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800" title={r.errors.join("; ")}>
+                              <AlertTriangle className="h-3 w-3" aria-hidden="true" /> {rowLabel(r)}
+                            </span>
+                          )}
+                          {tone === "invalid" && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-bold text-[#ED1C24]" title={r.errors.join("; ")}>
+                              <XCircle className="h-3 w-3" aria-hidden="true" /> {r.errors[0]}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                      {/* Compact vehicle-field secondary row — only rendered for rows
+                          that actually carry vehicle data, so equipment rows are unaffected. */}
+                      {vehicleParts.length > 0 && (
+                        <tr className={rowClass}>
+                          <td />
+                          <td colSpan={8} className="px-3 pb-2 pt-0">
+                            <p className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-[#6B7280]">
+                              {vehicleParts.map((part) => (
+                                <span key={part}>{part}</span>
+                              ))}
+                            </p>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -402,6 +438,46 @@ export function AssetImportForm() {
         <p className="mt-3 text-xs text-[#9CA3AF]">
           Headers are matched case-insensitively. Only the first sheet is used.
           Existing asset codes are never overwritten — duplicate codes are always skipped.
+        </p>
+      </div>
+
+      {/* Vehicle column reference — Vehicle Import Unit 1 */}
+      <div className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
+        <p className="mb-1 text-sm font-bold text-[#111827]">Vehicle columns (optional)</p>
+        <p className="mb-3 text-xs text-[#4B5563]">
+          Only needed when importing vehicles. Leave these columns blank for other equipment.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
+              <tr>
+                <th className="px-3 py-2">Accepted header names</th>
+                <th className="px-3 py-2">Maps to</th>
+                <th className="px-3 py-2">Format</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#E5E7EB]">
+              {[
+                ["Chassis Number / Chassis No / Chassis No. / Chassis / VIN",           "Chassis Number",           "Text"],
+                ["Engine Number / Engine No / Engine No. / Engine",                     "Engine Number",            "Text"],
+                ["Registration Expiry Date / Registration Expiry / Registration Expiry Dt / Istimara Expiry / Vehicle Registration Expiry", "Registration Expiry Date", "YYYY-MM-DD or Excel date"],
+                ["Insurance Expiry Date / Insurance Expiry / Insurance Expiry Dt / Insurance Valid Until", "Insurance Expiry Date", "YYYY-MM-DD or Excel date"],
+                ["Current Kilometer Reading / Current KM / Current Kilometers / KM Reading / Kilometer Reading / Odometer / Mileage", "Current Kilometer Reading", "Number"],
+                ["Assigned Driver / Assigned Operator / Assigned Operator / Driver / Driver / Operator Driver", "Assigned Driver", "Text"],
+                ["Model Year / Year / Vehicle Year / Manufacturing Year / Mfg Year",     "Model Year",               "4-digit year (1970–next year)"],
+              ].map(([header, field, format]) => (
+                <tr key={String(field)}>
+                  <td className="px-3 py-2 font-mono text-xs text-[#4B5563]">{header}</td>
+                  <td className="px-3 py-2 font-semibold">{field}</td>
+                  <td className="px-3 py-2 text-xs text-[#4B5563]">{format}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-3 text-xs text-[#9CA3AF]">
+          Duplicate plate numbers (within the file or already in Assets &amp; Equipment) are blocked, not silently imported.
+          Invalid dates, model years, or kilometer readings are flagged as row errors and skipped rather than guessed.
         </p>
       </div>
     </div>

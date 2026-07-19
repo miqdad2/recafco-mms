@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import type { Prisma } from "@prisma/client";
 import {
@@ -19,8 +18,10 @@ import type { LucideIcon } from "lucide-react";
 import { addWorkOrderMaterialAction } from "@/app/actions/maintenance";
 import { respondToClarificationAction } from "@/app/actions/workflow";
 import { uploadWorkOrderFileAction, deleteWorkOrderAttachmentAction } from "@/app/actions/files";
+import { BackLink } from "@/components/ui/back-link";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
 import { QrLinkCard } from "@/components/ui/qr-link-card";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -34,6 +35,8 @@ import { canViewEntityFile } from "@/lib/security/file-access";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { displayStatus } from "@/lib/display/work-order-labels";
 import { AutoRefresh } from "@/components/auto-refresh";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ── 7-stage display tracker ───────────────────────────────────────────────────
 
@@ -147,25 +150,66 @@ export default async function WorkOrderDetailPage({
   const successMessage = resolvedSearch.success;
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
 
-  const [wo, auditLogs, pendingClarification, technicians] = await Promise.all([
-    prisma.work_orders.findFirst({
-      where: { AND: [{ id }, { deleted_at: null }, visibilityFilter] },
+  // Look up by id first (the normal case). If that doesn't resolve, fall
+  // back to a job-number match — `id` is `@db.Uuid`, so only attempt the
+  // id-based lookup when the param is actually UUID-shaped, otherwise Prisma
+  // throws a validation error instead of returning null (Route Detail Fix
+  // Unit 1 Task 5). Job numbers are stored with "/" (e.g. "REC/MD/MECH/JOB/0013")
+  // but a URL path segment can't contain a literal "/", so the fallback also
+  // accepts the dash-separated form (e.g. "REC-MD-MECH-JOB-0013").
+  const isUuid = UUID_RE.test(id);
+  let wo = isUuid
+    ? await prisma.work_orders.findFirst({
+        where: { AND: [{ id }, { deleted_at: null }, visibilityFilter] },
+        include: workOrderControlInclude,
+      })
+    : null;
+  if (!wo) {
+    wo = await prisma.work_orders.findFirst({
+      where: {
+        AND: [
+          { work_order_number: { equals: id.replace(/-/g, "/"), mode: "insensitive" } },
+          { deleted_at: null },
+          visibilityFilter,
+        ],
+      },
       include: workOrderControlInclude,
-    }),
+    });
+  }
+
+  if (!wo) {
+    return (
+      <>
+        <PageHeader
+          title="Job Card not found"
+          breadcrumb={
+            <PageBreadcrumb items={[{ label: "Job Cards", href: "/maintenance/work-orders" }, { label: "Job Card Details" }]} />
+          }
+        />
+        <div className="p-4 lg:p-6">
+          <EmptyState
+            title="Job Card not found"
+            message="This Job Card may have been deleted, moved, or you may not have permission to view it."
+            action={<BackLink href="/maintenance/work-orders" label="Back to Job Cards" />}
+          />
+        </div>
+      </>
+    );
+  }
+
+  const [auditLogs, pendingClarification, technicians] = await Promise.all([
     prisma.audit_logs.findMany({
-      where: { entity_type: "work_order", entity_id: id },
+      where: { entity_type: "work_order", entity_id: wo.id },
       orderBy: { created_at: "desc" },
       take: 30,
     }),
-    getPendingClarificationForWorkOrder(id),
+    getPendingClarificationForWorkOrder(wo.id),
     prisma.profiles.findMany({
       where: { is_active: true, deleted_at: null },
       select: { id: true, full_name: true },
       orderBy: { full_name: "asc" },
     }),
   ]);
-
-  if (!wo) notFound();
 
   const actorIds = [
     wo.created_by,
@@ -257,8 +301,12 @@ export default async function WorkOrderDetailPage({
       <PageHeader
         title={wo.work_order_number ?? "Job Card"}
         description={summaryTitle.length > 80 ? summaryTitle.slice(0, 80) + "…" : summaryTitle}
+        breadcrumb={
+          <PageBreadcrumb items={[{ label: "Job Cards", href: "/maintenance/work-orders" }, { label: "Job Card Details" }]} />
+        }
         actions={
           <>
+            <BackLink href="/maintenance/work-orders" label="Back to Job Cards" />
             {canPrint ? (
               <Link href={`/maintenance/work-orders/${wo.id}/print`}>
                 <Button variant="secondary">
