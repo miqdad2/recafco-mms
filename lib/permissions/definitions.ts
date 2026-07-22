@@ -22,16 +22,34 @@ export const permissions: Record<PermissionKey, string> = {
   "work_orders.print": "Open work order print layouts",
   "work_orders.approve": "Approve, reject, and close maintenance work orders",
   "work_orders.assign": "Assign technicians and verify completed maintenance work",
+  "work_orders.create": "Create new maintenance work orders",
+  "work_orders.update": "Update work order execution details — notes, labor hours, and photos",
+  "work_orders.close": "Close completed and verified work orders and update asset history",
+  "work_orders.inventory_check": "Check inventory availability for work order required parts",
+  "work_orders.review": "Review job cards before Maintenance Manager approval",
+  "work_orders.request_correction": "Send a job card back for correction while it remains Under Review",
   "technician.jobs.view": "View assigned technician jobs",
   "technician.jobs.update": "Start, update, and complete assigned technician jobs",
   "notifications.view": "View in-app notifications",
   "parts_requests.view": "View parts requests",
   "parts_requests.create": "Create parts requests from work orders",
   "parts_requests.approve": "Approve or reject parts requests",
+  "parts_requests.edit": "Edit materials request items and quantities before issue",
+  "parts_requests.issue": "Issue materials against an approved materials request",
+  "parts_requests.mark_waiting_stock": "Mark a materials request as waiting for stock when none is available",
   "store.issue": "Issue parts and manage store workflow",
+  "store.receive": "Receive parts delivery from supplier and update inventory stock levels",
+  "offline_inventory.view": "View the Offline Inventory Control balance dashboard",
+  "offline_inventory.issue": "Issue materials from the Offline Inventory Control ledger",
+  "offline_inventory.ledger": "View Offline Inventory Control movement history",
   "inventory.movements.view": "View inventory movements",
   "purchase_requests.view": "View purchase requests",
   "purchase_requests.manage": "Create and manage purchase requests",
+  "purchase_orders.view": "View purchase orders and order line item details",
+  "purchase_orders.manage": "Create and manage formal purchase orders against approved purchase requests",
+  "purchase.production_approve": "Approve or reject production manager feasibility review for purchase requests",
+  "purchase.factory_approve": "Approve or reject factory manager operational review for purchase requests",
+  "purchase.manager_approve": "Approve or reject purchase manager procurement strategy for purchase requests",
   "finance.approve": "Approve or reject finance approvals",
   "ceo.approve": "Approve or reject CEO threshold approvals",
   "finance.reports.view": "View finance reports",
@@ -43,7 +61,9 @@ export const permissions: Record<PermissionKey, string> = {
   "cost.approve": "Approve or flag cost items after review",
   "cost.reports.view": "View cost controller reports and cost summaries",
   "budget.check": "Check budget availability and cost center allocation",
-  "cost_center.manage": "Manage cost centers and budget allocations"
+  "cost_center.manage": "Manage cost centers and budget allocations",
+  "workflow.view": "View workflow instances, step history, and the full approval chain",
+  "workflow.clarify": "Submit and respond to clarification requests in workflow steps"
 };
 
 export const roleLabels: Record<RoleSlug, string> = {
@@ -52,6 +72,7 @@ export const roleLabels: Record<RoleSlug, string> = {
   ceo_management: "CEO / Management",
   maintenance_manager: "Maintenance Manager",
   maintenance_supervisor: "Maintenance Supervisor",
+  maintenance_engineer: "Maintenance Engineer",
   maintenance_data_entry: "Maintenance Data Entry",
   technician: "Technician / Mechanic",
   store_keeper: "Store Keeper",
@@ -60,7 +81,10 @@ export const roleLabels: Record<RoleSlug, string> = {
   department_requester: "Department Requester",
   viewer_auditor: "Viewer / Auditor",
   cost_controller: "Cost Controller",
-  accounting_reviewer: "Accounting Reviewer"
+  accounting_reviewer: "Accounting Reviewer",
+  production_manager: "Production Manager",
+  factory_manager: "Factory Manager",
+  purchase_manager: "Purchase Manager"
 };
 
 export const adminNavigationPermissions: Record<string, PermissionKey> = {

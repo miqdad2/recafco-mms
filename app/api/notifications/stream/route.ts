@@ -1,6 +1,7 @@
 import { getCurrentUserContext } from "@/lib/auth/context";
 import { getUnreadNotificationCount } from "@/lib/notifications/service";
 import { prisma } from "@/lib/db/prisma";
+import { logSystemError } from "@/lib/errors/logging";
 
 // Use the Node.js runtime so Prisma (TCP to PostgreSQL) works inside the handler.
 export const runtime = "nodejs";
@@ -45,6 +46,41 @@ async function getNewNotificationsSince(userId: string, since: Date) {
 }
 
 /**
+ * Enterprise Real-Time Update Foundation Unit Task 3/4: reuses the existing
+ * realtime_events table (already written to by lib/realtime/events.ts'
+ * emitRealtimeEvent, previously with "no active consumer") as the source for
+ * a generic "something relevant changed, refresh this area" signal — rather
+ * than building a second SSE endpoint/connection alongside the notification
+ * stream this already is.
+ *
+ * Rows with no target_profile_id are broadcast to every connected user
+ * (Task 4's documented fallback: minimal, non-sensitive event names only —
+ * emitRealtimeEvent already strips cost/price/credential fields before a row
+ * is ever written). Rows with a target_profile_id are only sent to that
+ * user. No department/role-scoped filtering is applied yet — see the final
+ * report's permission/security section for why this is safe today.
+ */
+async function getNewRealtimeEventsSince(userId: string, since: Date) {
+  try {
+    return await prisma.realtime_events.findMany({
+      where: {
+        created_at: { gt: since },
+        OR: [{ target_profile_id: null }, { target_profile_id: userId }],
+      },
+      orderBy: { created_at: "desc" },
+      take: 20,
+      select: {
+        event_type: true,
+        entity_type: true,
+        entity_id: true,
+      },
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
  * GET /api/notifications/stream
  *
  * Server-Sent Events stream for the authenticated user.
@@ -57,6 +93,14 @@ async function getNewNotificationsSince(userId: string, since: Date) {
  *     Sent for each notification created since the previous poll.
  *     The client should use this as a refresh trigger — it does NOT
  *     carry the full notification payload.
+ *
+ *   realtime  { event_type, entity_type, entity_id }
+ *     Enterprise Real-Time Update Foundation Unit Task 4: sent for each row
+ *     in realtime_events created since the previous poll (that row's own
+ *     target_profile_id already scoped to this user or broadcast). Consumed
+ *     by useRealtimeEvents/<RealtimeRefresh watch={[...]} /> on individual
+ *     pages — never carries cost/price data (emitRealtimeEvent strips those
+ *     before the row is ever written) and never the full entity record.
  *
  *   ping  { ts: number }
  *     Heartbeat every 25 s to keep the connection alive.
@@ -85,6 +129,10 @@ export async function GET(request: Request): Promise<Response> {
   let pingTimer: ReturnType<typeof setTimeout> | null = null;
   // Track when we last polled so we only send truly new notifications.
   let lastCheckedAt = new Date();
+  // Separate cursor for the generic realtime_events poll (Task 4) — kept
+  // independent of lastCheckedAt so a slow notifications query never delays
+  // the realtime_events window or vice versa.
+  let lastCheckedAtRealtime = new Date();
 
   function cleanup() {
     if (closed) return;
@@ -138,10 +186,13 @@ export async function GET(request: Request): Promise<Response> {
             // Capture the window before awaiting so no notifications slip through.
             const since = lastCheckedAt;
             lastCheckedAt = new Date();
+            const realtimeSince = lastCheckedAtRealtime;
+            lastCheckedAtRealtime = new Date();
 
-            const [rows, count] = await Promise.all([
+            const [rows, count, realtimeRows] = await Promise.all([
               getNewNotificationsSince(userId, since),
               getUnreadNotificationCount(userId),
+              getNewRealtimeEventsSince(userId, realtimeSince),
             ]);
 
             send("unread_count", { count });
@@ -157,8 +208,30 @@ export async function GET(request: Request): Promise<Response> {
                 created_at: row.created_at.toISOString(),
               });
             }
-          } catch {
-            // DB error — skip this tick, reschedule next normally
+
+            // Enterprise Real-Time Update Foundation Unit Task 4: generic
+            // "something relevant changed" signal — no title/message/costs,
+            // just enough for the client's useRealtimeEvents hook to decide
+            // whether to refresh the current page.
+            for (const row of realtimeRows) {
+              send("realtime", {
+                event_type: row.event_type,
+                entity_type: row.entity_type,
+                entity_id: row.entity_id,
+              });
+            }
+          } catch (error) {
+            // Enterprise Error Handling Audit Unit Task 9: still never
+            // crashes the stream (page keeps working, next tick retries) —
+            // just also leaves a trace now instead of failing completely
+            // silently on every tick during a DB outage.
+            await logSystemError({
+              source: "notifications.stream.poll",
+              severity: "warning",
+              message: error instanceof Error ? error.message : "SSE poll tick failed",
+              userId,
+              route: "/api/notifications/stream"
+            });
           }
 
           schedulePoll();

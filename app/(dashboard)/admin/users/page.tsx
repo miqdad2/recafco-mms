@@ -4,6 +4,7 @@ import type { SerializedAuthUser, SerializedProfile } from "@/components/admin/u
 import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { ACCOUNT_TYPE_SLUGS } from "@/lib/users/account-types";
 
 const CREATE_USER_ERRORS = new Set([
   "duplicate-email",
@@ -63,18 +64,7 @@ export default async function UsersPage({
           })
         : Promise.resolve([] as Awaited<ReturnType<typeof prisma.profiles.findMany>>),
       prisma.roles.findMany({
-        where: {
-          slug: {
-            in: [
-              "super_admin",
-              "maintenance_data_entry",
-              "maintenance_manager",
-              "technician",
-              "store_keeper",
-              "viewer_auditor",
-            ],
-          },
-        },
+        where: { slug: { in: ACCOUNT_TYPE_SLUGS } },
         select: { id: true, slug: true },
       }),
       getAuthUsers(),

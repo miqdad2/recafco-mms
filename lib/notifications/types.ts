@@ -2,11 +2,19 @@ import type { RoleSlug } from "@/types/database";
 
 export type NotificationPriority = "low" | "normal" | "high" | "urgent";
 
+// Pre-existing drift, found in Unit 6: the notification_events_category_check
+// / notifications_category_check DB constraints actually allow "Parts
+// Requests", not "Materials Requests" — this type had "Materials Requests"
+// as if it were valid, which would have failed at runtime the first time
+// anything tried to use it as a real category. Added "Parts Requests" (the
+// DB-valid value) rather than removing "Materials Requests", to stay
+// additive/reversible; nothing currently uses "Materials Requests".
 export type NotificationCategory =
   | "Work Orders"
   | "Approvals"
   | "Technician Jobs"
   | "Materials Requests"
+  | "Parts Requests"
   | "Store / Inventory"
   | "Purchase"
   | "Finance"
@@ -85,7 +93,26 @@ export type NotificationEventKey =
   | "role.changed"
   | "settings.changed"
   | "security.account_unlocked"
-  | "security.sessions_revoked";
+  | "security.sessions_revoked"
+  // Maintenance Workflow Redesign Unit 6 — simplified Job Card / Materials
+  // Request events. Dot-notation kept consistent with every existing key
+  // above (job_card_created etc. in the Unit 6 spec are the same events,
+  // just written as prose there).
+  | "job_card.created"
+  | "job_card.submitted_for_review"
+  | "job_card.reviewed"
+  | "job_card.correction_requested"
+  | "job_card.approved"
+  | "job_card.waiting_materials"
+  | "job_card.assigned"
+  | "job_card.in_progress"
+  | "job_card.closed"
+  | "material_request.created"
+  | "material_request.approved"
+  | "material_request.waiting_stock"
+  | "material_request.partially_issued"
+  | "material_request.issued"
+  | "asset.updated";
 
 export type NotificationMetadata = Record<string, string | number | boolean | null | undefined>;
 
@@ -144,4 +171,5 @@ export type NotificationListItem = {
   read_at: string | null;
   archived_at: string | null;
   created_at: string;
+  actor_id: string | null;
 };

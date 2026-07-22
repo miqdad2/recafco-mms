@@ -6,13 +6,14 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { requirePermission } from "@/lib/auth/context";
 import { writeAuditLog } from "@/lib/audit/log";
+import { logSystemError } from "@/lib/errors/logging";
 
 const CATEGORY_PAGE = "/admin/settings/asset-categories";
 
 const nameSchema = z.string().trim().min(1).max(80);
 
 export async function createMainCategoryAction(formData: FormData) {
-  await requirePermission("assets.manage");
+  const context = await requirePermission("assets.manage");
   const name = nameSchema.safeParse(formData.get("name"));
   if (!name.success) redirect(`${CATEGORY_PAGE}?error=invalid-name`);
 
@@ -26,12 +27,24 @@ export async function createMainCategoryAction(formData: FormData) {
     await prisma.asset_categories.create({
       data: { name: name.data, parent_id: null, sort_order: nextOrder, is_active: true },
     });
-  } catch {
+  } catch (error) {
+    // Enterprise Error Handling Audit Unit Task 9: was a bare `catch {}` —
+    // any DB error (not just a duplicate name) was mapped to the same
+    // "name-exists" message with zero trace in system_error_logs.
+    await logSystemError({
+      source: "asset_categories.createMainCategoryAction",
+      severity: "warning",
+      message: error instanceof Error ? error.message : "Category create failed",
+      userId: context.userId,
+      route: CATEGORY_PAGE,
+      entityType: "asset_category",
+      metadata: { name: name.data }
+    });
     redirect(`${CATEGORY_PAGE}?error=name-exists`);
   }
 
   await writeAuditLog({
-    actorId: (await requirePermission("assets.manage")).userId,
+    actorId: context.userId,
     action: "asset_category.create",
     entityType: "asset_category",
     entityId: null,
@@ -64,7 +77,16 @@ export async function createSubcategoryAction(formData: FormData) {
     await prisma.asset_categories.create({
       data: { name: name.data, parent_id: parentId.data, sort_order: nextOrder, is_active: true },
     });
-  } catch {
+  } catch (error) {
+    await logSystemError({
+      source: "asset_categories.createSubcategoryAction",
+      severity: "warning",
+      message: error instanceof Error ? error.message : "Subcategory create failed",
+      userId: context.userId,
+      route: CATEGORY_PAGE,
+      entityType: "asset_category",
+      metadata: { name: name.data, parent: parent.name }
+    });
     redirect(`${CATEGORY_PAGE}?error=name-exists`);
   }
 
@@ -129,7 +151,17 @@ export async function renameCategoryAction(formData: FormData) {
       where: { id: id.data },
       data: { name: name.data, updated_at: new Date() },
     });
-  } catch {
+  } catch (error) {
+    await logSystemError({
+      source: "asset_categories.renameCategoryAction",
+      severity: "warning",
+      message: error instanceof Error ? error.message : "Category rename failed",
+      userId: context.userId,
+      route: CATEGORY_PAGE,
+      entityType: "asset_category",
+      entityId: id.data,
+      metadata: { name: name.data }
+    });
     redirect(`${CATEGORY_PAGE}?error=name-exists`);
   }
 

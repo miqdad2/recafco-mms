@@ -91,6 +91,103 @@ const fallbackTemplates: Record<string, { title: string; message: string; action
     message: "All required parts have been confirmed by Store Keeper. Work order {work_order_number} is ready for technician assignment.",
     actionLabel: "Open assignments",
     actionUrl: "/maintenance/assignments"
+  },
+
+  // Maintenance Workflow Redesign Unit 6 — simplified Job Card / Materials
+  // Request templates. "Job Card" and "Materials Request" throughout, never
+  // "Work Order"/"Parts Request"; no CEO/Finance/Purchase wording.
+  "job_card.created": {
+    title: "New Job Card Created",
+    message: "Job Card {job_card_number} was created for {asset_name}. Review is required.",
+    actionLabel: "Review Job Card",
+    actionUrl: "/maintenance/work-orders/{entity_id}"
+  },
+  "job_card.submitted_for_review": {
+    title: "Job Card Submitted for Review",
+    message: "Job Card {job_card_number} was submitted for {asset_name}. Review is required.",
+    actionLabel: "Review Job Card",
+    actionUrl: "/maintenance/work-orders/{entity_id}"
+  },
+  "job_card.reviewed": {
+    title: "Job Card Reviewed",
+    message: "Job Card {job_card_number} was reviewed and is ready for manager approval.",
+    actionLabel: "Open Job Card",
+    actionUrl: "/maintenance/work-orders/{entity_id}"
+  },
+  "job_card.correction_requested": {
+    title: "Correction Requested",
+    message: "Correction was requested for Job Card {job_card_number}: {reason}",
+    actionLabel: "Open Job Card",
+    actionUrl: "/maintenance/work-orders/{entity_id}"
+  },
+  "job_card.approved": {
+    title: "Job Card Approved",
+    message: "Job Card {job_card_number} was approved. Store can review the required materials.",
+    actionLabel: "Open Job Card",
+    actionUrl: "/maintenance/work-orders/{entity_id}"
+  },
+  "job_card.waiting_materials": {
+    title: "Job Card Waiting Materials",
+    message: "Job Card {job_card_number} is waiting for materials.",
+    actionLabel: "Open Job Card",
+    actionUrl: "/maintenance/work-orders/{entity_id}"
+  },
+  "job_card.assigned": {
+    title: "Job Card Assigned",
+    message: "Job Card {job_card_number} was assigned to {assignee_name}.",
+    actionLabel: "Open Job Card",
+    actionUrl: "/maintenance/work-orders/{entity_id}"
+  },
+  "job_card.in_progress": {
+    title: "Job Card In Progress",
+    message: "Work started for Job Card {job_card_number}.",
+    actionLabel: "Open Job Card",
+    actionUrl: "/maintenance/work-orders/{entity_id}"
+  },
+  "job_card.closed": {
+    title: "Job Card Closed",
+    message: "Job Card {job_card_number} has been closed.",
+    actionLabel: "Open Job Card",
+    actionUrl: "/maintenance/work-orders/{entity_id}"
+  },
+  "material_request.created": {
+    title: "Materials Requested",
+    message: "Materials were requested for Job Card {job_card_number}.",
+    actionLabel: "Open Materials Request",
+    actionUrl: "/store/parts-requests/{entity_id}"
+  },
+  "material_request.approved": {
+    title: "Materials Request Approved",
+    message: "Materials Request {request_number} for Job Card {job_card_number} was approved for Store issue.",
+    actionLabel: "Open Materials Request",
+    actionUrl: "/store/parts-requests/{entity_id}"
+  },
+  "material_request.waiting_stock": {
+    title: "Waiting Stock",
+    message: "Materials for Job Card {job_card_number} are waiting for stock: {reason}",
+    actionLabel: "Open Materials Request",
+    actionUrl: "/store/parts-requests/{entity_id}"
+  },
+  "material_request.partially_issued": {
+    // Enterprise Real-Time Notifications Unit Task 3: "Partially Issued" is
+    // banned as a primary label — reworded to lead with "Materials Sent" and
+    // push the partial/remaining detail into the message body only.
+    title: "Materials Sent (Some Remaining)",
+    message: "Some materials were sent for Job Card {job_card_number} ({issued_quantity} sent, {remaining_quantity} still needed).",
+    actionLabel: "Open Materials Request",
+    actionUrl: "/store/parts-requests/{entity_id}"
+  },
+  "material_request.issued": {
+    title: "Materials Issued",
+    message: "Materials for Job Card {job_card_number} were issued. The Job Card is ready for assignment.",
+    actionLabel: "Open Materials Request",
+    actionUrl: "/store/parts-requests/{entity_id}"
+  },
+  "asset.updated": {
+    title: "Asset Updated",
+    message: "Asset record updated: {asset_code}",
+    actionLabel: "Open Asset",
+    actionUrl: "/assets/{entity_id}"
   }
 };
 

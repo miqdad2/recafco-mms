@@ -11,6 +11,7 @@ import { writeAuditLog } from "@/lib/audit/log";
 import { prisma } from "@/lib/db/prisma";
 import { notifyByEvent } from "@/lib/notifications/service";
 import { emitRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
+import { ACCOUNT_TYPE_SLUGS } from "@/lib/users/account-types";
 
 
 const checkbox = z.preprocess((value) => value === "on" || value === "true", z.boolean());
@@ -155,17 +156,14 @@ export async function createLocalUserAction(formData: FormData) {
   const context = await requirePermission("admin.users.manage");
 
   // Resolve simplified account_type field → role_id before schema validation.
+  // account_type is a real role slug from the curated ACCOUNT_TYPE_SLUGS
+  // allow-list (see lib/users/account-types.ts) — validated against that
+  // list rather than trusted as-is, since it comes from client form input.
   const rawData: Record<string, FormDataEntryValue> = Object.fromEntries(formData);
   if (typeof rawData.account_type === "string" && rawData.account_type) {
-    const ACCOUNT_TYPE_TO_SLUG: Record<string, string> = {
-      maintenance_data_entry: "maintenance_data_entry",
-      maintenance_manager:    "maintenance_manager",
-      technician:             "technician",
-      store_keeper:           "store_keeper",
-      system_admin:           "super_admin",
-      viewer_auditor:         "viewer_auditor",
-    };
-    const roleSlug = ACCOUNT_TYPE_TO_SLUG[rawData.account_type] ?? "maintenance_data_entry";
+    const roleSlug = ACCOUNT_TYPE_SLUGS.includes(rawData.account_type)
+      ? rawData.account_type
+      : "maintenance_data_entry";
     const roleRow = await prisma.roles.findFirst({ where: { slug: roleSlug }, select: { id: true } }).catch(() => null);
     if (roleRow) rawData.role_id = roleRow.id;
     delete rawData.account_type;

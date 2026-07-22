@@ -77,8 +77,13 @@ export function StatCard({ label, mobileLabel, value, detail, icon: Icon, tone =
           <Icon className={compact ? "h-4 w-4" : "h-4 w-4 sm:h-5 sm:w-5"} aria-hidden="true" />
         </div>
       </div>
-      {!compact && detail && (
-        <p className="mt-2 line-clamp-2 text-[11px] font-medium leading-4 text-[#64748B] sm:mt-3 sm:text-xs sm:leading-5">
+      {detail && (
+        <p
+          className={cn(
+            "text-[11px] font-medium leading-4 text-[#64748B]",
+            compact ? "mt-1.5 line-clamp-1" : "mt-2 line-clamp-2 sm:mt-3 sm:text-xs sm:leading-5"
+          )}
+        >
           {detail}
         </p>
       )}

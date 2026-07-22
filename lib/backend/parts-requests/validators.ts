@@ -39,3 +39,39 @@ export function parsePartsRequestId(value: unknown) {
   if (!parsed.success) throw new AppError("Invalid parts request id.", { code: "VALIDATION_ERROR" });
   return parsed.data;
 }
+
+// Unit 5 — Materials Request / Store issue engine.
+
+export const markWaitingStockSchema = z.object({
+  partsRequestId: z.string().uuid(),
+  reason: z.string().trim().min(5).max(1000)
+});
+export type MarkWaitingStockInput = z.infer<typeof markWaitingStockSchema>;
+
+export const issueMaterialsItemSchema = z.object({
+  itemId: z.string().uuid(),
+  quantity: z.number().nonnegative()
+});
+
+export const issueMaterialsSchema = z.object({
+  partsRequestId: z.string().uuid(),
+  items: z.array(issueMaterialsItemSchema).min(1),
+  issuedTo: z.string().trim().max(200).optional(),
+  reason: z.string().trim().max(1000).optional()
+});
+export type IssueMaterialsInput = z.infer<typeof issueMaterialsSchema>;
+
+export const editMaterialsRequestItemSchema = z.object({
+  itemId: z.string().uuid(),
+  description: z.string().trim().min(1).optional(),
+  quantity_requested: z.number().int().positive().optional(),
+  unit_price: z.number().nonnegative().optional(),
+  remarks: z.string().trim().max(1000).nullable().optional()
+});
+
+export const editMaterialsRequestSchema = z.object({
+  partsRequestId: z.string().uuid(),
+  remarks: z.string().trim().max(1000).optional(),
+  items: z.array(editMaterialsRequestItemSchema).optional()
+});
+export type EditMaterialsRequestInput = z.infer<typeof editMaterialsRequestSchema>;

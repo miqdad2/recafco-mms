@@ -2,7 +2,10 @@ import { ZodError } from "zod";
 
 import { AppError, fieldErrorsFromZod, type ActionResult } from "@/lib/errors/app-error";
 
-const genericMessage = "The system could not complete this request. Try again or contact IT support.";
+// Enterprise Error Handling Audit Unit Task 10: aligned to the standard
+// "Unexpected" wording — this is the fallback shown for every error that
+// isn't an AppError/ZodError, i.e. the message most users will actually see.
+const genericMessage = "Something went wrong. Please try again or contact IT.";
 
 export function normalizeError(error: unknown) {
   if (error instanceof AppError) return error;

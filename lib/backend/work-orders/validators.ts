@@ -6,7 +6,10 @@ export const workOrderIdSchema = z.string().uuid();
 
 export const workflowCommentSchema = z.string().trim().max(1000).optional();
 
-export const ASSIGNMENT_TYPES = ["INTERNAL_TECHNICIAN", "FREELANCER", "EXTERNAL_COMPANY"] as const;
+// "OTHER" added Unit 4 for free-text assignee/company that doesn't fit
+// FREELANCER/EXTERNAL_COMPANY — safe to add since assignment_type has no DB
+// CHECK constraint, only this app-layer union.
+export const ASSIGNMENT_TYPES = ["INTERNAL_TECHNICIAN", "FREELANCER", "EXTERNAL_COMPANY", "OTHER"] as const;
 export type AssignmentType = (typeof ASSIGNMENT_TYPES)[number];
 
 export const technicianAssignmentSchema = z.object({

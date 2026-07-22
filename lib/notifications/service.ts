@@ -8,6 +8,8 @@ import { prisma } from "@/lib/db/prisma";
 import { logSystemError } from "@/lib/errors/logging";
 import type { Prisma } from "@prisma/client";
 
+const DUPLICATE_WINDOW_MS = 30_000;
+
 type DbNotificationEvent = {
   category: NotificationCategory;
   priority: NotificationPriority;
@@ -127,6 +129,28 @@ export async function notifyByEvent(input: NotifyByEventInput) {
         await logNotificationDelivery({ eventKey: input.eventKey, recipientUserId: recipient.userId, status: "disabled" });
         continue;
       }
+
+      // Task 9 (Enterprise Real-Time Notifications Unit): no unique DB
+      // constraint exists on (recipient, event, entity) — a code-level guard
+      // instead. Skips a duplicate insert for the same recipient/event/entity
+      // fired again within DUPLICATE_WINDOW_MS (e.g. a double-submit or a
+      // caller accidentally notifying twice for one action).
+      if (input.entityId) {
+        const recentDuplicate = await prisma.notifications.findFirst({
+          where: {
+            recipient_user_id: recipient.userId,
+            event_key: input.eventKey,
+            entity_id: input.entityId,
+            created_at: { gt: new Date(Date.now() - DUPLICATE_WINDOW_MS) }
+          },
+          select: { id: true }
+        });
+        if (recentDuplicate) {
+          await logNotificationDelivery({ eventKey: input.eventKey, recipientUserId: recipient.userId, status: "skipped" });
+          continue;
+        }
+      }
+
       notifications.push({
         recipientUserId: recipient.userId,
         recipientRole: recipient.roleSlug ?? null,
@@ -210,7 +234,8 @@ export async function getUserNotifications(userId: string, options: { limit?: nu
         read_at: true,
         archived_at: true,
         created_at: true,
-        is_read: true
+        is_read: true,
+        created_by: true
       }
     });
 
@@ -226,6 +251,7 @@ export async function getUserNotifications(userId: string, options: { limit?: nu
       action_url: item.action_url,
       action_label: item.action_label,
       metadata: (item.metadata ?? {}) as Record<string, string | number | boolean | null | undefined>,
+      actor_id: item.created_by,
       read_at: (item.read_at ?? (item.is_read ? item.created_at : null))?.toISOString() ?? null,
       archived_at: item.archived_at?.toISOString() ?? null,
       created_at: item.created_at.toISOString()

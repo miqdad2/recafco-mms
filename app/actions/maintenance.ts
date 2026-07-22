@@ -9,7 +9,8 @@ import { writeAuditLog } from "@/lib/audit/log";
 import { logSystemError } from "@/lib/errors/logging";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { createMaintenanceWorkflowInstanceForWorkOrder } from "@/lib/backend/workflows/engine";
-import { notifyByEvent } from "@/lib/notifications/service";
+import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
+import { createPartsRequest } from "@/lib/backend/parts-requests/service";
 import { emitRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { prisma } from "@/lib/db/prisma";
 import { parsePendingAttachments, saveAttachmentBatch } from "@/lib/files/attachment-form";
@@ -258,6 +259,18 @@ export async function upsertAssetAction(formData: FormData) {
     metadata: { category: parsed.data.category, status: parsed.data.status }
   });
 
+  // Enterprise Real-Time Notifications Unit Task 2 item L: quiet,
+  // non-critical awareness ping only — Super Admin / Maintenance Manager,
+  // not every role, per "notifications must be useful, not noisy".
+  await notifyWorkflowEvent({
+    eventKey: "asset.updated",
+    entityType: "asset",
+    entityId: data.id,
+    actorId: context.userId,
+    recipientRoles: ["super_admin", "maintenance_manager"],
+    metadata: { asset_code: data.asset_code }
+  });
+
   revalidatePath("/assets");
   revalidatePath("/dashboard");
   revalidatePath("/maintenance/work-orders");
@@ -286,13 +299,30 @@ export async function upsertPartAction(formData: FormData) {
       ? await prisma.parts.update({ where: { id }, data: clean({ ...values, ...(part_code ? { part_code } : {}), compatible_asset_categories: categories, updated_by: context.userId }), select: { id: true, part_code: true } })
       : await prisma.parts.create({ data: clean({ ...values, part_code, compatible_asset_categories: categories, updated_by: context.userId, created_by: context.userId }), select: { id: true, part_code: true } });
   } catch (saveError) {
+    const rawMessage = saveError instanceof Error ? saveError.message : "save failed";
     console.error("[maintenance.upsertPartAction] Save failed:", {
       source: "maintenance.upsertPartAction",
       severity: "error",
       code: (saveError as { code?: string } | null)?.code ?? null,
-      message: saveError instanceof Error ? saveError.message : "save failed",
+      message: rawMessage,
       meta: (saveError as { meta?: unknown } | null)?.meta ?? null,
       isEdit: !!id,
+    });
+    // Enterprise Error Handling Audit Unit Task 9: matches the sibling
+    // upsertAssetAction pattern above — this catch previously only logged to
+    // stdout, leaving no system_error_logs trace.
+    await logSystemError({
+      source: "maintenance.upsertPartAction",
+      severity: "error",
+      message: rawMessage.slice(-1500),
+      userId: context.userId,
+      route: "/store/parts",
+      entityType: "part",
+      metadata: {
+        code: (saveError as { code?: string } | null)?.code ?? null,
+        meta: JSON.stringify((saveError as { meta?: unknown } | null)?.meta ?? null),
+        isEdit: !!id,
+      },
     });
     redirect("/store/parts?error=save-failed");
   }
@@ -338,11 +368,14 @@ export async function upsertWorkOrderAction(formData: FormData) {
   // Read the intent flag — the form submits "save_draft" or "submit_for_approval",
   // never a raw status string. createStatus is derived here; any status field in
   // formData is ignored completely, so injecting status=Closed has no effect.
+  // Maintenance Workflow Redesign Unit 3: "Draft"/"Pending Approval" renamed to
+  // "Created"/"Under Review" (no Draft status in the new simplified model —
+  // "Created" is the equivalent safe/editable holding status).
   const rawIntent = String(formData.get("intent") ?? "").trim();
   if (!isEdit && rawIntent !== "save_draft" && rawIntent !== "submit_for_approval") {
     redirect(`${formBackHref}?error=invalid-status`);
   }
-  const createStatus = rawIntent === "submit_for_approval" ? "Pending Approval" : "Draft";
+  const createStatus = rawIntent === "submit_for_approval" ? "Under Review" : "Created";
 
   const parsed = workOrderSchema.safeParse(Object.fromEntries(formData));
 
@@ -353,13 +386,15 @@ export async function upsertWorkOrderAction(formData: FormData) {
   }
 
   // Status transitions must happen through dedicated workflow actions only.
-  // This action only handles draft creation and metadata edits on Draft/Rejected WOs.
-  const EDITABLE_STATUSES = ["Draft", "Rejected"];
+  // This action only handles creation and metadata edits on Created/Under Review WOs
+  // (Maintenance Workflow Redesign Unit 3 — no Draft/Rejected statuses anymore;
+  // corrections keep a Job Card at Under Review instead of a distinct status).
+  const EDITABLE_STATUSES = ["Created", "Under Review"];
   const { id, ...values } = parsed.data;
 
   if (!id) {
     // Operator complaint is required when submitting — description_of_work is optional.
-    if (createStatus === "Pending Approval") {
+    if (createStatus === "Under Review") {
       if (!parsed.data.operator_complaint) redirect(`${formBackHref}?error=missing-complaint`);
     }
   }
@@ -403,19 +438,22 @@ export async function upsertWorkOrderAction(formData: FormData) {
     created_by: context.userId
   });
 
-  // When editing a Rejected WO, auto-return it to Draft so "Submit for approval"
-  // becomes available immediately — without requiring a separate "Return to Draft" step.
-  // The DB trigger (work_orders_status_change) writes the status history entry automatically.
+  // Legacy pre-Unit3 defensive branch: "Rejected" is no longer a reachable status
+  // (removed from chk_work_orders_status), so existingStatus can never equal it for
+  // new data — this is inert unless an old, not-yet-migrated row is edited, in which
+  // case it now falls into "Under Review" (the closest new-model equivalent of the
+  // old auto-return-to-Draft behavior) rather than the invalid "Draft" value.
   const updatePayload = existingStatus === "Rejected"
-    ? { ...basePayload, status: "Draft" }
+    ? { ...basePayload, status: "Under Review" }
     : basePayload;
 
-  // Status is set on create only — never changed by this action on updates (except Rejected→Draft above).
+  // Status is set on create only — never changed by this action on updates (except the
+  // legacy Rejected branch above).
   const insertPayload = { ...basePayload, status: createStatus };
 
   let data: { id: string; work_order_number: string | null } | null = null;
   try {
-    if (!id && createStatus === "Pending Approval") {
+    if (!id && createStatus === "Under Review") {
       // New WO submitted for approval: create WO + workflow tracking rows atomically.
       // If workflow rows cannot be created, the entire transaction rolls back so submitted
       // work orders are never left without a tracking record.
@@ -433,22 +471,39 @@ export async function upsertWorkOrderAction(formData: FormData) {
         : await prisma.work_orders.create({ data: insertPayload, select: { id: true, work_order_number: true } });
     }
   } catch (saveError) {
+    const rawMessage = saveError instanceof Error ? saveError.message : "save failed";
     console.error("[maintenance.upsertWorkOrderAction] Save failed:", {
       source: "maintenance.upsertWorkOrderAction",
       severity: "error",
       code: (saveError as { code?: string } | null)?.code ?? null,
-      message: saveError instanceof Error ? saveError.message : "save failed",
+      message: rawMessage,
       meta: (saveError as { meta?: unknown } | null)?.meta ?? null,
       isEdit: !!id,
     });
+    // Enterprise Error Handling Audit Unit Task 9: matches the sibling
+    // upsertAssetAction/upsertPartAction pattern — this previously only
+    // logged to stdout, leaving no system_error_logs trace.
+    await logSystemError({
+      source: "maintenance.upsertWorkOrderAction",
+      severity: "error",
+      message: rawMessage.slice(-1500),
+      userId: context.userId,
+      route: formBackHref,
+      entityType: "work_order",
+      metadata: {
+        code: (saveError as { code?: string } | null)?.code ?? null,
+        meta: JSON.stringify((saveError as { meta?: unknown } | null)?.meta ?? null),
+        isEdit: !!id,
+      },
+    });
 
-    // Auto-recovery: if a new WO submit failed, try saving the data as a Draft so the
-    // user does not lose their work. Redirect to the recovered draft with a warning banner.
+    // Auto-recovery: if a new WO submit failed, try saving the data as Created so the
+    // user does not lose their work. Redirect to the recovered Job Card with a warning banner.
     let recoveredWoId: string | null = null;
-    if (!id && createStatus === "Pending Approval") {
+    if (!id && createStatus === "Under Review") {
       try {
         const recovered = await prisma.work_orders.create({
-          data: { ...insertPayload, status: "Draft" },
+          data: { ...insertPayload, status: "Created" },
           select: { id: true, work_order_number: true }
         });
         const recoveredId = recovered.id;
@@ -466,8 +521,8 @@ export async function upsertWorkOrderAction(formData: FormData) {
           action: "work_order.create",
           entityType: "work_order",
           entityId: recoveredId,
-          summary: `Recovery draft saved after submit failure: ${recovered.work_order_number}`,
-          metadata: { status: "Draft", worker_type: parsed.data.worker_type }
+          summary: `Recovery save after submit failure: ${recovered.work_order_number}`,
+          metadata: { status: "Created", worker_type: parsed.data.worker_type }
         });
         await emitRealtimeEvent({
           eventType: REALTIME_EVENTS.WORK_ORDER_CREATED,
@@ -510,6 +565,59 @@ export async function upsertWorkOrderAction(formData: FormData) {
   if (attachmentRows.length) await prisma.work_order_attachments.createMany({ data: attachmentRows.map((row) => ({ ...row!, work_order_id, uploaded_by: context.userId })) });
   if (requiredPartRows.length) await prisma.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id, created_by: context.userId })) });
 
+  // Critical Workflow Bug Fix: a Job Card created with "Required Parts" lines
+  // must produce a real, linked Materials Request — otherwise those lines
+  // stay disconnected (only visible as "N materials listed — no requests
+  // submitted yet" in the quick-view) and never reach Engineer, Manager, or
+  // Store. New Job Card only (never on edit — edits already delete+recreate
+  // the required-parts rows above on every save, so re-running this on edit
+  // would spawn a duplicate Materials Request each time). Uses the existing
+  // Unit 3/5 createPartsRequest service so the duplicate-active-request
+  // guard, notifications, and audit log are identical to a manually created
+  // request — no business rule is re-implemented here.
+  //
+  // createPartsRequest opens its own transaction and looks the work order up
+  // by id, so it cannot be nested inside the work order's own create
+  // transaction — it runs as a second step right after the Job Card commits.
+  // If it fails, the Job Card is NOT rolled back (it already exists and is
+  // valid on its own); the failure is logged and the user is redirected with
+  // a warning so they can add the Materials Request manually from the Job
+  // Card, which remains fully supported (Task 4).
+  let materialsRequestAutoCreateFailed = false;
+  if (!id && requiredPartRows.length > 0) {
+    try {
+      await createPartsRequest(context, {
+        workOrderId: work_order_id,
+        remarks: "Auto-created from the Job Card's Required Parts list at creation.",
+        items: requiredPartRows.map((row) => ({
+          part_id: null,
+          description: row!.description,
+          part_number: row!.part_number,
+          ss_rec_code: null,
+          quantity_requested: row!.quantity_required,
+          unit_price: 0,
+          remarks: row!.notes,
+        })),
+      });
+    } catch (autoRequestError) {
+      materialsRequestAutoCreateFailed = true;
+      const message = autoRequestError instanceof Error ? autoRequestError.message : String(autoRequestError);
+      console.error("[maintenance.upsertWorkOrderAction] Auto Materials Request creation failed:", {
+        workOrderId: work_order_id,
+        message,
+      });
+      await logSystemError({
+        severity: "error",
+        source: "maintenance.upsertWorkOrderAction.autoMaterialsRequest",
+        message: message.slice(0, 1000),
+        stack: autoRequestError instanceof Error ? (autoRequestError.stack ?? null) : null,
+        userId: context.userId,
+        entityType: "work_order",
+        entityId: work_order_id,
+      });
+    }
+  }
+
   // Attachments from the wizard — uploaded only now that the work order exists.
   // A partial or total upload failure never rolls back the work order itself.
   let attachmentUploadFailed = false;
@@ -542,7 +650,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
   }
 
   const auditStatus = id
-    ? (existingStatus === "Rejected" ? "Rejected→Draft" : "(preserved)")
+    ? (existingStatus === "Rejected" ? "Rejected→Under Review" : "(preserved)")
     : createStatus;
 
   await writeAuditLog({
@@ -554,25 +662,28 @@ export async function upsertWorkOrderAction(formData: FormData) {
     metadata: { status: auditStatus, worker_type: parsed.data.worker_type }
   });
 
-  if (!id && createStatus === "Pending Approval") {
+  if (!id && createStatus === "Under Review") {
     let asset_name = "unassigned asset";
     if (parsed.data.asset_id) {
       const asset = await prisma.assets.findUnique({ where: { id: parsed.data.asset_id }, select: { asset_name: true } }).catch(() => null);
       asset_name = asset?.asset_name ?? "unknown asset";
     }
 
-    await notifyByEvent({
-      eventKey: "work_order.submitted",
+    // Unit 6: switched to the safe wrapper (notifyByEvent itself never throws,
+    // but notifyWorkflowEvent matches the pattern used everywhere else) and
+    // to job_card.created — notify Maintenance Engineer, not Manager, at this
+    // stage (Manager is notified after Engineer reviews, via job_card.reviewed).
+    await notifyWorkflowEvent({
+      eventKey: "job_card.created",
       entityType: "work_order",
       entityId: data.id,
       actorId: context.userId,
-      recipientRoles: ["super_admin", "maintenance_manager"],
+      recipientRoles: ["maintenance_engineer"],
       metadata: {
-        work_order_number: data.work_order_number,
+        job_card_number: data.work_order_number,
         asset_name
       },
-      actionUrl: `/maintenance/work-orders/${data.id}`,
-      actionLabel: "Review work order"
+      actionUrl: `/maintenance/work-orders/${data.id}`
     });
   }
 
@@ -613,7 +724,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
   // guarantees created_by visibility unconditionally (Task 3), so this URL can
   // never resolve to an empty-because-of-scope list or a 404 detail page.
   const createRedirectUrl =
-    `/maintenance/work-orders?scope=created&success=job-card-created&created=${data.id}&preview=${data.id}&jc=${encodeURIComponent(data.work_order_number ?? "")}${attachmentUploadFailed ? "&warning=attachments-failed" : ""}`;
+    `/maintenance/work-orders?scope=created&success=job-card-created&created=${data.id}&preview=${data.id}&jc=${encodeURIComponent(data.work_order_number ?? "")}${attachmentUploadFailed ? "&warning=attachments-failed" : ""}${materialsRequestAutoCreateFailed ? "&mr_warning=1" : ""}`;
 
   console.log("[maintenance.upsertWorkOrderAction] Job Card created:", {
     id: data.id,
@@ -649,7 +760,8 @@ export async function addWorkOrderMaterialAction(formData: FormData) {
   });
   if (!wo) redirect(`${returnTo}?error=not-found`);
 
-  const TERMINAL = new Set(["Closed", "Cancelled", "Rejected"]);
+  // "Closed" is the only terminal status in the simplified model (Unit 4).
+  const TERMINAL = new Set(["Closed"]);
   if (TERMINAL.has(wo.status)) redirect(`${returnTo}?error=invalid-status`);
 
   let materialName = String(formData.get("material_name") ?? "").trim();

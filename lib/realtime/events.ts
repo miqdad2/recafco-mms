@@ -17,6 +17,29 @@ export const REALTIME_EVENTS = {
   USER_UPDATED:         "user.updated",
   BACKUP_UPDATED:       "backup.updated",
   NOTIFICATION_UPDATED: "notification.updated",
+
+  // Enterprise Real-Time Update Foundation Unit Task 2: "job_card.*" is the
+  // user-facing vocabulary this unit's client hook categorizes by (see
+  // lib/realtime/client-events.ts isJobCardEvent, which also matches the
+  // legacy "work_order.*" keys above for backward compatibility — nothing
+  // that already calls emitRealtimeEvent with a WORK_ORDER_* key needed to
+  // change).
+  JOB_CARD_CREATED:            "job_card.created",
+  JOB_CARD_UPDATED:            "job_card.updated",
+  JOB_CARD_REVIEWED:           "job_card.reviewed",
+  JOB_CARD_APPROVED:           "job_card.approved",
+  JOB_CARD_ASSIGNED:           "job_card.assigned",
+  JOB_CARD_IN_PROGRESS:        "job_card.in_progress",
+  JOB_CARD_CLOSED:             "job_card.closed",
+  MATERIALS_REQUEST_CREATED:   "materials_request.created",
+  MATERIALS_REQUEST_UPDATED:   "materials_request.updated",
+  MATERIALS_REQUEST_APPROVED:  "materials_request.approved",
+  MATERIALS_REQUEST_SENT:      "materials_request.sent",
+  STORE_MATERIALS_SENT:        "store_materials.sent",
+  MATERIAL_LEDGER_UPDATED:     "material_ledger.updated",
+  TECHNICIAN_JOB_UPDATED:      "technician_job.updated",
+  NOTIFICATION_CREATED:        "notification.created",
+  ASSET_UPDATED:               "asset.updated",
 } as const;
 
 export type RealtimeEventType = (typeof REALTIME_EVENTS)[keyof typeof REALTIME_EVENTS];
@@ -82,9 +105,12 @@ function sanitizePayload(raw: Record<string, unknown>): Record<string, unknown> 
 // Inserts a row into realtime_events. Never throws — errors are written to
 // system_error_logs so the calling action is never disrupted.
 //
-// Phase 2 note: a Socket.IO server-side listener will tail this table and
-// broadcast rows to subscribed clients. No application code changes will be
-// needed in the actions at that point.
+// Enterprise Real-Time Update Foundation Unit: this table's consumer is now
+// /api/notifications/stream (Server-Sent Events, polling this table every
+// 15s alongside the existing notifications poll) — not a Socket.IO listener
+// as an earlier comment here anticipated. No paid SaaS, no new server
+// process, no schema change; the table and this writer already existed with
+// no active reader.
 
 export async function emitRealtimeEvent(input: RealtimeEventInput): Promise<void> {
   try {
@@ -122,4 +148,25 @@ export async function emitRealtimeEvent(input: RealtimeEventInput): Promise<void
       }
     }
   }
+}
+
+// ── Convenience wrappers ─────────────────────────────────────────────────────
+// Task 7: thin, terse call sites for the two entity types most workflow
+// actions emit against — keeps each service function's emit call to one line
+// instead of repeating entityType/entityId/actorProfileId at every site.
+
+export function emitJobCardRealtimeEvent(
+  eventType: RealtimeEventType,
+  workOrderId: string,
+  actorId: string
+): Promise<void> {
+  return emitRealtimeEvent({ eventType, entityType: "work_order", entityId: workOrderId, actorProfileId: actorId });
+}
+
+export function emitMaterialsRequestRealtimeEvent(
+  eventType: RealtimeEventType,
+  partsRequestId: string,
+  actorId: string
+): Promise<void> {
+  return emitRealtimeEvent({ eventType, entityType: "parts_request", entityId: partsRequestId, actorProfileId: actorId });
 }

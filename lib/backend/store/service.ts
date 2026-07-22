@@ -8,7 +8,6 @@ import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { advanceInventoryCheckStep } from "@/lib/backend/workflows/engine";
 import { prisma } from "@/lib/db/prisma";
 import { AppError } from "@/lib/errors/app-error";
-import { canTransition } from "@/lib/workflows/status-rules";
 
 const SETTINGS_ID = "00000000-0000-0000-0000-000000000001";
 
@@ -155,199 +154,18 @@ type StoreIssueResult = {
   requestedBy: string | null;
 };
 
-const ISSUABLE_STATUSES = ["Waiting for Store", "Partially Issued", "Waiting for Purchase"];
-
+// Disabled (Unit 5) — this parts-catalog pipeline (parts.current_stock,
+// inventory_movements) is dead in practice: the parts catalog has 0 rows
+// (spare parts removed), and this function wrote now-invalid statuses
+// ("Waiting for Purchase", "Parts Issued") with no canTransition guard on the
+// linked work order. The Offline Inventory Control ledger
+// (offline_inventory_movements) is now the sole active material-issue
+// pipeline — see issueMaterials in lib/backend/parts-requests/service.ts.
+// Kept as a named export (rather than deleted) so any existing caller gets a
+// clear, safe error instead of a broken/removed-function build failure.
 export async function issuePartsToRequest(
-  context: CurrentUserContext,
-  input: StoreIssueInput
+  _context: CurrentUserContext,
+  _input: StoreIssueInput
 ): Promise<StoreIssueResult> {
-  assertBackendPermission(context, "store.issue");
-
-  const inner = await withBackendTransaction(context.userId, async (tx) => {
-    const request = await tx.parts_requests.findUnique({
-      where: { id: input.partsRequestId },
-      select: {
-        id: true,
-        parts_request_number: true,
-        status: true,
-        work_order_id: true,
-        requested_by: true
-      }
-    });
-
-    if (!request) {
-      throw new AppError("Parts request not found.", { code: "NOT_FOUND" });
-    }
-    if (!ISSUABLE_STATUSES.includes(request.status)) {
-      throw new AppError("Parts request is not in a valid status for store issue.", { code: "WORKFLOW_ERROR" });
-    }
-
-    let anyIssued = false;
-    let anyUnavailable = false;
-    let allIssued = true;
-
-    for (const item of input.items) {
-      const issued = item.issuedQuantity;
-      const unavailable = item.isUnavailable;
-      const availability = unavailable
-        ? "Unavailable"
-        : issued >= item.quantityRequested
-          ? "Available"
-          : issued > 0
-            ? "Partial"
-            : "Unchecked";
-
-      if (issued > 0 && item.partId) {
-        anyIssued = true;
-
-        // Atomic conditional UPDATE: deducts only if stock >= issued.
-        // Inside the transaction so a failed deduction rolls back all prior item changes,
-        // preventing partial inventory deduction across the item set.
-        const rowsUpdated = await tx.$executeRaw`
-          UPDATE public.parts
-          SET current_stock = current_stock - ${issued},
-              updated_by = ${context.userId},
-              updated_at = now()
-          WHERE id = ${item.partId}::uuid
-            AND current_stock >= ${issued}
-        `;
-
-        if (rowsUpdated === 0) {
-          throw new AppError(
-            `Insufficient stock for: ${item.description}`,
-            { code: "WORKFLOW_ERROR" }
-          );
-        }
-
-        await tx.inventory_movements.create({
-          data: {
-            part_id: item.partId,
-            movement_type: "Issue to Work Order",
-            quantity: issued,
-            unit_price: item.unitPrice,
-            work_order_id: request.work_order_id,
-            parts_request_id: input.partsRequestId,
-            reference: request.parts_request_number,
-            comments: "Store issue",
-            created_by: context.userId
-          }
-        });
-
-        await tx.work_order_materials.create({
-          data: {
-            work_order_id: request.work_order_id,
-            part_id: item.partId,
-            material_name: item.description,
-            part_number: item.partNumber,
-            ss_rec_code: item.ssRecCode,
-            quantity: issued,
-            unit_price: item.unitPrice
-          }
-        });
-      }
-
-      if (unavailable) anyUnavailable = true;
-      if (issued < item.quantityRequested) allIssued = false;
-
-      await tx.parts_request_items.update({
-        where: { id: item.itemId },
-        data: { issued_quantity: issued, stock_availability: availability }
-      });
-    }
-
-    const nextStatus = anyUnavailable
-      ? "Waiting for Purchase"
-      : allIssued
-        ? "Issued"
-        : anyIssued
-          ? "Partially Issued"
-          : "Waiting for Store";
-
-    if (!canTransition("parts_request", request.status, nextStatus)) {
-      throw new AppError(
-        `Cannot move parts request from ${request.status} to ${nextStatus}.`,
-        { code: "WORKFLOW_ERROR" }
-      );
-    }
-
-    await tx.parts_requests.update({
-      where: { id: input.partsRequestId },
-      data: {
-        status: nextStatus,
-        store_issue_comments: input.storeIssueComments,
-        updated_by: context.userId
-      }
-    });
-
-    // Preserve original behaviour: unconditional work order status push (no canTransition guard).
-    if (request.work_order_id) {
-      if (anyUnavailable) {
-        await tx.work_orders.update({
-          where: { id: request.work_order_id },
-          data: { status: "Waiting for Purchase", updated_by: context.userId }
-        });
-      } else if (anyIssued) {
-        await tx.work_orders.update({
-          where: { id: request.work_order_id },
-          data: { status: "Parts Issued", updated_by: context.userId }
-        });
-      }
-    }
-
-    return {
-      partsRequestId: input.partsRequestId,
-      partsRequestNumber: request.parts_request_number,
-      status: nextStatus,
-      workOrderId: request.work_order_id,
-      requestedBy: request.requested_by,
-      nextStatus
-    };
-  });
-
-  const { nextStatus, ...result } = inner;
-
-  const notifEventKey =
-    nextStatus === "Issued"
-      ? "parts_request.issued"
-      : nextStatus === "Partially Issued"
-        ? "parts_request.partially_issued"
-        : nextStatus === "Waiting for Purchase"
-          ? "parts_request.unavailable"
-          : null;
-
-  const notifTitle =
-    nextStatus === "Issued"
-      ? "Parts issued"
-      : nextStatus === "Partially Issued"
-        ? "Parts partially issued"
-        : nextStatus === "Waiting for Purchase"
-          ? "Part unavailable"
-          : null;
-
-  await Promise.all([
-    notifEventKey && result.requestedBy
-      ? notifyWorkflowEvent({
-          eventKey: notifEventKey,
-          entityType: "parts_request",
-          entityId: result.partsRequestId,
-          actorId: context.userId,
-          recipientUserIds: [result.requestedBy],
-          title: notifTitle ?? notifEventKey,
-          message: `${result.partsRequestNumber ?? "Parts request"} store status: ${nextStatus}.`,
-          actionUrl: `/store/parts-requests/${result.partsRequestId}`,
-          actionLabel: "Open parts request",
-          metadata: { status: nextStatus }
-        })
-      : Promise.resolve(),
-    writeAuditLog({
-      actorId: context.userId,
-      action: "store.issue",
-      entityType: "parts_request",
-      entityId: result.partsRequestId,
-      summary: `Store updated ${result.partsRequestNumber ?? result.partsRequestId}`,
-      metadata: { nextStatus }
-    })
-  ]);
-
-  return result;
+  throw new AppError("This action is no longer used in the simplified workflow.", { code: "WORKFLOW_ERROR" });
 }

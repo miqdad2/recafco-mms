@@ -20,6 +20,7 @@ import { QrLinkCard } from "@/components/ui/qr-link-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { displayStatus } from "@/lib/display/work-order-labels";
+import { displayPartsRequestStatus, partsRequestStatusTone } from "@/lib/display/parts-request-labels";
 import { createSignedFileUrl } from "@/lib/files/signed-url";
 import { canViewEntityFile } from "@/lib/security/file-access";
 import { prisma } from "@/lib/db/prisma";
@@ -34,14 +35,17 @@ import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 
 const TERMINAL = new Set(["Closed", "Cancelled", "Rejected"]);
 
+// Preventive Maintenance intentionally has no dedicated tab: there is no
+// real PM schedule/tracking workflow yet (only the optional next-service
+// fields shown in the Overview "Next Service" card), so a standalone tab
+// would only ever show an empty placeholder.
 const TABS = [
-  { id: "overview",               label: "Overview" },
-  { id: "repair-orders",          label: "Job Cards" },
-  { id: "parts-used",             label: "Parts Used" },
-  { id: "preventive-maintenance", label: "Preventive Maintenance" },
-  { id: "service-contracts",      label: "Service Contracts" },
-  { id: "documents",              label: "Documents" },
-  { id: "history",                label: "History" },
+  { id: "overview",           label: "Overview" },
+  { id: "repair-orders",      label: "Job Cards" },
+  { id: "materials-history",  label: "Materials History" },
+  { id: "service-contracts",  label: "Service Contracts" },
+  { id: "documents",          label: "Documents" },
+  { id: "history",            label: "History" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -107,7 +111,7 @@ export default async function AssetDetailPage({
 
   const today = new Date();
 
-  const [rawAsset, summary, rawDocuments, auditLogs, assetContracts] = await Promise.all([
+  const [rawAsset, summary, rawDocuments, assetContracts] = await Promise.all([
     prisma.assets.findUnique({
       where: { id },
       include: { departments: { select: { name: true } } },
@@ -116,12 +120,6 @@ export default async function AssetDetailPage({
     prisma.asset_documents.findMany({
       where: { asset_id: id },
       orderBy: { created_at: "desc" },
-    }),
-    prisma.audit_logs.findMany({
-      where: { entity_type: "asset", entity_id: id },
-      orderBy: { created_at: "desc" },
-      take: 30,
-      select: { id: true, action: true, summary: true, created_at: true },
     }),
     prisma.service_contracts.findMany({
       where: { asset_id: id, deleted_at: null },
@@ -164,15 +162,67 @@ export default async function AssetDetailPage({
     context.role?.slug === "super_admin" || context.permissions.includes("assets.manage");
 
   // Maintenance summary
-  const { workOrders, materials, partsUsed, totalRepairs, openOrders: openCount, lastRepairedDate } =
-    summary;
+  const {
+    workOrders,
+    materialsHistory,
+    recentMaterial,
+    totalRepairs,
+    openOrders: openCount,
+    lastRepairedDate,
+  } = summary;
   const openOrders = workOrders.filter((wo) => !TERMINAL.has(wo.status));
-  const waitingForPartsCount = workOrders.filter((wo) =>
-    ["Waiting for Parts", "Waiting for Purchase"].includes(wo.status)
-  ).length;
-  const pmWorkOrders = workOrders.filter((wo) =>
-    ["Routine", "Preventive", "Inspection", "Service"].includes(wo.maintenance_type)
-  );
+
+  // History tab: combined asset activity — Job Card + Materials Request
+  // audit trail (entity_id scoped to this asset's own Job Cards/Materials
+  // Requests) plus Store issue events, so nothing from an unrelated asset
+  // ever leaks in. Depends on summary's ids, so it can't join the first
+  // Promise.all above.
+  const workOrderIds = workOrders.map((wo) => wo.id);
+  const partsRequestIds = [...new Set(materialsHistory.map((m) => m.parts_request_id))];
+
+  const [auditLogs, materialIssueEvents] = await Promise.all([
+    prisma.audit_logs.findMany({
+      where: {
+        OR: [
+          { entity_type: "asset", entity_id: id },
+          ...(workOrderIds.length ? [{ entity_type: "work_order", entity_id: { in: workOrderIds } }] : []),
+          ...(partsRequestIds.length ? [{ entity_type: "parts_request", entity_id: { in: partsRequestIds } }] : []),
+        ],
+      },
+      orderBy: { created_at: "desc" },
+      take: 60,
+      select: { id: true, action: true, summary: true, created_at: true },
+    }),
+    workOrderIds.length
+      ? prisma.offline_inventory_movements.findMany({
+          where: { related_work_order_id: { in: workOrderIds }, movement_type: "ISSUED", deleted_at: null },
+          orderBy: { created_at: "desc" },
+          take: 30,
+          select: {
+            id: true,
+            quantity: true,
+            created_at: true,
+            manual_material_name: true,
+            parts: { select: { part_name: true } },
+            parts_requests: { select: { parts_request_number: true } },
+          },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  // Merge audit-log events and Store issue events into one plain-language,
+  // asset-scoped timeline (no raw JSON, no legacy statuses).
+  type HistoryEvent = { id: string; text: string; date: Date };
+  const historyEvents: HistoryEvent[] = [
+    ...auditLogs.map((log) => ({ id: `audit-${log.id}`, text: log.summary, date: log.created_at })),
+    ...materialIssueEvents.map((mv) => ({
+      id: `issue-${mv.id}`,
+      text: `Materials issued: ${mv.parts?.part_name ?? mv.manual_material_name ?? "Material"} (Qty ${Number(mv.quantity)})${
+        mv.parts_requests?.parts_request_number ? ` — ${mv.parts_requests.parts_request_number}` : ""
+      }`,
+      date: mv.created_at,
+    })),
+  ].sort((a, b) => b.date.getTime() - a.date.getTime());
 
   // Documents with signed URLs
   const signedDocuments = await Promise.all(
@@ -363,30 +413,29 @@ export default async function AssetDetailPage({
             <p className="mt-2 text-xs font-semibold text-[#4B5563]">Total Job Cards</p>
           </div>
 
-          {/* Waiting for parts */}
-          <div
-            className={`rounded-md border p-4 shadow-sm ${
-              waitingForPartsCount > 0 ? "border-red-200 bg-red-50" : "border-[#E5E7EB] bg-white"
-            }`}
-          >
+          {/* Recent Materials — latest Materials Request line for this
+              asset, derived through its linked Job Cards (Materials
+              Requests are never linked to an asset directly). This is an
+              overview pointer, not a workflow-condition metric: no
+              "Waiting for Parts" / "Waiting Materials" wording here, since
+              that is a Job Card state, not an asset-level fact. */}
+          <div className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between gap-2">
-              <p
-                className={`text-2xl font-black ${
-                  waitingForPartsCount > 0 ? "text-red-700" : "text-[#111827]"
-                }`}
-              >
-                {waitingForPartsCount}
+              <p className="truncate text-sm font-bold leading-tight text-[#111827]">
+                {recentMaterial ? recentMaterial.material_name : "—"}
               </p>
-              <Package
-                className={`h-5 w-5 ${
-                  waitingForPartsCount > 0 ? "text-red-500" : "text-[#D1D5DB]"
-                }`}
-                aria-hidden="true"
-              />
+              <Package className="h-5 w-5 shrink-0 text-[#D1D5DB]" aria-hidden="true" />
             </div>
-            <p className="mt-2 text-xs font-semibold text-[#4B5563]">Waiting for Parts</p>
-            {waitingForPartsCount === 0 && (
-              <p className="mt-0.5 text-[11px] text-[#9CA3AF]">None waiting</p>
+            <p className="mt-2 text-xs font-semibold text-[#4B5563]">Recent Materials</p>
+            {recentMaterial ? (
+              <p className="mt-0.5 text-[11px] text-[#6B7280]">
+                Requested {recentMaterial.quantity_requested}
+                {recentMaterial.issued_quantity > 0 ? ` · Issued ${recentMaterial.issued_quantity}` : ""}
+                {" · "}
+                {displayPartsRequestStatus(recentMaterial.parts_request_status)}
+              </p>
+            ) : (
+              <p className="mt-0.5 text-[11px] text-[#9CA3AF]">No materials history</p>
             )}
           </div>
         </div>
@@ -774,8 +823,12 @@ export default async function AssetDetailPage({
           </div>
         )}
 
-        {/* ── PARTS USED ────────────────────────────────────────────────────── */}
-        {activeTab === "parts-used" && (
+        {/* ── MATERIALS HISTORY ─────────────────────────────────────────────── */}
+        {/* assets.id -> work_orders.asset_id -> parts_requests.work_order_id ->
+            parts_request_items — Materials Requests are children of Job
+            Cards, never linked to an asset directly, so this table is built
+            entirely off the Job Cards already fetched for this asset. */}
+        {activeTab === "materials-history" && (
           <section className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
             <div className="flex items-center justify-between gap-3 border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
               <div>
@@ -783,248 +836,109 @@ export default async function AssetDetailPage({
                   Materials
                 </p>
                 <p className="mt-0.5 text-sm font-bold text-[#111827]">
-                  Parts Used ({partsUsed.length} record{partsUsed.length !== 1 ? "s" : ""})
+                  Materials History ({materialsHistory.length} record{materialsHistory.length !== 1 ? "s" : ""})
                 </p>
               </div>
             </div>
 
-            {partsUsed.length === 0 ? (
+            {materialsHistory.length === 0 ? (
               <div className="flex flex-col items-center gap-4 py-14 text-center">
                 <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#F5F6F8]">
                   <Package className="h-6 w-6 text-[#9CA3AF]" aria-hidden="true" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-[#374151]">No parts used yet</p>
+                  <p className="text-sm font-semibold text-[#374151]">
+                    No Materials Requests found for this asset.
+                  </p>
                   <p className="mt-0.5 text-xs text-[#6B7280]">
-                    Parts used during job cards will appear here.
+                    Materials requested for this asset through a Job Card will appear here.
                   </p>
                 </div>
               </div>
             ) : (
-              <>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[580px] text-left text-sm">
-                    <thead className="bg-gray-50 text-xs font-bold uppercase text-[#4B5563]">
-                      <tr>
-                        <th className="px-4 py-3">Date</th>
-                        <th className="px-4 py-3">Job Card</th>
-                        <th className="px-4 py-3">Part / Material</th>
-                        <th className="px-4 py-3">Part No.</th>
-                        <th className="px-4 py-3 text-right">Qty</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#E5E7EB]">
-                      {partsUsed.map((row, i) => (
-                        <tr
-                          key={`${row.work_order_id}-${row.material_name}-${i}`}
-                          className="hover:bg-gray-50"
-                        >
-                          <td className="px-4 py-3 text-[#4B5563]">
-                            {shortDate(row.date_of_order)}
-                          </td>
-                          <td className="px-4 py-3">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[880px] text-left text-sm">
+                  <thead className="bg-gray-50 text-xs font-bold uppercase text-[#4B5563]">
+                    <tr>
+                      <th className="px-4 py-3">Requested</th>
+                      <th className="px-4 py-3">Job Card</th>
+                      <th className="px-4 py-3">Materials Request</th>
+                      <th className="px-4 py-3">Material</th>
+                      <th className="px-4 py-3 text-right">Requested Qty</th>
+                      <th className="px-4 py-3 text-right">Issued Qty</th>
+                      <th className="px-4 py-3 text-right">Remaining Qty</th>
+                      <th className="px-4 py-3">Request Status</th>
+                      <th className="px-4 py-3">Job Card Status</th>
+                      <th className="px-4 py-3 text-right">Links</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E5E7EB]">
+                    {materialsHistory.map((row) => (
+                      <tr key={row.item_id} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 text-[#4B5563]">{shortDate(row.requested_date)}</td>
+                        <td className="px-4 py-3">
+                          <Link
+                            href={`/maintenance/work-orders/${row.work_order_id}`}
+                            className="font-bold text-[#ED1C24] hover:underline"
+                          >
+                            {row.work_order_number ?? "—"}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-3">
+                          <Link
+                            href={`/store/parts-requests/${row.parts_request_id}`}
+                            className="font-bold text-[#ED1C24] hover:underline"
+                          >
+                            {row.parts_request_number ?? "—"}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-3 font-semibold text-[#111827]">{row.material_name}</td>
+                        <td className="px-4 py-3 text-right font-mono text-[#111827]">
+                          {row.quantity_requested}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-[#111827]">
+                          {row.issued_quantity}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-[#111827]">
+                          {row.remaining_quantity}
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusBadge
+                            label={displayPartsRequestStatus(row.parts_request_status)}
+                            tone={partsRequestStatusTone(row.parts_request_status)}
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusBadge
+                            label={displayStatus(row.work_order_status)}
+                            tone={woStatusTone(row.work_order_status)}
+                          />
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex justify-end gap-3">
                             <Link
                               href={`/maintenance/work-orders/${row.work_order_id}`}
-                              className="font-bold text-[#ED1C24] hover:underline"
+                              className="inline-flex items-center gap-1 text-xs font-bold text-[#ED1C24] hover:underline"
                             >
-                              {row.work_order_number ?? "—"}
+                              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                              Job Card
                             </Link>
-                          </td>
-                          <td className="px-4 py-3 font-semibold text-[#111827]">
-                            {row.material_name}
-                          </td>
-                          <td className="px-4 py-3 text-[#4B5563]">{row.part_number ?? "—"}</td>
-                          <td className="px-4 py-3 text-right font-mono text-[#111827]">
-                            {row.quantity.toFixed(2)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Aggregated totals */}
-                {materials.length > 0 && (
-                  <details className="border-t border-[#E5E7EB] px-4 py-3">
-                    <summary className="cursor-pointer text-xs font-black uppercase tracking-wide text-[#4B5563] hover:text-[#111827]">
-                      Totals by part / material
-                    </summary>
-                    <div className="mt-3 overflow-x-auto">
-                      <table className="w-full min-w-[360px] text-left text-sm">
-                        <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
-                          <tr>
-                            <th className="px-3 py-2">Material</th>
-                            <th className="px-3 py-2">Part No.</th>
-                            <th className="px-3 py-2 text-right">Total Qty</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-[#E5E7EB]">
-                          {materials.map((m) => (
-                            <tr key={m.name} className="hover:bg-gray-50">
-                              <td className="px-3 py-2 font-semibold text-[#111827]">{m.name}</td>
-                              <td className="px-3 py-2 text-[#4B5563]">{m.part_number ?? "—"}</td>
-                              <td className="px-3 py-2 text-right font-mono">
-                                {m.totalQty.toFixed(2)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </details>
-                )}
-              </>
+                            <Link
+                              href={`/store/parts-requests/${row.parts_request_id}`}
+                              className="inline-flex items-center gap-1 text-xs font-bold text-[#ED1C24] hover:underline"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                              Materials Request
+                            </Link>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
-        )}
-
-        {/* ── PREVENTIVE MAINTENANCE ────────────────────────────────────────── */}
-        {activeTab === "preventive-maintenance" && (
-          <div className="space-y-5">
-            {/* Service schedule */}
-            {hasPmSchedule ? (
-              <section
-                className={`rounded-md border p-6 shadow-sm ${
-                  pmOverdue ? "border-amber-200 bg-amber-50" : "border-[#E5E7EB] bg-white"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
-                    Service Schedule
-                  </p>
-                  {pmOverdue && <StatusBadge label="Overdue" tone="amber" />}
-                </div>
-                <dl className="mt-5 grid gap-5 sm:grid-cols-3">
-                  {asset.next_service_date && (
-                    <div>
-                      <dt className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">
-                        Next Service Date
-                      </dt>
-                      <dd
-                        className={`mt-1 text-xl font-black ${
-                          pmOverdue ? "text-amber-700" : "text-[#111827]"
-                        }`}
-                      >
-                        {shortDate(asset.next_service_date)}
-                      </dd>
-                      {pmOverdue && (
-                        <p className="mt-0.5 text-xs font-semibold text-amber-700">
-                          Service date has passed
-                        </p>
-                      )}
-                    </div>
-                  )}
-                  {asset.next_service_kilometer && (
-                    <div>
-                      <dt className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">
-                        At Kilometer
-                      </dt>
-                      <dd className="mt-1 text-xl font-black text-[#111827]">
-                        {asset.next_service_kilometer} km
-                      </dd>
-                    </div>
-                  )}
-                  {asset.next_service_running_hours && (
-                    <div>
-                      <dt className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">
-                        At Running Hours
-                      </dt>
-                      <dd className="mt-1 text-xl font-black text-[#111827]">
-                        {asset.next_service_running_hours} hrs
-                      </dd>
-                    </div>
-                  )}
-                </dl>
-                {canEdit && (
-                  <div className="mt-5 border-t border-[#E5E7EB] pt-4">
-                    <Link
-                      href={`/assets/${asset.id}/edit`}
-                      className="text-sm font-bold text-[#ED1C24] hover:underline"
-                    >
-                      Update service schedule →
-                    </Link>
-                  </div>
-                )}
-              </section>
-            ) : (
-              <section className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
-                <div className="flex flex-col items-center gap-4 py-14 text-center">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#F5F6F8]">
-                    <Calendar className="h-6 w-6 text-[#9CA3AF]" aria-hidden="true" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-[#374151]">
-                      No preventive maintenance schedule set
-                    </p>
-                    <p className="mt-1 max-w-xs text-xs text-[#6B7280]">
-                      Preventive maintenance schedules can be added later when editing the asset.
-                    </p>
-                  </div>
-                  {canEdit && (
-                    <Link
-                      href={`/assets/${asset.id}/edit`}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
-                    >
-                      <Pencil className="h-4 w-4" aria-hidden="true" />
-                      Edit Asset
-                    </Link>
-                  )}
-                </div>
-              </section>
-            )}
-
-            {/* PM repair history */}
-            {pmWorkOrders.length > 0 && (
-              <section className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
-                <div className="border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
-                  <p className="text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
-                    PM History
-                  </p>
-                  <p className="mt-0.5 text-sm font-bold text-[#111827]">
-                    Preventive / Routine Orders ({pmWorkOrders.length})
-                  </p>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[520px] text-left text-sm">
-                    <thead className="bg-gray-50 text-xs font-bold uppercase text-[#4B5563]">
-                      <tr>
-                        <th className="px-4 py-3">RO No</th>
-                        <th className="px-4 py-3">Type</th>
-                        <th className="px-4 py-3">Date</th>
-                        <th className="px-4 py-3">Status</th>
-                        <th className="px-4 py-3">Completed</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#E5E7EB]">
-                      {pmWorkOrders.map((wo) => (
-                        <tr key={wo.id} className="hover:bg-gray-50">
-                          <td className="px-4 py-3">
-                            <Link
-                              href={`/maintenance/work-orders/${wo.id}`}
-                              className="font-bold text-[#ED1C24] hover:underline"
-                            >
-                              {wo.work_order_number ?? "Draft"}
-                            </Link>
-                          </td>
-                          <td className="px-4 py-3 text-[#4B5563]">{wo.maintenance_type}</td>
-                          <td className="px-4 py-3 text-[#4B5563]">{shortDate(wo.date_of_order)}</td>
-                          <td className="px-4 py-3">
-                            <StatusBadge
-                              label={displayStatus(wo.status)}
-                              tone={woStatusTone(wo.status)}
-                            />
-                          </td>
-                          <td className="px-4 py-3 text-[#4B5563]">
-                            {shortDate(wo.ending_datetime)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            )}
-          </div>
         )}
 
         {/* ── DOCUMENTS ─────────────────────────────────────────────────────── */}
@@ -1189,38 +1103,34 @@ export default async function AssetDetailPage({
               <p className="mt-0.5 text-sm font-bold text-[#111827]">Asset History</p>
             </div>
 
-            {auditLogs.length === 0 ? (
+            {historyEvents.length === 0 ? (
               <div className="flex flex-col items-center gap-3 py-14 text-center">
                 <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#F5F6F8]">
                   <Clock3 className="h-6 w-6 text-[#9CA3AF]" aria-hidden="true" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-[#374151]">No activity recorded yet</p>
-                  <p className="mt-0.5 text-xs text-[#6B7280]">
-                    Activity for this asset will appear here.
+                  <p className="text-sm font-semibold text-[#374151]">
+                    No history available for this asset yet.
                   </p>
                 </div>
               </div>
             ) : (
               <div className="divide-y divide-[#E5E7EB]">
-                {auditLogs.map((log) => (
-                  <div key={log.id} className="flex items-start gap-3 px-4 py-3">
+                {historyEvents.map((event) => (
+                  <div key={event.id} className="flex items-start gap-3 px-4 py-3">
                     <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F5F6F8]">
                       <CheckCircle2 className="h-3.5 w-3.5 text-[#6B7280]" aria-hidden="true" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-[#111827]">{log.summary}</p>
+                      <p className="text-sm text-[#111827]">{event.text}</p>
                       <p className="mt-0.5 text-xs text-[#9CA3AF]">
-                        {log.created_at.toLocaleDateString("en-US", {
+                        {event.date.toLocaleDateString("en-US", {
                           month: "short",
                           day: "numeric",
                           year: "numeric",
                         })}
                       </p>
                     </div>
-                    <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-[#6B7280]">
-                      {log.action}
-                    </span>
                   </div>
                 ))}
               </div>

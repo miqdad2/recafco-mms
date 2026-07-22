@@ -3,12 +3,21 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
-import { requirePermission } from "@/lib/auth/context";
+import { getCurrentUserContext, requirePermission } from "@/lib/auth/context";
 import { decidePurchaseAsCeo, requestCeoClarification } from "@/lib/backend/purchase-requests/service";
 import { ceoClarificationSchema, ceoDecisionSchema, parsePurchaseRequestId } from "@/lib/backend/purchase-requests/validators";
 import { safeErrorMessage } from "@/lib/errors/error-handler";
+import { errorToLogInput, logSystemError } from "@/lib/errors/logging";
 
-function errorPath(error: unknown, fallbackId?: string) {
+// Enterprise Error Handling Audit Unit Task 9: this redirected with a safe
+// message but never wrote to system_error_logs.
+async function errorPath(error: unknown, fallbackId?: string) {
+  const context = await getCurrentUserContext();
+  await logSystemError(errorToLogInput(error, "ceo_approvals.action", context?.userId ?? null, {
+    entityType: "purchase_request",
+    entityId: fallbackId ?? null,
+    route: "/ceo/approvals"
+  }));
   const message = encodeURIComponent(safeErrorMessage(error));
   return fallbackId ? `/ceo/approvals?error=${message}&purchase=${fallbackId}` : `/ceo/approvals?error=${message}`;
 }
@@ -36,7 +45,7 @@ export async function ceoApprovePurchaseAction(formData: FormData) {
     revalidateCeoDecisionPaths(result.purchaseRequestId);
     targetPath = `/ceo/approvals?success=approved&purchase=${result.purchaseRequestId}`;
   } catch (error) {
-    redirect(errorPath(error, purchaseRequestId));
+    redirect(await errorPath(error, purchaseRequestId));
   }
 
   redirect(targetPath);
@@ -57,7 +66,7 @@ export async function ceoRejectPurchaseAction(formData: FormData) {
     revalidateCeoDecisionPaths(result.purchaseRequestId);
     targetPath = `/ceo/approvals?success=rejected&purchase=${result.purchaseRequestId}`;
   } catch (error) {
-    redirect(errorPath(error, purchaseRequestId));
+    redirect(await errorPath(error, purchaseRequestId));
   }
 
   redirect(targetPath);
@@ -77,7 +86,7 @@ export async function ceoRequestClarificationAction(formData: FormData) {
     revalidateCeoDecisionPaths(result.purchaseRequestId);
     targetPath = `/ceo/approvals?success=clarification&purchase=${result.purchaseRequestId}`;
   } catch (error) {
-    redirect(errorPath(error, purchaseRequestId));
+    redirect(await errorPath(error, purchaseRequestId));
   }
 
   redirect(targetPath);

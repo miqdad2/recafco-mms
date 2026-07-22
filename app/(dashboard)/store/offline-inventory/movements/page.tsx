@@ -3,10 +3,13 @@ import { Package } from "lucide-react";
 
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { AutoRefresh } from "@/components/auto-refresh";
+import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { BackLink } from "@/components/ui/back-link";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
 import {
   normalizeCategory,
   movementTypeLabel,
@@ -29,7 +32,20 @@ export default async function MovementHistoryPage({
 }: {
   searchParams?: Promise<SearchParams>;
 }) {
-  await requirePermission("parts.view");
+  const context = await requirePermission("parts.view");
+  const canManage = canManageOfflineInventory(context);
+  // Store Issue Materials + Offline Inventory Separation Unit Task 6/9: this
+  // one page now serves two audiences — Store's own "Sent Materials" record
+  // of what it has issued, and everyone else's Material Ledger view of the
+  // same movements (issued by Store, received, opening stock).
+  const isStoreKeeper = context.role?.slug === "store_keeper";
+  const pageTitle = isStoreKeeper ? "Sent Materials" : "Movement History";
+  // Store Send Materials Approval Gate Unit Task 6: dropped "plus opening
+  // stock and received materials" — Store's own page is about what it sent,
+  // not a description of every movement type still visible in the filter.
+  const pageDescription = isStoreKeeper
+    ? "Materials sent by Store for Job Cards."
+    : "Material Ledger — materials issued by Store, received, and tracked against Job Cards.";
 
   const params = (await searchParams) ?? {};
   const q    = single(params.q)?.trim() ?? "";
@@ -62,9 +78,10 @@ export default async function MovementHistoryPage({
   const movementsRaw = await prisma.offline_inventory_movements.findMany({
     where,
     include: {
-      parts:       { select: { part_name: true, part_number: true } },
-      work_orders: { select: { work_order_number: true } },
-      profiles:    { select: { full_name: true } },
+      parts:          { select: { part_name: true, part_number: true } },
+      work_orders:    { select: { work_order_number: true, assets: { select: { asset_name: true, plate_number: true } } } },
+      parts_requests: { select: { id: true, parts_request_number: true } },
+      profiles:       { select: { full_name: true } },
     },
     orderBy: [{ movement_date: "desc" }, { created_at: "desc" }],
     take: 500,
@@ -87,22 +104,42 @@ export default async function MovementHistoryPage({
     work_order_number:     m.work_orders?.work_order_number ?? null,
     remarks:               m.remarks,
     created_by_name:       m.profiles.full_name,
+    parts_request_id:      m.parts_requests?.id ?? null,
+    parts_request_number:  m.parts_requests?.parts_request_number ?? null,
+    asset_name:            m.work_orders?.assets?.asset_name ?? null,
+    plate_number:          m.work_orders?.assets?.plate_number ?? null,
   }));
 
   const isFiltered = Boolean(q || type || from || to);
 
   return (
     <>
+      <AutoRefresh intervalMs={15000} />
+      <RealtimeRefresh watch={["store_materials.sent", "material_ledger.updated"]} />
       <PageHeader
-        title="Movement History"
-        description="View all materials received and issued by the Maintenance Store."
+        title={pageTitle}
+        description={pageDescription}
         breadcrumb={
-          <PageBreadcrumb items={[{ label: "Offline Inventory Control", href: "/store/offline-inventory" }, { label: "Movement History" }]} />
+          isStoreKeeper
+            ? <PageBreadcrumb items={[{ label: "Sent Materials" }]} />
+            : <PageBreadcrumb items={[{ label: "Offline Inventory Control", href: "/store/offline-inventory" }, { label: "Movement History" }]} />
         }
-        actions={<BackLink href="/store/offline-inventory" label="Back to Offline Inventory Control" />}
+        actions={
+          isStoreKeeper
+            ? <BackLink href="/store/issue-materials" label="Back to Issue Materials" />
+            : <BackLink href="/store/offline-inventory" label="Back to Offline Inventory Control" />
+        }
       />
 
       <div className="space-y-4 p-4 lg:p-6">
+        {/* Sidebar Access Alignment Task 7: same wording as the Offline
+            Inventory Control balance page, so Engineer/Data Entry/Manager
+            never read this page as "where I do store entry". */}
+        {!canManage && (
+          <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3 text-sm font-semibold text-[#4B5563]">
+            Store stock entry is managed by Store users. This page shows material movements and Job Card material tracking.
+          </div>
+        )}
         {hasAnyRecords > 0 && (
           <section className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm">
             <form className="grid gap-3 lg:grid-cols-[1fr_160px_160px_160px_auto]">
@@ -182,16 +219,17 @@ export default async function MovementHistoryPage({
                 <thead className="border-b border-[#E5E7EB] bg-[#F9FAFB] text-left text-xs font-bold uppercase tracking-wide text-[#4B5563]">
                   <tr>
                     <th className="px-4 py-3">Date</th>
-                    <th className="px-4 py-3">Type</th>
+                    {!isStoreKeeper && <th className="px-4 py-3">Type</th>}
                     <th className="px-4 py-3">Material</th>
-                    <th className="px-4 py-3">Category</th>
-                    <th className="px-4 py-3">Part No.</th>
-                    <th className="px-4 py-3">SS Rec. Code</th>
-                    <th className="px-4 py-3">Quantity</th>
-                    <th className="px-4 py-3">Unit</th>
-                    <th className="px-4 py-3">Related Job Card</th>
-                    <th className="px-4 py-3">Reference No.</th>
-                    <th className="px-4 py-3">Entered By</th>
+                    {!isStoreKeeper && <th className="px-4 py-3">Category</th>}
+                    {!isStoreKeeper && <th className="px-4 py-3">Part No.</th>}
+                    {!isStoreKeeper && <th className="px-4 py-3">SS Rec. Code</th>}
+                    <th className="px-4 py-3">{isStoreKeeper ? "Quantity Sent" : "Quantity"}</th>
+                    {!isStoreKeeper && <th className="px-4 py-3">Unit</th>}
+                    <th className="px-4 py-3">Job Card / Asset</th>
+                    <th className="px-4 py-3">Materials Request</th>
+                    {!isStoreKeeper && <th className="px-4 py-3">Reference No.</th>}
+                    <th className="px-4 py-3">{isStoreKeeper ? "Sent By" : "Entered By"}</th>
                     <th className="px-4 py-3">Remarks</th>
                   </tr>
                 </thead>
@@ -203,39 +241,67 @@ export default async function MovementHistoryPage({
                         <td className="whitespace-nowrap px-4 py-3 text-[#111827]">
                           {fmtDate(m.movement_date)}
                         </td>
-                        <td className="px-4 py-3">
-                          <StatusBadge
-                            label={movementTypeLabel(m.movement_type, m.reference_number)}
-                            tone={movementTypeTone(m.movement_type)}
-                          />
-                        </td>
+                        {!isStoreKeeper && (
+                          <td className="px-4 py-3">
+                            <StatusBadge
+                              label={movementTypeLabel(m.movement_type, m.reference_number)}
+                              tone={movementTypeTone(m.movement_type)}
+                            />
+                          </td>
+                        )}
                         <td className="px-4 py-3 font-semibold text-[#111827]">{name}</td>
-                        <td className="px-4 py-3 text-xs text-[#4B5563]">{m.category}</td>
-                        <td className="px-4 py-3 text-xs text-[#4B5563]">
-                          {m.part_number_display ?? "—"}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-[#4B5563]">
-                          {m.ss_rec_code ?? "—"}
-                        </td>
+                        {!isStoreKeeper && <td className="px-4 py-3 text-xs text-[#4B5563]">{m.category}</td>}
+                        {!isStoreKeeper && (
+                          <td className="px-4 py-3 text-xs text-[#4B5563]">
+                            {m.part_number_display ?? "—"}
+                          </td>
+                        )}
+                        {!isStoreKeeper && (
+                          <td className="px-4 py-3 text-xs text-[#4B5563]">
+                            {m.ss_rec_code ?? "—"}
+                          </td>
+                        )}
                         <td className="whitespace-nowrap px-4 py-3 font-bold text-[#111827]">
                           {m.quantity.toLocaleString("en-US", { maximumFractionDigits: 3 })}
+                          {isStoreKeeper ? ` ${m.unit}` : ""}
                         </td>
-                        <td className="px-4 py-3 text-[#4B5563]">{m.unit}</td>
+                        {!isStoreKeeper && <td className="px-4 py-3 text-[#4B5563]">{m.unit}</td>}
                         <td className="px-4 py-3">
                           {m.related_work_order_id ? (
-                            <Link
-                              href={`/maintenance/work-orders/${m.related_work_order_id}`}
-                              className="text-xs font-bold text-[#ED1C24] hover:underline"
-                            >
-                              {m.work_order_number ?? "View"}
-                            </Link>
+                            <>
+                              <Link
+                                href={`/maintenance/work-orders/${m.related_work_order_id}`}
+                                className="text-xs font-bold text-[#ED1C24] hover:underline"
+                              >
+                                {m.work_order_number ?? "View"}
+                              </Link>
+                              {m.asset_name && (
+                                <p className="text-xs text-[#4B5563]">
+                                  {m.asset_name}{m.plate_number ? ` - Plate ${m.plate_number}` : ""}
+                                </p>
+                              )}
+                            </>
                           ) : (
                             <span className="text-[#9CA3AF]">—</span>
                           )}
                         </td>
                         <td className="px-4 py-3 text-xs text-[#4B5563]">
-                          {m.reference_number ?? "—"}
+                          {m.parts_request_id ? (
+                            <Link
+                              href={`/store/parts-requests/${m.parts_request_id}`}
+                              className="font-bold text-[#ED1C24] hover:underline"
+                            >
+                              {m.parts_request_number ?? "View"}
+                            </Link>
+                          ) : (
+                            "—"
+                          )}
                         </td>
+                        {!isStoreKeeper && (
+                          <td className="px-4 py-3 text-xs text-[#4B5563]">
+                            {m.reference_number ?? "—"}
+                          </td>
+                        )}
                         <td className="px-4 py-3 text-xs text-[#4B5563]">
                           {m.created_by_name}
                         </td>

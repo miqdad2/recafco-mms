@@ -7,7 +7,7 @@ import type { PermissionKey } from "@/types/database";
 
 export function assertBackendPermission(context: CurrentUserContext, permission: PermissionKey) {
   if (!hasPermission(context, permission)) {
-    throw new AppError("You do not have permission to complete this action.", {
+    throw new AppError("You do not have permission to perform this action.", {
       code: "FORBIDDEN"
     });
   }

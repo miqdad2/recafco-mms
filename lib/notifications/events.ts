@@ -52,7 +52,40 @@ export const notificationEvents: NotificationEventDefinition[] = [
   { eventKey: "user.created", category: "System", priority: "normal", critical: false },
   { eventKey: "user.role_changed", category: "System", priority: "high", critical: true },
   { eventKey: "security.account_unlocked", category: "System", priority: "high", critical: true },
-  { eventKey: "security.sessions_revoked", category: "System", priority: "high", critical: true }
+  { eventKey: "security.sessions_revoked", category: "System", priority: "high", critical: true },
+
+  // Maintenance Workflow Redesign Unit 6. Categories reuse the existing
+  // NotificationCategory union rather than adding new ones — no schema
+  // change needed. NOTE: the DB CHECK constraint (notification_events_
+  // category_check / notifications_category_check) actually allows "Parts
+  // Requests", not "Materials Requests" — the NotificationCategory TS type
+  // has pre-existing drift where it lists "Materials Requests" as if it were
+  // valid (not introduced by this unit). Using "Parts Requests" here so a
+  // real notification row (which goes through this same category value)
+  // never hits that CHECK constraint. job_card.waiting_materials is defined
+  // but only fires from the unwired markJobCardWaitingMaterials primitive
+  // (Unit 4) — the Materials Request-driven "waiting stock" path fires
+  // material_request.waiting_stock instead, so the same real-world event is
+  // never reported twice.
+  { eventKey: "job_card.created", category: "Work Orders", priority: "normal", critical: false },
+  { eventKey: "job_card.submitted_for_review", category: "Approvals", priority: "normal", critical: true },
+  { eventKey: "job_card.reviewed", category: "Approvals", priority: "normal", critical: true },
+  { eventKey: "job_card.correction_requested", category: "Approvals", priority: "high", critical: true },
+  { eventKey: "job_card.approved", category: "Approvals", priority: "high", critical: true },
+  { eventKey: "job_card.waiting_materials", category: "Work Orders", priority: "high", critical: true },
+  { eventKey: "job_card.assigned", category: "Work Orders", priority: "high", critical: true },
+  { eventKey: "job_card.in_progress", category: "Work Orders", priority: "low", critical: false },
+  { eventKey: "job_card.closed", category: "Work Orders", priority: "normal", critical: false },
+  { eventKey: "material_request.created", category: "Parts Requests", priority: "normal", critical: false },
+  { eventKey: "material_request.approved", category: "Parts Requests", priority: "high", critical: true },
+  { eventKey: "material_request.waiting_stock", category: "Store / Inventory", priority: "high", critical: true },
+  { eventKey: "material_request.partially_issued", category: "Store / Inventory", priority: "high", critical: true },
+  { eventKey: "material_request.issued", category: "Store / Inventory", priority: "high", critical: true },
+
+  // Enterprise Real-Time Notifications Unit — Task 2 item L. Awareness-only,
+  // non-critical: Super Admin / Maintenance Manager get a quiet ping on asset
+  // create/edit/import, no CEO/Finance/Purchase involvement.
+  { eventKey: "asset.updated", category: "Assets", priority: "low", critical: false }
 ];
 
 export function getNotificationEvent(eventKey: string) {

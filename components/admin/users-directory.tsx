@@ -7,6 +7,7 @@ import { useMemo, useState } from "react";
 import { upsertProfileAction as upsertProfileFromAdmin } from "@/app/actions/admin";
 import { restoreUserAction } from "@/app/actions/user-access";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { ACCOUNT_TYPE_LABEL } from "@/lib/users/account-types";
 
 export type SerializedProfile = {
   id: string;
@@ -28,15 +29,6 @@ export type SerializedAuthUser = {
 };
 
 type StatusFilter = "all" | "active" | "inactive";
-
-const ROLE_LABEL: Record<string, string> = {
-  maintenance_data_entry: "Maintenance Data Entry",
-  maintenance_manager:    "Maintenance Manager",
-  technician:             "Technician",
-  store_keeper:           "Store / Spare Parts User",
-  super_admin:            "System Administrator",
-  viewer_auditor:         "Viewer / Auditor",
-};
 
 const AVATAR_COLORS = [
   "bg-[#ED1C24]", "bg-[#2563EB]", "bg-[#16A34A]", "bg-[#7C3AED]",
@@ -109,7 +101,7 @@ export function UsersDirectory({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-black text-[#111827]">User Directory</h2>
-            <p className="mt-0.5 text-sm text-[#4B5563]">Manage user account type and access status.</p>
+            <p className="mt-0.5 text-sm text-[#4B5563]">Manage user role / access type and access status.</p>
           </div>
           {/* Toolbar */}
           <div className="flex flex-wrap items-center gap-2">
@@ -156,7 +148,7 @@ export function UsersDirectory({
             <tr className="border-b border-[#DDE2EA] bg-[#F8FAFC]">
               <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">User</th>
               <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Login</th>
-              <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Account Type</th>
+              <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Role / Access Type</th>
               <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Status</th>
               <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]" />
             </tr>
@@ -198,11 +190,11 @@ export function UsersDirectory({
                     )}
                   </td>
 
-                  {/* Account Type — inline selector */}
+                  {/* Role / Access Type — inline selector */}
                   <td className="px-4 py-3">
                     {profile.is_archived ? (
                       <span className="text-xs text-[#9CA3AF]">
-                        {ROLE_LABEL[roleById.get(profile.role_id ?? "") ?? ""] ?? "Unknown"}
+                        {ACCOUNT_TYPE_LABEL[roleById.get(profile.role_id ?? "") ?? ""] ?? "Unknown"}
                       </span>
                     ) : (
                       <form action={upsertProfileFromAdmin} className="flex items-center gap-1.5">
@@ -218,18 +210,18 @@ export function UsersDirectory({
                           className="focus-ring w-full min-w-[11rem] rounded-md border border-[#E5E7EB] px-2 py-1.5 text-xs text-[#111827]"
                           name="role_id"
                           defaultValue={profile.role_id ?? ""}
-                          aria-label={`Account type for ${profile.full_name}`}
+                          aria-label={`Role / Access Type for ${profile.full_name}`}
                         >
                           {roles.map((r) => (
                             <option key={r.id} value={r.id}>
-                              {ROLE_LABEL[r.slug] ?? r.slug}
+                              {ACCOUNT_TYPE_LABEL[r.slug] ?? r.slug}
                             </option>
                           ))}
                         </select>
                         <button
                           type="submit"
                           className="focus-ring flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[#E5E7EB] bg-white text-[#4B5563] transition-colors hover:border-[#ED1C24] hover:text-[#ED1C24]"
-                          title={`Save account type for ${profile.full_name}`}
+                          title={`Save role / access type for ${profile.full_name}`}
                         >
                           <Save className="h-3.5 w-3.5" aria-hidden="true" />
                         </button>

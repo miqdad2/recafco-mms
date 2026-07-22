@@ -25,9 +25,15 @@ import { requirePermission, type CurrentUserContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts } from "@/lib/reports/data";
 import { displayStatus } from "@/lib/display/work-order-labels";
-import { OPEN_PR_STATUSES, displayPartsRequestStatus } from "@/lib/display/parts-request-labels";
+import {
+  OPEN_PR_STATUSES,
+  displayPartsRequestStatus,
+  materialsRequestListGroup,
+} from "@/lib/display/parts-request-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import { getReviewedWorkOrderIds } from "@/lib/work-orders/review-status";
 import { AutoRefresh } from "@/components/auto-refresh";
+import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import {
   RepairOrderQuickView,
   type QuickViewData,
@@ -39,8 +45,13 @@ import { JobCardCreatedModal } from "@/components/work-orders/job-card-created-m
 
 const PAGE_SIZE = 25;
 
+// Maintenance Workflow Redesign Unit 9 — Job Cards are fully closed only from
+// "Closed"; legacy pre-Unit3 terminal strings are kept here defensively so any
+// historical row is still treated as done (no action buttons, no "overdue").
 const TERMINAL_STATUSES = [
-  "Closed", "Cancelled",
+  "Closed",
+  // Legacy pre-Unit3 statuses — defensive fallback only, see lib/display/work-order-labels.ts.
+  "Cancelled", "Rejected",
   "Completed by Technician", "Verified by Supervisor", "Confirmed by Requester",
 ];
 
@@ -48,66 +59,82 @@ const OVERDUE_DAYS = 7;
 
 type Tab = { label: string; status: string };
 
-// One shared tab set for every role — Task 3 (JobCards-UX-SimplifyFilters-01).
-// "My Job Cards" replaces the old "All"/"My Job Cards" split: the label is the
-// same for everyone, but what it shows still depends on that role's own
-// visibility scope (a Data Entry user's "My Job Cards" is only what they
-// created; a Manager's is everything they're allowed to see) — Task 7.
+// Simple operational buckets for the new 9-status Job Card model (Maintenance
+// Workflow Redesign Unit 9 Task 2). Bucket key === tab label === query value,
+// which keeps this page and the dashboard's KPI hrefs pointed at the same
+// vocabulary. Never uses old words (Draft/Submitted/Pending Approval/Rejected/
+// Cancelled/Completed by Technician/Verified by Supervisor/Confirmed by
+// Requester/Waiting for Parts/Waiting for Purchase/Parts Issued) as a tab.
 const JOB_CARD_TABS: Tab[] = [
-  { label: "My Job Cards",      status: "" },
-  { label: "Awaiting Review",   status: "Awaiting Review" },
-  { label: "In Progress",       status: "In Progress" },
-  { label: "Waiting Materials", status: "Waiting for Parts" },
-  { label: "Closed",            status: "Closed" },
+  { label: "All",          status: "" },
+  { label: "New",          status: "New" },
+  { label: "Review",       status: "Review" },
+  { label: "Approved",     status: "Approved" },
+  { label: "Materials",    status: "Materials" },
+  { label: "Assigned",     status: "Assigned" },
+  { label: "In Progress",  status: "In Progress" },
+  { label: "Closed",       status: "Closed" },
 ];
 
-// Single, role-independent mapping from tab status keys → the DB status
-// strings each bucket covers — Task 7's employee-friendly grouping:
-//   Awaiting Review   — not yet reviewed by a manager (includes Draft, since
-//                        a draft is also "not yet moving" from the employee's
-//                        point of view and has nowhere else sensible to go)
-//   In Progress       — approved through post-completion, pending closure
-//                        ("Ready to Close" is intentionally folded in here,
-//                        not shown as its own tab, per Task 7)
-//   Waiting Materials — blocked on parts/purchase
-//   Closed            — fully resolved (Cancelled and Rejected/"Returned for
-//                        Fix" fold in here too — Task 7 says Returned for Fix
-//                        should not be its own tab; it still shows as its own
-//                        status badge in the table)
-// Any status not listed here (there are none left unmapped) falls back to a
-// single-value filter, so old bookmarked/dashboard links (?status=Draft,
-// ?status=Rejected, etc.) keep working unchanged.
+// Single, role-independent mapping from tab/bucket keys → the DB status
+// strings each bucket covers (Task 2):
+//   New         — Created only
+//   Review      — Under Review only
+//   Approved    — Approved only
+//   Materials   — Waiting Materials, Partially Issued, Materials Issued
+//   Assigned    — Assigned only
+//   In Progress — In Progress only
+//   Closed      — Closed only
+// Any status not listed here falls back to a single-value filter, so an old
+// bookmarked/dashboard link with a raw legacy status string (?status=Draft,
+// ?status=Rejected, etc.) still resolves to *something* instead of erroring —
+// it will just always show under no bucket's badge (0 results), which is
+// correct since no live record can hold that value under the locked Unit 3
+// status model.
+function getStatusMap(): Record<string, string[]> {
+  return {
+    New:          ["Created"],
+    Review:       ["Under Review"],
+    Approved:     ["Approved"],
+    Materials:    ["Waiting Materials", "Partially Issued", "Materials Issued"],
+    Assigned:     ["Assigned"],
+    "In Progress": ["In Progress"],
+    Closed:       ["Closed"],
+  };
+}
+
 // Task 9 — wording for a status tab that has zero matching Job Cards, used
 // only when no other filter (search/date/etc.) is also in play.
 const TAB_EMPTY_STATE: Record<string, { title: string; message: string }> = {
-  "Awaiting Review": {
-    title: "No Job Cards awaiting review.",
+  New: {
+    title: "No new Job Cards.",
+    message: "Job Cards not yet submitted for review will appear here.",
+  },
+  Review: {
+    title: "No Job Cards under review.",
     message: "New submitted Job Cards will appear here.",
+  },
+  Approved: {
+    title: "No approved Job Cards.",
+    message: "Approved Job Cards awaiting materials or assignment will appear here.",
+  },
+  Materials: {
+    title: "No Job Cards waiting for materials.",
+    message: "Job Cards blocked by materials will appear here.",
+  },
+  Assigned: {
+    title: "No assigned Job Cards.",
+    message: "Job Cards assigned to a technician will appear here.",
   },
   "In Progress": {
     title: "No Job Cards in progress.",
     message: "Job Cards being worked on will appear here.",
-  },
-  "Waiting for Parts": {
-    title: "No Job Cards waiting for materials.",
-    message: "Job Cards blocked by materials will appear here.",
   },
   Closed: {
     title: "No closed Job Cards yet.",
     message: "Closed Job Cards will appear here.",
   },
 };
-
-function getStatusMap(): Record<string, string[]> {
-  return {
-    "Awaiting Review":   ["Draft", "Submitted", "Pending Approval"],
-    "In Progress":       ["Approved", "Assigned", "In Progress", "Parts Issued",
-                           "Completed by Technician", "Verified by Supervisor", "Confirmed by Requester",
-                           "Reopened"],
-    "Waiting for Parts": ["Waiting for Parts", "Waiting for Purchase"],
-    "Closed":            ["Closed", "Cancelled", "Rejected"],
-  };
-}
 
 function expandStatuses(tabStatus: string, combined: Record<string, string[]>): string[] {
   return combined[tabStatus] ?? [tabStatus];
@@ -137,6 +164,7 @@ type SP = {
   preview?: string;
   success?: string;
   warning?: string;
+  mr_warning?: string;
   jc?: string;
   scope?: string;
   created?: string;
@@ -173,19 +201,27 @@ function getNeedsActionFilter(context: CurrentUserContext) {
   const isAdmin = context.role?.slug === "super_admin";
 
   if (isAdmin || p.includes("work_orders.approve")) {
-    return { status: { in: ["Submitted", "Pending Approval", "Verified by Supervisor", "Confirmed by Requester"] } };
+    // Under Review needs a review/approve decision; In Progress needs a
+    // closure decision — the two manager-facing decision points left in the
+    // simplified 9-status model (there is no separate post-completion
+    // verification stage any more).
+    return { status: { in: ["Under Review", "In Progress"] } };
   }
   if (p.includes("work_orders.assign")) {
-    return { status: { in: ["Approved", "Completed by Technician"] } };
+    return { status: { in: ["Approved", "Materials Issued"] } };
   }
   if (p.includes("store.issue")) {
-    return { status: "Waiting for Parts" as const };
+    return { status: { in: ["Waiting Materials", "Partially Issued"] } };
   }
   if (p.includes("purchase_requests.manage")) {
+    // Purchase is explicitly out of scope for the simplified Job Card/
+    // Materials Request model (Unit 3 locked decision) — kept as a no-op
+    // filter rather than removed, since the Purchase Officer role/module is
+    // untouched by this redesign.
     return { status: "Waiting for Purchase" as const };
   }
   if (p.includes("work_orders.manage")) {
-    return { status: { in: ["Draft", "Rejected"] }, created_by: context.userId };
+    return { status: "Created" as const, created_by: context.userId };
   }
   return { status: { in: [] as string[] } };
 }
@@ -196,51 +232,115 @@ function getRowActLabel(status: string, context: CurrentUserContext): string | n
   const p = context.permissions;
   const isAdmin = context.role?.slug === "super_admin";
   const canApprove = isAdmin || p.includes("work_orders.approve");
+  // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 1/12:
+  // Engineer holds work_orders.review, not work_orders.approve — this button
+  // used to check canApprove only, so Engineer's Under Review rows never got
+  // an action button here even though the quick-view's own Review button
+  // (gated on canReview) worked fine once opened directly.
+  const canReview = isAdmin || p.includes("work_orders.review");
   const canAssign = isAdmin || p.includes("work_orders.assign");
-  if (canApprove && ["Submitted", "Pending Approval"].includes(status)) return "Assign";
-  if (canAssign && status === "Approved") return "Assign";
-  if (p.includes("store.issue") && ["Waiting for Parts", "Waiting for Purchase"].includes(status)) return "Parts";
-  if ((canApprove || canAssign) &&
+  // Data Entry Dashboard/Tabs/Material Tracking Alignment Task 4: the Close
+  // button used to piggyback on canApprove/canAssign, which happened to work
+  // for every role tested so far but doesn't reflect the real permission
+  // gating the Close action — checks work_orders.close explicitly instead,
+  // per this task's "use existing permissions" rule.
+  const canClose = isAdmin || p.includes("work_orders.close");
+  // Data Entry Job Card Progress Update and Close Action Unit: generic
+  // Assigned -> In Progress capability for Data Entry/Engineer/Manager
+  // (excludes Technician here — Technician has its own dedicated Start
+  // Work/Mark Completed flow on /technician/jobs, not this list's row action).
+  const isTechnician = context.role?.slug === "technician";
+  const canUpdateProgress = !isTechnician && (isAdmin || p.includes("work_orders.update"));
+  if ((canApprove || canReview) && status === "Under Review") return "Review";
+  if (canAssign && ["Approved", "Partially Issued", "Materials Issued"].includes(status)) return "Assign";
+  if (canUpdateProgress && status === "Assigned") return "Start";
+  if (p.includes("store.issue") && ["Waiting Materials", "Partially Issued"].includes(status)) return "Materials";
+  if (canClose && status === "In Progress") return "Close";
+  // Legacy pre-Unit3 statuses — defensive fallback only.
+  if ((canApprove || canReview) && ["Submitted", "Pending Approval"].includes(status)) return "Review";
+  if (p.includes("store.issue") && ["Waiting for Parts", "Waiting for Purchase"].includes(status)) return "Materials";
+  if (canClose &&
     ["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"].includes(status)) return "Close";
   return null;
 }
 
 // ── Next action label ─────────────────────────────────────────────────────────
 
-function getNextAction(status: string, context: CurrentUserContext): { label: string; mine: boolean } {
+function getNextAction(
+  status: string,
+  context: CurrentUserContext,
+  reviewed?: boolean
+): { label: string; mine: boolean } {
   const p = context.permissions;
   const isAdmin = context.role?.slug === "super_admin";
   const canApprove = isAdmin || p.includes("work_orders.approve");
+  // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 1/12: see
+  // matching note in getRowActLabel — Engineer needs canReview, not canApprove.
+  const canReview = isAdmin || p.includes("work_orders.review");
   const canAssign = isAdmin || p.includes("work_orders.assign");
+  const canClose = isAdmin || p.includes("work_orders.close");
+  const isTechnician = context.role?.slug === "technician";
+  const canUpdateProgress = !isTechnician && (isAdmin || p.includes("work_orders.update"));
 
   switch (status) {
-    case "Draft":                    return { label: "Submit job card",      mine: p.includes("work_orders.manage") };
+    case "Created":           return { label: "Submit for review",        mine: p.includes("work_orders.manage") };
+    // Plain status hint, not a command — this text isn't clickable (the real
+    // action lives in the Action column), so it reads as "what's needed" not
+    // "click here to do this". Data Entry Job Card Action Clarity Fix Task 1:
+    // a reviewer/approver still sees the actionable "Needs review" (their
+    // Action column button says "Review"); anyone without that permission
+    // (Data Entry, Store, Viewer/Auditor) sees an explanatory, non-actionable
+    // sentence instead, so a bare Job Cards list row makes clear *why* no
+    // update button is offered rather than looking like a missing feature.
+    // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 5: once
+    // an Engineer has already reviewed (work_order.review audit entry
+    // exists), Manager's row reads "Engineer Reviewed — Waiting Manager
+    // Approval" instead of the generic "Needs review", even though the
+    // status string itself never leaves "Under Review".
+    case "Under Review":
+      return reviewed
+        ? { label: "Engineer Reviewed — Waiting Manager Approval", mine: canApprove }
+        // Store Send Materials Approval Gate Unit Task 4: literal "Waiting
+        // Engineer Review" wording for anyone not the Engineer/Manager
+        // themselves — was "Waiting for Engineer / Manager review", which
+        // named the Manager even though Manager isn't the blocker yet.
+        : { label: (canApprove || canReview) ? "Needs review" : "Waiting Engineer Review", mine: canApprove || canReview };
+    case "Approved":          return { label: "Assign technician",        mine: canAssign };
+    case "Waiting Materials":  return { label: "Waiting for materials",    mine: false };
+    case "Partially Issued":  return { label: "Store follow-up in progress", mine: canAssign };
+    case "Materials Issued":  return { label: "Assign technician",        mine: canAssign };
+    case "Assigned":          return { label: canUpdateProgress ? "Ready to start" : "Technician to start", mine: canUpdateProgress };
+    case "In Progress":       return { label: canClose ? "Ready to close" : "Work in progress", mine: canClose };
+    case "Closed":             return { label: "Job card closed",          mine: false };
+    // Legacy pre-Unit3 statuses — defensive fallback only.
+    case "Draft":              return { label: "Submit for review",        mine: p.includes("work_orders.manage") };
     case "Submitted":
-    case "Pending Approval":         return { label: "Assign technician",   mine: canApprove };
-    case "Approved":                 return { label: "Assign technician",   mine: canAssign };
-    case "Assigned":                 return { label: "Technician to start", mine: false };
-    case "In Progress":
-    case "Parts Issued":             return { label: "Work in progress",         mine: false };
+    case "Pending Approval":  return { label: "Needs review",             mine: canApprove };
+    case "Parts Issued":      return { label: "Assign technician",        mine: canAssign };
     case "Waiting for Parts":
-    case "Waiting for Purchase":     return { label: "Waiting for materials",    mine: false };
+    case "Waiting for Purchase": return { label: "Waiting for materials", mine: false };
     case "Completed by Technician":
     case "Verified by Supervisor":
-    case "Confirmed by Requester":   return { label: "Awaiting manager closure", mine: canApprove || canAssign };
-    case "Closed":                   return { label: "Job card closed",          mine: false };
-    case "Rejected":                 return { label: "Rejected",            mine: false };
-    case "Cancelled":                return { label: "Cancelled",           mine: false };
-    default:                         return { label: status,                mine: false };
+    case "Confirmed by Requester": return { label: "Awaiting manager closure", mine: canClose };
+    case "Rejected":          return { label: "Legacy status",             mine: false };
+    case "Cancelled":         return { label: "Legacy status",             mine: false };
+    case "Reopened":          return { label: "Ready to close",            mine: canClose };
+    default:                  return { label: status,                     mine: false };
   }
 }
 
 // ── Tone helpers ──────────────────────────────────────────────────────────────
 
 function statusTone(s: string): "green" | "amber" | "red" | "blue" | "gray" {
-  if (["Closed", "Verified by Supervisor", "Confirmed by Requester"].includes(s)) return "green";
-  if (["Completed by Technician"].includes(s)) return "green";
-  if (s.includes("Waiting") || ["Submitted", "Pending Approval"].includes(s)) return "amber";
+  if (["Closed", "Approved", "Materials Issued"].includes(s)) return "green";
+  if (s.includes("Waiting") || s === "Partially Issued" || s === "Under Review") return "amber";
+  if (["Assigned", "In Progress"].includes(s)) return "blue";
+  if (s === "Created") return "gray";
+  // Legacy pre-Unit3 statuses — defensive fallback only.
+  if (["Verified by Supervisor", "Confirmed by Requester", "Completed by Technician"].includes(s)) return "green";
+  if (["Submitted", "Pending Approval"].includes(s)) return "amber";
   if (["Rejected", "Cancelled"].includes(s)) return "red";
-  if (["Assigned", "In Progress", "Parts Issued", "Approved"].includes(s)) return "blue";
+  if (["Parts Issued"].includes(s)) return "blue";
   return "gray";
 }
 
@@ -253,6 +353,27 @@ function formatDate(v: Date | string | null | undefined): string {
 
 function ageInDays(createdAt: Date): number {
   return Math.floor((Date.now() - createdAt.getTime()) / 86_400_000);
+}
+
+function formatTime(v: Date | string | null | undefined): string {
+  if (!v) return "";
+  const d = v instanceof Date ? v : new Date(String(v));
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+// Materials column text — reuses the same Requested/Approved/Store
+// Follow-up/Issued grouping as the Materials Request list page, so wording
+// stays consistent across both pages instead of exposing a bare icon.
+function materialsColumnText(requests: { status: string }[]): string {
+  if (requests.length === 0) return "No Materials Request";
+  const groups = requests.map((r) => materialsRequestListGroup(displayPartsRequestStatus(r.status)));
+  if (groups.some((g) => g === "Store Follow-up")) return "Store follow-up";
+  const openCount = groups.filter((g) => g === "Requested" || g === "Approved").length;
+  if (openCount > 0) {
+    return openCount === 1 ? "1 Materials Request open" : `${openCount} Materials Requests open`;
+  }
+  return requests.length === 1 ? "Materials issued" : "All issued";
 }
 
 function countFor(summaries: StatusSummary[], statuses: string[]): number {
@@ -518,32 +639,24 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
   const scopeCreated = sp.scope === "created";
 
-  // Combines deleted_at guard + role visibility — used for KPI/summary queries
-  const visibilityOnlyWhere: Prisma.work_ordersWhereInput = {
-    AND: [{ deleted_at: null }, visibilityFilter],
-  };
-
   const roleSlug = context.role?.slug ?? "";
   const isNormalUser = ["maintenance_data_entry", "department_requester"].includes(roleSlug);
   const statusMap = getStatusMap();
 
-  // Full WHERE for the list: visibility + user-applied filters stacked as AND
-  // to prevent key conflicts when the visibility filter itself uses `status`.
-  const listConditions: Prisma.work_ordersWhereInput[] = [
+  // Filters shared between the table and the tab/KPI status counts —
+  // everything except the status/tab condition itself and needsAction (a
+  // separate toggle orthogonal to tabs). Tab counts are built from this same
+  // base so a search/date/department filter narrows both the table and the
+  // tab counts identically — no second count-vs-row mismatch on top of the
+  // "Review" tab bug fixed below.
+  const nonStatusConditions: Prisma.work_ordersWhereInput[] = [
     { deleted_at: null },
     visibilityFilter,
   ];
-  if (status === "Waiting for Parts") {
-    // Show job cards that have at least one open materials request (not just those with WO status "Waiting for Parts")
-    listConditions.push({ parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } });
-  } else if (status) {
-    const statusList = expandStatuses(status, statusMap);
-    listConditions.push(statusList.length === 1 ? { status } : { status: { in: statusList } });
-  }
-  if (deptId)     listConditions.push({ requested_by_department_id: deptId });
-  if (workerType) listConditions.push({ worker_type: workerType });
-  if (dateFilter) listConditions.push({ date_of_order: dateFilter });
-  if (search)     listConditions.push({
+  if (deptId)     nonStatusConditions.push({ requested_by_department_id: deptId });
+  if (workerType) nonStatusConditions.push({ worker_type: workerType });
+  if (dateFilter) nonStatusConditions.push({ date_of_order: dateFilter });
+  if (search)     nonStatusConditions.push({
     OR: [
       { work_order_number: { contains: search, mode: "insensitive" } },
       { ordered_by:         { contains: search, mode: "insensitive" } },
@@ -552,8 +665,31 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       { assets: { asset_code:   { contains: search, mode: "insensitive" } } },
       { assets: { asset_name:   { contains: search, mode: "insensitive" } } },
       { assets: { plate_number: { contains: search, mode: "insensitive" } } },
+      // Task 8: also match by requested material name on a linked Materials Request.
+      { parts_requests: { some: { parts_request_items: { some: { description: { contains: search, mode: "insensitive" } } } } } },
     ],
   });
+  const nonStatusWhere: Prisma.work_ordersWhereInput = { AND: nonStatusConditions };
+
+  // Full WHERE for the list: shared filters + the status/tab condition +
+  // needsAction stacked as AND.
+  const listConditions: Prisma.work_ordersWhereInput[] = [...nonStatusConditions];
+  if (status === "Materials") {
+    // Show job cards that have at least one open materials request (not just those with WO status "Waiting Materials")
+    listConditions.push({ parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } });
+  } else if (status) {
+    // Bug fix: this used to push `{ status }` (the raw tab key from the URL,
+    // e.g. "Review" or "New") instead of the actual mapped DB status
+    // (`statusList[0]`, e.g. "Under Review" or "Created") whenever a tab
+    // maps to exactly one status. That's why the "Review" tab showed a
+    // correct count (computed separately via the same statusMap through
+    // tabCount/groupBy) but the table itself always came back empty — no
+    // work_order row has status literally "Review". Tabs whose key happens
+    // to equal the real status string (Approved/Assigned/In Progress/Closed)
+    // were unaffected by coincidence only.
+    const statusList = expandStatuses(status, statusMap);
+    listConditions.push(statusList.length === 1 ? { status: statusList[0] } : { status: { in: statusList } });
+  }
   if (needsAction) listConditions.push(getNeedsActionFilter(context));
   const where: Prisma.work_ordersWhereInput = { AND: listConditions };
 
@@ -585,27 +721,31 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               profiles: { select: { full_name: true } },
             },
           },
+          parts_requests: { select: { status: true } },
         },
       }),
       prisma.work_orders.count({ where }),
       prisma.work_orders.groupBy({
         by: ["status"],
-        where: visibilityOnlyWhere,
+        where: nonStatusWhere,
         _count: { _all: true },
       }),
-      // Count job cards with at least one open materials request (independent of WO status field)
+      // Count job cards with at least one open materials request (independent
+      // of WO status field) — shares nonStatusConditions so this tab/KPI count
+      // also reflects any active search/date/department filter.
       prisma.work_orders.count({
-        where: {
-          AND: [
-            { deleted_at: null },
-            visibilityFilter,
-            { parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } },
-          ],
-        },
+        where: { AND: [...nonStatusConditions, { parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } }] },
       }),
     ]);
 
   const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE));
+
+  // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 5: batched
+  // (no N+1) lookup of which of this page's Under Review rows already have a
+  // work_order.review audit entry, so the Status column can distinguish
+  // "Engineer Reviewed — Waiting Manager Approval" from "not reviewed yet".
+  const underReviewIdsOnPage = workOrders.filter((wo) => wo.status === "Under Review").map((wo) => wo.id);
+  const reviewedIds = await getReviewedWorkOrderIds(underReviewIdsOnPage);
 
   // ── Quick-view preview data ───────────────────────────────────────────────
   // `created` (set on the post-create redirect) is a fallback source for the
@@ -644,6 +784,11 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                 id: true,
                 asset_code: true,
                 asset_name: true,
+                category: true,
+                brand: true,
+                model: true,
+                plate_number: true,
+                status: true,
                 location: true,
                 condition: true,
                 criticality: true,
@@ -666,7 +811,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         }),
         prisma.parts_requests.findMany({
           where: { work_order_id: previewId },
-          select: { status: true },
+          select: {
+            id: true,
+            parts_request_number: true,
+            status: true,
+            parts_request_items: { select: { id: true, description: true, quantity_requested: true, issued_quantity: true } },
+          },
           orderBy: { created_at: "desc" },
           take: 20,
         }),
@@ -678,9 +828,20 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             })
           : Promise.resolve([] as Array<{ id: string; full_name: string }>),
       ])
-    : [null, [] as Array<{ status: string }>, [] as Array<{ id: string; full_name: string }>];
+    : [
+        null,
+        [] as Array<{ id: string; parts_request_number: string | null; status: string; parts_request_items: { id: string; description: string; quantity_requested: unknown; issued_quantity: unknown }[] }>,
+        [] as Array<{ id: string; full_name: string }>,
+      ];
 
   const isAdmin = context.role?.slug === "super_admin";
+  // The previewed Job Card may not be one of the rows currently on this page
+  // (e.g. opened via a direct/bookmarked ?preview= link), so its reviewed
+  // status is looked up on its own rather than assumed to be in reviewedIds.
+  const previewReviewed =
+    previewWO && previewWO.status === "Under Review"
+      ? (await getReviewedWorkOrderIds([previewWO.id])).has(previewWO.id)
+      : false;
   const drawerData: QuickViewData | null = previewWO
     ? {
         id: previewWO.id,
@@ -700,6 +861,11 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               id: previewWO.assets.id,
               asset_code: previewWO.assets.asset_code,
               asset_name: previewWO.assets.asset_name,
+              category: previewWO.assets.category,
+              brand: previewWO.assets.brand,
+              model: previewWO.assets.model,
+              plate_number: previewWO.assets.plate_number,
+              status: previewWO.assets.status,
               location: previewWO.assets.location,
               condition: previewWO.assets.condition,
               criticality: previewWO.assets.criticality,
@@ -728,6 +894,17 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         last_parts_request_status: prData[0]
           ? displayPartsRequestStatus(prData[0].status)
           : null,
+        all_parts_requests: prData.map((pr) => ({
+          id: pr.id,
+          parts_request_number: pr.parts_request_number,
+          status: pr.status,
+          items: pr.parts_request_items.map((item) => ({
+            id: item.id,
+            description: item.description,
+            quantity_requested: Number(item.quantity_requested),
+            issued_quantity: Number(item.issued_quantity),
+          })),
+        })),
         attachment_count: previewWO._count.work_order_attachments,
         roleSlug: context.role?.slug ?? "",
         canApprove:
@@ -736,10 +913,19 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           isAdmin || context.permissions.includes("work_orders.assign"),
         canManage:
           isAdmin || context.permissions.includes("work_orders.manage"),
+        canReview:
+          isAdmin || context.permissions.includes("work_orders.review"),
+        canRequestCorrection:
+          isAdmin || context.permissions.includes("work_orders.request_correction"),
+        canClose:
+          isAdmin || context.permissions.includes("work_orders.close"),
+        canUpdateProgress:
+          isAdmin || context.permissions.includes("work_orders.update"),
         canCreateParts:
           isAdmin ||
           context.permissions.includes("parts_requests.create") ||
           context.permissions.includes("work_orders.manage"),
+        reviewed: previewReviewed,
         closeHref: buildHref({ ...sp, preview: undefined }),
       }
     : null;
@@ -761,8 +947,9 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   });
 
   const totalWOs       = statusSummaries.reduce((n, s) => n + s._count._all, 0);
-  const submittedCount = tabCount(statusSummaries, "Awaiting Review", statusMap);
-  const activeJobs     = tabCount(statusSummaries, "In Progress",     statusMap);
+  const submittedCount = tabCount(statusSummaries, "Review",   statusMap);
+  const approvedCount  = tabCount(statusSummaries, "Approved", statusMap);
+  const activeJobs     = tabCount(statusSummaries, "In Progress", statusMap);
   // Waiting Materials KPI counts job cards with open materials requests, not just WO status field
   const waitingParts   = waitingMaterialsCount;
   const closed         = countFor(statusSummaries, ["Closed"]);
@@ -839,10 +1026,11 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           <JobCardCreatedModal
             jobCardId={previewId}
             jobCardNumber={drawerData?.work_order_number ?? sp.jc ?? null}
-            isDraft={drawerData?.status === "Draft"}
+            isDraft={drawerData?.status === "Created"}
             assetName={drawerData?.assets?.asset_name ?? null}
             issue={drawerData?.operator_complaint ?? null}
             attachmentWarning={sp.warning === "attachments-failed"}
+            materialsRequestWarning={sp.mr_warning === "1"}
             dismissHref={createdDismissHref}
           />
         )}
@@ -903,7 +1091,8 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
   return (
     <>
-      <AutoRefresh intervalMs={30000} />
+      <AutoRefresh intervalMs={15000} />
+      <RealtimeRefresh watch={["job_card.", "work_order.", "materials_request.", "store_materials."]} />
       {showCreatedModal ? (
         <JobCardCreatedModal
           jobCardId={previewId}
@@ -912,6 +1101,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           assetName={drawerData?.assets?.asset_name ?? null}
           issue={drawerData?.operator_complaint ?? null}
           attachmentWarning={sp.warning === "attachments-failed"}
+          materialsRequestWarning={sp.mr_warning === "1"}
           dismissHref={createdDismissHref}
         />
       ) : (
@@ -944,12 +1134,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               detail="All my job cards"
             />
             <KpiCard
-              title="Awaiting Review"
+              title="Under Review"
               value={submittedCount}
-              href={buildHref({ status: "Awaiting Review" })}
+              href={buildHref({ status: "Review" })}
               tone={submittedCount > 0 ? "amber" : "gray"}
               icon={Clock3}
-              detail="Submitted and waiting for manager review"
+              detail="Needs engineer / manager review"
               urgent={submittedCount > 0}
             />
             <KpiCard
@@ -958,19 +1148,19 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               href={buildHref({ status: "In Progress" })}
               tone="blue"
               icon={Wrench}
-              detail="Assigned · in progress"
+              detail="Assigned or being worked on"
             />
             <KpiCard
               title="Waiting Materials"
               value={waitingParts}
-              href={buildHref({ status: "Waiting for Parts" })}
+              href={buildHref({ status: "Materials" })}
               tone={waitingParts > 0 ? "amber" : "gray"}
               icon={Package}
-              detail="Materials needed or store issue pending"
+              detail="Materials requested or store issue pending"
             />
           </section>
         ) : (
-          <section className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+          <section className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
             <KpiCard
               title="Total Job Cards"
               value={totalWOs}
@@ -980,13 +1170,21 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               detail="All maintenance job cards"
             />
             <KpiCard
-              title="Awaiting Review"
+              title="Under Review"
               value={submittedCount}
-              href={buildHref({ status: "Awaiting Review" })}
+              href={buildHref({ status: "Review" })}
               tone={submittedCount > 0 ? "amber" : "gray"}
               icon={Clock3}
-              detail="Submitted and pending manager review"
+              detail="Needs engineer / manager review"
               urgent={submittedCount > 0}
+            />
+            <KpiCard
+              title="Approved"
+              value={approvedCount}
+              href={buildHref({ status: "Approved" })}
+              tone="blue"
+              icon={CheckCircle2}
+              detail="Ready for materials or assignment"
             />
             <KpiCard
               title="In Progress"
@@ -994,15 +1192,15 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               href={buildHref({ status: "In Progress" })}
               tone="blue"
               icon={Wrench}
-              detail="Approved · assigned · in progress · ready to close"
+              detail="Assigned or being worked on"
             />
             <KpiCard
               title="Waiting Materials"
               value={waitingParts}
-              href={buildHref({ status: "Waiting for Parts" })}
+              href={buildHref({ status: "Materials" })}
               tone={waitingParts > 0 ? "amber" : "gray"}
               icon={Package}
-              detail="Materials needed or store issue pending"
+              detail="Materials requested or store issue pending"
             />
             <KpiCard
               title="Closed"
@@ -1024,7 +1222,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             {activeTabs.map((tab) => {
               const isActive = tab.status === "" ? !status : tabIsActive(status, tab.status, statusMap);
               const itemCount =
-                tab.status === "Waiting for Parts"
+                tab.status === "Materials"
                   ? waitingMaterialsCount
                   : tab.status
                     ? tabCount(statusSummaries, tab.status, statusMap)
@@ -1074,11 +1272,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               <thead className="bg-gray-50 text-xs font-black uppercase text-[#4B5563]">
                 <tr>
                   <th className="px-4 py-3">Job Card</th>
-                  <th className="px-4 py-3">Asset / Machine</th>
-                  <th className="px-4 py-3">Issue / Problem</th>
+                  <th className="px-4 py-3">Asset / Equipment / Vehicle</th>
+                  <th className="px-4 py-3">Issue</th>
+                  <th className="px-4 py-3">Materials</th>
                   <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Technician / Assignment</th>
-                  <th className="px-4 py-3">Age</th>
+                  <th className="px-4 py-3">Assignment</th>
+                  <th className="px-4 py-3">Created Date</th>
                   <th className="px-4 py-3 text-right">Action</th>
                 </tr>
               </thead>
@@ -1086,7 +1285,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                 {workOrders.length > 0 ? (
                   workOrders.map((wo) => {
                     const actLabel   = getRowActLabel(wo.status, context);
-                    const nextAct    = getNextAction(wo.status, context);
+                    const nextAct    = getNextAction(wo.status, context, reviewedIds.has(wo.id));
                     const isTerminal = TERMINAL_STATUSES.includes(wo.status);
                     const age        = ageInDays(wo.created_at);
                     const isOverdue  = age > OVERDUE_DAYS && !isTerminal;
@@ -1102,10 +1301,11 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                     })();
 
                     const rowBg = (() => {
+                      // Legacy pre-Unit3 statuses (Rejected/Cancelled) — defensive fallback only.
                       if (wo.status === "Rejected" || wo.status === "Cancelled") return "bg-red-50/50 hover:bg-red-50";
                       if (isOverdue) return "bg-red-50/30 hover:bg-red-50";
-                      if (["Waiting for Parts", "Waiting for Purchase"].includes(wo.status)) return "bg-amber-50/40 hover:bg-amber-50";
-                      if (["Assigned", "In Progress", "Parts Issued", "Approved"].includes(wo.status)) return "bg-blue-50/30 hover:bg-blue-50";
+                      if (["Waiting Materials", "Partially Issued", "Waiting for Parts", "Waiting for Purchase"].includes(wo.status)) return "bg-amber-50/40 hover:bg-amber-50";
+                      if (["Assigned", "In Progress", "Approved", "Materials Issued", "Parts Issued"].includes(wo.status)) return "bg-blue-50/30 hover:bg-blue-50";
                       if (["Closed", "Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"].includes(wo.status)) return "bg-green-50/30 hover:bg-green-50";
                       return "hover:bg-gray-50";
                     })();
@@ -1127,7 +1327,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                           <p className="text-xs text-[#9CA3AF]">{formatDate(wo.date_of_order)}</p>
                         </td>
 
-                        {/* Asset / Machine */}
+                        {/* Asset / Equipment / Vehicle */}
                         <td className="px-4 py-3">
                           {wo.assets ? (
                             <Link href={`/assets/${wo.assets.id}`} className="group/asset block">
@@ -1144,13 +1344,18 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                           )}
                         </td>
 
-                        {/* Issue / Problem */}
+                        {/* Issue */}
                         <td className="max-w-[180px] px-4 py-3">
                           {wo.operator_complaint ? (
                             <p className="line-clamp-2 text-xs text-[#111827]">{wo.operator_complaint}</p>
                           ) : (
                             <span className="text-xs text-[#9CA3AF]">—</span>
                           )}
+                        </td>
+
+                        {/* Materials — plain wording instead of a bare icon */}
+                        <td className="px-4 py-3">
+                          <p className="text-xs text-[#111827]">{materialsColumnText(wo.parts_requests)}</p>
                         </td>
 
                         {/* Status */}
@@ -1163,7 +1368,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                           )}
                         </td>
 
-                        {/* Technician / Assignment */}
+                        {/* Assignment */}
                         <td className="px-4 py-3">
                           {assignedDisplay ? (
                             <span className="text-sm text-[#111827]">{assignedDisplay}</span>
@@ -1172,11 +1377,11 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                           )}
                         </td>
 
-                        {/* Age */}
+                        {/* Created Date — actual date/time only, no relative
+                            "Created today"/"X days ago" wording. */}
                         <td className="px-4 py-3">
-                          <span className={`text-xs font-semibold ${isOverdue ? "text-[#DC2626]" : "text-[#4B5563]"}`}>
-                            {age === 0 ? "Today" : age === 1 ? "1 day open" : `${age} days open`}
-                          </span>
+                          <p className="text-xs font-semibold text-[#111827]">{formatDate(wo.created_at)}</p>
+                          <p className="text-xs text-[#9CA3AF]">{formatTime(wo.created_at)}</p>
                           {isOverdue && <p className="text-xs font-bold text-[#DC2626]">Overdue</p>}
                         </td>
 
@@ -1191,7 +1396,8 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                             </Link>
                             {actLabel && (
                               <Link
-                                href={`/maintenance/work-orders/${wo.id}`}
+                                href={previewHref}
+                                scroll={false}
                                 className="inline-block rounded-md bg-[#ED1C24] px-3 py-2 text-center text-xs font-bold text-white transition hover:bg-[#c8181e]"
                               >
                                 {actLabel}
@@ -1224,7 +1430,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                         />
                       ) : (
                         <EmptyState
-                          title="No job cards match your filters"
+                          title={activeTab ? "No Job Cards found for this status." : "No Job Cards found."}
                           message="Clear the filters or adjust your search to see job cards. You can also create a new job card."
                           action={
                             <div className="flex gap-3">
@@ -1285,7 +1491,7 @@ function FilterSection({ sp }: { sp: SP }) {
         <input
           name="search"
           defaultValue={sp.search ?? ""}
-          placeholder="Job card no., asset name, requester, location…"
+          placeholder="Search job card, asset, vehicle plate, requester, material…"
           className="focus-ring w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
         />
 

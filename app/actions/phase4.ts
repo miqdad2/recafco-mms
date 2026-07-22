@@ -27,15 +27,13 @@ import {
 import {
   approvePartsRequest,
   createPartsRequest,
+  issueMaterials,
   rejectPartsRequest
 } from "@/lib/backend/parts-requests/service";
-import { issuePartsToRequest } from "@/lib/backend/store/service";
-import type { StoreIssueItem } from "@/lib/backend/store/service";
 import { safeErrorMessage } from "@/lib/errors/error-handler";
 import { prisma } from "@/lib/db/prisma";
-import { OPEN_PR_STATUSES, displayPartsRequestStatus } from "@/lib/display/parts-request-labels";
+import { OPEN_PR_STATUSES } from "@/lib/display/parts-request-labels";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
-import { computeBalance } from "@/app/actions/offline-inventory";
 import { normalizeCategory } from "@/components/store/offline-inventory-types";
 
 // ── Form parsing helpers (used for indexed item fields from parts-request form) ──
@@ -214,43 +212,32 @@ export async function rejectPartsRequestAction(formData: FormData) {
   redirect(targetPath);
 }
 
+// Unit 5: now delegates to issueMaterials — the Offline Inventory Control-
+// backed engine — instead of the disabled, parts-catalog-based
+// issuePartsToRequest. The form is unchanged (issued_{id} inputs still send
+// the item's new total issued quantity, matching issueMaterials' absolute
+// semantics), so the existing StoreIssuePanel UI keeps working as-is.
+// "Unavailable" checkboxes no longer set a per-item state (that concept is
+// gone) — leaving an item's issued quantity unchanged and checking it as
+// unavailable simply means nothing is recorded for that item this call.
 export async function storeIssueAction(formData: FormData) {
   const context = await requirePermission("store.issue");
   const requestId = idFrom(formData, "parts_request_id");
 
-  // Fetch items here to resolve dynamic form keys (issued_{id}, unavailable_{id}).
+  // Fetch items here to resolve dynamic form keys (issued_{id}).
   // Item IDs come from the DB, not the submitted form, so the mapping is tamper-safe.
   const rawItems = await prisma.parts_request_items.findMany({
     where: { parts_request_id: requestId },
-    select: {
-      id: true,
-      part_id: true,
-      description: true,
-      part_number: true,
-      ss_rec_code: true,
-      quantity_requested: true,
-      unit_price: true
-    }
+    select: { id: true, quantity_requested: true }
   });
 
-  const storeItems: StoreIssueItem[] = [];
+  const items: { itemId: string; quantity: number }[] = [];
   for (const item of rawItems) {
     const issued = num(formData.get(`issued_${item.id}`));
-    const unavailable = formData.get(`unavailable_${item.id}`) === "on";
     if (issued < 0 || issued > Number(item.quantity_requested)) {
       redirect(`/store/parts-requests/${requestId}?error=invalid-issued-quantity`);
     }
-    storeItems.push({
-      itemId: item.id,
-      partId: item.part_id as string | null,
-      description: item.description,
-      partNumber: item.part_number as string | null,
-      ssRecCode: item.ss_rec_code as string | null,
-      quantityRequested: Number(item.quantity_requested),
-      unitPrice: Number(item.unit_price),
-      issuedQuantity: issued,
-      isUnavailable: unavailable
-    });
+    items.push({ itemId: item.id, quantity: issued });
   }
 
   // Look up the linked work order now so we can revalidate its detail page after issue.
@@ -262,14 +249,16 @@ export async function storeIssueAction(formData: FormData) {
 
   let targetPath = `/store/parts-requests/${requestId}`;
   try {
-    const result = await issuePartsToRequest(context, {
+    const result = await issueMaterials(context, {
       partsRequestId: requestId,
-      items: storeItems,
-      storeIssueComments: String(formData.get("store_issue_comments") ?? "") || null
+      items,
+      reason: String(formData.get("store_issue_comments") ?? "") || undefined
     });
     revalidatePath(`/store/parts-requests/${requestId}`);
     revalidatePath("/store/parts-requests");
-    revalidatePath("/store/parts");
+    revalidatePath("/store/issue-materials");
+    revalidatePath("/store/offline-inventory");
+    revalidatePath("/store/offline-inventory/movements");
     revalidatePath("/maintenance/work-orders");
     revalidatePath("/dashboard");
     if (linkedWoId) revalidatePath(`/maintenance/work-orders/${linkedWoId}`);
@@ -278,6 +267,86 @@ export async function storeIssueAction(formData: FormData) {
     redirect(`/store/parts-requests/${requestId}?error=${encodeURIComponent(safeErrorMessage(error))}`);
   }
   redirect(targetPath);
+}
+
+export type StoreIssueModalState = {
+  ok: boolean;
+  error?: string;
+  partsRequestId?: string;
+  partsRequestNumber?: string | null;
+  workOrderId?: string | null;
+  workOrderNumber?: string | null;
+  status?: string;
+} | null;
+
+// Store Guided Send Materials Popup Workflow Unit Task 3/4/5: a non-redirecting
+// sibling of storeIssueAction, for the dashboard's guided popup — reuses
+// issueMaterials exactly as-is (same permission check, same Job Card approval
+// gate, same quantity validation, same no-stock-balance behavior, same
+// movement/notification/realtime side effects), just returns a result instead
+// of redirecting so the popup can show a success/error state in place.
+export async function storeIssueModalAction(
+  _prev: StoreIssueModalState,
+  formData: FormData
+): Promise<StoreIssueModalState> {
+  const context = await requirePermission("store.issue");
+  const parsedId = z.uuid().safeParse(formData.get("parts_request_id"));
+  if (!parsedId.success) {
+    return { ok: false, error: "Invalid Materials Request." };
+  }
+  const requestId = parsedId.data;
+
+  const rawItems = await prisma.parts_request_items.findMany({
+    where: { parts_request_id: requestId },
+    select: { id: true, quantity_requested: true }
+  });
+
+  const items: { itemId: string; quantity: number }[] = [];
+  for (const item of rawItems) {
+    const issued = num(formData.get(`issued_${item.id}`));
+    if (issued < 0 || issued > Number(item.quantity_requested)) {
+      return { ok: false, error: "Quantity cannot be more than the remaining requested quantity." };
+    }
+    items.push({ itemId: item.id, quantity: issued });
+  }
+
+  try {
+    const result = await issueMaterials(context, {
+      partsRequestId: requestId,
+      items,
+      reason: String(formData.get("store_issue_comments") ?? "") || undefined
+    });
+
+    const updated = await prisma.parts_requests.findUnique({
+      where: { id: result.partsRequestId },
+      select: {
+        parts_request_number: true,
+        status: true,
+        work_order_id: true,
+        work_orders: { select: { work_order_number: true } }
+      }
+    });
+
+    revalidatePath(`/store/parts-requests/${requestId}`);
+    revalidatePath("/store/parts-requests");
+    revalidatePath("/store/issue-materials");
+    revalidatePath("/store/offline-inventory");
+    revalidatePath("/store/offline-inventory/movements");
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
+    if (updated?.work_order_id) revalidatePath(`/maintenance/work-orders/${updated.work_order_id}`);
+
+    return {
+      ok: true,
+      partsRequestId: result.partsRequestId,
+      partsRequestNumber: updated?.parts_request_number ?? null,
+      workOrderId: updated?.work_order_id ?? null,
+      workOrderNumber: updated?.work_orders?.work_order_number ?? null,
+      status: updated?.status
+    };
+  } catch (error) {
+    return { ok: false, error: safeErrorMessage(error) };
+  }
 }
 
 // ── Receive materials against a request (Data Entry/Manager/Admin) ──────────────
@@ -330,7 +399,6 @@ export async function receiveMaterialsForRequestAction(formData: FormData) {
       ssRecCode: string | null;
       qtyNow: number;
       unit: string;
-      qtyIssued: number;
     };
 
     const toReceive: ItemReceive[] = [];
@@ -342,12 +410,15 @@ export async function receiveMaterialsForRequestAction(formData: FormData) {
         throw new Error("Quantity received must be a whole number greater than 0.");
       }
 
-      // Data Entry is capped at the remaining requested quantity; Manager/Admin
-      // may receive more than requested (Task 4's explicit exception).
-      const remaining = Number(item.quantity_requested) - Number(item.issued_quantity);
-      if (!isManagerOrAdmin && qty > remaining + 1e-6) {
+      // Data Entry is capped at the requested quantity; Manager/Admin may
+      // receive more than requested (Task 4's explicit exception). Unit 5:
+      // receiving no longer touches issued_quantity (that's issueMaterials'
+      // job now), so the cap is against the requested total, not a
+      // receive-tracked "remaining".
+      const requestedQty = Number(item.quantity_requested);
+      if (!isManagerOrAdmin && qty > requestedQty + 1e-6) {
         throw new Error(
-          `Cannot receive more than the requested quantity for "${item.description}". Remaining: ${remaining.toFixed(2)}.`
+          `Cannot receive more than the requested quantity for "${item.description}" (${requestedQty}).`
         );
       }
 
@@ -358,7 +429,6 @@ export async function receiveMaterialsForRequestAction(formData: FormData) {
         ssRecCode: item.ss_rec_code as string | null,
         qtyNow: qty,
         unit: String(formData.get(`unit_${item.id}`) ?? "").trim() || "PCS",
-        qtyIssued: Number(item.issued_quantity),
       });
     }
 
@@ -387,11 +457,6 @@ export async function receiveMaterialsForRequestAction(formData: FormData) {
           },
         });
 
-        await tx.parts_request_items.update({
-          where: { id: ir.itemId },
-          data: { issued_quantity: ir.qtyIssued + ir.qtyNow },
-        });
-
         await writeAuditLog({
           actorId: context.userId,
           action: "parts_request.receive",
@@ -411,14 +476,11 @@ export async function receiveMaterialsForRequestAction(formData: FormData) {
         });
       }
 
-      // Simple status model (Task 2/5): any successful receive moves the
-      // request straight to "Received" — no partial/full distinction any
-      // more. Internally this is the pre-existing, otherwise-unused
-      // "Waiting for Store" status value; see parts-request-labels.ts.
-      await tx.parts_requests.update({
-        where: { id: requestId },
-        data: { status: "Waiting for Store", updated_by: context.userId },
-      });
+      // Unit 5: receiving stock into the Offline Inventory Control ledger no
+      // longer changes the Materials Request's status — "Waiting for Store"
+      // is not a valid status in the simplified model. Receiving is now a
+      // general store stock-in event, decoupled from any one request's
+      // lifecycle; issuing (issueMaterials) is what advances request status.
     });
 
     // Optional attachment — save after main transaction; failure is non-fatal.
@@ -482,221 +544,20 @@ export async function receiveMaterialsForRequestAction(formData: FormData) {
 }
 
 // ── Issue materials against a request (Data Entry/Manager/Admin) ────────────────
-// Creates one "ISSUED" Offline Inventory Control movement per material line
-// that was previously received against this request, decreasing the store
-// balance, linked to both the Materials Request and its Job Card.
-// MaterialsRequest-DataEntryReceiveIssue-01 Tasks 1/6/7/12.
-
+// Disabled (Unit 5). This action's model — issue against whatever was
+// RECEIVED specifically for this request, keyed by a derived part/material
+// line rather than parts_request_items.id — no longer fits the simplified
+// engine: receiving is now decoupled from any one request (see
+// receiveMaterialsForRequestAction above), and issuing goes through
+// issueMaterials (itemId-based, absolute-total semantics) via storeIssueAction
+// on the Materials Request detail page instead. That page's Store Issue
+// panel is the supported issue path; this list-page quick action returns a
+// clear "not ready" message until Unit 9 wires it to the new engine.
 export async function issueMaterialsForRequestAction(formData: FormData) {
-  const context = await requireReceiveIssuePermission();
-
+  await requireReceiveIssuePermission();
   const requestId = idFrom(formData, "parts_request_id");
-  let attachmentUploadFailed = false;
-
-  try {
-    const issuedTo = String(formData.get("issued_to") ?? "").trim() || null;
-    const remarks = String(formData.get("remarks") ?? "").trim() || null;
-
-    const request = await prisma.parts_requests.findUnique({
-      where: { id: requestId },
-      select: { id: true, parts_request_number: true, status: true, work_order_id: true },
-    });
-    if (!request) throw new Error("Materials request not found.");
-    if (request.status !== "Waiting for Store" && request.status !== "Partially Issued") {
-      throw new Error("This request has no received materials waiting to be issued.");
-    }
-
-    // The materials actually available to issue are whatever was received
-    // against THIS request — read from the movement ledger itself (the
-    // source of truth for the store balance), not the item rows, since the
-    // unit chosen at receive time isn't stored anywhere else.
-    const receivedLines = await prisma.offline_inventory_movements.findMany({
-      where: { parts_request_id: requestId, movement_type: "RECEIVED", deleted_at: null },
-      select: {
-        part_id: true,
-        manual_material_name: true,
-        manual_part_number: true,
-        ss_rec_code: true,
-        unit: true,
-      },
-      distinct: ["part_id", "manual_material_name", "unit"],
-    });
-    if (receivedLines.length === 0) {
-      throw new Error("No received materials found for this request.");
-    }
-
-    type ItemIssue = {
-      partId: string | null;
-      materialName: string | null;
-      partNumber: string | null;
-      ssRecCode: string | null;
-      unit: string;
-      qty: number;
-      available: number;
-    };
-
-    const toIssue: ItemIssue[] = [];
-    for (const line of receivedLines) {
-      const lineKey = line.part_id ?? `${line.manual_material_name ?? ""}|${line.unit}`;
-      const rawQty = String(formData.get(`issueQty_${lineKey}`) ?? "").trim();
-      if (!rawQty) continue;
-      const qty = Number(rawQty);
-      if (!Number.isInteger(qty) || qty <= 0) {
-        throw new Error("Quantity to issue must be a whole number greater than 0.");
-      }
-
-      const available = await computeBalance({
-        partId: line.part_id,
-        manualName: line.manual_material_name,
-        unit: line.unit,
-      });
-      if (available <= 0) {
-        throw new Error(`No available balance for "${line.manual_material_name ?? "this material"}".`);
-      }
-      if (qty > available) {
-        throw new Error(
-          `Cannot issue more than the available balance for "${line.manual_material_name ?? "this material"}". Available: ${available} ${line.unit}.`
-        );
-      }
-
-      toIssue.push({
-        partId: line.part_id,
-        materialName: line.manual_material_name,
-        partNumber: line.manual_part_number,
-        ssRecCode: line.ss_rec_code,
-        unit: line.unit,
-        qty,
-        available,
-      });
-    }
-
-    if (toIssue.length === 0) throw new Error("Enter a quantity to issue for at least one material.");
-
-    await prisma.$transaction(async (tx) => {
-      for (const ii of toIssue) {
-        await tx.offline_inventory_movements.create({
-          data: {
-            movement_type: "ISSUED",
-            movement_date: new Date(),
-            part_id: ii.partId,
-            manual_material_name: ii.partId ? null : ii.materialName,
-            manual_part_number: ii.partId ? null : ii.partNumber,
-            ss_rec_code: ii.ssRecCode,
-            category: normalizeCategory(null),
-            quantity: ii.qty,
-            unit: ii.unit,
-            counterparty: issuedTo,
-            purpose: `Material issue — ${request.parts_request_number ?? requestId}`,
-            related_work_order_id: request.work_order_id,
-            parts_request_id: requestId,
-            remarks,
-            created_by: context.userId,
-          },
-        });
-
-        await writeAuditLog({
-          actorId: context.userId,
-          action: "parts_request.issue",
-          entityType: "parts_request",
-          entityId: requestId,
-          summary: `Issued ${ii.qty} ${ii.unit} of "${ii.materialName ?? ii.partNumber ?? "material"}" for ${request.parts_request_number ?? requestId}`,
-          metadata: {
-            partsRequestId: requestId,
-            workOrderId: request.work_order_id,
-            materialName: ii.materialName,
-            quantity: ii.qty,
-            unit: ii.unit,
-            issuedTo,
-            remarks,
-          },
-        });
-      }
-
-      // Simple status model (Task 2/7): any successful issue against a
-      // Received request moves it straight to "Issued".
-      await tx.parts_requests.update({
-        where: { id: requestId },
-        data: { status: "Issued", updated_by: context.userId },
-      });
-
-      if (request.work_order_id) {
-        const openSiblings = await tx.parts_requests.count({
-          where: {
-            work_order_id: request.work_order_id,
-            id: { not: requestId },
-            status: { in: OPEN_PR_STATUSES },
-          },
-        });
-        if (openSiblings === 0) {
-          const wo = await tx.work_orders.findUnique({
-            where: { id: request.work_order_id },
-            select: { status: true },
-          });
-          if (wo && ["Waiting for Parts", "Waiting for Purchase"].includes(wo.status)) {
-            await tx.work_orders.update({
-              where: { id: request.work_order_id },
-              data: { status: "In Progress", updated_by: context.userId },
-            });
-          }
-        }
-      }
-    });
-
-    // Optional attachment — same non-fatal pattern as receive.
-    const attachmentFile = pickUploadedFile(formData, "attachment_file");
-    if (attachmentFile) {
-      const attachmentType = String(formData.get("attachment_type") ?? "").trim() || "Material Issue Photo";
-      const validationErr = validatePrivateFileWithOptions(attachmentFile, {
-        maxSizeBytes: MAX_PRIVATE_FILE_SIZE,
-        allowedTypes: ALLOWED_PRIVATE_FILE_TYPES,
-      });
-      if (validationErr) {
-        attachmentUploadFailed = true;
-      } else {
-        try {
-          const filePath = await savePrivateFile("work-order-files", request.work_order_id, attachmentFile);
-          await prisma.parts_request_attachments.create({
-            data: {
-              parts_request_id: requestId,
-              work_order_id: request.work_order_id,
-              attachment_type: attachmentType,
-              file_name: attachmentFile.name,
-              file_path: filePath,
-              content_type: attachmentFile.type,
-              file_size: attachmentFile.size,
-              uploaded_by: context.userId,
-            },
-          });
-          await writeAuditLog({
-            actorId: context.userId,
-            action: "file.upload",
-            entityType: "parts_request",
-            entityId: requestId,
-            summary: `Uploaded ${attachmentType} proof on material issue`,
-            metadata: { fileName: attachmentFile.name, bucket: "work-order-files", workOrderId: request.work_order_id },
-          });
-        } catch {
-          // attachment save failure must not block the issue confirmation
-          attachmentUploadFailed = true;
-        }
-      }
-    }
-
-    revalidatePath(`/store/parts-requests/${requestId}`);
-    revalidatePath("/store/parts-requests");
-    revalidatePath("/store/offline-inventory");
-    revalidatePath("/store/offline-inventory/movements");
-    revalidatePath("/maintenance/work-orders");
-    revalidatePath("/dashboard");
-    if (request.work_order_id)
-      revalidatePath(`/maintenance/work-orders/${request.work_order_id}`);
-  } catch (error) {
-    redirect(
-      `/store/parts-requests?issueMr=${requestId}&issue_error=${encodeURIComponent(safeErrorMessage(error))}`
-    );
-  }
   redirect(
-    `/store/parts-requests?success=material-request-issued&issued=${encodeURIComponent(requestId)}${attachmentUploadFailed ? "&warning=attachments-failed" : ""}`
+    `/store/parts-requests?issueMr=${requestId}&issue_error=${encodeURIComponent("This action is no longer used in the simplified workflow. Use the Materials Request detail page to issue materials.")}`
   );
 }
 
@@ -836,8 +697,11 @@ export async function receiveMaterialFromRequestAction(formData: FormData) {
       },
     });
     if (!request) throw new Error("Materials request not found.");
-    if (displayPartsRequestStatus(request.status) !== "Requested")
-      throw new Error("This request has already been received or processed.");
+    // Unit 5: receiving is a general store stock-in event, decoupled from the
+    // request's lifecycle status — only blocked once the request is fully
+    // Issued (nothing left to usefully receive against it).
+    if (request.status === "Issued")
+      throw new Error("This request has already been fully issued.");
 
     const totalRequested = request.parts_request_items.reduce(
       (sum, item) => sum + Number(item.quantity_requested),
@@ -848,9 +712,10 @@ export async function receiveMaterialFromRequestAction(formData: FormData) {
     if (!isManagerOrAdmin && totalRequested > 0 && qty > totalRequested)
       throw new Error(`Cannot receive more than requested (${totalRequested} ${unit}).`);
 
-    // Simple status model (Task 2/5): receiving always moves the request to
-    // "Received" (internally "Waiting for Store") — Issued only happens via
-    // a separate, explicit issue action against the store balance.
+    // Unit 5: receiving into the Offline Inventory Control ledger no longer
+    // changes the Materials Request's status ("Waiting for Store" is not a
+    // valid status in the simplified model) — issuing (issueMaterials) is
+    // what advances request status.
     await prisma.$transaction(async (tx) => {
       await tx.offline_inventory_movements.create({
         data: {
@@ -868,11 +733,6 @@ export async function receiveMaterialFromRequestAction(formData: FormData) {
           remarks,
           created_by: context.userId,
         },
-      });
-
-      await tx.parts_requests.update({
-        where: { id: requestId },
-        data: { status: "Waiting for Store", updated_by: context.userId },
       });
     });
 

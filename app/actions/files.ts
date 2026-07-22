@@ -16,6 +16,7 @@ import {
 } from "@/lib/files/validation";
 import { notifyByEvent } from "@/lib/notifications/service";
 import { prisma } from "@/lib/db/prisma";
+import { logSystemError } from "@/lib/errors/logging";
 
 const uuid = z.string().uuid();
 const text = z.string().trim().min(2).max(80);
@@ -110,8 +111,19 @@ async function canUploadWorkOrder(workOrderId: string) {
   let wo: { id: string } | null = null;
   try {
     wo = await prisma.work_orders.findUnique({ where: { id: workOrderId }, select: { id: true } });
-  } catch {
-    // fail-closed: deny on DB error
+  } catch (error) {
+    // fail-closed: deny on DB error — but a DB failure denying every upload
+    // silently gave IT no way to tell "genuinely not found" apart from "DB
+    // hiccup" (Enterprise Error Handling Audit Unit Task 9).
+    await logSystemError({
+      source: "files.canUploadWorkOrder",
+      severity: "warning",
+      message: error instanceof Error ? error.message : "Work order lookup failed",
+      userId: context.userId,
+      route: `/maintenance/work-orders/${workOrderId}`,
+      entityType: "work_order",
+      entityId: workOrderId
+    });
   }
 
   if (!wo) {
@@ -134,8 +146,16 @@ async function canUploadWorkOrder(workOrderId: string) {
         where: { work_order_id: workOrderId, technician_id: context.userId },
         select: { id: true },
       });
-    } catch {
-      // fail-closed: deny on DB error
+    } catch (error) {
+      await logSystemError({
+        source: "files.canUploadWorkOrder.assignmentCheck",
+        severity: "warning",
+        message: error instanceof Error ? error.message : "Assignment lookup failed",
+        userId: context.userId,
+        route: `/maintenance/work-orders/${workOrderId}`,
+        entityType: "work_order",
+        entityId: workOrderId
+      });
     }
 
     if (!assignment) {
@@ -255,8 +275,16 @@ export async function uploadAssetFileAction(formData: FormData) {
   let asset: { id: string } | null = null;
   try {
     asset = await prisma.assets.findUnique({ where: { id: assetId }, select: { id: true } });
-  } catch {
-    // fail-closed: deny on DB error
+  } catch (error) {
+    await logSystemError({
+      source: "files.uploadAssetFileAction",
+      severity: "warning",
+      message: error instanceof Error ? error.message : "Asset lookup failed",
+      userId: context.userId,
+      route: `/assets/${assetId}`,
+      entityType: "asset",
+      entityId: assetId
+    });
   }
 
   if (!asset) {
@@ -350,8 +378,16 @@ export async function uploadPurchaseFileAction(formData: FormData) {
   let pr: { id: string } | null = null;
   try {
     pr = await prisma.purchase_requests.findUnique({ where: { id: purchaseRequestId }, select: { id: true } });
-  } catch {
-    // fail-closed: deny on DB error
+  } catch (error) {
+    await logSystemError({
+      source: "files.uploadPurchaseFileAction",
+      severity: "warning",
+      message: error instanceof Error ? error.message : "Purchase request lookup failed",
+      userId: context.userId,
+      route: `/purchase/requests/${purchaseRequestId}`,
+      entityType: "purchase_request",
+      entityId: purchaseRequestId
+    });
   }
 
   if (!pr) {

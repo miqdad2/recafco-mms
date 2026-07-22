@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 import { requirePermission } from "@/lib/auth/context";
 import { writeAuditLog } from "@/lib/audit/log";
 import { logSystemError } from "@/lib/errors/logging";
+import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
 
 export type CategoryStatus = "matched" | "new";
 
@@ -712,8 +713,21 @@ export async function importAssetsAction(rows: ImportPreviewRow[]): Promise<Impo
       existingCodes.add(code.toLowerCase());
       imported++;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Database error";
-      failures.push({ rowNumber: row.rowNumber, asset_code: code, reason: msg });
+      // Enterprise Error Handling Audit Unit Task 9/10: this used to push the
+      // raw Prisma error message straight into the per-row failure reason
+      // (could leak a raw Postgres constraint/column name) with no
+      // system_error_logs trace. Full detail is now logged for IT; the user
+      // sees the standard row-scoped import message instead.
+      await logSystemError({
+        source: "asset-import.importAssetsAction",
+        severity: "warning",
+        message: err instanceof Error ? err.message : "Asset row create failed",
+        userId: context.userId,
+        route: "/assets/import",
+        entityType: "asset",
+        metadata: { rowNumber: row.rowNumber, asset_code: code }
+      });
+      failures.push({ rowNumber: row.rowNumber, asset_code: code, reason: `Import failed on row ${row.rowNumber}. Please correct the file and try again.` });
       skipped++;
     }
   }
@@ -727,6 +741,22 @@ export async function importAssetsAction(rows: ImportPreviewRow[]): Promise<Impo
     summary: `Imported ${imported} asset(s) from Excel (${skipped} skipped, ${failures.length} failed, ${createdCategories} new categor${createdCategories === 1 ? "y" : "ies"} created)`,
     metadata: { imported, skipped, failureCount: failures.length, rowsReceived: rows.length, createdCategories }
   });
+
+  // Enterprise Real-Time Notifications Unit Task 2 item L / Task 11: one
+  // summary ping per import batch, not one per row — noisy per-asset
+  // notifications for a 200-row import would violate "notify the right
+  // people only, not everyone for every update".
+  if (imported > 0) {
+    await notifyWorkflowEvent({
+      eventKey: "asset.updated",
+      entityType: "asset",
+      entityId: null,
+      actorId: context.userId,
+      recipientRoles: ["super_admin", "maintenance_manager"],
+      title: "Assets Imported",
+      message: `${imported} asset${imported === 1 ? "" : "s"} imported from Excel${skipped ? ` (${skipped} skipped)` : ""}.`
+    });
+  }
 
   return { imported, skipped, failures };
 }

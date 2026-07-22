@@ -246,7 +246,7 @@ export function StoreBalanceView({
         )}
         {!canManage && (
           <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3 text-sm font-semibold text-[#4B5563]">
-            You have view-only access to Offline Inventory Control.
+            Store stock entry is managed by Store users. This page shows material movements and Job Card material tracking.
           </div>
         )}
 

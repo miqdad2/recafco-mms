@@ -8,6 +8,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { getUserNotificationSummary, getUserNotifications } from "@/lib/notifications/service";
 import { formatDateTime } from "@/lib/utils";
+import { prisma } from "@/lib/db/prisma";
 
 type NotificationsPageProps = {
   searchParams?: Promise<{
@@ -35,6 +36,13 @@ export default async function NotificationsPage({ searchParams }: NotificationsP
     }),
     getUserNotificationSummary(context.userId)
   ]);
+
+  // Task 7: show the actor who triggered each notification, when available.
+  const actorIds = [...new Set(notifications.map((n) => n.actor_id).filter((id): id is string => Boolean(id)))];
+  const actors = actorIds.length
+    ? await prisma.profiles.findMany({ where: { id: { in: actorIds } }, select: { id: true, full_name: true } })
+    : [];
+  const actorNameById = new Map(actors.map((a) => [a.id, a.full_name]));
 
   return (
     <>
@@ -96,7 +104,12 @@ export default async function NotificationsPage({ searchParams }: NotificationsP
                       {!notification.read_at ? <StatusBadge label="Unread" tone="red" /> : <StatusBadge label="Read" tone="gray" />}
                     </div>
                     <p className="mt-2 text-sm leading-6 text-[#4B5563]">{notification.message}</p>
-                    <p className="mt-2 text-xs font-semibold text-[#64748B]">{formatDateTime(notification.created_at)}</p>
+                    <p className="mt-2 text-xs font-semibold text-[#64748B]">
+                      {formatDateTime(notification.created_at)}
+                      {notification.actor_id && actorNameById.get(notification.actor_id)
+                        ? ` · by ${actorNameById.get(notification.actor_id)}`
+                        : ""}
+                    </p>
                     {notification.action_url ? (
                       <Link href={notification.action_url} className="mt-3 inline-flex text-sm font-bold text-[#ED1C24] hover:text-[#c9151c]">
                         {notification.action_label ?? "Open related record"}

@@ -478,11 +478,16 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
     (sum, chip) => sum + (isVehicleCategory(chip.category) ? Number(chip.count) : 0),
     0
   );
-  // Admin actions only for super_admin and managers with explicit assets.manage permission.
-  // maintenance_data_entry is excluded even if the role carries assets.manage in DB.
+  // Assets & Equipment Data Entry Access Alignment: this used to explicitly
+  // exclude maintenance_data_entry even though the role already carries
+  // assets.manage in the DB (route guards on /assets/new, /assets/import,
+  // and /assets/[id]/edit all already require plain assets.manage with no
+  // role-slug exception) — so Data Entry could reach every asset write
+  // route by URL but never saw the New Asset / Import Excel buttons here.
+  // Now purely permission-based, matching every other asset route/action in
+  // the app and Data Entry's real, already-granted assets.manage permission.
   const canManage =
-    context.role?.slug === "super_admin" ||
-    (context.role?.slug === "maintenance_manager" && (context.permissions as string[]).includes("assets.manage"));
+    context.role?.slug === "super_admin" || context.permissions.includes("assets.manage");
   // Normal users (maintenance_data_entry, viewer, etc.) get a simplified filter set.
   const isFullFilterUser =
     context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";

@@ -20,6 +20,14 @@ export type MovementRow = {
   work_order_number: string | null;
   remarks: string | null;
   created_by_name: string;
+  // Store Issue Materials + Offline Inventory Separation Unit Task 6/9:
+  // Data Entry/Engineer/Manager use this same page as their Material Ledger
+  // and need the linked Materials Request + asset/vehicle visible without
+  // opening the Job Card separately.
+  parts_request_id: string | null;
+  parts_request_number: string | null;
+  asset_name: string | null;
+  plate_number: string | null;
 };
 
 export type RecentMovementRow = {

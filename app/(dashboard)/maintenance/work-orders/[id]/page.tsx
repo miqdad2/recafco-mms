@@ -33,46 +33,73 @@ import { createSignedFileUrl } from "@/lib/files/signed-url";
 import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/security/permissions";
 import { canViewEntityFile } from "@/lib/security/file-access";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import { getReviewedWorkOrderIds } from "@/lib/work-orders/review-status";
 import { displayStatus } from "@/lib/display/work-order-labels";
 import { AutoRefresh } from "@/components/auto-refresh";
+import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Must match the AppError message thrown by assertNoActiveDuplicateMaterialsRequest
+// (lib/backend/parts-requests/repository.ts) exactly — used to detect this
+// specific failure so the banner can link straight to the blocking request
+// (Maintenance Workflow Redesign Unit 8 Task 6).
+const DUPLICATE_MATERIALS_REQUEST_ERROR =
+  "This Job Card already has an active Materials Request. Please update the existing request instead.";
+const ACTIVE_MATERIALS_REQUEST_STATUSES = ["Requested", "Approved", "Waiting Stock", "Partially Issued"];
+
 // ── 7-stage display tracker ───────────────────────────────────────────────────
 
+// Maintenance Workflow Redesign Unit 7: relabeled for the simplified 9-status
+// model (was built around the old 16-status model — every new-model status
+// fell through to the `default: -1` case, so this stepper silently showed no
+// progress at all for any Job Card created since Unit 3). Kept the same
+// 7-slot structure/JSX (no stepper redesign) — just corrected which status
+// maps to which slot, with the old statuses kept as a legacy fallback.
 const DISPLAY_STAGES = [
-  "Submitted",
-  "Manager Review",
+  "Created",
+  "Review",
+  "Approved",
+  "Materials",
   "Assigned",
   "In Progress",
-  "Waiting Materials",
-  "Ready to Close",
   "Closed",
 ] as const;
 
 function statusToStageIndex(status: string): number {
   switch (status) {
+    case "Created":
+      return 0;
+    case "Under Review":
+      return 1;
+    case "Approved":
+      return 2;
+    case "Waiting Materials":
+    case "Partially Issued":
+    case "Materials Issued":
+      return 3;
+    case "Assigned":
+      return 4;
+    case "In Progress":
+      return 5;
+    case "Closed":
+      return 6;
+    // Legacy pre-Unit3 statuses — defensive fallback only.
     case "Draft":
     case "Submitted":
     case "Reopened":
       return 0;
     case "Pending Approval":
       return 1;
-    case "Approved":
-    case "Assigned":
-      return 2;
-    case "In Progress":
     case "Parts Issued":
       return 3;
     case "Waiting for Parts":
     case "Waiting for Purchase":
-      return 4;
+      return 3;
     case "Completed by Technician":
     case "Verified by Supervisor":
     case "Confirmed by Requester":
       return 5;
-    case "Closed":
-      return 6;
     default:
       return -1;
   }
@@ -197,11 +224,68 @@ export default async function WorkOrderDetailPage({
     );
   }
 
-  const [auditLogs, pendingClarification, technicians] = await Promise.all([
+  // Unit 7: linked Materials Request ids, needed to batch-fetch their audit
+  // trail and any Offline Inventory movements tied to them (Task 4/5/8 —
+  // single round-trip, no N+1 per request/movement).
+  const linkedPartsRequestIds = wo.parts_requests.map((pr) => pr.id);
+
+  // Unit 8 Task 6: when creation fails with the duplicate-active-request
+  // error, link straight to the request that's blocking it. wo.parts_requests
+  // is already loaded above (no extra query needed).
+  const activeMaterialsRequest =
+    wo.parts_requests.find((pr) => ACTIVE_MATERIALS_REQUEST_STATUSES.includes(pr.status)) ?? null;
+
+  // Store Send Materials Approval Gate Unit Task 5: an active/open request
+  // already exists -> View Materials, never a second "Request Materials"
+  // button (the backend already blocks a duplicate active request; this
+  // avoids the user hitting that error in the first place). Once a request
+  // has fully Issued at least once, a fresh request is a deliberate "more
+  // materials needed" case, so it's worded "Request Extra Materials" rather
+  // than the first-time "Request Materials" (matches the wording already
+  // used on the Technician's own job page).
+  const hasIssuedMaterialsRequest = wo.parts_requests.some((pr) => pr.status === "Issued");
+  const materialsButtonLabel = activeMaterialsRequest
+    ? "View Materials"
+    : hasIssuedMaterialsRequest
+      ? "Request Extra Materials"
+      : "Request Materials";
+  const materialsButtonHref = activeMaterialsRequest
+    ? `/store/parts-requests/${activeMaterialsRequest.id}`
+    : `/store/parts-requests/new?repair_order_id=${wo.id}`;
+
+  // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 5/7:
+  // whether this Job Card already has a work_order.review audit entry —
+  // drives the "Reviewed — waiting Manager approval" messaging so Engineer
+  // doesn't see a repeat "Confirm Review / Send to Manager" as if nothing
+  // happened, and so Manager's view can distinguish reviewed vs. not.
+  const reviewed = (await getReviewedWorkOrderIds([wo.id])).has(wo.id);
+
+  const [auditLogs, partsRequestAuditLogs, offlineMovements, pendingClarification, technicians] = await Promise.all([
     prisma.audit_logs.findMany({
       where: { entity_type: "work_order", entity_id: wo.id },
       orderBy: { created_at: "desc" },
       take: 30,
+    }),
+    linkedPartsRequestIds.length
+      ? prisma.audit_logs.findMany({
+          where: { entity_type: "parts_request", entity_id: { in: linkedPartsRequestIds } },
+          orderBy: { created_at: "desc" },
+          take: 50,
+        })
+      : Promise.resolve([]),
+    // OPENING_STOCK is never linked to a specific Job Card (related_work_order_id
+    // is always null for it), so excluding it here also naturally excludes it —
+    // no separate "unrelated movement" filtering needed (Task 5).
+    prisma.offline_inventory_movements.findMany({
+      where: {
+        deleted_at: null,
+        movement_type: { not: "OPENING_STOCK" },
+        OR: [
+          { related_work_order_id: wo.id },
+          ...(linkedPartsRequestIds.length ? [{ parts_request_id: { in: linkedPartsRequestIds } }] : [])
+        ]
+      },
+      orderBy: { created_at: "desc" },
     }),
     getPendingClarificationForWorkOrder(wo.id),
     prisma.profiles.findMany({
@@ -221,6 +305,8 @@ export default async function WorkOrderDetailPage({
     ...wo.work_order_attachments.map((item) => item.uploaded_by),
     ...wo.inventory_movements.map((item) => item.created_by),
     ...auditLogs.map((item) => item.actor_id),
+    ...partsRequestAuditLogs.map((item) => item.actor_id),
+    ...offlineMovements.map((item) => item.created_by),
     pendingClarification?.requested_by,
   ].filter((value): value is string => Boolean(value));
 
@@ -267,7 +353,13 @@ export default async function WorkOrderDetailPage({
     }))
   );
 
-  const timeline = buildTimeline(wo, auditLogs, actorName);
+  const timeline = buildTimeline(wo, auditLogs, partsRequestAuditLogs, offlineMovements, actorName);
+  // Unit 7: System Audit (manager-only, technical) now also includes the
+  // linked Materials Requests' raw audit trail, not just the Job Card's own —
+  // merged and re-sorted since they were fetched as two separate queries.
+  const systemAuditLogs = [...auditLogs, ...partsRequestAuditLogs].sort(
+    (a, b) => b.created_at.getTime() - a.created_at.getTime()
+  );
   const openPartsRequests = wo.parts_requests.filter(
     (r) => !["Closed", "Cancelled", "Issued"].includes(r.status)
   ).length;
@@ -298,6 +390,10 @@ export default async function WorkOrderDetailPage({
   return (
     <>
       <AutoRefresh intervalMs={20000} enabled={!isTerminal} />
+      <RealtimeRefresh
+        watch={["job_card.", "work_order.", "materials_request.", "store_materials.", "technician_job."]}
+        enabled={!isTerminal}
+      />
       <PageHeader
         title={wo.work_order_number ?? "Job Card"}
         description={summaryTitle.length > 80 ? summaryTitle.slice(0, 80) + "…" : summaryTitle}
@@ -330,6 +426,14 @@ export default async function WorkOrderDetailPage({
           <div className="rounded-md border border-[#DC2626] bg-red-50 p-4">
             <p className="text-sm font-black text-[#DC2626]">Action could not be completed</p>
             <p className="mt-1 text-sm leading-5 text-[#4B5563]">{humanizeError(errorMessage)}</p>
+            {errorMessage === DUPLICATE_MATERIALS_REQUEST_ERROR && activeMaterialsRequest ? (
+              <Link
+                href={`/store/parts-requests/${activeMaterialsRequest.id}`}
+                className="mt-2 inline-flex items-center gap-1 text-sm font-bold text-[#ED1C24] hover:underline"
+              >
+                Open Existing Materials Request <ArrowRight className="h-4 w-4" aria-hidden />
+              </Link>
+            ) : null}
           </div>
         ) : null}
         {warningMessage === "recovery-draft-saved" ? (
@@ -364,6 +468,18 @@ export default async function WorkOrderDetailPage({
           <div className="rounded-md border border-[#16A34A] bg-green-50 p-4">
             <p className="text-sm font-black text-[#16A34A]">Parts usage recorded</p>
             <p className="mt-1 text-sm leading-5 text-[#4B5563]">The part has been added to this job card.</p>
+          </div>
+        ) : null}
+        {/* Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 4/8:
+            the Confirm Review submit used to redirect here with no visible
+            confirmation at all — this makes the outcome unambiguous. */}
+        {successMessage === "reviewed" ? (
+          <div className="rounded-md border border-[#16A34A] bg-green-50 p-4">
+            <p className="text-sm font-black text-[#16A34A]">Job Card reviewed</p>
+            <p className="mt-1 text-sm leading-5 text-[#4B5563]">
+              {wo.work_order_number ?? "This Job Card"} reviewed successfully. Sent to Maintenance Manager for
+              approval. Next step: Waiting Manager Approval.
+            </p>
           </div>
         ) : null}
 
@@ -691,17 +807,17 @@ export default async function WorkOrderDetailPage({
                 <SectionHeader eyebrow="Materials" title="Materials" icon={PackageSearch} />
                 {canCreatePartsRequest && !["Closed", "Cancelled", "Rejected"].includes(wo.status) ? (
                   <Link
-                    href={`/store/parts-requests/new?repair_order_id=${wo.id}`}
+                    href={materialsButtonHref}
                     className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
                   >
                     <PackageSearch className="h-4 w-4" aria-hidden="true" />
-                    Request Materials
+                    {materialsButtonLabel}
                   </Link>
                 ) : null}
               </div>
 
               <div className="mt-5 grid gap-4 md:grid-cols-2">
-                <MetricCard label="Parts requests" value={wo.parts_requests.length} icon={PackageSearch} tone="blue" />
+                <MetricCard label="Materials requests" value={wo.parts_requests.length} icon={PackageSearch} tone="blue" />
                 <MetricCard
                   label="Open requests"
                   value={openPartsRequests}
@@ -828,7 +944,7 @@ export default async function WorkOrderDetailPage({
                     >
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
-                          <p className="font-black text-[#111827]">{request.parts_request_number ?? "Parts request"}</p>
+                          <p className="font-black text-[#111827]">{request.parts_request_number ?? "Materials Request"}</p>
                           <p className="mt-1 text-sm text-[#4B5563]">
                             {request.remarks || "No remarks"} — {request.parts_request_items.length} items
                           </p>
@@ -995,7 +1111,19 @@ export default async function WorkOrderDetailPage({
           {/* ── Sidebar ──────────────────────────────────────────────────── */}
           <aside className="space-y-5">
             {/* Current Action (shows context for all users; action buttons for managers/supervisors) */}
-            <WorkflowActions workOrderId={wo.id} status={wo.status} context={context} technicians={technicians} currentAssignment={currentAssignment} />
+            <WorkflowActions
+              workOrderId={wo.id}
+              status={wo.status}
+              context={context}
+              technicians={technicians}
+              currentAssignment={currentAssignment}
+              activeMaterialsRequest={
+                activeMaterialsRequest
+                  ? { id: activeMaterialsRequest.id, number: activeMaterialsRequest.parts_request_number, status: activeMaterialsRequest.status }
+                  : null
+              }
+              reviewed={reviewed}
+            />
 
             {/* Quick Facts */}
             <section className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
@@ -1064,18 +1192,18 @@ export default async function WorkOrderDetailPage({
             </div>
           </details>
 
-          {canManage && auditLogs.length > 0 ? (
+          {canManage && systemAuditLogs.length > 0 ? (
             <details className="border-t border-[#E5E7EB]">
               <summary className="flex cursor-pointer select-none items-center gap-2 p-5 hover:bg-gray-50">
                 <div>
                   <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">System Audit</p>
                   <h3 className="text-base font-black text-[#111827]">
-                    Audit Details ({auditLogs.length} records)
+                    Audit Details ({systemAuditLogs.length} records)
                   </h3>
                 </div>
               </summary>
               <div className="space-y-2 border-t border-[#E5E7EB] p-5">
-                {auditLogs.slice(0, 15).map((log) => (
+                {systemAuditLogs.slice(0, 15).map((log) => (
                   <RecordLine
                     key={log.id}
                     title={log.action}
@@ -1094,90 +1222,327 @@ export default async function WorkOrderDetailPage({
 
 // ── Timeline builder ──────────────────────────────────────────────────────────
 
+// Maintenance Workflow Redesign Unit 7 — statuses reachable under the
+// simplified model. Any work_order_status_history row whose to_status falls
+// outside this set is pre-redesign history with no matching semantic audit
+// log action (Task 6) — shown as a neutral "Legacy status update" fallback
+// instead of guessing at a clean title for it.
+const NEW_JOB_CARD_STATUSES = new Set([
+  "Created", "Under Review", "Approved", "Waiting Materials", "Partially Issued",
+  "Materials Issued", "Assigned", "In Progress", "Closed"
+]);
+
+function metaGet(metadata: unknown, key: string): string | undefined {
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    const value = (metadata as Record<string, unknown>)[key];
+    if (value === null || value === undefined || value === "") return undefined;
+    return String(value);
+  }
+  return undefined;
+}
+
+type AuditLogRow = { id: string; action: string; summary: string; created_at: Date; actor_id: string | null; entity_id: string | null; metadata: unknown };
+type OfflineMovementRow = {
+  id: string;
+  movement_type: string;
+  quantity: Prisma.Decimal | number;
+  unit: string;
+  manual_material_name: string | null;
+  counterparty: string | null;
+  parts_request_id: string | null;
+  created_by: string;
+  created_at: Date;
+};
+
+/**
+ * Builds the staff-facing Activity Timeline. Job Card lifecycle events
+ * (submit/review/correction/approve/start/close) come primarily from
+ * audit_logs (entity_type="work_order") rather than work_order_status_history,
+ * because Unit 4's no-op review/correction actions never change status (so
+ * they never produce a status_history row at all — audit_logs is the only
+ * record of them) and because audit_logs carries the actual human-entered
+ * comments/reasons, while the DB trigger only writes a generic "Status
+ * updated" note. Materials Request and Offline Inventory activity from every
+ * linked request appear inline (Task 4/5) — Job Card is the parent, so its
+ * timeline is the one place staff need to look.
+ */
 function buildTimeline(
   wo: WorkOrderControl,
-  auditLogs: Array<{
-    id: string;
-    action: string;
-    summary: string;
-    created_at: Date;
-    actor_id: string | null;
-  }>,
+  auditLogs: AuditLogRow[],
+  partsRequestAuditLogs: AuditLogRow[],
+  offlineMovements: OfflineMovementRow[],
   actorName: (id?: string | null) => string
 ): TimelineItem[] {
   const items: TimelineItem[] = [
     {
       id: `created-${wo.id}`,
       at: wo.created_at,
-      title: `Created ${wo.work_order_number ?? "work order"}`,
-      detail: wo.operator_complaint || wo.description_of_work || "Work order was created.",
+      title: "Job Card created",
+      detail: wo.operator_complaint || wo.description_of_work || "Job Card created.",
       actor: actorName(wo.created_by),
       tone: "blue",
-      label: "Created",
+      label: "Job Card",
     },
-    ...wo.work_order_status_history.map((item) => ({
-      id: `status-${item.id}`,
+  ];
+
+  // ── Job Card lifecycle (submit/review/correction/approve/start/close) ──────
+  for (const log of auditLogs) {
+    const entry = jobCardAuditEntry(log, actorName);
+    if (entry) items.push(entry);
+  }
+
+  // ── Legacy fallback for pre-redesign status history ─────────────────────────
+  for (const item of wo.work_order_status_history) {
+    if (NEW_JOB_CARD_STATUSES.has(item.to_status)) continue; // covered by a semantic audit entry above
+    items.push({
+      id: `status-legacy-${item.id}`,
       at: item.changed_at,
-      title: item.from_status
-        ? `${displayStatus(item.from_status)} → ${displayStatus(item.to_status)}`
-        : displayStatus(item.to_status),
-      detail: item.notes || "Status updated.",
+      title: "Legacy status update",
+      detail: item.from_status ? `${item.from_status} → ${item.to_status}` : item.to_status,
       actor: actorName(item.changed_by),
-      tone: statusTone(item.to_status),
-      label: "Status",
-    })),
-    ...wo.work_order_assignments.map((item) => ({
+      tone: "gray",
+      label: "Job Card",
+    });
+  }
+
+  // ── Assignment (current assignment only — reassignment replaces the row) ───
+  for (const item of wo.work_order_assignments) {
+    const { assigneeName, typeLabel } = describeAssignee(item);
+    items.push({
       id: `assignment-${item.id}`,
       at: item.assigned_at,
-      title: `Assigned to ${item.profiles?.full_name ?? "technician"}`,
-      detail: item.notes || "Technician assignment recorded.",
+      title: `Assigned to ${assigneeName} (${typeLabel})`,
+      detail: item.notes || "Assignment recorded.",
       actor: actorName(item.assigned_by),
-      tone: "blue" as BadgeTone,
-      label: "Assign",
-    })),
-    ...wo.work_order_technician_notes.map((item) => ({
+      tone: "blue",
+      label: "Assignment",
+    });
+  }
+
+  // ── Work progress (technician notes) ────────────────────────────────────────
+  for (const item of wo.work_order_technician_notes) {
+    items.push({
       id: `tech-note-${item.id}`,
       at: item.created_at,
-      title: `Technician update by ${item.profiles.full_name}`,
+      title: `Work update by ${item.profiles.full_name}`,
       detail: `${displayValue(item.labor_hours)} labor hours. ${item.note}`,
       actor: item.profiles.full_name,
-      tone: "gray" as BadgeTone,
-      label: "Tech",
-    })),
-    ...wo.parts_requests.map((item) => ({
-      id: `parts-request-${item.id}`,
-      at: item.created_at,
-      title: `Parts request ${item.parts_request_number ?? ""}`.trim(),
-      detail: `${item.status}. ${item.remarks || "No remarks."}`,
-      actor:
-        item.profiles_parts_requests_prepared_byToprofiles?.full_name ??
-        actorName(item.created_by),
-      tone: statusTone(item.status),
-      label: "Parts",
-    })),
-    ...wo.work_order_attachments.map((item) => ({
+      tone: "gray",
+      label: "Work Progress",
+    });
+  }
+
+  // ── Materials Request lifecycle (every request linked to this Job Card) ────
+  for (const pr of wo.parts_requests) {
+    const itemSummary = pr.parts_request_items
+      .slice(0, 3)
+      .map((line) => `${line.description} (${displayValue(line.quantity_requested)})`)
+      .join(", ");
+    const requesterName =
+      pr.profiles_parts_requests_requested_byToprofiles?.full_name ?? actorName(pr.requested_by ?? pr.created_by);
+
+    items.push({
+      id: `mr-created-${pr.id}`,
+      at: pr.created_at,
+      title: "Materials requested",
+      detail: `${pr.parts_request_number ?? "Materials Request"}${itemSummary ? ` — ${itemSummary}` : ""}`,
+      actor: requesterName,
+      tone: "amber",
+      label: "Materials",
+    });
+
+    for (const log of partsRequestAuditLogs.filter((l) => l.entity_id === pr.id)) {
+      const entry = materialsRequestAuditEntry(log, pr.parts_request_number, actorName);
+      if (entry) items.push(entry);
+    }
+  }
+
+  // ── Offline Inventory Control movements linked to this Job Card ────────────
+  const prNumberById = new Map(wo.parts_requests.map((pr) => [pr.id, pr.parts_request_number]));
+  for (const item of offlineMovements) {
+    const materialName = item.manual_material_name || "material";
+    const prNumber = item.parts_request_id ? prNumberById.get(item.parts_request_id) : null;
+    const linkedNote = prNumber ? ` (Materials Request ${prNumber})` : "";
+    const qty = displayValue(item.quantity);
+
+    if (item.movement_type === "RECEIVED") {
+      items.push({
+        id: `movement-${item.id}`,
+        at: item.created_at,
+        title: "Materials received",
+        detail: `${materialName} — quantity ${qty} ${item.unit}${item.counterparty ? ` from ${item.counterparty}` : ""}${linkedNote}`,
+        actor: actorName(item.created_by),
+        tone: "blue",
+        label: "Store Issue",
+      });
+    } else if (item.movement_type === "ISSUED") {
+      items.push({
+        id: `movement-${item.id}`,
+        at: item.created_at,
+        title: "Materials issued",
+        detail: `${materialName} — quantity ${qty} ${item.unit}${item.counterparty ? ` to ${item.counterparty}` : ""}${linkedNote}`,
+        actor: actorName(item.created_by),
+        tone: "green",
+        label: "Store Issue",
+      });
+    } else {
+      // RETURNED / ADJUSTMENT — not currently produced by any workflow action
+      // linked to a Job Card, kept for defensive completeness (Task 5).
+      items.push({
+        id: `movement-${item.id}`,
+        at: item.created_at,
+        title: `${item.movement_type.charAt(0)}${item.movement_type.slice(1).toLowerCase()} recorded`,
+        detail: `${materialName} — quantity ${qty} ${item.unit}${linkedNote}`,
+        actor: actorName(item.created_by),
+        tone: "gray",
+        label: "Store Issue",
+      });
+    }
+  }
+
+  // ── Attachments ──────────────────────────────────────────────────────────────
+  for (const item of wo.work_order_attachments) {
+    items.push({
       id: `attachment-${item.id}`,
       at: item.created_at,
       title: `${item.attachment_type} uploaded`,
       detail: item.file_name,
       actor: actorName(item.uploaded_by),
-      tone: "gray" as BadgeTone,
-      label: "File",
-    })),
-    ...wo.inventory_movements.map((item) => ({
-      id: `inventory-${item.id}`,
-      at: item.created_at,
-      title: `${item.movement_type} stock movement`,
-      detail: `${item.parts.part_name} — quantity ${displayValue(item.quantity)}. ${item.comments || ""}`,
-      actor: actorName(item.created_by),
-      tone: "blue" as BadgeTone,
-      label: "Stock",
-    })),
-  ];
+      tone: "gray",
+      label: "Attachment",
+    });
+  }
 
   return items.sort(
     (a, b) => new Date(b.at ?? 0).getTime() - new Date(a.at ?? 0).getTime()
   );
+}
+
+// Maps a Job Card-scoped audit_logs row to a clean timeline entry, or
+// returns null to leave it in System Audit only (creation/edit/assign/file
+// actions are already represented by richer, dedicated entries above).
+function jobCardAuditEntry(log: AuditLogRow, actorName: (id?: string | null) => string): TimelineItem | null {
+  const actor = actorName(log.actor_id);
+  switch (log.action) {
+    case "work_order.submit":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Submitted for review",
+        detail: "Sent to the Maintenance Engineer for review.", actor, tone: "amber", label: "Job Card",
+      };
+    // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 6:
+    // wording now says "sent to Manager" explicitly (was just "Reviewed by
+    // Maintenance Engineer") — Job Card status stays "Under Review" for this
+    // step, so the timeline text is the only place that makes "reviewed and
+    // waiting on Manager" visible.
+    case "work_order.review":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Reviewed and sent to Manager",
+        detail: metaGet(log.metadata, "comments") ?? "Reviewed by the Maintenance Engineer and sent to the Maintenance Manager for approval.",
+        actor, tone: "amber", label: "Review",
+      };
+    case "work_order.correction_requested":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Correction requested",
+        detail: metaGet(log.metadata, "note") ?? "Correction requested.",
+        actor, tone: "red", label: "Correction",
+      };
+    case "work_order.correction_responded":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Correction addressed",
+        detail: metaGet(log.metadata, "response") ?? "Response submitted.",
+        actor, tone: "amber", label: "Correction",
+      };
+    case "work_order.approve":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Approved by Maintenance Manager",
+        detail: metaGet(log.metadata, "comments") ?? "Job Card approved.",
+        actor, tone: "green", label: "Approval",
+      };
+    case "work_order.waiting_materials":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Waiting materials",
+        detail: "Job Card is waiting for materials.", actor, tone: "amber", label: "Materials",
+      };
+    case "work_order.start":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Work started",
+        detail: "Technician started work on this Job Card.", actor, tone: "blue", label: "Work Progress",
+      };
+    // Data Entry Job Card Progress Update and Close Action Unit: the generic
+    // (non-technician) Start Work action — Data Entry/Engineer/Manager
+    // marking progress after being informed work has started. Distinct from
+    // work_order.start above so the wording never wrongly implies a
+    // technician did it; the actor name already shows who really did.
+    case "work_order.start_progress":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Work started",
+        detail: metaGet(log.metadata, "note") ?? "Marked as In Progress.", actor, tone: "blue", label: "Work Progress",
+      };
+    // Technician Dashboard and My Jobs Workflow Alignment Unit Task 8: was
+    // previously unmapped here (System Audit only) — a technician's work
+    // update or photo upload never appeared in the friendly Activity
+    // Timeline at all. work_order_technician_notes already has its own rich
+    // timeline entry elsewhere in this file; this covers the audit action
+    // itself so "photo uploaded" is visible even if that richer entry is
+    // ever removed.
+    case "work_order.technician_update":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Technician update added",
+        detail: metaGet(log.metadata, "laborHours") ? `Labor hours logged: ${metaGet(log.metadata, "laborHours")}` : "Work update added by technician.",
+        actor, tone: "gray", label: "Work Progress",
+      };
+    case "work_order.complete":
+    case "work_order.external_completed":
+    case "work_order.close":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Job Card closed",
+        detail: metaGet(log.metadata, "comments") ?? metaGet(log.metadata, "notes") ?? "Job Card closed.",
+        actor, tone: "green", label: "Closure",
+      };
+    default:
+      return null; // work_order.create/update/assign, file.upload — covered elsewhere or System Audit only
+  }
+}
+
+// Maps a Materials Request-scoped audit_logs row to a clean timeline entry.
+// parts_request.issue is intentionally skipped — the linked Offline Inventory
+// movement(s) already show that action with the exact material/quantity, so
+// including both would report the same real event twice.
+function materialsRequestAuditEntry(
+  log: AuditLogRow,
+  requestNumber: string | null,
+  actorName: (id?: string | null) => string
+): TimelineItem | null {
+  const label = requestNumber ?? "Materials Request";
+  const actor = actorName(log.actor_id);
+  switch (log.action) {
+    case "parts_request.approve":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Materials Request approved",
+        detail: `${label} approved for Store issue.`, actor, tone: "green", label: "Materials",
+      };
+    case "parts_request.waiting_stock":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Waiting stock",
+        detail: `${label}: ${metaGet(log.metadata, "reason") ?? "waiting for stock."}`,
+        actor, tone: "amber", label: "Materials",
+      };
+    default:
+      return null; // create (own dedicated entry), edit, issue (see movements) — System Audit only
+  }
+}
+
+function describeAssignee(item: WorkOrderControl["work_order_assignments"][number]): { assigneeName: string; typeLabel: string } {
+  switch (item.assignment_type) {
+    case "FREELANCER":
+      return { assigneeName: item.external_name || "freelancer", typeLabel: "freelancer" };
+    case "EXTERNAL_COMPANY":
+      return { assigneeName: item.external_company || "external company", typeLabel: "third-party company" };
+    case "OTHER":
+      return { assigneeName: item.external_name || item.external_company || "assignee", typeLabel: "outside assignee" };
+    default:
+      return { assigneeName: item.profiles?.full_name ?? "technician", typeLabel: "internal technician" };
+  }
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────

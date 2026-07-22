@@ -8,11 +8,33 @@ import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { displayStatus } from "@/lib/display/work-order-labels";
 import { AutoRefresh } from "@/components/auto-refresh";
+import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
+
+// Technician Dashboard and My Jobs Workflow Alignment Unit Task 5: never
+// exposes "Parts" wording or the raw Materials Request status word — just
+// the 4 plain states a technician needs to know.
+function materialsLabel(status: string | null): string {
+  if (!status) return "No Materials Request";
+  if (status === "Issued") return "Materials sent";
+  if (status === "Waiting Stock" || status === "Partially Issued") return "Store follow-up";
+  return "Materials requested";
+}
+
+function jobAction(status: string): string {
+  if (status === "Assigned") return "Start Work";
+  if (status === "In Progress") return "Update / Close";
+  return "View";
+}
+
+function formatDate(v: Date): string {
+  return v.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
 
 export default async function TechnicianJobsPage() {
   const context = await requirePermission("technician.jobs.view");
   const assignments = await prisma.work_order_assignments.findMany({
     select: {
+      assigned_at: true,
       work_orders: {
         select: {
           id: true,
@@ -23,7 +45,8 @@ export default async function TechnicianJobsPage() {
           operator_complaint: true,
           maintenance_type: true,
           worker_type: true,
-          assets: { select: { asset_code: true, asset_name: true } }
+          assets: { select: { asset_code: true, asset_name: true, plate_number: true, location: true } },
+          parts_requests: { select: { status: true }, orderBy: { created_at: "desc" }, take: 1 },
         }
       }
     },
@@ -31,28 +54,45 @@ export default async function TechnicianJobsPage() {
     orderBy: { assigned_at: "desc" }
   });
 
-  const jobs = (assignments ?? []).map((assignment) => Array.isArray(assignment.work_orders) ? assignment.work_orders[0] : assignment.work_orders).filter(Boolean);
+  const jobs = assignments
+    .map((assignment) => ({
+      job: Array.isArray(assignment.work_orders) ? assignment.work_orders[0] : assignment.work_orders,
+      assignedAt: assignment.assigned_at,
+    }))
+    .filter((row) => Boolean(row.job));
 
   return (
     <>
       <AutoRefresh intervalMs={20000} />
-      <PageHeader title="My Technician Jobs" description="Mobile job dashboard for your assigned job cards." />
+      <RealtimeRefresh watch={["job_card.assigned", "technician_job.", "materials_request."]} />
+      <PageHeader title="My Jobs" description="Your assigned Job Cards — start work, update progress, and close when done." />
       <div className="grid gap-4 p-4 sm:grid-cols-2 xl:grid-cols-3">
-        {jobs.length ? jobs.map((job) => {
-          const asset = Array.isArray(job.assets) ? job.assets[0] : job.assets;
+        {jobs.length ? jobs.map(({ job, assignedAt }) => {
+          const asset = Array.isArray(job!.assets) ? job!.assets[0] : job!.assets;
+          const materialsStatus = job!.parts_requests[0]?.status ?? null;
           return (
-            <Link key={job.id} href={`/technician/jobs/${job.id}`} className="block min-h-44 rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm transition hover:border-[#ED1C24]">
+            <Link key={job!.id} href={`/technician/jobs/${job!.id}`} className="block min-h-48 rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm transition hover:border-[#ED1C24]">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-lg font-black text-[#111827]">{job.work_order_number}</p>
-                  <p className="mt-1 text-sm text-[#4B5563]">{asset ? `${asset.asset_code} - ${asset.asset_name}` : "No asset"}</p>
+                  <p className="text-lg font-black text-[#111827]">{job!.work_order_number}</p>
+                  <p className="mt-1 text-sm text-[#4B5563]">
+                    {asset ? `${asset.asset_code} - ${asset.asset_name}` : "No asset"}
+                    {asset?.plate_number ? ` - Plate ${asset.plate_number}` : ""}
+                  </p>
                 </div>
-                <StatusBadge label={displayStatus(job.status)} tone={job.status === "In Progress" ? "blue" : job.status === "Completed by Technician" ? "green" : "amber"} />
+                <StatusBadge label={displayStatus(job!.status)} tone={job!.status === "In Progress" ? "blue" : job!.status === "Closed" ? "green" : "amber"} />
               </div>
-              <p className="mt-4 text-sm text-[#111827]">{job.operator_complaint || "No complaint recorded."}</p>
+              <p className="mt-4 text-sm text-[#111827]">{job!.operator_complaint || "No complaint recorded."}</p>
+              <p className="mt-2 text-xs font-semibold text-[#4B5563]">{materialsLabel(materialsStatus)}</p>
               <div className="mt-4 flex flex-wrap gap-3 text-xs font-semibold text-[#4B5563]">
-                <span className="inline-flex items-center gap-1"><Clock className="h-4 w-4" /> {job.maintenance_type} / {job.worker_type}</span>
-                <span className="inline-flex items-center gap-1"><MapPin className="h-4 w-4" /> {job.job_location || "No location"}</span>
+                <span className="inline-flex items-center gap-1"><Clock className="h-4 w-4" /> {job!.maintenance_type} / {job!.worker_type}</span>
+                <span className="inline-flex items-center gap-1"><MapPin className="h-4 w-4" /> {asset?.location || job!.job_location || "No location"}</span>
+              </div>
+              <div className="mt-4 flex items-center justify-between border-t border-[#E5E7EB] pt-3">
+                <span className="text-xs text-[#9CA3AF]">Assigned {formatDate(assignedAt)}</span>
+                <span className="rounded bg-[#ED1C24] px-3 py-1.5 text-xs font-bold text-white">
+                  {jobAction(job!.status)}
+                </span>
               </div>
             </Link>
           );

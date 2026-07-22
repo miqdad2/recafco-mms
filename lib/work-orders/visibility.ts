@@ -7,11 +7,20 @@ import type { CurrentUserContext } from "@/lib/auth/context";
 // Work order statuses that are already fully resolved — no further action needed
 export const TERMINAL_WO_STATUSES = ["Closed", "Cancelled"] as const;
 
-// Stages a Supervisor must be able to see for assignment + verification
+// Stages a Supervisor must be able to see for assignment + verification.
+// Maintenance Workflow Redesign Unit 9 Task 11: re-derived for the
+// simplified 9-status Job Card model — the old statuses below matched zero
+// live records, which meant a Supervisor with no department set (or working
+// outside their own department) could never see a Job Card needing
+// assignment. Legacy statuses are kept for any pre-Unit3 historical row.
 const SUPERVISOR_STAGES = [
   "Approved",
+  "Waiting Materials",
+  "Partially Issued",
+  "Materials Issued",
   "Assigned",
   "In Progress",
+  // Legacy pre-Unit3 statuses — defensive fallback only.
   "Waiting for Parts",
   "Waiting for Purchase",
   "Parts Issued",
@@ -118,10 +127,30 @@ function getRoleScopeFilter(
   }
 
   // ── Store Keeper ──────────────────────────────────────────────────────────
-  // Sees only WOs that are actively waiting for store or have been issued.
-  if (slug === "store_keeper" || perms.includes("store.issue")) {
+  // Sees only WOs where materials may need Store action: from Manager
+  // approval (so Store can see what's required) through fully issued
+  // (Maintenance Workflow Redesign Unit 3 — simplified status model).
+  //
+  // Manager Dashboard Real Preview Loader Fix — root cause found via live
+  // runtime debugging: Maintenance Manager also holds `store.issue` (granted
+  // intentionally so Manager can send materials too — see
+  // lib/backend/parts-requests/service.ts assertCanIssueMaterials), so this
+  // permission-based fallback was matching Manager FIRST (this check runs
+  // before the Maintenance Manager branch below) and silently downgrading
+  // Manager's visibility to Store Keeper's narrow status-based scope. A real
+  // Job Card Manager needed to preview — "Under Review", not in Store
+  // Keeper's allowed list, and not created by that Manager — fell through
+  // both OR branches and vanished, producing "Job Card not found" only for
+  // Managers who also hold store.issue. `!perms.includes("work_orders.approve")`
+  // excludes anyone who actually has Manager-level access, matching the same
+  // exclusion pattern already used for Maintenance Supervisor below.
+  if (
+    slug === "store_keeper" ||
+    (perms.includes("store.issue") && !perms.includes("work_orders.approve")) ||
+    (perms.includes("parts_requests.issue") && !perms.includes("work_orders.approve"))
+  ) {
     return {
-      status: { in: ["Waiting for Parts", "Parts Issued"] },
+      status: { in: ["Approved", "Waiting Materials", "Partially Issued", "Materials Issued"] },
     };
   }
 
@@ -131,6 +160,21 @@ function getRoleScopeFilter(
     return {
       work_order_assignments: { some: { technician_id: userId } },
     };
+  }
+
+  // ── Maintenance Engineer ──────────────────────────────────────────────────
+  // Reviews every incoming Job Card (Under Review) and tracks work through to
+  // close — same company-wide scope as Manager (Critical Workflow Bug Fix —
+  // Engineer/Manager Visibility, Task 7). Checked by slug, before the
+  // Maintenance Supervisor fallback below: Engineer's permission set
+  // (work_orders.assign without work_orders.approve) would otherwise
+  // accidentally match that permission-based heuristic and get routed into
+  // Supervisor's narrower SUPERVISOR_STAGES scope — which excludes "Under
+  // Review" entirely, hiding every Job Card Engineer is actually meant to
+  // review. That was the root cause of Engineer never seeing a Data-Entry-
+  // created "Under Review" Job Card.
+  if (slug === "maintenance_engineer") {
+    return {};
   }
 
   // ── Maintenance Supervisor ────────────────────────────────────────────────
@@ -205,11 +249,13 @@ export function getRoleDescription(context: CurrentUserContext): string {
     case "purchase_officer":
       return "Job Cards with active purchase requests";
     case "store_keeper":
-      return "Job Cards waiting for parts issue or store action";
+      return "Job Cards waiting for materials issue or store action";
     case "technician":
       return "My assigned jobs";
     case "maintenance_manager":
       return "All maintenance Job Cards — full management view";
+    case "maintenance_engineer":
+      return "All maintenance Job Cards — review and tracking view";
     case "maintenance_supervisor":
       return "Supervisor assignment and job verification queue";
     case "maintenance_data_entry":

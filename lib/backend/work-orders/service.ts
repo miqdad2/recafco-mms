@@ -3,7 +3,7 @@ import "server-only";
 import type { CurrentUserContext } from "@/lib/auth/context";
 
 const SETTINGS_ID = "00000000-0000-0000-0000-000000000001";
-import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
+import { dedupeRecipients, notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
 import { assertActiveUser, assertBackendPermission } from "@/lib/backend/security/guards";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { advanceMaintenanceManagerReview, requestMaintenanceManagerClarification, respondToMaintenanceManagerClarification } from "@/lib/backend/workflows/engine";
@@ -18,6 +18,8 @@ import type { TechnicianAssignmentInput, TechnicianUpdateInput } from "@/lib/bac
 import { writeAuditLog } from "@/lib/audit/log";
 import { AppError } from "@/lib/errors/app-error";
 import { canTransition, transitionError } from "@/lib/workflows/status-rules";
+import { emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
+import { approvePartsRequest } from "@/lib/backend/parts-requests/service";
 
 type WorkflowResult = {
   workOrderId: string;
@@ -31,7 +33,7 @@ async function transitionWorkOrder(context: CurrentUserContext, workOrderId: str
   return withBackendTransaction(context.userId, (tx) => transitionWorkOrderInTransaction(tx, context, workOrderId, nextStatus));
 }
 
-async function transitionWorkOrderInTransaction(tx: BackendTransaction, context: CurrentUserContext, workOrderId: string, nextStatus: string): Promise<WorkflowResult & { createdBy: string | null; wasAlreadyInStatus: boolean }> {
+async function transitionWorkOrderInTransaction(tx: BackendTransaction, context: CurrentUserContext, workOrderId: string, nextStatus: string): Promise<WorkflowResult & { createdBy: string | null; wasAlreadyInStatus: boolean; assetName: string | null }> {
   const existing = await findWorkflowWorkOrder(tx, workOrderId);
   if (!existing) {
     throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
@@ -49,8 +51,24 @@ async function transitionWorkOrderInTransaction(tx: BackendTransaction, context:
     workOrderNumber: row.work_order_number,
     status: row.status,
     createdBy: row.created_by,
-    wasAlreadyInStatus
+    wasAlreadyInStatus,
+    assetName: existing.assets?.asset_name ?? null
   };
+}
+
+// Unit 4: "Closed" is only a direct transition target from "In Progress" in the
+// simplified map (matches the locked Unit 3 design). Work completed straight
+// from "Assigned" — the normal case for external assignees, who have no
+// technician account and so can never call startTechnicianJob themselves —
+// hops through "In Progress" first, in the same transaction, so completion
+// always succeeds instead of hitting a dead end at "Assigned".
+async function closeFromInFlightStatus(tx: BackendTransaction, context: CurrentUserContext, workOrderId: string) {
+  const existing = await findWorkflowWorkOrder(tx, workOrderId);
+  if (!existing) throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
+  if (existing.status === "Assigned") {
+    await transitionWorkOrderInTransaction(tx, context, workOrderId, "In Progress");
+  }
+  return transitionWorkOrderInTransaction(tx, context, workOrderId, "Closed");
 }
 
 async function auditWorkflow(context: CurrentUserContext, action: string, result: WorkflowResult, summary: string, metadata: Record<string, unknown> = {}) {
@@ -64,22 +82,118 @@ async function auditWorkflow(context: CurrentUserContext, action: string, result
   });
 }
 
+// Maintenance Workflow Redesign Unit 6: resolves "creator + these roles" down
+// to a deduped, actor-excluded user-id list for a single notifyWorkflowEvent
+// call — used by every Job Card notification below so recipients are always
+// merged and deduped up front, never split across multiple notify calls for
+// one action (which would risk duplicates).
+async function jobCardRecipients(
+  tx: BackendTransaction,
+  roleSlugs: string[],
+  creatorId: string | null | undefined,
+  actorId: string
+): Promise<string[]> {
+  const roleIds = roleSlugs.length ? await getActiveUserIdsByRoleSlugs(tx, roleSlugs) : [];
+  return dedupeRecipients([creatorId, ...roleIds], actorId);
+}
+
+// job_card.closed recipients: creator + Engineer + Manager + any assigned
+// internal technician(s) — shared by closeWorkOrder, completeTechnicianJob,
+// and markExternalWorkCompleted, since all three now end at "Closed".
+async function jobCardClosedRecipients(
+  tx: BackendTransaction,
+  workOrderId: string,
+  creatorId: string | null | undefined,
+  actorId: string
+): Promise<string[]> {
+  const [roleIds, assignments] = await Promise.all([
+    getActiveUserIdsByRoleSlugs(tx, ["maintenance_engineer", "maintenance_manager"]),
+    tx.work_order_assignments.findMany({ where: { work_order_id: workOrderId, technician_id: { not: null } }, select: { technician_id: true } })
+  ]);
+  const technicianIds = assignments.map((a) => a.technician_id).filter((id): id is string => Boolean(id));
+  return dedupeRecipients([creatorId, ...roleIds, ...technicianIds], actorId);
+}
+
+// Maintenance Workflow Redesign Unit 4: Created -> Under Review (was -> Pending
+// Approval). Covers submitting a Job Card that was previously saved as Created —
+// distinct from submitting directly at creation time, which app/actions/maintenance.ts
+// handles by inserting straight into "Under Review".
 export async function submitWorkOrder(context: CurrentUserContext, workOrderId: string) {
   assertBackendPermission(context, "work_orders.manage");
-  const result = await transitionWorkOrder(context, workOrderId, "Pending Approval");
+  const result = await transitionWorkOrder(context, workOrderId, "Under Review");
+
+  // Unit 6: notify Maintenance Engineer only — Manager isn't notified until
+  // Engineer has reviewed (job_card.reviewed), keeping this stage quiet for them.
+  const engineerIds = await withBackendTransaction(context.userId, async (tx) =>
+    dedupeRecipients(await getActiveUserIdsByRoleSlugs(tx, ["maintenance_engineer"]), context.userId)
+  );
 
   await Promise.all([
     notifyWorkflowEvent({
-      eventKey: "work_order.submitted",
+      eventKey: "job_card.submitted_for_review",
       entityType: "work_order",
       entityId: result.workOrderId,
       actorId: context.userId,
-      recipientRoles: ["super_admin", "maintenance_manager"],
-      metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
-      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
-      actionLabel: "Review work order"
+      recipientUserIds: engineerIds,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card", asset_name: result.assetName ?? "" },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
-    auditWorkflow(context, "work_order.submit", result, `Submitted ${result.workOrderNumber ?? "work order"} for approval`)
+    auditWorkflow(context, "work_order.submit", result, `Submitted ${result.workOrderNumber ?? "work order"} for review`)
+  ]);
+
+  return result;
+}
+
+// New (Unit 4): Under Review -> Under Review only — reviewing a Job Card never
+// advances its status (that's approveJobCard's job), so this checks the current
+// status explicitly rather than using the generic transition helper (which would
+// also allow the valid-but-wrong Created -> Under Review submit transition).
+export async function reviewJobCard(context: CurrentUserContext, workOrderId: string, comments?: string) {
+  assertBackendPermission(context, "work_orders.review");
+
+  const result = await withBackendTransaction(context.userId, async (tx) => {
+    const existing = await findWorkflowWorkOrder(tx, workOrderId);
+    if (!existing) throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
+    if (existing.status !== "Under Review") {
+      throw new AppError(
+        `Job Card can only be reviewed while Under Review. Current status: "${existing.status}".`,
+        { code: "WORKFLOW_ERROR" }
+      );
+    }
+    return {
+      workOrderId: existing.id,
+      workOrderNumber: existing.work_order_number,
+      status: existing.status
+    };
+  });
+
+  // Unit 6: notify Maintenance Manager now that Engineer has reviewed.
+  const managerIds = await withBackendTransaction(context.userId, async (tx) =>
+    dedupeRecipients(await getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager"]), context.userId)
+  );
+
+  await Promise.all([
+    notifyWorkflowEvent({
+      eventKey: "job_card.reviewed",
+      entityType: "work_order",
+      entityId: result.workOrderId,
+      actorId: context.userId,
+      recipientUserIds: managerIds,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card" },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`
+    }),
+    auditWorkflow(
+      context,
+      "work_order.review",
+      result,
+      `Reviewed by ${context.role?.name ?? "reviewer"} and sent to Manager: ${result.workOrderNumber ?? "work order"}`,
+      // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 6:
+      // sent_to_manager records that this review notified the Manager,
+      // without adding a schema column or a new status — Job Card stays
+      // "Under Review" and this stays a metadata flag on the audit entry.
+      { comments, sent_to_manager: true }
+    ),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_REVIEWED, result.workOrderId, context.userId)
   ]);
 
   return result;
@@ -88,76 +202,156 @@ export async function submitWorkOrder(context: CurrentUserContext, workOrderId: 
 export async function approveWorkOrder(context: CurrentUserContext, workOrderId: string, comments?: string) {
   assertBackendPermission(context, "work_orders.approve");
   const result = await transitionWorkOrder(context, workOrderId, "Approved");
-  const supervisors = await withBackendTransaction(context.userId, async (tx) => {
-    if (!result.wasAlreadyInStatus) {
-      await tx.approvals.create({
-        data: { work_order_id: result.workOrderId, status: "Approved", decided_by: context.userId, comments: comments || null }
-      });
-      try {
-        await advanceMaintenanceManagerReview(tx, result.workOrderId, "approved", context.userId, comments);
-      } catch (err) {
-        console.error("[workflow] Tracking update failed on work order approve:", err);
-      }
+
+  // Unified Manager Job Card + Materials Approval Flow Fix Task 8/9: a
+  // friendly, explicit error instead of a silent re-notify/re-audit when
+  // called again on an already-approved Job Card (double click, two tabs,
+  // or approveJobCardAndMaterials racing a plain single approval).
+  if (result.wasAlreadyInStatus) {
+    throw new AppError("This Job Card is already approved.", { code: "WORKFLOW_ERROR" });
+  }
+
+  // Unit 6: notify Store + creator + Engineer (was maintenance_supervisor, a
+  // dormant role not part of the new active set). result.wasAlreadyInStatus
+  // is always false here now — the guard above already returned early
+  // otherwise — so the approvals row is always created for a real approval.
+  const recipients = await withBackendTransaction(context.userId, async (tx) => {
+    await tx.approvals.create({
+      data: { work_order_id: result.workOrderId, status: "Approved", decided_by: context.userId, comments: comments || null }
+    });
+    try {
+      await advanceMaintenanceManagerReview(tx, result.workOrderId, "approved", context.userId, comments);
+    } catch (err) {
+      console.error("[workflow] Tracking update failed on work order approve:", err);
     }
-    return getActiveUserIdsByRoleSlugs(tx, ["super_admin", "maintenance_supervisor"]);
+    return jobCardRecipients(tx, ["store_keeper", "maintenance_engineer"], result.createdBy, context.userId);
   });
 
   await Promise.all([
     notifyWorkflowEvent({
-      eventKey: "work_order.approved",
+      eventKey: "job_card.approved",
       entityType: "work_order",
       entityId: result.workOrderId,
       actorId: context.userId,
-      recipientUserIds: supervisors,
-      metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
-      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
-      actionLabel: "Open work order"
+      recipientUserIds: recipients,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card" },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
-    auditWorkflow(context, "work_order.approve", result, `Approved ${result.workOrderNumber ?? "work order"}`, { comments })
+    auditWorkflow(context, "work_order.approve", result, `Approved ${result.workOrderNumber ?? "work order"}`, { comments }),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_APPROVED, result.workOrderId, context.userId)
   ]);
 
   return result;
 }
 
-export async function rejectWorkOrder(context: CurrentUserContext, workOrderId: string, comments?: string) {
+/**
+ * Unified Manager Job Card + Materials Approval Flow Fix Task 3: a single
+ * action covering all three cases the Manager popup can be in —
+ *   - Job Card Under Review + a Requested Materials Request(s) linked: this
+ *     approves the Job Card AND every linked Requested request.
+ *   - Job Card Under Review, no Requested Materials Request: approves the
+ *     Job Card only (there's nothing else to approve).
+ *   - Job Card already Approved, but a Requested Materials Request still
+ *     exists: approves only the Materials Request(s) — the Job Card step is
+ *     silently skipped rather than erroring, since re-approving is a no-op
+ *     from the user's point of view (the popup shouldn't have shown this
+ *     button for a still-Under-Review Job Card in the first place, but a
+ *     stale page/race should still behave helpfully, not throw).
+ *
+ * Reuses approveWorkOrder/approvePartsRequest as-is (their own notifications,
+ * audit logs, and idempotency guards) rather than reimplementing either —
+ * this function only decides WHICH of the two to call, sequentially, each in
+ * its own transaction. Not a single atomic transaction across both: if the
+ * Materials Request approval fails after the Job Card approval succeeded,
+ * the Job Card is left correctly Approved (not a corrupted state), just a
+ * partial-success outcome — an acceptable, low-risk tradeoff over
+ * reimplementing both functions' logic inline for strict atomicity.
+ */
+export async function approveJobCardAndMaterials(context: CurrentUserContext, workOrderId: string, comments?: string) {
   assertBackendPermission(context, "work_orders.approve");
-  const result = await transitionWorkOrder(context, workOrderId, "Rejected");
 
-  if (!result.wasAlreadyInStatus) {
-    await withBackendTransaction(context.userId, async (tx) => {
-      await tx.approvals.create({
-        data: { work_order_id: result.workOrderId, status: "Rejected", decided_by: context.userId, comments: comments || null }
-      });
-      try {
-        await advanceMaintenanceManagerReview(tx, result.workOrderId, "rejected", context.userId, comments);
-      } catch (err) {
-        console.error("[workflow] Tracking update failed on work order reject:", err);
-      }
+  const { workOrderNumber, jobCardNeedsApproval, requestedMaterialsRequestIds } = await withBackendTransaction(context.userId, async (tx) => {
+    const wo = await findWorkflowWorkOrder(tx, workOrderId);
+    if (!wo) throw new AppError("Job Card was not found.", { code: "NOT_FOUND" });
+    const linkedRequested = await tx.parts_requests.findMany({
+      where: { work_order_id: workOrderId, status: "Requested" },
+      select: { id: true }
     });
+    return {
+      workOrderNumber: wo.work_order_number,
+      jobCardNeedsApproval: wo.status === "Under Review",
+      requestedMaterialsRequestIds: linkedRequested.map((r) => r.id)
+    };
+  });
+
+  if (!jobCardNeedsApproval && requestedMaterialsRequestIds.length === 0) {
+    throw new AppError("This Job Card is already approved.", { code: "WORKFLOW_ERROR" });
   }
+
+  if (jobCardNeedsApproval) {
+    await approveWorkOrder(context, workOrderId, comments);
+  }
+
+  const approvedMaterialsRequestIds: string[] = [];
+  for (const id of requestedMaterialsRequestIds) {
+    await approvePartsRequest(context, { partsRequestId: id, comments });
+    approvedMaterialsRequestIds.push(id);
+  }
+
+  return {
+    workOrderId,
+    workOrderNumber,
+    jobCardApproved: jobCardNeedsApproval,
+    approvedMaterialsRequestIds
+  };
+}
+
+// New (Unit 4), minimal primitive only: Approved -> Waiting Materials. Not wired
+// to any Materials Request/Store logic here — Unit 5 owns deciding when this
+// fires (e.g. from a materials request being created, or Store finding no
+// stock). Exists now so the transition itself is guarded, tested, and callable.
+export async function markJobCardWaitingMaterials(context: CurrentUserContext, workOrderId: string) {
+  assertBackendPermission(context, "work_orders.manage");
+  const result = await transitionWorkOrder(context, workOrderId, "Waiting Materials");
+
+  const recipients = await withBackendTransaction(context.userId, (tx) =>
+    jobCardRecipients(tx, ["maintenance_manager", "maintenance_engineer"], result.createdBy, context.userId)
+  );
 
   await Promise.all([
     notifyWorkflowEvent({
-      eventKey: "work_order.rejected",
+      eventKey: "job_card.waiting_materials",
       entityType: "work_order",
       entityId: result.workOrderId,
       actorId: context.userId,
-      recipientUserIds: [result.createdBy, context.userId].filter((id): id is string => Boolean(id)),
-      metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
-      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
-      actionLabel: "Open work order"
+      recipientUserIds: recipients,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card" },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
-    auditWorkflow(context, "work_order.reject", result, `Rejected ${result.workOrderNumber ?? "work order"}`, { comments })
+    auditWorkflow(context, "work_order.waiting_materials", result, `Marked ${result.workOrderNumber ?? "work order"} as Waiting Materials`)
   ]);
 
   return result;
 }
 
-export async function requestWorkOrderClarification(context: CurrentUserContext, workOrderId: string, question: string) {
-  assertBackendPermission(context, "work_orders.approve");
+// Disabled (Unit 4) — "Rejected" no longer exists in the simplified status model.
+// Corrections are handled by requestJobCardCorrection, which keeps the Job Card
+// at "Under Review" with an audit note instead of moving it to a Rejected status.
+// Kept as a named export (rather than deleted) so any existing caller gets a
+// clear, safe error instead of a broken/removed-function build failure.
+export async function rejectWorkOrder(_context: CurrentUserContext, _workOrderId: string, _comments?: string): Promise<WorkflowResult> {
+  throw new AppError("This action is no longer used in the simplified workflow.", { code: "WORKFLOW_ERROR" });
+}
 
-  if (question.trim().length < 10) {
-    throw new AppError("Clarification question must be at least 10 characters.", { code: "VALIDATION_ERROR" });
+// Renamed from requestWorkOrderClarification (Unit 4): the correction loop keeps
+// the Job Card at "Under Review" with an audit note instead of a distinct status
+// (no "Returned" status). Valid from "Under Review" only — Engineer and Manager
+// both hold work_orders.request_correction per the Unit 3 permission grants.
+export async function requestJobCardCorrection(context: CurrentUserContext, workOrderId: string, note: string) {
+  assertBackendPermission(context, "work_orders.request_correction");
+
+  if (note.trim().length < 10) {
+    throw new AppError("Correction note must be at least 10 characters.", { code: "VALIDATION_ERROR" });
   }
 
   const result = await withBackendTransaction(context.userId, async (tx) => {
@@ -165,14 +359,14 @@ export async function requestWorkOrderClarification(context: CurrentUserContext,
     if (!existing) {
       throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
     }
-    if (!["Submitted", "Pending Approval"].includes(existing.status)) {
+    if (existing.status !== "Under Review") {
       throw new AppError(
-        `Clarification can only be requested on a Submitted or Pending Approval work order. Current status: "${existing.status}".`,
+        `Correction can only be requested while the Job Card is Under Review. Current status: "${existing.status}".`,
         { code: "WORKFLOW_ERROR" }
       );
     }
 
-    await requestMaintenanceManagerClarification(tx, workOrderId, question.trim(), context.userId);
+    await requestMaintenanceManagerClarification(tx, workOrderId, note.trim(), context.userId);
 
     return {
       workOrderId: existing.id,
@@ -182,24 +376,44 @@ export async function requestWorkOrderClarification(context: CurrentUserContext,
     };
   });
 
+  // Unit 6: if Engineer requested the correction, notify the Job Card creator;
+  // if Manager (or anyone else authorized) requested it, notify Engineer
+  // instead — the correction goes back to whichever side needs to act on it.
+  const isEngineer = context.role?.slug === "maintenance_engineer";
+  const correctionRecipients = isEngineer
+    ? dedupeRecipients([result.createdBy], context.userId)
+    : await withBackendTransaction(context.userId, async (tx) =>
+        dedupeRecipients(await getActiveUserIdsByRoleSlugs(tx, ["maintenance_engineer"]), context.userId)
+      );
+
   await Promise.all([
     notifyWorkflowEvent({
-      eventKey: "work_order.clarification_requested",
+      eventKey: "job_card.correction_requested",
       entityType: "work_order",
       entityId: result.workOrderId,
       actorId: context.userId,
-      recipientUserIds: [result.createdBy].filter((id): id is string => Boolean(id)),
-      metadata: { work_order_number: result.workOrderNumber ?? "Work order", question: question.trim() },
-      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
-      actionLabel: "View work order"
+      recipientUserIds: correctionRecipients,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card", reason: note.trim() },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
-    auditWorkflow(context, "work_order.clarification_requested", result, `Requested clarification on ${result.workOrderNumber ?? "work order"}`, { question: question.trim() })
+    auditWorkflow(
+      context,
+      "work_order.correction_requested",
+      result,
+      `Correction requested by ${context.role?.name ?? "reviewer"}: ${result.workOrderNumber ?? "work order"}`,
+      { note: note.trim() }
+    ),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_UPDATED, result.workOrderId, context.userId)
   ]);
 
   return result;
 }
 
-export async function respondToWorkOrderClarification(context: CurrentUserContext, workOrderId: string, response: string) {
+// Renamed from respondToWorkOrderClarification (Unit 4): the Job Card creator (or
+// a manage-permission holder) records that a requested correction was addressed.
+// No status change — the Job Card stays "Under Review" the whole time, ready for
+// re-review, so there is nothing to "resubmit" separately.
+export async function respondToJobCardCorrection(context: CurrentUserContext, workOrderId: string, response: string) {
   assertActiveUser(context);
 
   if (response.trim().length < 10) {
@@ -211,9 +425,9 @@ export async function respondToWorkOrderClarification(context: CurrentUserContex
     if (!existing) {
       throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
     }
-    if (!["Submitted", "Pending Approval"].includes(existing.status)) {
+    if (existing.status !== "Under Review") {
       throw new AppError(
-        `Clarification response can only be submitted on a Submitted or Pending Approval work order. Current status: "${existing.status}".`,
+        `Correction response can only be submitted while the Job Card is Under Review. Current status: "${existing.status}".`,
         { code: "WORKFLOW_ERROR" }
       );
     }
@@ -223,7 +437,7 @@ export async function respondToWorkOrderClarification(context: CurrentUserContex
       context.permissions.includes("work_orders.manage") ||
       existing.created_by === context.userId;
     if (!canRespond) {
-      throw new AppError("You are not authorized to respond to this clarification request.", { code: "FORBIDDEN" });
+      throw new AppError("You are not authorized to respond to this correction request.", { code: "FORBIDDEN" });
     }
 
     await respondToMaintenanceManagerClarification(tx, workOrderId, response.trim(), context.userId);
@@ -249,9 +463,9 @@ export async function respondToWorkOrderClarification(context: CurrentUserContex
       recipientUserIds: approverIds,
       metadata: { work_order_number: result.workOrderNumber ?? "Work order", response: response.trim() },
       actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
-      actionLabel: "Review clarification response"
+      actionLabel: "Review correction response"
     }),
-    auditWorkflow(context, "work_order.clarification_responded", result, `Responded to clarification on ${result.workOrderNumber ?? "work order"}`, { response: response.trim() })
+    auditWorkflow(context, "work_order.correction_responded", result, `Correction response submitted for ${result.workOrderNumber ?? "work order"}`, { response: response.trim() })
   ]);
 
   return result;
@@ -292,13 +506,15 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
     await tx.work_order_assignments.deleteMany({ where: { work_order_id: input.workOrderId } });
 
     let technicianIds: string[] = [];
+    let assigneeName = "";
 
     if (assignmentType === "INTERNAL_TECHNICIAN") {
       const technicians = await tx.profiles.findMany({
         where: { id: { in: input.technicianIds ?? [] }, is_active: true },
-        select: { id: true }
+        select: { id: true, full_name: true }
       });
       technicianIds = technicians.map((t) => t.id);
+      assigneeName = technicians.map((t) => t.full_name).join(", ");
       if (!technicianIds.length) {
         throw new AppError("Select at least one active technician.", { code: "VALIDATION_ERROR" });
       }
@@ -315,6 +531,7 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
       if (!input.externalName?.trim()) {
         throw new AppError("Freelancer name is required.", { code: "VALIDATION_ERROR" });
       }
+      assigneeName = input.externalName.trim();
       await tx.work_order_assignments.create({
         data: {
           work_order_id: input.workOrderId,
@@ -327,10 +544,11 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
           notes: input.notes?.trim() || null,
         }
       });
-    } else {
+    } else if (assignmentType === "EXTERNAL_COMPANY") {
       if (!input.externalCompany?.trim()) {
         throw new AppError("Company name is required.", { code: "VALIDATION_ERROR" });
       }
+      assigneeName = input.externalCompany.trim();
       await tx.work_order_assignments.create({
         data: {
           work_order_id: input.workOrderId,
@@ -338,6 +556,25 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
           assignment_type: "EXTERNAL_COMPANY",
           external_company: input.externalCompany.trim(),
           external_contact_person: input.externalContactPerson?.trim() || null,
+          external_phone: input.externalPhone?.trim() || null,
+          external_trade: input.externalTrade?.trim() || null,
+          external_expected_visit_date: input.externalExpectedVisitDate ? new Date(input.externalExpectedVisitDate) : null,
+          notes: input.notes?.trim() || null,
+        }
+      });
+    } else {
+      // OTHER (Unit 4): free-text assignee/company that isn't a clean fit for
+      // FREELANCER or EXTERNAL_COMPANY — reuses external_name for the free-text label.
+      if (!input.externalName?.trim()) {
+        throw new AppError("A name or description is required for this assignment type.", { code: "VALIDATION_ERROR" });
+      }
+      assigneeName = input.externalName.trim();
+      await tx.work_order_assignments.create({
+        data: {
+          work_order_id: input.workOrderId,
+          assigned_by: context.userId,
+          assignment_type: "OTHER",
+          external_name: input.externalName.trim(),
           external_phone: input.externalPhone?.trim() || null,
           external_trade: input.externalTrade?.trim() || null,
           external_expected_visit_date: input.externalExpectedVisitDate ? new Date(input.externalExpectedVisitDate) : null,
@@ -354,41 +591,111 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
       status: row.status,
       assignmentType,
       technicianIds,
+      assigneeName,
+      createdBy: existing.created_by
     };
   });
 
-  const notifyPromises: Promise<unknown>[] = [
+  // Unit 6 (Enterprise Real-Time Notifications Unit Task 10 fix): the
+  // assigned internal technician(s) and the awareness-only Engineer/Manager/
+  // creator audience need DIFFERENT links (technician has no
+  // work_orders.view access to the Job Card detail page; Engineer/Manager/
+  // Data Entry have no technician.jobs.view access to the Technician job
+  // page) — a single shared notifyWorkflowEvent call can only carry one
+  // actionUrl for every recipient, so this is now two calls instead of one.
+  const otherRecipients = await withBackendTransaction(context.userId, async (tx) =>
+    jobCardRecipients(tx, ["maintenance_engineer", "maintenance_manager"], result.createdBy, context.userId)
+  );
+  const technicianRecipients = dedupeRecipients(result.technicianIds, context.userId);
+  const awarenessRecipients = otherRecipients.filter((id) => !technicianRecipients.includes(id));
+
+  await Promise.all([
+    technicianRecipients.length
+      ? notifyWorkflowEvent({
+          eventKey: "job_card.assigned",
+          entityType: "work_order",
+          entityId: result.workOrderId,
+          actorId: context.userId,
+          recipientUserIds: technicianRecipients,
+          metadata: { job_card_number: result.workOrderNumber ?? "Job Card", assignee_name: result.assigneeName || "the assignee" },
+          actionUrl: `/technician/jobs/${result.workOrderId}`
+        })
+      : Promise.resolve([]),
+    awarenessRecipients.length
+      ? notifyWorkflowEvent({
+          eventKey: "job_card.assigned",
+          entityType: "work_order",
+          entityId: result.workOrderId,
+          actorId: context.userId,
+          recipientUserIds: awarenessRecipients,
+          metadata: { job_card_number: result.workOrderNumber ?? "Job Card", assignee_name: result.assigneeName || "the assignee" },
+          actionUrl: `/maintenance/work-orders/${result.workOrderId}`
+        })
+      : Promise.resolve([]),
     auditWorkflow(
       context,
       "work_order.assign",
       result,
-      `Assigned ${assignmentType === "INTERNAL_TECHNICIAN" ? "technician" : assignmentType === "FREELANCER" ? "freelancer" : "external company"} to ${result.workOrderNumber ?? "work order"}`,
+      `Assigned ${
+        assignmentType === "INTERNAL_TECHNICIAN"
+          ? "technician"
+          : assignmentType === "FREELANCER"
+            ? "freelancer"
+            : assignmentType === "EXTERNAL_COMPANY"
+              ? "external company"
+              : "assignee"
+      } to ${result.workOrderNumber ?? "work order"}`,
       { assignmentType, technicianIds: result.technicianIds }
-    )
-  ];
-
-  if (assignmentType === "INTERNAL_TECHNICIAN" && result.technicianIds.length) {
-    notifyPromises.push(
-      notifyWorkflowEvent({
-        eventKey: "work_order.assigned",
-        entityType: "work_order",
-        entityId: result.workOrderId,
-        actorId: context.userId,
-        recipientUserIds: result.technicianIds,
-        metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
-        actionUrl: `/technician/jobs/${result.workOrderId}`,
-        actionLabel: "Open job"
-      })
-    );
-  }
-
-  await Promise.all(notifyPromises);
+    ),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_ASSIGNED, result.workOrderId, context.userId)
+  ]);
 
   return result;
 }
 
+// Data Entry Job Card Progress Update and Close Action Unit: a generic
+// "start work" step (Assigned -> In Progress) for whoever holds
+// work_orders.update (Maintenance Data Entry, Engineer, Manager) — separate
+// from startTechnicianJob below, which is hard-locked to the specific
+// assigned technician's own account (technician.jobs.update + a self-
+// assignment check) and drives the Technician's own /technician/jobs flow.
+// This covers the case where Data Entry/Engineer/Manager marks progress
+// after being told work has started — e.g. by an external freelancer/company
+// assignee who has no technician login at all and so could never call
+// startTechnicianJob themselves. The optional note is recorded as an audit
+// entry (same pattern as reviewJobCard/closeWorkOrder's `comments`) rather
+// than a work_order_technician_notes row, so it never gets mislabeled as a
+// technician's own field update on the detail page.
+export async function startJobCardProgress(context: CurrentUserContext, workOrderId: string, note?: string) {
+  assertBackendPermission(context, "work_orders.update");
+  const result = await transitionWorkOrder(context, workOrderId, "In Progress");
+
+  const creatorRecipient = dedupeRecipients([result.createdBy], context.userId);
+
+  await Promise.all([
+    notifyWorkflowEvent({
+      eventKey: "job_card.in_progress",
+      entityType: "work_order",
+      entityId: result.workOrderId,
+      actorId: context.userId,
+      recipientUserIds: creatorRecipient,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card" },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`
+    }),
+    auditWorkflow(context, "work_order.start_progress", result, `Work started for ${result.workOrderNumber ?? "work order"}`, { note }),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_IN_PROGRESS, result.workOrderId, context.userId)
+  ]);
+
+  return result;
+}
+
+// Unit 4: no "Completed by Technician" status exists anymore — marking external
+// (freelancer/company) work as completed now closes the Job Card directly, same
+// as the internal-technician completion path. Permission changed from
+// work_orders.assign to work_orders.close (Manager/Engineer/Data Entry/Technician
+// per the Unit 3 grants), matching who is actually authorized to close a Job Card.
 export async function markExternalWorkCompleted(context: CurrentUserContext, workOrderId: string, notes?: string) {
-  assertBackendPermission(context, "work_orders.assign");
+  assertBackendPermission(context, "work_orders.close");
 
   const result = await withBackendTransaction(context.userId, async (tx) => {
     const existing = await findWorkflowWorkOrder(tx, workOrderId);
@@ -412,16 +719,32 @@ export async function markExternalWorkCompleted(context: CurrentUserContext, wor
       });
     }
 
-    return transitionWorkOrderInTransaction(tx, context, workOrderId, "Completed by Technician");
+    return closeFromInFlightStatus(tx, context, workOrderId);
   });
 
-  await auditWorkflow(
-    context,
-    "work_order.external_completed",
-    result,
-    `External work marked completed for ${result.workOrderNumber ?? "work order"}`,
-    { notes }
+  const recipients = await withBackendTransaction(context.userId, (tx) =>
+    jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
   );
+
+  await Promise.all([
+    notifyWorkflowEvent({
+      eventKey: "job_card.closed",
+      entityType: "work_order",
+      entityId: result.workOrderId,
+      actorId: context.userId,
+      recipientUserIds: recipients,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card" },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`
+    }),
+    auditWorkflow(
+      context,
+      "work_order.external_completed",
+      result,
+      `External work closed for ${result.workOrderNumber ?? "work order"}`,
+      { notes }
+    ),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_CLOSED, result.workOrderId, context.userId)
+  ]);
 
   return result;
 }
@@ -436,17 +759,22 @@ export async function startTechnicianJob(context: CurrentUserContext, workOrderI
     return transitionWorkOrderInTransaction(tx, context, workOrderId, "In Progress");
   });
 
+  // Unit 6: creator only, low priority — starting work is common enough that
+  // notifying Manager/Engineer too would be noisy for a routine step.
+  const creatorRecipient = dedupeRecipients([result.createdBy], context.userId);
+
   await Promise.all([
     notifyWorkflowEvent({
-      eventKey: "technician.job_started",
+      eventKey: "job_card.in_progress",
       entityType: "work_order",
       entityId: result.workOrderId,
       actorId: context.userId,
-      recipientRoles: ["maintenance_manager", "maintenance_supervisor"],
-      metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
+      recipientUserIds: creatorRecipient,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card" },
       actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
-    auditWorkflow(context, "work_order.start", result, `Started ${result.workOrderNumber ?? "work order"}`)
+    auditWorkflow(context, "work_order.start", result, `Work started by technician: ${result.workOrderNumber ?? "work order"}`),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_IN_PROGRESS, result.workOrderId, context.userId)
   ]);
 
   return result;
@@ -462,7 +790,7 @@ export async function addTechnicianUpdate(context: CurrentUserContext, input: Te
 
     const existing = await findWorkflowWorkOrder(tx, input.workOrderId);
     if (!existing) throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
-    if (!["Assigned", "In Progress", "Waiting for Parts", "Parts Issued"].includes(existing.status)) {
+    if (!["Assigned", "In Progress", "Waiting Materials", "Partially Issued", "Materials Issued"].includes(existing.status)) {
       throw new AppError("Technician updates are not allowed in the current work order status.", { code: "WORKFLOW_ERROR" });
     }
 
@@ -506,10 +834,22 @@ export async function addTechnicianUpdate(context: CurrentUserContext, input: Te
       workOrderId: existing.id,
       workOrderNumber: existing.work_order_number,
       status: existing.status,
+      createdBy: existing.created_by,
       photoUploaded: Boolean(input.photoFileName && input.photoFilePath),
       laborHours: input.laborHours
     };
   });
+
+  // Technician Dashboard and My Jobs Workflow Alignment Unit Task 7: these
+  // notifications previously targeted "maintenance_supervisor" — a dormant
+  // role with no active users in the current workflow (Engineer/Manager/
+  // Data Entry are the active review chain now), so a technician's work
+  // update or photo silently notified nobody. Routed to the same
+  // creator + Engineer + Manager pattern every other Job Card notification
+  // in this file uses.
+  const recipients = await withBackendTransaction(context.userId, (tx) =>
+    jobCardRecipients(tx, ["maintenance_engineer", "maintenance_manager"], result.createdBy, context.userId)
+  );
 
   await Promise.all([
     notifyWorkflowEvent({
@@ -517,8 +857,8 @@ export async function addTechnicianUpdate(context: CurrentUserContext, input: Te
       entityType: "work_order",
       entityId: result.workOrderId,
       actorId: context.userId,
-      recipientRoles: ["maintenance_supervisor"],
-      metadata: { labor_hours: result.laborHours },
+      recipientUserIds: recipients,
+      metadata: { labor_hours: result.laborHours, job_card_number: result.workOrderNumber ?? "Job Card" },
       actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
     result.photoUploaded
@@ -527,76 +867,74 @@ export async function addTechnicianUpdate(context: CurrentUserContext, input: Te
           entityType: "work_order",
           entityId: result.workOrderId,
           actorId: context.userId,
-          recipientRoles: ["maintenance_supervisor"],
-          metadata: { work_order_id: result.workOrderId },
+          recipientUserIds: recipients,
+          metadata: { work_order_id: result.workOrderId, job_card_number: result.workOrderNumber ?? "Job Card" },
           actionUrl: `/maintenance/work-orders/${result.workOrderId}`
         })
       : Promise.resolve(),
-    auditWorkflow(context, "work_order.technician_update", result, "Added technician update to work order", { laborHours: result.laborHours })
+    auditWorkflow(context, "work_order.technician_update", result, "Added technician update to work order", { laborHours: result.laborHours }),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.TECHNICIAN_JOB_UPDATED, result.workOrderId, context.userId)
   ]);
 
   return result;
 }
 
-export async function completeTechnicianJob(context: CurrentUserContext, workOrderId: string) {
+// Unit 4: no "Completed by Technician" status — a technician completing their
+// own assigned job now closes it directly (technician holds work_orders.close
+// per the Unit 3 grants, on top of the existing assignment check here).
+// Technician Dashboard and My Jobs Workflow Alignment Unit Task 9: a
+// completion note is now required — this used to close with no record at
+// all of what was actually done, unlike every other close path in this file
+// (closeWorkOrder/markExternalWorkCompleted both accept comments).
+export async function completeTechnicianJob(context: CurrentUserContext, workOrderId: string, comments: string) {
   assertBackendPermission(context, "technician.jobs.update");
+  if (!comments || comments.trim().length < 3) {
+    throw new AppError("A completion note is required to close this job.", { code: "VALIDATION_ERROR" });
+  }
+
   const result = await withBackendTransaction(context.userId, async (tx) => {
     if (!(await isTechnicianAssigned(tx, workOrderId, context.userId))) {
       throw new AppError("This job is not assigned to you.", { code: "FORBIDDEN" });
     }
 
-    return transitionWorkOrderInTransaction(tx, context, workOrderId, "Completed by Technician");
+    return closeFromInFlightStatus(tx, context, workOrderId);
   });
-  const supervisors = await withBackendTransaction(context.userId, (tx) => getActiveUserIdsByRoleSlugs(tx, ["super_admin", "maintenance_supervisor"]));
+
+  const recipients = await withBackendTransaction(context.userId, (tx) =>
+    jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
+  );
 
   await Promise.all([
     notifyWorkflowEvent({
-      eventKey: "work_order.completed",
+      eventKey: "job_card.closed",
       entityType: "work_order",
       entityId: result.workOrderId,
       actorId: context.userId,
-      recipientUserIds: supervisors,
-      metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
-      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
-      actionLabel: "Verify work order"
+      recipientUserIds: recipients,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card" },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
-    auditWorkflow(context, "work_order.complete", result, `Completed ${result.workOrderNumber ?? "work order"}`)
+    auditWorkflow(context, "work_order.complete", result, `Closed by technician: ${result.workOrderNumber ?? "work order"}`, { comments }),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_CLOSED, result.workOrderId, context.userId)
   ]);
 
   return result;
 }
 
-export async function verifyWorkOrder(context: CurrentUserContext, workOrderId: string, comments?: string) {
-  assertBackendPermission(context, "work_orders.assign");
-  const result = await transitionWorkOrder(context, workOrderId, "Verified by Supervisor");
-  const managers = await withBackendTransaction(context.userId, async (tx) => {
-    if (!result.wasAlreadyInStatus) {
-      await tx.approvals.create({
-        data: { work_order_id: result.workOrderId, status: "Verified", decided_by: context.userId, comments: comments || null }
-      });
-    }
-    return getActiveUserIdsByRoleSlugs(tx, ["super_admin", "maintenance_manager"]);
-  });
-
-  await Promise.all([
-    notifyWorkflowEvent({
-      eventKey: "work_order.verified",
-      entityType: "work_order",
-      entityId: result.workOrderId,
-      actorId: context.userId,
-      recipientUserIds: managers,
-      metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
-      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
-      actionLabel: "Close work order"
-    }),
-    auditWorkflow(context, "work_order.verify", result, `Verified ${result.workOrderNumber ?? "work order"}`, { comments })
-  ]);
-
-  return result;
+// Disabled (Unit 4) — "Verified by Supervisor" no longer exists; the simplified
+// model has no separate verification stage, and Maintenance Supervisor is not
+// part of the new active role set. Closing (closeWorkOrder / markExternalWorkCompleted
+// / completeTechnicianJob) is now the only step after work is done.
+export async function verifyWorkOrder(_context: CurrentUserContext, _workOrderId: string, _comments?: string): Promise<WorkflowResult> {
+  throw new AppError("This action is no longer used in the simplified workflow.", { code: "WORKFLOW_ERROR" });
 }
 
+// Unit 4: permission changed from work_orders.approve to work_orders.close so
+// Maintenance Manager, Maintenance Engineer, Data Entry, and Technician can all
+// close a Job Card directly from "In Progress" (or any other in-flight status a
+// caller reaches it from), per the Unit 3 grants — no separate verify/confirm step.
 export async function closeWorkOrder(context: CurrentUserContext, workOrderId: string, comments?: string) {
-  assertBackendPermission(context, "work_orders.approve");
+  assertBackendPermission(context, "work_orders.close");
   const result = await transitionWorkOrder(context, workOrderId, "Closed");
 
   if (!result.wasAlreadyInStatus) {
@@ -607,58 +945,36 @@ export async function closeWorkOrder(context: CurrentUserContext, workOrderId: s
     });
   }
 
+  // Unit 6: creator + Engineer + Manager + assigned internal technician (was
+  // notifying only the actor themselves, which is rarely useful).
+  const recipients = await withBackendTransaction(context.userId, (tx) =>
+    jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
+  );
+
   await Promise.all([
     notifyWorkflowEvent({
-      eventKey: "work_order.closed",
+      eventKey: "job_card.closed",
       entityType: "work_order",
       entityId: result.workOrderId,
       actorId: context.userId,
-      recipientUserIds: [context.userId],
-      metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
-      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
-      actionLabel: "View work order"
+      recipientUserIds: recipients,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card" },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
-    auditWorkflow(context, "work_order.close", result, `Closed ${result.workOrderNumber ?? "work order"}`, { comments })
+    auditWorkflow(context, "work_order.close", result, `Closed ${result.workOrderNumber ?? "work order"}`, { comments }),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_CLOSED, result.workOrderId, context.userId)
   ]);
 
   return result;
 }
 
-export async function cancelWorkOrder(context: CurrentUserContext, workOrderId: string, comments?: string) {
-  assertBackendPermission(context, "work_orders.approve");
-  const result = await transitionWorkOrder(context, workOrderId, "Cancelled");
-
-  if (!result.wasAlreadyInStatus) {
-    await withBackendTransaction(context.userId, async (tx) => {
-      await tx.approvals.create({
-        data: { work_order_id: result.workOrderId, status: "Cancelled", decided_by: context.userId, comments: comments || null }
-      });
-    });
-  }
-
-  await Promise.all([
-    notifyWorkflowEvent({
-      eventKey: "work_order.cancelled",
-      entityType: "work_order",
-      entityId: result.workOrderId,
-      actorId: context.userId,
-      recipientUserIds: [result.createdBy].filter((id): id is string => Boolean(id)),
-      metadata: { work_order_number: result.workOrderNumber ?? "Work order" },
-      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
-      actionLabel: "View job card"
-    }),
-    auditWorkflow(context, "work_order.cancel", result, `Cancelled ${result.workOrderNumber ?? "work order"}`, { comments })
-  ]);
-
-  return result;
+// Disabled (Unit 4) — "Cancelled" no longer exists in the simplified status model.
+export async function cancelWorkOrder(_context: CurrentUserContext, _workOrderId: string, _comments?: string): Promise<WorkflowResult> {
+  throw new AppError("This action is no longer used in the simplified workflow.", { code: "WORKFLOW_ERROR" });
 }
 
-// Allows the original submitter or an authorized manager to return a Rejected work order
-// back to Draft so it can be revised and resubmitted. Status history is written automatically
-// by the work_orders_status_change DB trigger when the UPDATE fires.
-export async function returnWorkOrderToDraft(context: CurrentUserContext, workOrderId: string) {
-  assertBackendPermission(context, "work_orders.manage");
-  const result = await transitionWorkOrder(context, workOrderId, "Draft");
-  await auditWorkflow(context, "work_order.return_to_draft", result, `Returned ${result.workOrderNumber ?? "work order"} to Draft for revision`);
-  return result;
+// Disabled (Unit 4) — "Draft" no longer exists; corrections keep a Job Card at
+// "Under Review" (see requestJobCardCorrection) instead of returning it anywhere.
+export async function returnWorkOrderToDraft(_context: CurrentUserContext, _workOrderId: string): Promise<WorkflowResult> {
+  throw new AppError("This action is no longer used in the simplified workflow.", { code: "WORKFLOW_ERROR" });
 }

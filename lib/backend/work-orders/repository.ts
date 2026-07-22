@@ -9,7 +9,8 @@ export async function findWorkflowWorkOrder(tx: BackendTransaction, id: string) 
       id: true,
       work_order_number: true,
       status: true,
-      created_by: true
+      created_by: true,
+      assets: { select: { asset_name: true } }
     }
   });
 }

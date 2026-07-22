@@ -160,12 +160,17 @@ function EmbeddedPartsRequestForm({ workOrderId, parts }: { workOrderId: string;
   return (
     <form action={createPartsRequestAction} className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
       <input type="hidden" name="work_order_id" value={workOrderId} />
+      {/* Technician Dashboard and My Jobs Workflow Alignment Unit Task 3/10:
+          this embedded form is only ever used from the Technician job detail
+          page (the only caller of this component) — renamed from "Parts
+          Request" to keep "Materials" wording consistent throughout the
+          technician-facing workflow. */}
       <div className="flex flex-col gap-2 border-l-4 border-[#ED1C24] pl-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Maintenance Form</p>
-          <h2 className="text-lg font-black text-[#111827]">Parts Request</h2>
+          <h2 className="text-lg font-black text-[#111827]">Request Extra Materials</h2>
         </div>
-        <Button type="submit">Submit parts request</Button>
+        <Button type="submit">Send Request</Button>
       </div>
       <label className="mt-4 block">
         <span className="text-sm font-semibold text-[#111827]">Remarks / equipment name</span>

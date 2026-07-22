@@ -1,32 +1,17 @@
 "use client";
 
-import { Plus, Save, X } from "lucide-react";
+import { Eye, EyeOff, Plus, Save, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { createLocalUserAction } from "@/app/actions/admin";
 import { Button } from "@/components/ui/button";
-
-const ACCOUNT_TYPES = [
-  { value: "maintenance_data_entry", label: "Maintenance Data Entry" },
-  { value: "maintenance_manager",    label: "Maintenance Manager" },
-  { value: "technician",             label: "Technician" },
-  { value: "store_keeper",           label: "Store / Spare Parts User" },
-  { value: "system_admin",           label: "System Administrator" },
-  { value: "viewer_auditor",         label: "Viewer / Auditor" },
-] as const;
-
-const ACCOUNT_TYPE_HELP: Record<string, string> = {
-  maintenance_data_entry: "Creates and manages Job Cards. Can submit requests and track progress.",
-  maintenance_manager:    "Reviews and approves Job Cards, assigns technicians, and closes completed work.",
-  technician:             "Receives job assignments, logs work updates, and marks work as completed.",
-  store_keeper:           "Manages spare parts inventory, handles parts requests, and processes store issues.",
-  system_admin:           "Full system access including user management, settings, and all records.",
-  viewer_auditor:         "Read-only access to Job Cards, assets, and reports. Cannot create or modify records.",
-};
+import { ACCOUNT_TYPES, ACCOUNT_TYPE_HELP } from "@/lib/users/account-types";
 
 export function CreateUserDrawer({ initialOpen = false }: { initialOpen?: boolean }) {
   const [open, setOpen] = useState(initialOpen);
   const [accountType, setAccountType] = useState<string>("maintenance_data_entry");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
   // Close on Escape key
   useEffect(() => {
@@ -116,13 +101,36 @@ export function CreateUserDrawer({ initialOpen = false }: { initialOpen?: boolea
                 <span className="text-sm font-semibold">
                   Temporary password <span className="text-[#ED1C24]">*</span>
                 </span>
-                <input
-                  className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2 font-mono text-sm tracking-wider"
-                  type="password"
-                  name="password"
-                  autoComplete="new-password"
-                  required
-                />
+                <div className="mt-1 flex gap-1.5">
+                  <input
+                    className="focus-ring w-full rounded-md border border-[#E5E7EB] px-3 py-2 font-mono text-sm tracking-wider"
+                    type={showPassword ? "text" : "password"}
+                    name="password"
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-[#E5E7EB] text-[#4B5563] transition-colors hover:border-[#111827] hover:text-[#111827]"
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setPassword("123"); setShowPassword(true); }}
+                  className="mt-1.5 text-xs font-bold text-[#2563EB] hover:underline"
+                >
+                  Use temporary password 123
+                </button>
+                <p className="mt-1.5 text-xs text-[#4B5563]">
+                  A simple temporary password like <span className="font-mono font-semibold">123</span> is fine — the
+                  user will be asked to change this password on first login and cannot use the dashboard until they do.
+                </p>
               </label>
 
               <label className="block">
@@ -155,7 +163,7 @@ export function CreateUserDrawer({ initialOpen = false }: { initialOpen?: boolea
 
               <label className="block">
                 <span className="text-sm font-semibold">
-                  Account type <span className="text-[#ED1C24]">*</span>
+                  Role / Access Type <span className="text-[#ED1C24]">*</span>
                 </span>
                 <select
                   className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
@@ -164,7 +172,7 @@ export function CreateUserDrawer({ initialOpen = false }: { initialOpen?: boolea
                   onChange={(e) => setAccountType(e.target.value)}
                 >
                   {ACCOUNT_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>{t.label}</option>
+                    <option key={t.slug} value={t.slug}>{t.label}</option>
                   ))}
                 </select>
                 {ACCOUNT_TYPE_HELP[accountType] && (

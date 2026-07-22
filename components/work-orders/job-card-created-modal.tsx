@@ -14,6 +14,7 @@ export type JobCardCreatedModalProps = {
   assetName: string | null;
   issue: string | null;
   attachmentWarning: boolean;
+  materialsRequestWarning?: boolean;
   dismissHref: string;
 };
 
@@ -26,6 +27,7 @@ export function JobCardCreatedModal({
   assetName,
   issue,
   attachmentWarning,
+  materialsRequestWarning = false,
   dismissHref,
 }: JobCardCreatedModalProps) {
   const router = useRouter();
@@ -99,6 +101,13 @@ export function JobCardCreatedModal({
                 <span>Job Card created, but some attachments failed to upload.</span>
               </div>
             )}
+
+            {materialsRequestWarning && (
+              <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-left text-xs font-semibold text-amber-800">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <span>Job Card created, but the Materials Request could not be created automatically. Use &quot;Request Materials&quot; from the Job Card to add it.</span>
+              </div>
+            )}
           </div>
 
           <div className="px-6 py-4">
@@ -119,7 +128,7 @@ export function JobCardCreatedModal({
 
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-bold uppercase tracking-wide text-[#4B5563]">Current status</span>
-              <StatusBadge label={isDraft ? "Draft" : "Awaiting Review"} tone={isDraft ? "gray" : "amber"} />
+              <StatusBadge label={isDraft ? "New" : "Awaiting Review"} tone={isDraft ? "gray" : "amber"} />
             </div>
 
             <p className="mt-3 text-sm leading-relaxed text-[#111827]">
