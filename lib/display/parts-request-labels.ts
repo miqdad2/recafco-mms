@@ -38,6 +38,18 @@ export function displayPartsRequestStatus(status: string): string {
   }
 }
 
+// Data Entry Dashboard and Job Cards UX Simplification Task 5: a compact
+// "Materials <Status>" badge label — e.g. "Materials Requested", "Materials
+// Approved" — instead of the shorter, less-clear "Materials: Requested"
+// colon form. "Waiting Stock" reads as "Waiting for Materials" (matches the
+// wording already used elsewhere for this same state), everything else is a
+// direct "Materials " + status concatenation.
+export function materialsRequestBadgeLabel(status: string): string {
+  const display = displayPartsRequestStatus(status);
+  if (display === "Waiting Stock") return "Waiting for Materials";
+  return `Materials ${display}`;
+}
+
 export function partsRequestStatusTone(status: string): "green" | "amber" | "red" | "blue" | "gray" {
   switch (status) {
     case "Issued":

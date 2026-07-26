@@ -2,6 +2,7 @@ import "server-only";
 
 import type { CurrentUserContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { isBreakdownMaintenanceType } from "@/lib/work-orders/maintenance-types";
 
 export type ReportMode =
   | "overdue"
@@ -227,7 +228,7 @@ export async function getAssetReport(filters: ReportFilters) {
       warrantyExpiry: rows.filter((row) => isDateBetween(row.warranty_expiry_date, today, in30)).length
     },
     topBreakdownAssets: rows
-      .map((row) => ({ ...row, breakdownCount: row.work_orders.filter((wo) => wo.maintenance_type === "Breakdown").length }))
+      .map((row) => ({ ...row, breakdownCount: row.work_orders.filter((wo) => isBreakdownMaintenanceType(wo.maintenance_type)).length }))
       .sort((a, b) => b.breakdownCount - a.breakdownCount)
       .slice(0, 10)
   };

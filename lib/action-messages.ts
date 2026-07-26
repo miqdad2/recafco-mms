@@ -78,7 +78,7 @@ const ERROR_MAP: Record<string, ToastMessage> = {
   "no-login-account":           { tone: "error",   title: "No login account found" },
   // Generic
   "invalid-input":              { tone: "error",   title: "Invalid input",                  description: "Please check all required fields and try again." },
-  "save-failed":                { tone: "error",   title: "Save failed",                    description: "Please try again." },
+  "save-failed":                { tone: "error",   title: "Save failed",                    description: "Please try again or contact IT." },
   "not-found":                  { tone: "error",   title: "Record not found" },
   "not-editable":               { tone: "error",   title: "This record cannot be edited in its current state" },
   "permission-denied":          { tone: "error",   title: "Permission denied",              description: "You don't have access to that page. Contact your administrator if needed." },

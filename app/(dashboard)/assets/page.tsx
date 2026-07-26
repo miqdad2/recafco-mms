@@ -17,6 +17,25 @@ type AssetsPageProps = {
 
 const pageSize = 25;
 
+// Assets Dashboard Card Clarity Cleanup Task 4/6: a Job Card is "open" if it
+// hasn't reached the one terminal status in the simplified workflow model
+// ("Closed" — see lib/workflows/status-rules.ts); "Cancelled"/"Rejected" are
+// kept in this exclusion list defensively for any legacy pre-Unit4 rows.
+const OPEN_JOB_CARD_STATUSES_EXCLUDED = ["Closed", "Cancelled", "Rejected"];
+
+// A Job Card counts as "active maintenance" once it's past Manager approval
+// and is actually queued for/undergoing repair — matches the subtitle
+// "Assets currently being repaired or waiting for materials" (Created/Under
+// Review are deliberately excluded: nothing is being repaired yet).
+const ACTIVE_MAINTENANCE_JOB_CARD_STATUSES = [
+  "Approved",
+  "Waiting Materials",
+  "Partially Issued",
+  "Materials Issued",
+  "Assigned",
+  "In Progress",
+];
+
 type AssetRow = {
   id: string;
   asset_code: string;
@@ -62,6 +81,13 @@ function assetStatusTone(status: string): "green" | "amber" | "red" | "gray" {
   if (status === "Under Maintenance" || status === "Waiting for Parts") return "amber";
   if (status === "Retired") return "gray";
   return "green";
+}
+
+// Assets Dashboard Card Clarity Cleanup Task 3: display label only — the
+// stored status value ("Waiting for Parts") is unchanged so filtering,
+// tone lookups, and existing records are unaffected.
+function displayAssetStatus(status: string): string {
+  return status === "Waiting for Parts" ? "Waiting for Materials" : status;
 }
 
 export default async function AssetsPage({ searchParams }: AssetsPageProps) {
@@ -402,7 +428,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
       : {}),
   };
 
-  const [assets, count, categoryChips, criticalStatusCount, waitingCount] = await Promise.all([
+  const [assets, count, categoryChips, needAttentionCount, activeMaintenanceCount] = await Promise.all([
     prisma.assets.findMany({
       where,
       orderBy: dueSoonFilter ? { next_service_date: "asc" } : { asset_code: "asc" },
@@ -427,8 +453,29 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
       group by category
       order by count(*) desc, category asc
     `,
-    prisma.assets.count({ where: { deleted_at: null, status: { in: ["Breakdown", "Out of Service"] } } }),
-    prisma.assets.count({ where: { deleted_at: null, status: { in: ["Waiting for Parts", "Under Maintenance"] } } }),
+    // Assets Dashboard Card Clarity Cleanup Task 4/6: "Need Attention" — an
+    // asset in a bad status (Breakdown/Out of Service) OR one with any open
+    // (non-Closed) Job Card, same "open" definition already used for the
+    // per-row "Open Job Card" badge below (OPEN_JOB_CARD_STATUSES).
+    prisma.assets.count({
+      where: {
+        deleted_at: null,
+        OR: [
+          { status: { in: ["Breakdown", "Out of Service"] } },
+          { work_orders: { some: { deleted_at: null, status: { notIn: OPEN_JOB_CARD_STATUSES_EXCLUDED } } } },
+        ],
+      },
+    }),
+    // "Active Maintenance" — an asset with a Job Card that has passed
+    // approval and is actively being worked (queued for/awaiting materials,
+    // assigned, or in progress). Deliberately narrower than "Need Attention"
+    // (excludes Created/Under Review — those haven't started maintenance yet).
+    prisma.assets.count({
+      where: {
+        deleted_at: null,
+        work_orders: { some: { deleted_at: null, status: { in: ACTIVE_MAINTENANCE_JOB_CARD_STATUSES } } },
+      },
+    }),
   ]);
 
   // Last repair date per asset on this page (most recent closed work order)
@@ -451,7 +498,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         where: {
           asset_id: { in: assetIds },
           deleted_at: null,
-          status: { notIn: ["Closed", "Cancelled", "Rejected"] },
+          status: { notIn: OPEN_JOB_CARD_STATUSES_EXCLUDED },
         },
         select: { asset_id: true },
       })
@@ -536,20 +583,20 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             href="/assets"
           />
           <SummaryCard
-            title="Critical Assets"
-            value={criticalStatusCount}
-            detail="Breakdown or out of service"
+            title="Need Attention"
+            value={needAttentionCount}
+            detail="Assets with open Job Cards"
             icon={ShieldAlert}
-            tone={criticalStatusCount > 0 ? "red" : "gray"}
+            tone={needAttentionCount > 0 ? "red" : "gray"}
             href="/assets?status=Breakdown"
           />
           <SummaryCard
-            title="Under Maintenance"
-            value={waitingCount}
-            detail="Waiting for parts or under maintenance"
+            title="Active Maintenance"
+            value={activeMaintenanceCount}
+            detail="Assets currently being repaired or waiting for materials"
             icon={Wrench}
-            tone={waitingCount > 0 ? "amber" : "gray"}
-            href="/assets?status=Waiting+for+Parts"
+            tone={activeMaintenanceCount > 0 ? "amber" : "gray"}
+            href="/assets?status=Under+Maintenance"
           />
         </section>
 
@@ -618,17 +665,16 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             className="mt-2 flex items-center justify-between rounded-md border border-[#ED1C24]/30 bg-red-50 px-4 py-3 shadow-sm transition hover:border-[#ED1C24] hover:shadow-md"
           >
             <div className="min-w-0">
-              <p className="text-sm font-bold text-[#111827]">Vehicles &amp; Mobile Equipment</p>
+              <p className="text-sm font-bold text-[#111827]">Fleet View</p>
               <p className="mt-0.5 text-xs text-[#4B5563]">
-                Cars, pickups, buses, trucks, loaders, forklifts, and cranes
+                Vehicles and mobile equipment combined view
               </p>
-              <p className="mt-0.5 text-xs font-semibold text-[#ED1C24]">Open fleet view</p>
             </div>
             <span className="ml-3 shrink-0 text-xl font-black text-[#111827]">{fleetViewCount}</span>
           </Link>
 
           <p className="mt-2 text-xs text-[#9CA3AF]">
-            Category cards show main asset categories. Fleet view includes vehicles and mobile equipment such as loaders, forklifts, and cranes.
+            Category cards show main asset categories. Fleet view includes cars, pickups, buses, trucks, loaders, forklifts, and cranes.
           </p>
         </section>
 
@@ -689,7 +735,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
           <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="status" defaultValue={params?.status ?? ""}>
             <option value="">Status</option>
             {["Active", "In Use", "Under Maintenance", "Breakdown", "Waiting for Parts", "Out of Service", "Retired"].map((s) => (
-              <option key={s} value={s}>{s}</option>
+              <option key={s} value={s}>{displayAssetStatus(s)}</option>
             ))}
           </select>
           {isFullFilterUser && (<>
@@ -825,7 +871,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                           {asset.location ?? <span className="text-[#9CA3AF]">—</span>}
                         </td>
                         <td className="px-4 py-2.5">
-                          <StatusBadge label={asset.status} tone={assetStatusTone(asset.status)} />
+                          <StatusBadge label={displayAssetStatus(asset.status)} tone={assetStatusTone(asset.status)} />
                         </td>
                         <td className="px-4 py-2.5">
                           {hasOpenRepair ? (

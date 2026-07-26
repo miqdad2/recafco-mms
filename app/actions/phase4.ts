@@ -31,6 +31,7 @@ import {
   rejectPartsRequest
 } from "@/lib/backend/parts-requests/service";
 import { safeErrorMessage } from "@/lib/errors/error-handler";
+import { errorToLogInput, logSystemError } from "@/lib/errors/logging";
 import { prisma } from "@/lib/db/prisma";
 import { OPEN_PR_STATUSES } from "@/lib/display/parts-request-labels";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
@@ -165,6 +166,15 @@ export async function createPartsRequestAction(formData: FormData) {
       redirectUrl: targetPath,
     });
   } catch (error) {
+    // New Job Card Wizard Cleanup + Draft/Material Submit Fix Task 10: this
+    // previously redirected with a safe message but never wrote to
+    // system_error_logs — matches the workflowErrorPath pattern already used
+    // for every action in app/actions/workflow.ts.
+    await logSystemError(errorToLogInput(error, "phase4.createPartsRequestAction", context.userId, {
+      entityType: "work_order",
+      entityId: workOrderId,
+      route: `/maintenance/work-orders/${workOrderId}`
+    }));
     redirect(
       `/maintenance/work-orders/${workOrderId}?error=${encodeURIComponent(safeErrorMessage(error))}`
     );

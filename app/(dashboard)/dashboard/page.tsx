@@ -30,6 +30,7 @@ import {
   displayPartsRequestStatus,
   partsRequestStatusTone,
   materialsRequestStoreFollowUpHint,
+  materialsRequestBadgeLabel,
   OPEN_PR_STATUSES,
 } from "@/lib/display/parts-request-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
@@ -138,15 +139,21 @@ function woTone(status: string): "green" | "amber" | "red" | "blue" | "gray" {
 // falls back to a neutral "Legacy" label rather than a forbidden old word.
 function employeeStatusLabel(status: string): string {
   if (status === "Created") return "New";
-  if (status === "Under Review") return "Review";
+  if (status === "Under Review") return "Waiting Review";
   if (status === "Approved") return "Approved";
-  if (["Waiting Materials", "Partially Issued", "Materials Issued"].includes(status)) return "Materials";
+  // Data Entry Dashboard and Job Cards UX Simplification Task 5: these three
+  // used to collapse into one bare, ambiguous "Materials" badge — showing
+  // the real status name is clearer and matches displayStatus() elsewhere.
+  if (status === "Waiting Materials") return "Waiting Materials";
+  if (status === "Partially Issued") return "Partially Issued";
+  if (status === "Materials Issued") return "Materials Issued";
   if (status === "Assigned") return "Assigned";
   if (status === "In Progress") return "In Progress";
   if (status === "Closed") return "Closed";
   // Legacy pre-Unit3 statuses — defensive fallback only.
-  if (["Draft", "Submitted", "Pending Approval"].includes(status)) return "Review";
-  if (["Waiting for Parts", "Waiting for Purchase", "Parts Issued"].includes(status)) return "Materials";
+  if (["Draft", "Submitted", "Pending Approval"].includes(status)) return "Waiting Review";
+  if (["Waiting for Parts", "Waiting for Purchase"].includes(status)) return "Waiting Materials";
+  if (status === "Parts Issued") return "Materials Issued";
   if (["Completed by Technician", "Verified by Supervisor", "Confirmed by Requester"].includes(status)) return "In Progress";
   return "Legacy";
 }
@@ -217,7 +224,18 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <p className="text-[10px] font-black uppercase tracking-widest text-[#9CA3AF]">{children}</p>;
 }
 
+// Data Entry Dashboard and Job Cards UX Simplification: once status badges
+// started showing the real status name (Task 5) instead of a vague bucket
+// word, a Job Card already at "Materials Issued"/"Waiting Materials"/
+// "Partially Issued" would show that exact same text twice — once as the
+// main status badge, once as the materials-request badge. Shared by every
+// row component below: the materials badge is only additional information
+// when the Job Card's own status doesn't already say it.
+const JOB_CARD_STATUS_ALREADY_SHOWS_MATERIALS = ["Waiting Materials", "Partially Issued", "Materials Issued"];
+
 function WoRow({ row }: { row: WoRow }) {
+  const showMaterialsBadge =
+    row.materials_request_status && !JOB_CARD_STATUS_ALREADY_SHOWS_MATERIALS.includes(row.status);
   return (
     <Link
       href={`?preview=${row.id}`}
@@ -231,10 +249,10 @@ function WoRow({ row }: { row: WoRow }) {
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
         <StatusBadge label={displayStatus(row.status)} tone={woTone(row.status)} />
-        {row.materials_request_status && (
+        {showMaterialsBadge && (
           <StatusBadge
-            label={`Materials: ${displayPartsRequestStatus(row.materials_request_status)}`}
-            tone={partsRequestStatusTone(row.materials_request_status)}
+            label={materialsRequestBadgeLabel(row.materials_request_status!)}
+            tone={partsRequestStatusTone(row.materials_request_status!)}
           />
         )}
         <span className="hidden shrink-0 text-xs text-[#9CA3AF] sm:block">{formatDateTime(row.updated_at)}</span>
@@ -295,6 +313,8 @@ function TechJobRow({ row }: { row: TechJobRow }) {
 
 function NuJobCardRow({ row }: { row: NuJobCardRow }) {
   const subtitle = [row.asset_name, row.issue_summary].filter(Boolean).join(" · ");
+  const showMaterialsBadge =
+    row.materials_request_status && !JOB_CARD_STATUS_ALREADY_SHOWS_MATERIALS.includes(row.status);
   return (
     <Link
       href={`?preview=${row.id}`}
@@ -308,10 +328,10 @@ function NuJobCardRow({ row }: { row: NuJobCardRow }) {
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 sm:gap-3">
         <StatusBadge label={employeeStatusLabel(row.status)} tone={woTone(row.status)} />
-        {row.materials_request_status && (
+        {showMaterialsBadge && (
           <StatusBadge
-            label={`Materials: ${displayPartsRequestStatus(row.materials_request_status)}`}
-            tone={partsRequestStatusTone(row.materials_request_status)}
+            label={materialsRequestBadgeLabel(row.materials_request_status!)}
+            tone={partsRequestStatusTone(row.materials_request_status!)}
           />
         )}
         <span className="hidden shrink-0 text-xs text-[#9CA3AF] sm:block">{formatDateTime(row.created_at)}</span>
@@ -343,6 +363,8 @@ function ManagerActionRow({
     action.label === "Close"
       ? `/maintenance/work-orders/${row.id}`
       : `?preview=${row.id}`;
+  const showMaterialsBadge =
+    row.materials_request_status && !JOB_CARD_STATUS_ALREADY_SHOWS_MATERIALS.includes(row.status);
   return (
     <div className="flex items-start gap-3 px-4 py-2.5">
       <div className="min-w-0 flex-1 space-y-0.5">
@@ -370,10 +392,10 @@ function ManagerActionRow({
         </Link>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {row.materials_request_status && (
+        {showMaterialsBadge && (
           <StatusBadge
-            label={`Materials: ${displayPartsRequestStatus(row.materials_request_status)}`}
-            tone={partsRequestStatusTone(row.materials_request_status)}
+            label={materialsRequestBadgeLabel(row.materials_request_status!)}
+            tone={partsRequestStatusTone(row.materials_request_status!)}
           />
         )}
         <StatusBadge label={displayStatus(row.status)} tone={woTone(row.status)} />
@@ -627,6 +649,12 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } }] } })),
       safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Approved" }] } })),
       safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Created" }] } })),
+      // Data Entry Dashboard and Job Cards UX Simplification Task 2: "Ready
+      // for My Update" — Job Cards where Data Entry's own next action is
+      // actually available (mark work started), replacing the old "Approved
+      // / Ready" card which counted Approved Job Cards Data Entry has no
+      // action on (assignment/materials are Manager/Store's turn, not theirs).
+      safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Assigned" }] } })),
     ]),
     prisma.work_orders
       .findMany({
@@ -1357,23 +1385,27 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               </div>
             )}
 
-            {/* Quick Actions */}
+            {/* Quick Actions — Task 7: "View My Job Cards" reads as a link
+                into the same Job Cards register, not a separate module. */}
             <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
-              <QuickAction label="Create Job Card"     href="/maintenance/work-orders/new" icon={PlusCircle}   iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
-              <QuickAction label="Materials Requests"  href="/store/parts-requests"        icon={ShoppingCart} iconBg="bg-violet-50" iconColor="text-violet-600" />
+              <QuickAction label="Create New Job Card" href="/maintenance/work-orders/new" icon={PlusCircle}   iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
+              <QuickAction label="View My Job Cards"   href="/maintenance/work-orders"     icon={ClipboardList} iconBg="bg-green-50"  iconColor="text-green-600" />
+              <QuickAction label="Open Materials Requests" href="/store/parts-requests"    icon={ShoppingCart} iconBg="bg-violet-50" iconColor="text-violet-600" />
               <QuickAction label="Assets & Equipment"  href="/assets"                      icon={Gauge}        iconBg="bg-blue-50"   iconColor="text-blue-600" />
-              <QuickAction label="My Job Cards"        href="/maintenance/work-orders"     icon={ClipboardList} iconBg="bg-green-50"  iconColor="text-green-600" />
             </div>
 
             {/* KPI Queue */}
             <section className="space-y-2">
-              <SectionLabel>My Job Cards</SectionLabel>
+              <SectionLabel>My Work Today</SectionLabel>
               <KpiRow cols="sm:grid-cols-5" cards={[
-                { label: "My Open Job Cards",         value: nuQueue[0], icon: ClipboardList, tone: "blue",                             href: "/maintenance/work-orders" },
-                { label: "Under Review",              value: nuQueue[1], icon: Clock,         tone: nuQueue[1] > 0 ? "blue"  : "gray",  href: "/maintenance/work-orders?status=Review" },
-                { label: "Approved / Ready",          value: nuQueue[4], icon: CheckCircle2,  tone: "blue",                             href: "/maintenance/work-orders?status=Approved" },
-                { label: "Materials Requests",        value: nuQueue[3], icon: AlertTriangle, tone: nuQueue[3] > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Materials" },
-                { label: "In Progress",                value: nuQueue[2], icon: Wrench,        tone: nuQueue[2] > 0 ? "blue"  : "gray",  href: "/maintenance/work-orders?status=In+Progress" },
+                { label: "My Open Job Cards",  value: nuQueue[0], icon: ClipboardList, tone: "blue",                             href: "/maintenance/work-orders" },
+                { label: "Waiting Review",     value: nuQueue[1], icon: Clock,         tone: nuQueue[1] > 0 ? "blue"  : "gray",  href: "/maintenance/work-orders?status=Review" },
+                { label: "Waiting Materials",  value: nuQueue[3], icon: AlertTriangle, tone: nuQueue[3] > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Materials" },
+                // "Ready for My Update" replaces the old "Approved / Ready"
+                // card (Task 2) — Approved Job Cards aren't Data Entry's turn
+                // to act on; Assigned ones are (mark work started).
+                { label: "Ready for My Update", value: nuQueue[6], icon: CheckCircle2,  tone: nuQueue[6] > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Assigned" },
+                { label: "In Progress",         value: nuQueue[2], icon: Wrench,        tone: nuQueue[2] > 0 ? "blue"  : "gray",  href: "/maintenance/work-orders?status=In+Progress" },
               ]} />
             </section>
 
@@ -1424,7 +1456,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 { label: "Waiting Engineer Review",   value: mgQueue[1], icon: Clock,          tone: mgQueue[1] > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Review" },
                 { label: "Approved / Active",         value: mgQueue[2], icon: Wrench,         tone: "blue",                              href: "/maintenance/work-orders" },
                 { label: "Open Materials Requests",   value: mgQueue[3], icon: AlertTriangle,  tone: mgQueue[3] > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Materials" },
-                { label: "Ready to Assign",           value: mgQueue[4], icon: Users,          tone: mgQueue[4] > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Approved" },
+                { label: "Ready to Assign",           value: mgQueue[4], icon: Users,          tone: mgQueue[4] > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=ReadyToAssign" },
               ]} />
             </section>
 

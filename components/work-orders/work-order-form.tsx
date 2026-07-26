@@ -4,10 +4,12 @@ import { Field } from "@/components/ui/field";
 import { FormSection } from "@/components/ui/form-section";
 import { FormDocumentHeader } from "@/components/forms/form-document-header";
 import Link from "next/link";
+import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/maintenance-types";
 
-const maintenanceTypes = ["Routine", "Service", "Breakdown", "Preventive", "Inspection", "Emergency", "Other"];
+const maintenanceTypes = MAINTENANCE_TYPES;
 const workerTypes = ["Auto", "Mechanical", "Electrical", "Civil", "AC", "Plumbing", "Welding/Fabrication", "Other"];
 const priorities = ["Low", "Normal", "High", "Urgent"];
+const MAX_REQUIRED_PART_ROWS = 8;
 
 type Option = { id: string; name: string; code?: string };
 type AssetOption = {
@@ -42,7 +44,6 @@ export function WorkOrderForm({
   workOrder,
   departments,
   assets,
-  supervisors,
   preselectedAsset = null,
   laborRows = [],
   materialRows = [],
@@ -52,7 +53,6 @@ export function WorkOrderForm({
   workOrder?: FormRecord | null;
   departments: Option[];
   assets: AssetOption[];
-  supervisors: Option[];
   preselectedAsset?: FullAssetOption | null;
   laborRows?: FormRecord[];
   materialRows?: FormRecord[];
@@ -202,7 +202,7 @@ export function WorkOrderForm({
                             <div className="mt-2 flex flex-wrap gap-3">
                               {maintenanceTypes.map((item) => (
                                 <label key={item} className="flex items-center gap-1 text-xs font-semibold">
-                                  <input type="radio" name="maintenance_type" value={item} defaultChecked={item === "Breakdown"} className="accent-[#ED1C24]" />
+                                  <input type="radio" name="maintenance_type" value={item} defaultChecked={item === DEFAULT_MAINTENANCE_TYPE} className="accent-[#ED1C24]" />
                                   {item}
                                 </label>
                               ))}
@@ -459,7 +459,16 @@ export function WorkOrderForm({
         <Field label="Starting date/time" name="starting_datetime" type="datetime-local" defaultValue={dateTimeLocal(workOrder?.starting_datetime)} />
         <Field label="Ending date/time" name="ending_datetime" type="datetime-local" defaultValue={dateTimeLocal(workOrder?.ending_datetime)} />
         <Field label="Maintenance type" name="maintenance_type">
-          <select className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="maintenance_type" defaultValue={workOrder?.maintenance_type ?? "Routine"}>
+          <select className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="maintenance_type" defaultValue={workOrder?.maintenance_type ?? DEFAULT_MAINTENANCE_TYPE}>
+            {/* New Job Card Wizard Cleanup Unit Task 2: a legacy record can hold
+                a pre-rename value (e.g. "Preventive") not in the current list —
+                keep it selectable so re-saving other fields doesn't silently
+                overwrite it with the first option in the list. */}
+            {typeof workOrder?.maintenance_type === "string" &&
+              workOrder.maintenance_type &&
+              !maintenanceTypes.includes(workOrder.maintenance_type) && (
+                <option key={workOrder.maintenance_type} value={workOrder.maintenance_type}>{workOrder.maintenance_type} (legacy)</option>
+              )}
             {maintenanceTypes.map((item) => (
               <option key={item}>{item}</option>
             ))}
@@ -481,16 +490,12 @@ export function WorkOrderForm({
             ))}
           </select>
         </Field>
-        <Field label="Assigned supervisor" name="assigned_supervisor_id">
-          <select className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="assigned_supervisor_id" defaultValue={workOrder?.assigned_supervisor_id ?? ""}>
-            <option value="">Not assigned</option>
-            {supervisors.map((supervisor) => (
-              <option key={supervisor.id} value={supervisor.id}>
-                {supervisor.name}
-              </option>
-            ))}
-          </select>
-        </Field>
+        {/* New Job Card Wizard Cleanup Unit Task 4: no editable Assigned
+            Technician field here either — this form is only reachable while
+            the Job Card is Created/Under Review (pre-approval), the same
+            window the wizard's Task 4 rule covers. Any legacy value is
+            preserved as-is rather than exposed for editing at this stage. */}
+        <input type="hidden" name="assigned_supervisor_id" value={typeof workOrder?.assigned_supervisor_id === "string" ? workOrder.assigned_supervisor_id : ""} />
         <label className="block">
           <span className="text-sm font-semibold text-[#111827]">Operator complaint</span>
           <textarea className="focus-ring mt-1 min-h-24 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="operator_complaint" defaultValue={workOrder?.operator_complaint ?? ""} />
@@ -529,7 +534,16 @@ export function WorkOrderForm({
       </FormSection>
 
       <FormSection title="Required Parts (if known)" description="List parts or materials expected for this job. Store Keeper will check availability.">
-        {[0, 1, 2].map((index) => (
+        {/* New Job Card Wizard Cleanup Unit Task 5: this form has no client-side
+            "Add Row" control, so the row count must always cover every
+            existing required-part row up front — the save action deletes and
+            recreates all rows from whatever this form submits (parseRequiredPartRows
+            reads up to MAX_REQUIRED_PART_ROWS), so rendering fewer rows than
+            already exist here would silently drop them on save. */}
+        {Array.from(
+          { length: Math.min(MAX_REQUIRED_PART_ROWS, Math.max(3, requiredPartRows.length + 2)) },
+          (_, index) => index
+        ).map((index) => (
           <div key={index} className="rounded-md border border-[#E5E7EB] p-3 md:col-span-2">
             <div className="grid gap-3 md:grid-cols-5">
               <Field label="Description / part name" name={`req_part_description_${index}`} defaultValue={requiredPartRows[index]?.description} />

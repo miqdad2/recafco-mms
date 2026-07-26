@@ -35,7 +35,7 @@ export function displayNextAction(status: string, canAct: boolean): string {
     case "Approved":           return canAct ? "Request materials or assign" : "Awaiting materials or assignment";
     case "Waiting Materials":  return canAct ? "Issue materials" : "Awaiting materials";
     case "Partially Issued":   return canAct ? "Issue remaining materials or assign" : "Awaiting materials or assignment";
-    case "Materials Issued":   return canAct ? "Assign technician" : "Awaiting assignment";
+    case "Materials Issued":   return canAct ? "Ready to assign" : "Awaiting assignment";
     case "Assigned":           return "Technician to start";
     case "In Progress":        return canAct ? "Close job card" : "Job in progress";
     case "Closed":             return "Closed";
@@ -46,7 +46,7 @@ export function displayNextAction(status: string, canAct: boolean): string {
     case "Rejected":                return "Needs correction";
     case "Waiting for Parts":
     case "Waiting for Purchase":    return canAct ? "Issue materials" : "Awaiting materials";
-    case "Parts Issued":            return canAct ? "Assign technician" : "Awaiting assignment";
+    case "Parts Issued":            return canAct ? "Ready to assign" : "Awaiting assignment";
     case "Completed by Technician":
     case "Verified by Supervisor":
     case "Confirmed by Requester":  return canAct ? "Close job card" : "Awaiting closure";

@@ -1070,7 +1070,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       onClick={() => setActionPanelMode("start")}
                       className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
                     >
-                      Start Work <ArrowRight className="h-4 w-4" />
+                      Mark Work Started <ArrowRight className="h-4 w-4" />
                     </button>
                   )}
                   {showStartWork && (
@@ -1500,7 +1500,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
               <div className="shrink-0 flex items-start justify-between gap-3 rounded-t-xl border-b border-[#E5E7EB] bg-[#F5F6F8] px-5 py-4">
                 <div className="min-w-0">
                   <p id="start-panel-heading" className="text-sm font-black text-[#111827]">
-                    Start Work
+                    Mark Work Started
                   </p>
                   <p className="mt-0.5 text-xs text-[#4B5563]">{data.work_order_number ?? "Job Card"}</p>
                 </div>
@@ -1536,7 +1536,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                     className="focus-ring min-h-16 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
                   />
                   <button type="submit" className="w-full rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]">
-                    Start Work
+                    Mark Work Started
                   </button>
                 </form>
               </div>

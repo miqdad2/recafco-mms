@@ -6,7 +6,7 @@ import { prisma } from "@/lib/db/prisma";
 export default async function EditWorkOrderPage({ params }: { params: Promise<{ id: string }> }) {
   await requirePermission("work_orders.manage");
   const { id } = await params;
-  const [rawWorkOrder, departments, assets, supervisors, rawLabor, rawMaterials, rawAttachments, rawRequiredParts] = await Promise.all([
+  const [rawWorkOrder, departments, assets, rawLabor, rawMaterials, rawAttachments, rawRequiredParts] = await Promise.all([
     prisma.work_orders.findUnique({ where: { id } }),
     prisma.departments.findMany({
       where: { is_active: true },
@@ -17,11 +17,6 @@ export default async function EditWorkOrderPage({ params }: { params: Promise<{ 
       where: { deleted_at: null },
       select: { id: true, asset_code: true, asset_name: true, category: true, serial_number: true, plate_number: true },
       orderBy: { asset_code: "asc" }
-    }),
-    prisma.profiles.findMany({
-      where: { is_active: true },
-      select: { id: true, full_name: true },
-      orderBy: { full_name: "asc" }
     }),
     prisma.work_order_labor.findMany({ where: { work_order_id: id } }),
     prisma.work_order_materials.findMany({ where: { work_order_id: id } }),
@@ -78,13 +73,12 @@ export default async function EditWorkOrderPage({ params }: { params: Promise<{ 
 
   return (
     <>
-      <PageHeader title="Edit Work Order" description={`Update ${workOrder?.work_order_number ?? "work order"} paper-form details.`} />
+      <PageHeader title="Edit Job Card" description={`Update ${workOrder?.work_order_number ?? "Job Card"} details.`} />
       <div className="p-4 lg:p-6">
         <WorkOrderForm
           workOrder={workOrder}
           departments={departments ?? []}
           assets={assets ?? []}
-          supervisors={(supervisors ?? []).map((item) => ({ id: item.id, name: item.full_name }))}
           laborRows={labor ?? []}
           materialRows={materials ?? []}
           attachmentRows={attachments ?? []}

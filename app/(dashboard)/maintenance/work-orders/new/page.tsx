@@ -14,30 +14,23 @@ export default async function NewWorkOrderPage({
   const sp = (await searchParams) ?? {};
   const preselectedAssetId = sp.asset_id ?? null;
 
-  const [assets, supervisors] = await Promise.all([
-    prisma.assets.findMany({
-      where: { deleted_at: null },
-      select: {
-        id: true,
-        asset_code: true,
-        asset_name: true,
-        category: true,
-        serial_number: true,
-        plate_number: true,
-        location: true,
-        status: true,
-        brand: true,
-        model: true,
-        model_year: true,
-      },
-      orderBy: { asset_code: "asc" },
-    }),
-    prisma.profiles.findMany({
-      where: { is_active: true },
-      select: { id: true, full_name: true },
-      orderBy: { full_name: "asc" },
-    }),
-  ]);
+  const assets = await prisma.assets.findMany({
+    where: { deleted_at: null },
+    select: {
+      id: true,
+      asset_code: true,
+      asset_name: true,
+      category: true,
+      serial_number: true,
+      plate_number: true,
+      location: true,
+      status: true,
+      brand: true,
+      model: true,
+      model_year: true,
+    },
+    orderBy: { asset_code: "asc" },
+  });
 
   return (
     <>
@@ -52,7 +45,6 @@ export default async function NewWorkOrderPage({
       <div className="p-4 lg:p-6">
         <WorkOrderWizard
           assets={assets}
-          supervisors={supervisors.map((p) => ({ id: p.id, name: p.full_name }))}
           preselectedAssetId={preselectedAssetId}
         />
       </div>

@@ -281,7 +281,7 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
               name="note"
               placeholder="Progress note (optional)"
             />
-            <Button type="submit" className="w-full">Start Work</Button>
+            <Button type="submit" className="w-full">Mark Work Started</Button>
           </form>
         ) : null}
 

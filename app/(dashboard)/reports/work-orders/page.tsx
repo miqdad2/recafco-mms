@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
 import { displayStatus } from "@/lib/display/work-order-labels";
+import { isBreakdownMaintenanceType } from "@/lib/work-orders/maintenance-types";
 import {
   getFilterOptions,
   getMgrFilterOptions,
@@ -82,7 +83,7 @@ function daysAgo(date: string | null | undefined): number {
 function computeModeSummary(rows: any[], mode: ReportMode): SummaryCard[] {
   switch (mode) {
     case "overdue": {
-      const breakdowns = rows.filter((r: any) => r.maintenance_type === "Breakdown").length;
+      const breakdowns = rows.filter((r: any) => isBreakdownMaintenanceType(r.maintenance_type)).length;
       const ages = rows.map((r: any) => daysAgo(r.starting_datetime ?? r.created_at));
       const avg = ages.length ? Math.round(ages.reduce((a, b) => a + b, 0) / ages.length) : 0;
       const oldest = ages.length ? Math.max(...ages) : 0;
@@ -107,7 +108,7 @@ function computeModeSummary(rows: any[], mode: ReportMode): SummaryCard[] {
     }
     case "asset-history": {
       const assetIds = new Set(rows.map((r) => r.asset_id).filter(Boolean));
-      const breakdowns = rows.filter((r) => r.maintenance_type === "Breakdown").length;
+      const breakdowns = rows.filter((r) => isBreakdownMaintenanceType(r.maintenance_type)).length;
       return [
         { label: "Total job cards", value: rows.length, tone: "blue" },
         { label: "Assets affected", value: assetIds.size, tone: "blue" },

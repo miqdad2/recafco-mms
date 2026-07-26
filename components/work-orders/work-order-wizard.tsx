@@ -11,16 +11,8 @@ import {
   JOB_CARD_ATTACHMENT_CATEGORIES,
   MAX_ATTACHMENT_ROWS,
 } from "@/lib/files/attachment-constants";
+import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/maintenance-types";
 
-const MAINTENANCE_TYPES = [
-  "Routine",
-  "Service",
-  "Breakdown",
-  "Preventive",
-  "Inspection",
-  "Emergency",
-  "Other",
-];
 const WORKER_TYPES = [
   "Auto",
   "Mechanical",
@@ -35,8 +27,6 @@ const STEP_LABELS = ["Select Asset", "Request Details", "Assignment", "Required 
 const MAX_PART_ROWS = 8;
 
 type AssetOption = AssetPickerOption;
-
-type ProfileOption = { id: string; name: string };
 
 // ── Step indicator ────────────────────────────────────────────────────────────
 
@@ -95,11 +85,9 @@ const ta = "focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] bg-white p
 
 export function WorkOrderWizard({
   assets,
-  supervisors,
   preselectedAssetId,
 }: {
   assets: AssetOption[];
-  supervisors: ProfileOption[];
   preselectedAssetId?: string | null;
 }) {
   const formRef = useRef<HTMLFormElement>(null);
@@ -170,7 +158,6 @@ export function WorkOrderWizard({
     setStep((p) => Math.max(p - 1, 1));
   }
 
-  const reviewTech = supervisors.find((s) => s.id === reviewData.assigned_supervisor_id)?.name;
   const reviewParts = Array.from({ length: MAX_PART_ROWS }, (_, i) => ({
     desc: reviewData[`req_part_description_${i}`] ?? "",
     partNo: reviewData[`req_part_part_number_${i}`] ?? "",
@@ -297,7 +284,7 @@ export function WorkOrderWizard({
                       type="radio"
                       name="maintenance_type"
                       value={t}
-                      defaultChecked={t === "Breakdown"}
+                      defaultChecked={t === DEFAULT_MAINTENANCE_TYPE}
                       className="accent-[#ED1C24]"
                     />
                     {t}
@@ -348,10 +335,10 @@ export function WorkOrderWizard({
         <div className={step !== 3 ? "hidden" : ""}>
           <WizardCard
             title="Assignment Planning"
-            description="Select the maintenance team and optionally pre-assign a technician."
+            description="Select the maintenance team. A technician is assigned later, after approval and materials are resolved."
           >
             <div>
-              <FieldLabel label="Worker team / trade" required />
+              <FieldLabel label="Worker team / division" required />
               <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2">
                 {WORKER_TYPES.map((t) => (
                   <label
@@ -373,20 +360,11 @@ export function WorkOrderWizard({
                 <p className="mt-1 text-xs text-[#DC2626]">{errors.worker_type}</p>
               )}
             </div>
-
-            <div className="mt-5 max-w-xs">
-              <label className="block">
-                <FieldLabel label="Assigned technician" hint="optional" />
-                <select name="assigned_supervisor_id" defaultValue="" className={inp}>
-                  <option value="">Not yet assigned</option>
-                  {supervisors.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
+            {/* New Job Card Wizard Cleanup Unit Task 4: no Assigned Technician
+                field here — technician assignment happens only after the Job
+                Card is approved and required materials are resolved, from the
+                Manager/Engineer/Data Entry assignment workflow. */}
+            <input type="hidden" name="assigned_supervisor_id" value="" />
           </WizardCard>
         </div>
 
@@ -500,7 +478,7 @@ export function WorkOrderWizard({
             description="Confirm all details before saving. A reference number is generated automatically."
           >
             <div className="space-y-5">
-              <ReviewSection title="Asset / Machine">
+              <ReviewSection title="Asset / Equipment / Vehicle">
                 {selectedAsset ? (
                   <div>
                     <p className="font-bold text-[#111827]">
@@ -563,13 +541,12 @@ export function WorkOrderWizard({
 
               <ReviewSection title="Assignment">
                 <dl className="grid gap-3 sm:grid-cols-2">
-                  <ReviewRow label="Worker team" value={reviewData.worker_type} />
-                  <ReviewRow label="Assigned technician" value={reviewTech} />
+                  <ReviewRow label="Worker team / division" value={reviewData.worker_type} />
                 </dl>
               </ReviewSection>
 
-              {reviewParts.length > 0 && (
-                <ReviewSection title="Required Parts">
+              <ReviewSection title="Required Parts">
+                {reviewParts.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -592,8 +569,10 @@ export function WorkOrderWizard({
                       </tbody>
                     </table>
                   </div>
-                </ReviewSection>
-              )}
+                ) : (
+                  <p className="text-sm italic text-[#9CA3AF]">No materials requested</p>
+                )}
+              </ReviewSection>
             </div>
 
             <div className="mt-6 space-y-2 border-t border-[#E5E7EB] pt-5">

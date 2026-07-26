@@ -410,7 +410,14 @@ export default async function WorkOrderDetailPage({
                 </Button>
               </Link>
             ) : null}
-            {canManage && ["Draft", "Rejected"].includes(wo.status) ? (
+            {/* New Job Card Wizard Cleanup + Draft/Material Submit Fix Task 5:
+                this gate checked the pre-Unit3 status names ("Draft"/"Rejected"),
+                which no longer exist in the simplified workflow (status-rules.ts
+                renamed them to "Created"/"Under Review") — no current Job Card
+                could ever match, so a saved draft had no way back into its own
+                edit form (the only reachable action was blind Submit). Matches
+                EDITABLE_STATUSES in upsertWorkOrderAction exactly. */}
+            {canManage && ["Created", "Under Review"].includes(wo.status) ? (
               <Link href={`/maintenance/work-orders/${wo.id}/edit`}>
                 <Button>Edit</Button>
               </Link>

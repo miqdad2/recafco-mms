@@ -65,15 +65,19 @@ type Tab = { label: string; status: string };
 // vocabulary. Never uses old words (Draft/Submitted/Pending Approval/Rejected/
 // Cancelled/Completed by Technician/Verified by Supervisor/Confirmed by
 // Requester/Waiting for Parts/Waiting for Purchase/Parts Issued) as a tab.
+// Data Entry Dashboard and Job Cards UX Simplification Task 4: label-only
+// cleanup (the safer, explicitly-permitted fallback over a full tab-behavior
+// redesign) — `status` values, hrefs, getStatusMap()/TAB_EMPTY_STATE keys,
+// and expandStatuses() are all unchanged, so this is purely cosmetic.
 const JOB_CARD_TABS: Tab[] = [
-  { label: "All",          status: "" },
-  { label: "New",          status: "New" },
-  { label: "Review",       status: "Review" },
-  { label: "Approved",     status: "Approved" },
-  { label: "Materials",    status: "Materials" },
-  { label: "Assigned",     status: "Assigned" },
-  { label: "In Progress",  status: "In Progress" },
-  { label: "Closed",       status: "Closed" },
+  { label: "All",             status: "" },
+  { label: "Created",         status: "New" },
+  { label: "Waiting Review",  status: "Review" },
+  { label: "Approved",        status: "Approved" },
+  { label: "Waiting Materials", status: "Materials" },
+  { label: "Assigned",        status: "Assigned" },
+  { label: "In Progress",     status: "In Progress" },
+  { label: "Closed",          status: "Closed" },
 ];
 
 // Single, role-independent mapping from tab/bucket keys → the DB status
@@ -97,6 +101,16 @@ function getStatusMap(): Record<string, string[]> {
     Review:       ["Under Review"],
     Approved:     ["Approved"],
     Materials:    ["Waiting Materials", "Partially Issued", "Materials Issued"],
+    // Job Cards Ready-to-Assign Label and KPI Cleanup Task 1: a virtual
+    // bucket, not a tab — only reachable via the "Ready to Assign" KPI card's
+    // href — so its drill-down list matches the KPI's own status set
+    // (Approved + Materials Issued) instead of just "Approved" alone. Note
+    // this list filter is status-only (matches every existing tab's
+    // behavior): it doesn't re-check the "not yet assigned"/"no blocking
+    // materials request" refinement the KPI count itself applies, so it can
+    // show a superset of the counted rows — the same known imprecision the
+    // "Waiting Materials" KPI vs. "Materials" tab already has.
+    ReadyToAssign: ["Approved", "Materials Issued"],
     Assigned:     ["Assigned"],
     "In Progress": ["In Progress"],
     Closed:       ["Closed"],
@@ -253,7 +267,7 @@ function getRowActLabel(status: string, context: CurrentUserContext): string | n
   const canUpdateProgress = !isTechnician && (isAdmin || p.includes("work_orders.update"));
   if ((canApprove || canReview) && status === "Under Review") return "Review";
   if (canAssign && ["Approved", "Partially Issued", "Materials Issued"].includes(status)) return "Assign";
-  if (canUpdateProgress && status === "Assigned") return "Start";
+  if (canUpdateProgress && status === "Assigned") return "Mark Work Started";
   if (p.includes("store.issue") && ["Waiting Materials", "Partially Issued"].includes(status)) return "Materials";
   if (canClose && status === "In Progress") return "Close";
   // Legacy pre-Unit3 statuses — defensive fallback only.
@@ -305,10 +319,15 @@ function getNextAction(
         // themselves — was "Waiting for Engineer / Manager review", which
         // named the Manager even though Manager isn't the blocker yet.
         : { label: (canApprove || canReview) ? "Needs review" : "Waiting Engineer Review", mine: canApprove || canReview };
-    case "Approved":          return { label: "Assign technician",        mine: canAssign };
+    // Job Cards Ready-to-Assign Label and KPI Cleanup Task 3: "Assign
+    // technician" read like an instruction aimed at whoever's viewing the
+    // row, even for roles that can't act on it — "Ready to assign" is a
+    // status statement instead, matching the new "Ready to Assign" KPI's
+    // wording. The Action-column button (a separate label) still says "Assign".
+    case "Approved":          return { label: "Ready to assign",          mine: canAssign };
     case "Waiting Materials":  return { label: "Waiting for materials",    mine: false };
     case "Partially Issued":  return { label: "Store follow-up in progress", mine: canAssign };
-    case "Materials Issued":  return { label: "Assign technician",        mine: canAssign };
+    case "Materials Issued":  return { label: "Ready to assign",          mine: canAssign };
     case "Assigned":          return { label: canUpdateProgress ? "Ready to start" : "Technician to start", mine: canUpdateProgress };
     case "In Progress":       return { label: canClose ? "Ready to close" : "Work in progress", mine: canClose };
     case "Closed":             return { label: "Job card closed",          mine: false };
@@ -316,7 +335,7 @@ function getNextAction(
     case "Draft":              return { label: "Submit for review",        mine: p.includes("work_orders.manage") };
     case "Submitted":
     case "Pending Approval":  return { label: "Needs review",             mine: canApprove };
-    case "Parts Issued":      return { label: "Assign technician",        mine: canAssign };
+    case "Parts Issued":      return { label: "Ready to assign",          mine: canAssign };
     case "Waiting for Parts":
     case "Waiting for Purchase": return { label: "Waiting for materials", mine: false };
     case "Completed by Technician":
@@ -693,7 +712,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   if (needsAction) listConditions.push(getNeedsActionFilter(context));
   const where: Prisma.work_ordersWhereInput = { AND: listConditions };
 
-  const [workOrders, count, statusSummaries, waitingMaterialsCount] =
+  const [workOrders, count, statusSummaries, waitingMaterialsCount, readyToAssignCount] =
     await Promise.all([
       prisma.work_orders.findMany({
         where,
@@ -735,6 +754,23 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       // also reflects any active search/date/department filter.
       prisma.work_orders.count({
         where: { AND: [...nonStatusConditions, { parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } }] },
+      }),
+      // Job Cards Ready-to-Assign Label and KPI Cleanup Task 1/4: Approved or
+      // Materials Issued, not yet assigned, and not blocked by an open
+      // materials request — mirrors the Manager dashboard's existing "Ready
+      // to Assign" KPI (app/(dashboard)/dashboard/page.tsx) exactly, so the
+      // two pages never disagree on what "ready to assign" means. Waiting
+      // Materials/Partially Issued are excluded by construction: their own
+      // linked materials request status is itself one of OPEN_PR_STATUSES.
+      prisma.work_orders.count({
+        where: {
+          AND: [
+            ...nonStatusConditions,
+            { status: { in: ["Approved", "Materials Issued"] } },
+            { work_order_assignments: { none: {} } },
+            { NOT: { parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } } },
+          ],
+        },
       }),
     ]);
 
@@ -948,7 +984,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
   const totalWOs       = statusSummaries.reduce((n, s) => n + s._count._all, 0);
   const submittedCount = tabCount(statusSummaries, "Review",   statusMap);
-  const approvedCount  = tabCount(statusSummaries, "Approved", statusMap);
   const activeJobs     = tabCount(statusSummaries, "In Progress", statusMap);
   // Waiting Materials KPI counts job cards with open materials requests, not just WO status field
   const waitingParts   = waitingMaterialsCount;
@@ -1097,7 +1132,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         <JobCardCreatedModal
           jobCardId={previewId}
           jobCardNumber={drawerData?.work_order_number ?? sp.jc ?? null}
-          isDraft={drawerData?.status === "Draft"}
+          isDraft={drawerData?.status === "Created"}
           assetName={drawerData?.assets?.asset_name ?? null}
           issue={drawerData?.operator_complaint ?? null}
           attachmentWarning={sp.warning === "attachments-failed"}
@@ -1109,7 +1144,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       )}
       <PageHeader
         title="Job Cards"
-        description="Track job cards, technician work, waiting materials, and repair history."
+        description="Search, filter, and track Job Cards."
         actions={
           <Link
             href="/maintenance/work-orders/new"
@@ -1123,95 +1158,63 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
       <div className="space-y-3 p-4 lg:p-6">
         {/* ── Operational KPI cards ─────────────────────────────────────────── */}
-        {isNormalUser ? (
-          <section className="grid gap-3 grid-cols-2 sm:grid-cols-4">
-            <KpiCard
-              title="Total Job Cards"
-              value={totalWOs}
-              href="/maintenance/work-orders"
-              tone="blue"
-              icon={ClipboardList}
-              detail="All my job cards"
-            />
-            <KpiCard
-              title="Under Review"
-              value={submittedCount}
-              href={buildHref({ status: "Review" })}
-              tone={submittedCount > 0 ? "amber" : "gray"}
-              icon={Clock3}
-              detail="Needs engineer / manager review"
-              urgent={submittedCount > 0}
-            />
-            <KpiCard
-              title="In Progress"
-              value={activeJobs}
-              href={buildHref({ status: "In Progress" })}
-              tone="blue"
-              icon={Wrench}
-              detail="Assigned or being worked on"
-            />
-            <KpiCard
-              title="Waiting Materials"
-              value={waitingParts}
-              href={buildHref({ status: "Materials" })}
-              tone={waitingParts > 0 ? "amber" : "gray"}
-              icon={Package}
-              detail="Materials requested or store issue pending"
-            />
-          </section>
-        ) : (
-          <section className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
-            <KpiCard
-              title="Total Job Cards"
-              value={totalWOs}
-              href="/maintenance/work-orders"
-              tone="blue"
-              icon={ClipboardList}
-              detail="All maintenance job cards"
-            />
-            <KpiCard
-              title="Under Review"
-              value={submittedCount}
-              href={buildHref({ status: "Review" })}
-              tone={submittedCount > 0 ? "amber" : "gray"}
-              icon={Clock3}
-              detail="Needs engineer / manager review"
-              urgent={submittedCount > 0}
-            />
-            <KpiCard
-              title="Approved"
-              value={approvedCount}
-              href={buildHref({ status: "Approved" })}
-              tone="blue"
-              icon={CheckCircle2}
-              detail="Ready for materials or assignment"
-            />
-            <KpiCard
-              title="In Progress"
-              value={activeJobs}
-              href={buildHref({ status: "In Progress" })}
-              tone="blue"
-              icon={Wrench}
-              detail="Assigned or being worked on"
-            />
-            <KpiCard
-              title="Waiting Materials"
-              value={waitingParts}
-              href={buildHref({ status: "Materials" })}
-              tone={waitingParts > 0 ? "amber" : "gray"}
-              icon={Package}
-              detail="Materials requested or store issue pending"
-            />
-            <KpiCard
-              title="Closed"
-              value={closed}
-              href={buildHref({ status: "Closed" })}
-              tone="green"
-              icon={CheckCircle2}
-              detail="Closed job cards"
-            />
-          </section>
-        )}
+        {/* Job Cards Ready-to-Assign Label and KPI Cleanup Task 2: one shared
+            6-card layout for every role (All Job Cards, Waiting Review,
+            Waiting Materials, Ready to Assign, In Progress, Closed) —
+            replaces "Approved" with the more actionable "Ready to Assign" and
+            unifies what used to be two separate 4-card/6-card layouts. */}
+        <section className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+          <KpiCard
+            title="All Job Cards"
+            value={totalWOs}
+            href="/maintenance/work-orders"
+            tone="blue"
+            icon={ClipboardList}
+            detail={isNormalUser ? "All my job cards" : "All maintenance job cards"}
+          />
+          <KpiCard
+            title="Waiting Review"
+            value={submittedCount}
+            href={buildHref({ status: "Review" })}
+            tone={submittedCount > 0 ? "amber" : "gray"}
+            icon={Clock3}
+            detail="Needs engineer / manager review"
+            urgent={submittedCount > 0}
+          />
+          <KpiCard
+            title="Waiting Materials"
+            value={waitingParts}
+            href={buildHref({ status: "Materials" })}
+            tone={waitingParts > 0 ? "amber" : "gray"}
+            icon={Package}
+            detail="Materials requested or store issue pending"
+          />
+          <KpiCard
+            title="Ready to Assign"
+            value={readyToAssignCount}
+            href={buildHref({ status: "ReadyToAssign" })}
+            tone={readyToAssignCount > 0 ? "amber" : "gray"}
+            icon={CheckCircle2}
+            detail="Approved or materials issued, not yet assigned"
+            urgent={readyToAssignCount > 0}
+          />
+          <KpiCard
+            title="In Progress"
+            value={activeJobs}
+            href={buildHref({ status: "In Progress" })}
+            tone="blue"
+            icon={Wrench}
+            detail="Assigned or being worked on"
+          />
+          <KpiCard
+            title="Closed"
+            value={closed}
+            href={buildHref({ status: "Closed" })}
+            tone="green"
+            icon={CheckCircle2}
+            detail="Closed job cards"
+          />
+        </section>
 
         {/* ── Filters ───────────────────────────────────────────────────────── */}
         <FilterSection sp={sp} />
