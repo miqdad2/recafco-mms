@@ -1,10 +1,9 @@
 import Link from "next/link";
 import {
-  approveWorkOrderAction,
+  approveJobCardAndMaterialsAction,
   closeWorkOrderAction,
   markExternalWorkCompletedAction,
   requestClarificationAction,
-  reviewJobCardAction,
   startJobCardProgressAction,
   submitWorkOrderAction
 } from "@/app/actions/workflow";
@@ -34,11 +33,12 @@ type WorkflowActionsProps = {
   technicians: Technician[];
   currentAssignment?: CurrentAssignment;
   activeMaterialsRequest?: ActiveMaterialsRequest;
-  // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 6/7:
-  // whether a work_order.review audit entry already exists — relabels the
-  // Review form so a repeat visit never reads as if the first review didn't
-  // register (status stays "Under Review" through both review and approval).
-  reviewed?: boolean;
+  // Simplified Workflow UI Consistency Cleanup Task 3: whether this Job Card
+  // has an unresolved correction request right now — suppresses every normal
+  // status action below so the page's correction banner (with its own
+  // Submit Response / Resubmit action) is the one clear thing to do,
+  // regardless of what the raw status would otherwise allow.
+  hasPendingCorrection?: boolean;
 };
 
 function can(context: CurrentUserContext, permission: PermissionKey) {
@@ -56,7 +56,7 @@ function getStepContext(status: string): { title: string; description: string } 
     case "Created":
       return { title: "Created", description: "Fill in all details and send for review when ready." };
     case "Under Review":
-      return { title: "Under Review", description: "Awaiting Maintenance Engineer / Manager review and approval." };
+      return { title: "Under Review", description: "Awaiting Supervisor / Manager review and approval." };
     case "Approved":
       return { title: "Approved", description: "Approved and awaiting materials or technician assignment." };
     case "Waiting Materials":
@@ -97,22 +97,14 @@ function getStepContext(status: string): { title: string; description: string } 
   }
 }
 
-export function WorkflowActions({ workOrderId, status, context, technicians, currentAssignment, activeMaterialsRequest, reviewed }: WorkflowActionsProps) {
+export function WorkflowActions({ workOrderId, status, context, technicians, currentAssignment, activeMaterialsRequest, hasPendingCorrection = false }: WorkflowActionsProps) {
   const canSubmit  = can(context, "work_orders.manage") && status === "Created";
-  const canApprove = can(context, "work_orders.approve") && status === "Under Review";
-  // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 8/12: the
-  // Engineer's Review action (work_orders.review) had no form anywhere on
-  // this Full Details page — canRequestCorrection was computed below but
-  // never included in hasActions either, so an Engineer with review +
-  // request_correction but no approve/assign/close saw only the generic
-  // "Under Review" text here with no way to act, even though the quick-view
-  // already exposed both actions via its own canReview/canRequestCorrection
-  // flags. Both are now included in hasActions so this page has parity.
-  const canReview = can(context, "work_orders.review") && status === "Under Review";
-  // Correction requests are only meaningful while a Job Card is Under Review —
-  // this now uses work_orders.request_correction (Engineer + Manager), not
+  const canApprove = can(context, "work_orders.approve") && status === "Under Review" && !hasPendingCorrection;
+  // Correction requests are only meaningful while a Job Card is Under Review
+  // and no correction is already pending — this now uses
+  // work_orders.request_correction (Engineer + Manager), not
   // work_orders.approve (Manager only), per the Unit 3 permission grants.
-  const canRequestCorrection = can(context, "work_orders.request_correction") && status === "Under Review";
+  const canRequestCorrection = can(context, "work_orders.request_correction") && status === "Under Review" && !hasPendingCorrection;
   // Assignment (and reassignment) is available once materials are resolved or
   // not needed, and while work is still open — matches the Unit 3 transition
   // map. Unified Manager Job Card + Materials Approval Flow Fix Task 4: the
@@ -122,14 +114,20 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
   // requires no active (in-progress) Materials Request at all, matching the
   // same gate applied to the quick-view popup's Assign Work button.
   const canAssign =
+    !hasPendingCorrection &&
     (can(context, "work_orders.approve") || can(context, "work_orders.assign")) &&
     ["Approved", "Partially Issued", "Materials Issued", "Assigned", "In Progress"].includes(status) &&
     (status === "Assigned" || status === "In Progress" || !activeMaterialsRequest);
-  // closeWorkOrder only transitions "In Progress" -> "Closed" (the locked Unit 3
-  // map). Closing directly from "Assigned" (no explicit start) is handled by the
-  // external/technician-specific completion actions below, which hop through
-  // "In Progress" internally — this generic button stays exact to the map.
-  const canClose = can(context, "work_orders.close") && status === "In Progress";
+  // Simplified Job Card Approval Workflow Unit Task 4: Close is now available
+  // directly from any "Open"-bucket status (Approved/Waiting Materials/
+  // Partially Issued/Materials Issued/Assigned/In Progress), matching the
+  // widened transitions.work_order map in lib/workflows/status-rules.ts — the
+  // simplified flow has no required Store-issue/assignment step before work
+  // can be closed.
+  const canClose =
+    !hasPendingCorrection &&
+    can(context, "work_orders.close") &&
+    ["Approved", "Waiting Materials", "Partially Issued", "Materials Issued", "Assigned", "In Progress"].includes(status);
   // Data Entry Job Card Action Clarity Fix Task 4: the same generic (non-
   // technician) Assigned -> In Progress step already offered in the quick-view
   // (Data Entry Job Card Progress Update and Close Action Unit) was missing
@@ -142,15 +140,16 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
   // External Work Completed" shortcut from Assigned straight to Closed below,
   // so this generic step would otherwise offer a redundant second button.
   const canStartProgress =
-    !isTechnician && !isExternalAssignment && can(context, "work_orders.update") && status === "Assigned";
+    !hasPendingCorrection && !isTechnician && !isExternalAssignment && can(context, "work_orders.update") && status === "Assigned";
 
   const canMarkExternalComplete =
+    !hasPendingCorrection &&
     can(context, "work_orders.close") &&
     ["Assigned", "In Progress"].includes(status) &&
     isExternalAssignment;
 
   const hasActions =
-    canSubmit || canApprove || canReview || canRequestCorrection || canAssign || canClose ||
+    canSubmit || canApprove || canRequestCorrection || canAssign || canClose ||
     canMarkExternalComplete || canStartProgress;
 
   // Data Entry Job Card Action Clarity Fix Task 3: a Job Card can only ever
@@ -180,19 +179,24 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
     // its own explicit message, instead of the generic "awaiting materials
     // or technician assignment" step text.
     const ctx =
-      status === "Under Review"
+      hasPendingCorrection
         ? {
-            title: "Waiting for Engineer / Manager review.",
-            description: canActLaterOnApproval
-              ? "You can assign/start/close after approval."
-              : "No update available until approval.",
+            title: "Correction Requested — Waiting on Data Entry.",
+            description: "See the correction request above for what needs to change and to respond.",
           }
-        : activeMaterialsRequest && ["Approved", "Partially Issued", "Materials Issued"].includes(status)
+        : status === "Under Review"
           ? {
-              title: "Waiting for materials before assignment.",
-              description: `${activeMaterialsRequest.number ?? "The Materials Request"} must be sent by Store before this Job Card can be assigned.`,
+              title: "Waiting for Supervisor / Manager review.",
+              description: canActLaterOnApproval
+                ? "You can assign/start/close after approval."
+                : "No update available until approval.",
             }
-          : getStepContext(status);
+          : activeMaterialsRequest && ["Approved", "Partially Issued", "Materials Issued"].includes(status)
+            ? {
+                title: "Waiting for materials before assignment.",
+                description: `${activeMaterialsRequest.number ?? "The Materials Request"} must be received before this Job Card can be assigned.`,
+              }
+            : getStepContext(status);
     if (!ctx) return null;
     const canCreatePartsRequest =
       can(context, "parts_requests.create") || can(context, "work_orders.manage");
@@ -202,7 +206,7 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
         <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Current Action</p>
         <p className="mt-2 text-sm font-black text-[#111827]">{ctx.title}</p>
         <p className="mt-1 text-sm leading-5 text-[#4B5563]">{ctx.description}</p>
-        {materialsQuickAction || (canCreatePartsRequest && isActive) ? (
+        {!hasPendingCorrection && (materialsQuickAction || (canCreatePartsRequest && isActive)) ? (
           <div className="mt-4 border-t border-[#E5E7EB] pt-3">
             <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Quick actions</p>
             {materialsQuickAction ?? (
@@ -232,40 +236,25 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
           </form>
         ) : null}
 
-        {/* Engineer — review and send to Manager (status stays Under Review) */}
-        {canReview ? (
-          <form action={reviewJobCardAction} className="space-y-2 rounded-md border border-[#E5E7EB] p-3">
-            <input type="hidden" name="work_order_id" value={workOrderId} />
-            <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">
-              {reviewed ? "Add Review Note" : "Confirm Review"}
-            </p>
-            {reviewed && (
-              <p className="text-xs text-[#4B5563]">
-                Already reviewed and sent to the Maintenance Manager — this adds another note without
-                repeating the notification.
-              </p>
-            )}
-            <textarea
-              className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
-              name="comments"
-              placeholder="Review notes (optional)"
-            />
-            <Button type="submit" className="w-full">
-              {reviewed ? "Add Review Note" : "Confirm Review / Send to Manager"}
-            </Button>
-          </form>
-        ) : null}
-
-        {/* Under Review — Manager approve */}
+        {/* Under Review — Supervisor / Manager approves and opens. Simplified
+            Job Card Approval Workflow Unit Task 4: uses the combined
+            approve-Job-Card-and-materials action (already existed for the
+            quick-view) so any linked Requested Materials Request is approved
+            in the same step — no separate Materials Request approval task. */}
         {canApprove ? (
-          <form action={approveWorkOrderAction} className="space-y-2">
+          <form action={approveJobCardAndMaterialsAction} className="space-y-2">
             <input type="hidden" name="work_order_id" value={workOrderId} />
+            <p className="text-xs text-[#6B7280]">
+              {activeMaterialsRequest?.status === "Requested"
+                ? "This will approve the Job Card and requested materials. Materials will be marked as Awaiting Receipt."
+                : "This will approve the Job Card and make it Open."}
+            </p>
             <textarea
               className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
               name="comments"
               placeholder="Approval notes (optional)"
             />
-            <Button type="submit" className="w-full">Approve Job Card</Button>
+            <Button type="submit" className="w-full">Approve</Button>
           </form>
         ) : null}
 
@@ -327,6 +316,7 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
             <p className="text-xs font-black text-amber-800">Need a correction before approving?</p>
             <form action={requestClarificationAction} className="space-y-2">
               <input type="hidden" name="work_order_id" value={workOrderId} />
+              <input type="hidden" name="kind" value="correction" />
               <textarea
                 className="focus-ring min-h-20 w-full rounded-md border border-amber-200 bg-white px-3 py-2 text-sm"
                 name="question"
@@ -339,14 +329,41 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
           </div>
         ) : null}
 
-        {/* Manager/Engineer/Data Entry/Technician — close directly (no separate verify/confirm step) */}
+        {/* Supervisor/Manager — ask Data Entry to add/change materials. Same
+            requestClarificationAction/ClarificationRequest mechanism as
+            Request Correction above, just a second, materials-framed entry
+            point (Simplified Job Card Approval Workflow Unit Task 4). */}
+        {canRequestCorrection ? (
+          <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3">
+            <p className="text-xs font-black text-amber-800">Need materials added or changed before approving?</p>
+            <form action={requestClarificationAction} className="space-y-2">
+              <input type="hidden" name="work_order_id" value={workOrderId} />
+              <input type="hidden" name="kind" value="materials" />
+              <textarea
+                className="focus-ring min-h-20 w-full rounded-md border border-amber-200 bg-white px-3 py-2 text-sm"
+                name="question"
+                placeholder="What materials need to be added or changed? (min 10 characters)"
+                required
+                minLength={10}
+              />
+              <Button type="submit" variant="secondary" className="w-full">Ask to Add/Update Materials</Button>
+            </form>
+          </div>
+        ) : null}
+
+        {/* Manager/Data Entry — close directly (no separate verify/confirm step).
+            Simplified Job Card Approval Workflow Unit Task 4: closing note is
+            now required (min 10 characters, matching the request-correction
+            convention), not optional. */}
         {canClose ? (
           <form action={closeWorkOrderAction} className="space-y-2">
             <input type="hidden" name="work_order_id" value={workOrderId} />
             <textarea
               className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
               name="comments"
-              placeholder="Closure notes (optional)"
+              placeholder="Describe the work completed (required, min 10 characters)"
+              required
+              minLength={10}
             />
             <Button type="submit" className="w-full">Close Job Card</Button>
           </form>

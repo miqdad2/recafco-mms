@@ -45,7 +45,7 @@ export default async function MovementHistoryPage({
   // not a description of every movement type still visible in the filter.
   const pageDescription = isStoreKeeper
     ? "Materials sent by Store for Job Cards."
-    : "Material Ledger — materials issued by Store, received, and tracked against Job Cards.";
+    : "Materials received, used, and tracked against Job Cards.";
 
   const params = (await searchParams) ?? {};
   const q    = single(params.q)?.trim() ?? "";
@@ -114,8 +114,12 @@ export default async function MovementHistoryPage({
 
   return (
     <>
+      {/* Enterprise-Wide Real-Time Update Verification Task 2/8: widened the
+          same way as the Offline Inventory Control balance page — this list
+          previously never picked up the direct opening-stock/receive/record-
+          used actions at all (no "offline_inventory." watcher existed). */}
       <AutoRefresh intervalMs={15000} />
-      <RealtimeRefresh watch={["store_materials.sent", "material_ledger.updated"]} />
+      <RealtimeRefresh watch={["offline_inventory.", "material_ledger.", "store_materials.", "materials_request.", "job_card."]} />
       <PageHeader
         title={pageTitle}
         description={pageDescription}
@@ -137,7 +141,7 @@ export default async function MovementHistoryPage({
             never read this page as "where I do store entry". */}
         {!canManage && (
           <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3 text-sm font-semibold text-[#4B5563]">
-            Store stock entry is managed by Store users. This page shows material movements and Job Card material tracking.
+            Offline Inventory Control records maintenance material movements linked to Job Cards.
           </div>
         )}
         {hasAnyRecords > 0 && (
@@ -157,7 +161,7 @@ export default async function MovementHistoryPage({
                 <option value="">All types</option>
                 <option value="OPENING_STOCK">Opening Stock</option>
                 <option value="RECEIVED">Received</option>
-                <option value="ISSUED">Issued</option>
+                <option value="ISSUED">Used</option>
               </select>
               <input
                 className="focus-ring min-h-10 rounded-md border border-[#DDE2EA] px-3 py-2 text-sm"
@@ -201,7 +205,7 @@ export default async function MovementHistoryPage({
                 <div>
                   <h2 className="text-lg font-black text-[#111827]">No material movements recorded yet.</h2>
                   <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">
-                    Received and issued materials will appear here.
+                    Received and used materials will appear here.
                   </p>
                 </div>
               )}

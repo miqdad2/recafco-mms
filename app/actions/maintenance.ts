@@ -11,7 +11,7 @@ import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { createMaintenanceWorkflowInstanceForWorkOrder } from "@/lib/backend/workflows/engine";
 import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
 import { createPartsRequest } from "@/lib/backend/parts-requests/service";
-import { emitRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
+import { emitRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { prisma } from "@/lib/db/prisma";
 import { parsePendingAttachments, saveAttachmentBatch } from "@/lib/files/attachment-form";
 import { MAX_ATTACHMENT_ROWS } from "@/lib/files/attachment-constants";
@@ -669,16 +669,16 @@ export async function upsertWorkOrderAction(formData: FormData) {
       asset_name = asset?.asset_name ?? "unknown asset";
     }
 
-    // Unit 6: switched to the safe wrapper (notifyByEvent itself never throws,
-    // but notifyWorkflowEvent matches the pattern used everywhere else) and
-    // to job_card.created — notify Maintenance Engineer, not Manager, at this
-    // stage (Manager is notified after Engineer reviews, via job_card.reviewed).
+    // Simplified Job Card Approval Workflow Unit Task 4/11: notify
+    // Supervisor/Manager directly on submit — there is no Engineer review
+    // stage in the active flow, so Manager is the one and only approver who
+    // needs to know a Job Card is Submitted.
     await notifyWorkflowEvent({
       eventKey: "job_card.created",
       entityType: "work_order",
       entityId: data.id,
       actorId: context.userId,
-      recipientRoles: ["maintenance_engineer"],
+      recipientRoles: ["maintenance_manager"],
       metadata: {
         job_card_number: data.work_order_number,
         asset_name
@@ -808,6 +808,8 @@ export async function addWorkOrderMaterialAction(formData: FormData) {
     summary: `Recorded ${materialName} (qty ${qty.data}) used on ${wo.work_order_number}`,
     metadata: { material_name: materialName, quantity: qty.data },
   });
+
+  await emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_UPDATED, wo.id, context.userId);
 
   revalidatePath(`/maintenance/work-orders/${wo.id}`);
   redirect(`${returnTo}?success=material-added`);

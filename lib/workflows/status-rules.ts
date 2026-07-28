@@ -6,14 +6,21 @@ const transitions: Record<WorkflowEntity, Record<string, string[]>> = {
   // variants: corrections keep the record at "Under Review" (audit note only,
   // see lib/audit/log.ts callers), and closing is a single terminal step from
   // any in-flight status a caller reaches it from.
+  // Simplified Job Card Approval Workflow Unit: Approved/Materials
+  // Issued/Assigned can now go straight to In Progress/Closed — the
+  // simplified flow has no required Store-issue/technician-assignment step,
+  // so a Job Card can be worked on and closed directly from "Approved"
+  // (displayed as "Open"). Additive only — every transition that was valid
+  // before is still valid, so the old multi-step flow (Store, assignment)
+  // keeps working exactly as it did for any in-flight record using it.
   work_order: {
     Created: ["Under Review"],
     "Under Review": ["Approved", "Under Review"],
-    Approved: ["Waiting Materials", "Partially Issued", "Materials Issued", "Assigned"],
-    "Waiting Materials": ["Partially Issued", "Materials Issued"],
-    "Partially Issued": ["Partially Issued", "Materials Issued", "Assigned"],
-    "Materials Issued": ["Assigned"],
-    Assigned: ["In Progress", "Assigned"],
+    Approved: ["Waiting Materials", "Partially Issued", "Materials Issued", "Assigned", "In Progress", "Closed"],
+    "Waiting Materials": ["Partially Issued", "Materials Issued", "In Progress", "Closed"],
+    "Partially Issued": ["Partially Issued", "Materials Issued", "Assigned", "In Progress", "Closed"],
+    "Materials Issued": ["Assigned", "In Progress", "Closed"],
+    Assigned: ["In Progress", "Assigned", "Closed"],
     "In Progress": ["Closed", "Assigned"],
     Closed: []
   },

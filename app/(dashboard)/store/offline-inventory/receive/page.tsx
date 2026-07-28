@@ -21,7 +21,7 @@ export default async function AddReceivedMaterialPage() {
     <>
       <PageHeader
         title="Add Received Material"
-        description="Record material newly received into the Maintenance Store."
+        description="Record material newly received for maintenance tracking."
         actions={
           <Link
             href="/store/offline-inventory"

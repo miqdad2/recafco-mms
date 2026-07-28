@@ -7,11 +7,12 @@ import { X, CheckCircle2, ArrowRight } from "lucide-react";
 
 import { storeIssueModalAction, type StoreIssueModalState } from "@/app/actions/phase4";
 
-// Store Guided Send Materials Popup Workflow Unit: Store completes a
-// Materials Request send from one guided popup instead of navigating to the
-// full Materials Request detail page. Reuses storeIssueModalAction, which
-// itself reuses issueMaterials exactly as-is (Task 3) — this component only
-// adds the guided UI around it.
+// Simplified Workflow Correction Unit: Data Entry or Supervisor/Manager
+// records materials received against a Materials Request from one guided
+// popup, instead of navigating to the full Materials Request detail page.
+// Reuses storeIssueModalAction/issueMaterials exactly as-is (only the
+// movement_type it records and this component's wording changed) — this
+// component only adds the guided UI around it.
 
 export type StoreSendMaterialsData = {
   id: string;
@@ -34,35 +35,30 @@ export type StoreSendMaterialsData = {
 
 function SendItemRow({ item }: { item: StoreSendMaterialsData["items"][number] }) {
   const remaining = Math.max(item.quantity_requested - item.issued_quantity, 0);
-  const [qtyToSendNow, setQtyToSendNow] = useState(remaining);
-  const newTotal = item.issued_quantity + qtyToSendNow;
-  // Task 8: no "Offline Inventory"/"stock balance" wording — short, calm note only.
-  const showNoBalanceNote = (item.balance ?? 0) <= 0;
+  const [qtyReceivedNow, setQtyReceivedNow] = useState(remaining);
+  const newTotal = item.issued_quantity + qtyReceivedNow;
 
   return (
     <div className="rounded-md border border-[#E5E7EB] p-3">
       <p className="text-base font-bold text-[#111827]">{item.description}</p>
       <p className="mt-1 text-xs text-[#6B7280]">
         Requested quantity: <span className="font-semibold text-[#111827]">{item.quantity_requested}</span>
-        {" · "}Already sent: <span className="font-semibold text-[#111827]">{item.issued_quantity}</span>
+        {" · "}Already received: <span className="font-semibold text-[#111827]">{item.issued_quantity}</span>
         {" · "}Remaining: <span className="font-semibold text-[#111827]">{remaining}</span>
       </p>
-      {showNoBalanceNote && (
-        <p className="mt-1.5 text-xs text-amber-700">Store send will be recorded for Maintenance tracking.</p>
-      )}
       <div className="mt-2">
-        <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Quantity to send now</label>
+        <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Quantity received now</label>
         <input
           className="focus-ring w-full max-w-[160px] rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
           type="number"
           min="0"
           max={remaining}
           step="0.01"
-          value={qtyToSendNow}
+          value={qtyReceivedNow}
           onChange={(e) => {
             const raw = Number(e.target.value);
             const clamped = Number.isFinite(raw) ? Math.min(Math.max(raw, 0), remaining) : 0;
-            setQtyToSendNow(clamped);
+            setQtyReceivedNow(clamped);
           }}
         />
         <input type="hidden" name={`issued_${item.id}`} value={newTotal} />
@@ -73,26 +69,27 @@ function SendItemRow({ item }: { item: StoreSendMaterialsData["items"][number] }
 
 function SuccessPanel({ state, onClose }: { state: StoreIssueModalState; onClose: () => void }) {
   if (!state || !state.ok) return null;
+  const displayStatus = state.status === "Issued" ? "Received" : state.status === "Partially Issued" ? "Requested (partially received)" : state.status ?? "-";
   return (
     <div className="space-y-4">
       <div className="flex items-start gap-3 rounded-md border border-green-200 bg-green-50 p-4">
         <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-green-600" aria-hidden />
         <div>
-          <p className="text-sm font-black text-green-900">Materials sent successfully</p>
-          <p className="mt-1 text-sm text-green-800">These materials were recorded for the Job Card.</p>
+          <p className="text-sm font-black text-green-900">Materials received successfully</p>
+          <p className="mt-1 text-sm text-green-800">These materials were recorded in Offline Inventory Control, linked to this Job Card.</p>
         </div>
       </div>
       <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3 text-sm">
-        <p>Materials sent: <span className="font-semibold text-[#111827]">{state.partsRequestNumber ?? "Materials Request"}</span></p>
+        <p>Materials Request: <span className="font-semibold text-[#111827]">{state.partsRequestNumber ?? "Materials Request"}</span></p>
         <p className="mt-1">Job Card: <span className="font-semibold text-[#111827]">{state.workOrderNumber ?? "-"}</span></p>
-        <p className="mt-1">Materials Request status: <span className="font-semibold text-[#111827]">{state.status ?? "-"}</span></p>
+        <p className="mt-1">Materials Request status: <span className="font-semibold text-[#111827]">{displayStatus}</span></p>
       </div>
       <div className="flex flex-wrap gap-2">
         <Link
           href="/store/offline-inventory/movements"
           className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
         >
-          Open Sent Materials <ArrowRight className="h-4 w-4" aria-hidden />
+          Open Offline Inventory Control <ArrowRight className="h-4 w-4" aria-hidden />
         </Link>
         {state.workOrderId && (
           <Link
@@ -147,7 +144,7 @@ export function StoreSendMaterialsPopup({
         >
           <div className="shrink-0 flex items-start justify-between gap-3 rounded-t-xl border-b border-[#E5E7EB] bg-[#F5F6F8] px-5 py-4">
             <div className="min-w-0">
-              <p id="send-materials-heading" className="text-sm font-black text-[#111827]">Send Materials</p>
+              <p id="send-materials-heading" className="text-sm font-black text-[#111827]">Receive Materials</p>
               <p className="mt-0.5 text-xs text-[#4B5563]">
                 {data.parts_request_number ?? "Materials Request"}
                 {data.work_order_number && <> · {data.work_order_number}</>}
@@ -211,7 +208,7 @@ export function StoreSendMaterialsPopup({
                       disabled={isPending}
                       className="flex-1 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e] disabled:opacity-60"
                     >
-                      {isPending ? "Sending…" : "Send Materials"}
+                      {isPending ? "Receiving…" : "Receive Materials"}
                     </button>
                     <button
                       type="button"

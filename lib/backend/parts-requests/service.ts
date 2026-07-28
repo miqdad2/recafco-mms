@@ -23,6 +23,7 @@ import type {
   RejectPartsRequestInput
 } from "@/lib/backend/parts-requests/validators";
 import { AppError } from "@/lib/errors/app-error";
+import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { canTransition, transitionError } from "@/lib/workflows/status-rules";
 import { normalizeCategory } from "@/components/store/offline-inventory-types";
 import { emitMaterialsRequestRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
@@ -35,17 +36,15 @@ type PartsRequestResult = {
   requestedBy: string | null;
 };
 
-// store.issue is the pre-existing, broader permission (also held by
-// maintenance_manager); parts_requests.issue is the new, Store-scoped Unit 3
-// permission. Checking both preserves Manager's existing issue capability
-// (Task 10 says Store "can issue" — it doesn't say Manager's existing access
-// must be revoked) without granting Manager a new permission unnecessarily.
+// Simplified Workflow Correction Unit: this now backs the "Receive Materials"
+// action (movement_type RECEIVED, not ISSUED — see issueMaterials below), and
+// the shared canReceiveIssueMaterials() role check (Data Entry, Manager,
+// Super Admin, or legacy store.issue/parts_requests.issue holders) is the
+// single source of truth so this backend guard and the UI never drift apart.
 function assertCanIssueMaterials(context: CurrentUserContext) {
   assertActiveUser(context);
-  if (context.role?.slug === "super_admin") return;
-  if (context.permissions.includes("parts_requests.issue")) return;
-  if (context.permissions.includes("store.issue")) return;
-  throw new AppError("You do not have permission to issue materials.", { code: "FORBIDDEN" });
+  if (canReceiveIssueMaterials(context)) return;
+  throw new AppError("You do not have permission to receive materials.", { code: "FORBIDDEN" });
 }
 
 function assertCanCreatePartsRequest(context: CurrentUserContext) {
@@ -106,11 +105,11 @@ export async function createPartsRequest(
       });
     }
 
-    // Unit 6: Manager + Engineer (if not the creator) — Store is deliberately
-    // NOT notified here (per Task 3: "optionally notify Store only after
-    // approval, not immediately").
+    // Simplified Job Card Approval Workflow Unit Task 11: Manager only (if
+    // not the creator) — Store has left the active workflow, Engineer is no
+    // longer a surfaced reviewer.
     const recipients = dedupeRecipients(
-      await getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager", "maintenance_engineer"]),
+      await getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager"]),
       context.userId
     );
 
@@ -197,9 +196,10 @@ export async function approvePartsRequest(
       }
     });
 
-    // Unit 6: Store + creator + Engineer (was Store only).
-    const storeAndEngineerIds = await getActiveUserIdsByRoleSlugs(tx, ["store_keeper", "maintenance_engineer"]);
-    const recipients = dedupeRecipients([updated.requested_by, ...storeAndEngineerIds], context.userId);
+    // Simplified Job Card Approval Workflow Unit Task 11: creator only —
+    // Store has left the active workflow and Engineer is no longer a
+    // surfaced reviewer.
+    const recipients = dedupeRecipients([updated.requested_by], context.userId);
     const jobCardNumber = await getJobCardNumber(tx, existing.work_order_id);
 
     return {
@@ -460,24 +460,27 @@ const ISSUABLE_MATERIALS_REQUEST_STATUSES = ["Approved", "Waiting Stock", "Parti
 const MATERIALS_REQUEST_ITEM_UNIT = "PCS"; // parts_request_items has no unit column (Unit 5 — see report)
 
 /**
- * Records materials Store has sent against a Materials Request — the active,
- * sole material-send pipeline. Store Send Materials Flow Unit: this does NOT
- * check system stock/opening/received balance — Store physically handles
- * material availability, and this function only records what was sent. The
- * offline_inventory_movements row it creates is a tracking record for the
- * Material Ledger, not a stock gate.
+ * Records materials received against a Materials Request — the active, sole
+ * material-receive pipeline (Simplified Workflow Correction Unit: renamed
+ * from "issue"/Store-send semantics — there is no separate Store-send step
+ * in the active workflow any more, Data Entry/Manager record materials as
+ * received directly). Does NOT check system stock/opening balance — this
+ * only records what physically arrived. The offline_inventory_movements row
+ * it creates (movement_type RECEIVED) is a tracking record for the Offline
+ * Inventory Control ledger, not a stock gate.
  *
- * `quantity` per item is the ABSOLUTE new total sent for that item (not a
- * delta) — matching the existing StoreIssuePanel UI, which pre-fills each
- * input with the item's current issued_quantity and lets Store edit it
- * upward. The Offline Inventory ledger movement created for each item records
- * only the DELTA (new total minus what was already sent), since the ledger is
- * an append-only log of discrete events, not a running total.
+ * `quantity` per item is the ABSOLUTE new total received for that item (not a
+ * delta) — matching the existing UI, which pre-fills each input with the
+ * item's current received quantity (`issued_quantity` column, unrenamed —
+ * see below) and lets the user edit it upward. The Offline Inventory ledger
+ * movement created for each item records only the DELTA (new total minus
+ * what was already received), since the ledger is an append-only log of
+ * discrete events, not a running total.
  *
  * Race-condition safety: locks the parts_requests row with SELECT ... FOR
- * UPDATE before re-reading items/issued quantities, so two concurrent send
- * attempts against the SAME request serialize instead of both reading the
- * same stale issued_quantity.
+ * UPDATE before re-reading items/received quantities, so two concurrent
+ * receive attempts against the SAME request serialize instead of both
+ * reading the same stale issued_quantity.
  */
 export async function issueMaterials(context: CurrentUserContext, input: IssueMaterialsInput) {
   assertCanIssueMaterials(context);
@@ -487,17 +490,14 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
     if (!request) throw new AppError("Materials request not found.", { code: "NOT_FOUND" });
     if (!ISSUABLE_MATERIALS_REQUEST_STATUSES.includes(request.status)) {
       throw new AppError(
-        `Materials request is not in a valid status for issue. Current status: "${request.status}".`,
+        `Materials request is not in a valid status to receive materials. Current status: "${request.status}".`,
         { code: "WORKFLOW_ERROR" }
       );
     }
 
-    // Store Send Materials Approval Gate Unit Task 2: Store must not send
-    // materials before the linked Job Card has been Manager-approved, even
-    // if the Materials Request itself already says Approved/Waiting Stock/
-    // Partially Issued — those statuses only describe Store's own workflow,
-    // not whether the Manager has approved the Job Card yet. Does not check
-    // stock/balance (unchanged, out of scope for this gate).
+    // Materials cannot be recorded as received before the linked Job Card has
+    // been Manager-approved, even if the Materials Request itself already
+    // says Approved/Waiting Stock/Partially Issued.
     if (request.work_order_id) {
       const linkedJobCard = await tx.work_orders.findUnique({
         where: { id: request.work_order_id },
@@ -505,7 +505,7 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
       });
       if (linkedJobCard && (linkedJobCard.status === "Created" || linkedJobCard.status === "Under Review")) {
         throw new AppError(
-          "Materials cannot be sent yet. This Job Card is waiting Manager approval.",
+          "Materials cannot be received yet. This Job Card is waiting Manager approval.",
           { code: "WORKFLOW_ERROR" }
         );
       }
@@ -545,13 +545,13 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
 
       if (newTotal < alreadyIssued - 1e-9) {
         throw new AppError(
-          `Issued quantity cannot be decreased for "${item.description}" (already issued: ${alreadyIssued}).`,
+          `Received quantity cannot be decreased for "${item.description}" (already received: ${alreadyIssued}).`,
           { code: "VALIDATION_ERROR" }
         );
       }
       if (newTotal > requested + 1e-9) {
         throw new AppError(
-          `Cannot issue more than requested for "${item.description}". Requested: ${requested}.`,
+          `Cannot receive more than requested for "${item.description}". Requested: ${requested}.`,
           { code: "VALIDATION_ERROR" }
         );
       }
@@ -559,17 +559,16 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
       const delta = newTotal - alreadyIssued;
       if (delta <= 1e-9) continue; // no change for this item — nothing to record
 
-      // Store Send Materials Flow Unit Task 2: no system stock/balance check
-      // here by design — Store sends materials based on the approved
-      // Materials Request and physically handles availability themselves.
-      // The only quantity rules are: cannot decrease, cannot exceed
-      // requested (both checked above), and cannot re-record a zero delta
-      // (checked just above) — the offline_inventory_movements row created
-      // below is a tracking record of what was sent, not a stock gate.
+      // No system stock/balance check here by design — this only records
+      // what physically arrived. The only quantity rules are: cannot
+      // decrease, cannot exceed requested (both checked above), and cannot
+      // re-record a zero delta (checked just above) — the
+      // offline_inventory_movements row created below is a tracking record
+      // of what was received, not a stock gate.
 
       await tx.offline_inventory_movements.create({
         data: {
-          movement_type: "ISSUED",
+          movement_type: "RECEIVED",
           movement_date: new Date(),
           part_id: item.part_id,
           manual_material_name: item.part_id ? null : item.description,
@@ -579,7 +578,7 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
           quantity: delta,
           unit: MATERIALS_REQUEST_ITEM_UNIT,
           counterparty: input.issuedTo ?? null,
-          purpose: `Material issue — ${request.parts_request_number ?? request.id}`,
+          purpose: `Material receive — ${request.parts_request_number ?? request.id}`,
           related_work_order_id: request.work_order_id,
           parts_request_id: request.id,
           remarks: input.reason ?? null,
@@ -600,7 +599,7 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
     }
 
     if (!anyDeltaApplied) {
-      throw new AppError("Enter a quantity to issue for at least one item.", { code: "VALIDATION_ERROR" });
+      throw new AppError("Enter a quantity received for at least one item.", { code: "VALIDATION_ERROR" });
     }
 
     const totalRequested = items.reduce((sum, item) => sum + Number(item.quantity_requested), 0);
@@ -620,16 +619,13 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
       await syncJobCardMaterialStatusInTx(tx, context, request.work_order_id);
     }
 
-    // Unit 6: Manager + Engineer + creator (was creator only). Partial and
-    // final issue fire distinct events per Task 6, with issued/remaining
-    // quantity totals in the message for the partial case.
-    // Enterprise Real-Time Notifications Unit Task 2 (matrix G): also notify
-    // any technician already assigned to the linked Job Card — materials can
-    // arrive after assignment (e.g. a technician's own "Request Extra
-    // Materials" mid-job), and the matrix calls for that technician to know
+    // Manager + creator, notified on receive (Simplified Workflow Correction
+    // Unit Task 10: do not notify Store or Engineer). Also notifies any
+    // technician already assigned to the linked Job Card — materials can
+    // arrive after assignment, and the assigned technician should know
     // materials showed up.
     const [roleIds, assignments] = await Promise.all([
-      getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager", "maintenance_engineer"]),
+      getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager"]),
       request.work_order_id
         ? tx.work_order_assignments.findMany({ where: { work_order_id: request.work_order_id, technician_id: { not: null } }, select: { technician_id: true } })
         : Promise.resolve([])

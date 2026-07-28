@@ -25,22 +25,19 @@ import { canViewEntityFile } from "@/lib/security/file-access";
 import {
   displayPartsRequestStatus,
   partsRequestStatusTone,
+  materialsReceiptStatus,
 } from "@/lib/display/parts-request-labels";
-import { displayStatus as displayJobCardStatus } from "@/lib/display/work-order-labels";
+import {
+  getPendingCorrectionWorkOrderIds,
+  displaySimplifiedStatus,
+  simplifiedStatusTone,
+} from "@/lib/work-orders/simplified-status";
 import { canReceiveIssueMaterials, getPartsRequestVisibilityFilter } from "@/lib/parts-requests/visibility";
 import { PARTS_REQUEST_ATTACHMENT_CATEGORIES } from "@/lib/files/attachment-constants";
-import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
+import { AutoRefresh } from "@/components/auto-refresh";
+import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// Job Card status tone — mirrors the tone rule used by the Job Card detail
-// page's own local statusTone() (Maintenance Workflow Redesign Unit 8 Task 2).
-// Kept local since it's a small, page-specific display rule, not shared logic.
-function jobCardStatusTone(status: string): "green" | "amber" | "red" | "blue" | "gray" {
-  if (["Closed", "Approved", "Materials Issued"].includes(status)) return "green";
-  if (status.includes("Waiting") || status === "Partially Issued" || status === "Under Review") return "amber";
-  return "blue";
-}
 
 type BadgeTone = "green" | "amber" | "red" | "blue" | "gray";
 
@@ -276,15 +273,11 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
     issued_quantity: item.issued_quantity.toFixed(2)
   }));
 
-  // Store Materials Issue Page Simplification Unit Task 2: informational
-  // only — never blocks a send, just backs a soft "no store balance
-  // recorded" note on the Send Materials panel.
-  const materialBalances = await getMaterialBalancesForItems(
-    rawItems.map((item) => ({ part_id: item.part_id, description: item.description }))
-  );
-
   const canApprove = context.role?.slug === "super_admin" || context.permissions.includes("parts_requests.approve");
   const canReceive = canReceiveIssueMaterials(context);
+  const jobCardHasPendingCorrection = jobCard
+    ? (await getPendingCorrectionWorkOrderIds([jobCard.id])).has(jobCard.id)
+    : false;
 
   // The single-material receive panel below only applies while the request
   // is still "Requested" — once received, use the list's Issue popup instead
@@ -366,9 +359,16 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
 
   return (
     <>
+      {/* Enterprise-Wide Real-Time Update Verification Task 3/8: this page
+          previously had no auto-refresh mechanism at all — two users viewing
+          the same Materials Request (e.g. one receiving materials while the
+          other watches) never saw the other's change without a manual
+          reload. */}
+      <AutoRefresh intervalMs={15000} />
+      <RealtimeRefresh watch={["materials_request.", "job_card.", "work_order.", "offline_inventory.", "material_ledger."]} />
       <PageHeader
         title={request.parts_request_number ?? ""}
-        description="Materials request details and approval."
+        description="Materials request details, linked Job Card, and item tracking."
         breadcrumb={
           <PageBreadcrumb items={[{ label: "Materials Requests", href: "/store/parts-requests" }, { label: "Request Details" }]} />
         }
@@ -429,9 +429,10 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
             <Info
               label="Job Card Status"
               value={
-                jobCard ? (
-                  <StatusBadge label={displayJobCardStatus(jobCard.status)} tone={jobCardStatusTone(jobCard.status)} />
-                ) : (
+                jobCard ? (() => {
+                  const simplified = displaySimplifiedStatus(jobCard.status, jobCardHasPendingCorrection);
+                  return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
+                })() : (
                   "-"
                 )
               }
@@ -480,23 +481,21 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
 
         {/* ── Action panels ────────────────────────────────────────── */}
         <section className="space-y-5">
-          {/* Manager approval — Unit 5: gate fixed to the new "Requested" status
-              (was "Submitted"/"Pending Approval", never reached by new-model
-              requests); Reject button removed since rejectPartsRequest is
-              disabled in the simplified workflow (no Rejected status).
-              Unified Manager Job Card + Materials Approval Flow Fix Task 5:
-              this page is no longer Manager's primary flow — that's the Job
-              Card popup, where approving the Job Card also approves this in
-              one step. Opened directly here, Manager may still approve, but
-              only once the linked Job Card is itself already approved;
-              otherwise they're told to approve the Job Card first. */}
-          {canApprove && request.status === "Requested" ? (
-            jobCard && jobCard.status === "Under Review" ? (
+          {/* Simplified Workflow UI Consistency Cleanup Task 4: no standalone
+              "Materials Request approval" step while the linked Job Card
+              isn't Open yet — the Materials Request is approved together
+              with its Job Card in one step (approveJobCardAndMaterialsAction),
+              so Manager's primary action here is always "Open Job Card"
+              until that happens. The only case a standalone Approve button
+              still appears is materials requested/added AFTER the Job Card
+              was already Open (Case C — a second Materials Request on an
+              already-open Job Card). */}
+          {canApprove && request.status === "Requested" && jobCard ? (
+            jobCard.status === "Created" ? (
               <section className="rounded-md border border-amber-200 bg-amber-50 p-5 shadow-sm">
-                <h2 className="text-lg font-bold text-amber-900">Approve the linked Job Card first.</h2>
+                <h2 className="text-lg font-bold text-amber-900">Waiting for Job Card to be opened</h2>
                 <p className="mt-1 text-sm text-amber-800">
-                  This Materials Request belongs to {jobCard.work_order_number ?? "a Job Card"}, which hasn&apos;t been approved yet.
-                  Open the Job Card to approve both together.
+                  This Materials Request belongs to {jobCard.work_order_number ?? "a Job Card"}, which hasn&apos;t been submitted for review yet.
                 </p>
                 <Link
                   href={`/maintenance/work-orders/${jobCard.id}`}
@@ -505,9 +504,29 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
                   Open Job Card <ArrowRight className="h-4 w-4" aria-hidden />
                 </Link>
               </section>
-            ) : (
+            ) : jobCard.status === "Under Review" ? (
+              <section className="rounded-md border border-amber-200 bg-amber-50 p-5 shadow-sm">
+                <h2 className="text-lg font-bold text-amber-900">
+                  {jobCardHasPendingCorrection ? "Waiting on Data Entry correction" : "Waiting Supervisor / Manager review"}
+                </h2>
+                <p className="mt-1 text-sm text-amber-800">
+                  {jobCardHasPendingCorrection
+                    ? `${jobCard.work_order_number ?? "The Job Card"} was sent back to Data Entry for a correction. This Materials Request will be reviewed once it's resubmitted.`
+                    : `This Materials Request belongs to ${jobCard.work_order_number ?? "a Job Card"}, which is still awaiting review. Open the Job Card to review both together.`}
+                </p>
+                <Link
+                  href={`/maintenance/work-orders/${jobCard.id}`}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#c8181e]"
+                >
+                  Open Job Card <ArrowRight className="h-4 w-4" aria-hidden />
+                </Link>
+              </section>
+            ) : jobCard.status !== "Closed" ? (
               <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-                <h2 className="text-lg font-bold">Maintenance Manager Approval</h2>
+                <h2 className="text-lg font-bold">Approve Materials Request</h2>
+                <p className="mt-1 text-sm text-[#4B5563]">
+                  {jobCard.work_order_number ?? "This Job Card"} is already open — approve these additional materials to make them ready to receive.
+                </p>
                 <div className="mt-4 grid gap-3">
                   <form action={approvePartsRequestAction} className="space-y-2">
                     <input type="hidden" name="parts_request_id" value={request.id} />
@@ -516,11 +535,14 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
                   </form>
                 </div>
               </section>
-            )
+            ) : null
           ) : null}
 
-          {/* Receive Material */}
-          {canReceive && isOpen && (
+          {/* Generic free-text receive log — superseded by the per-item
+              "Receive Materials" panel below for the active workflow (Data
+              Entry/Manager/Super Admin); kept available to Store Keeper only
+              so a legacy free-text log capability isn't deleted outright. */}
+          {canReceive && isOpen && context.role?.slug === "store_keeper" && (
             <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
               <h2 className="text-lg font-bold">Receive Material</h2>
               <p className="mt-1 text-sm text-[#4B5563]">Record materials received against this request.</p>
@@ -588,16 +610,43 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
             </section>
           )}
 
-          {/* Send Materials panel — Store sends against the approved
-              Materials Request with no system stock/balance check
-              (Store Send Materials Flow Unit). */}
+          {/* Manager Approval Success Popup and Materials Awaiting Receipt
+              Flow Task 8: a short, plain-language banner ahead of the
+              Receive Materials panel below, sharing the exact same 3-value
+              status mapping as the badge/KPI/quick-view surfaces. */}
+          {(() => {
+            const receipt = materialsReceiptStatus(request.status, jobCard?.status ?? null, jobCardHasPendingCorrection);
+            if (receipt === "Received") {
+              return (
+                <div className="mb-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm font-semibold text-green-800">
+                  Materials received and recorded in Offline Inventory Control.
+                </div>
+              );
+            }
+            if (receipt === "Awaiting Receipt") {
+              return (
+                <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+                  Materials are approved and awaiting receipt.
+                </div>
+              );
+            }
+            return (
+              <div className="mb-3 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-2 text-sm font-semibold text-[#4B5563]">
+                Materials can be received after the Job Card is Open.
+              </div>
+            );
+          })()}
+
+          {/* Receive Materials panel — per-item receive against the approved
+              Materials Request; creates the Offline Inventory Control
+              movement and marks the request Received once fully received. */}
           <StoreIssuePanel
             requestId={request.id}
             status={request.status}
             jobCardStatus={jobCard?.status ?? null}
+            jobCardHasPendingCorrection={jobCardHasPendingCorrection}
             items={items ?? []}
             context={context}
-            materialBalances={Object.fromEntries(materialBalances)}
           />
         </section>
 

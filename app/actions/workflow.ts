@@ -47,6 +47,36 @@ async function workflowErrorPath(workOrderId: string, error: unknown, basePath =
   return `${basePath}/${workOrderId}?error=${encodeURIComponent(safeErrorMessage(error))}`;
 }
 
+// Manager Approval Success Popup and Materials Awaiting Receipt Flow Task 2:
+// only ever redirect back to a same-origin relative path the caller itself
+// supplied (the quick-view's own data.closeHref) — never an arbitrary value,
+// to avoid an open-redirect if this field were ever tampered with.
+function safeReturnTo(formData: FormData, fallback: string): string {
+  const raw = formData.get("return_to");
+  if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")) return fallback;
+  return raw;
+}
+
+// Allowlist only — the query-param name a host page uses to open the Job
+// Card quick-view again ("preview" on the dashboard/Job Cards list,
+// "jobPreview" on the Materials Requests list, which reserves "preview" for
+// its own Materials Request quick-view). Never trust an arbitrary field name.
+const PREVIEW_PARAM_ALLOWLIST = new Set(["preview", "jobPreview"]);
+function safeReturnToParam(formData: FormData): string {
+  const raw = formData.get("return_to_param");
+  return typeof raw === "string" && PREVIEW_PARAM_ALLOWLIST.has(raw) ? raw : "preview";
+}
+
+// Appends/overwrites query params on a relative path without disturbing
+// whatever filters it already carries (e.g. a Job Cards list URL with
+// ?status=Submitted&search=...).
+function appendParams(path: string, params: Record<string, string>): string {
+  const url = new URL(path, "http://localhost");
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  const qs = url.searchParams.toString();
+  return qs ? `${url.pathname}?${qs}` : url.pathname;
+}
+
 function idFrom(formData: FormData, fallbackPath = "/maintenance/work-orders") {
   try {
     return parseWorkOrderId(formData.get("work_order_id"));
@@ -158,7 +188,14 @@ export async function approveJobCardAndMaterialsAction(formData: FormData) {
   const context = await requirePermission("work_orders.approve");
   const id = idFrom(formData);
   const comments = parseWorkflowComment(formData.get("comments"));
-  let targetPath = `/maintenance/work-orders/${id}`;
+  // Manager Approval Success Popup and Materials Awaiting Receipt Flow Task
+  // 1/2: previously always redirected to the full Job Card detail page,
+  // forcing Manager away from whatever list/dashboard they were reviewing
+  // from — now returns to that same page (the quick-view's own
+  // data.closeHref, passed through as return_to) with a success popup
+  // instead of a hard navigation away.
+  let targetPath = safeReturnTo(formData, `/maintenance/work-orders/${id}`);
+  const previewParam = safeReturnToParam(formData);
 
   try {
     const result = await approveJobCardAndMaterials(context, id, comments);
@@ -168,7 +205,7 @@ export async function approveJobCardAndMaterialsAction(formData: FormData) {
     revalidatePath("/store/issue-materials");
     revalidatePath("/technician/jobs");
     revalidatePath("/dashboard");
-    targetPath = `/maintenance/work-orders/${result.workOrderId}`;
+    targetPath = appendParams(targetPath, { success: "job-card-opened", [previewParam]: result.workOrderId });
   } catch (error) {
     redirect(await workflowErrorPath(id, error));
   }
@@ -199,6 +236,12 @@ export async function requestClarificationAction(formData: FormData) {
   const context = await requirePermission("work_orders.request_correction");
   const id = idFrom(formData);
   const question = String(formData.get("question") ?? "").trim();
+  // Simplified Workflow UI Consistency Cleanup: "Request Correction" and "Ask
+  // to Add/Update Materials" both post here (same underlying
+  // ClarificationRequest, no schema field distinguishing them) — this is
+  // purely a UI hint carried through the redirect so the confirmation modal
+  // can word itself correctly, not persisted anywhere.
+  const kind = formData.get("kind") === "materials" ? "materials" : "correction";
   let targetPath = `/maintenance/work-orders/${id}`;
 
   if (question.length < 10) {
@@ -210,7 +253,7 @@ export async function requestClarificationAction(formData: FormData) {
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/work-orders");
     revalidatePath("/dashboard");
-    targetPath = `/maintenance/work-orders/${result.workOrderId}?success=clarification-sent`;
+    targetPath = `/maintenance/work-orders/${result.workOrderId}?success=clarification-sent&kind=${kind}`;
   } catch (error) {
     redirect(await workflowErrorPath(id, error));
   }
@@ -445,12 +488,19 @@ export async function closeWorkOrderAction(formData: FormData) {
   const comments = parseWorkflowComment(formData.get("comments"));
   let targetPath = `/maintenance/work-orders/${id}`;
 
+  // Simplified Job Card Approval Workflow Unit Task 4: "Close" now requires a
+  // closing note — was optional. Same >= 10 character convention already
+  // used for request-correction/respond-to-correction.
+  if (!comments || comments.trim().length < 10) {
+    redirect(`${targetPath}?error=closing-note-required`);
+  }
+
   try {
     const result = await closeWorkOrder(context, id, comments);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/work-orders");
     revalidatePath("/dashboard");
-    targetPath = `/maintenance/work-orders/${result.workOrderId}`;
+    targetPath = `/maintenance/work-orders/${result.workOrderId}?success=job-card-closed`;
   } catch (error) {
     redirect(await workflowErrorPath(id, error));
   }

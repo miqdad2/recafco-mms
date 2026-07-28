@@ -9,6 +9,7 @@ import { writeAuditLog } from "@/lib/audit/log";
 import { revalidatePath } from "next/cache";
 import { UNITS, normalizeCategory } from "@/components/store/offline-inventory-types";
 import { requireOfflineInventoryManage } from "@/lib/store/offline-inventory-data";
+import { emitOfflineInventoryRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 
 export type ImportRowStatus =
   | "valid"
@@ -329,6 +330,13 @@ export async function importOpeningStockAction(rows: ImportPreviewRow[]): Promis
     summary: `Imported ${imported} opening stock item(s) from Excel (${skipped} skipped, batch ${batchRef})`,
     metadata: { imported, skipped, failureCount: failures.length, rowsReceived: rows.length, batchReference: batchRef },
   });
+
+  // Enterprise-Wide Real-Time Update Verification Task 2/7: one event per
+  // batch, not per row — an import can be dozens/hundreds of rows, and every
+  // watcher only needs to know "the ledger changed," not each individual line.
+  if (imported > 0) {
+    await emitOfflineInventoryRealtimeEvent(REALTIME_EVENTS.OFFLINE_INVENTORY_IMPORTED, null, context.userId);
+  }
 
   revalidatePath("/store/offline-inventory");
   revalidatePath("/store/offline-inventory/movements");

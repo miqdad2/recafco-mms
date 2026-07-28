@@ -13,16 +13,12 @@ import {
 } from "@/lib/files/attachment-constants";
 import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/maintenance-types";
 
-const WORKER_TYPES = [
-  "Auto",
-  "Mechanical",
-  "Electrical",
-  "Civil",
-  "AC",
-  "Plumbing",
-  "Welding/Fabrication",
-  "Other",
-];
+// Worker Team / Division Option Cleanup: narrowed to the 4 options
+// management wants offered for new Job Cards. The database still allows the
+// full historical set (Civil/AC/Plumbing/Welding/Fabrication) via
+// work_orders_worker_type_check — this list only controls what a NEW Job
+// Card can select, it does not migrate or block existing records.
+const WORKER_TYPES = ["Auto", "Mechanical", "Electrical", "Other"];
 const STEP_LABELS = ["Select Asset", "Request Details", "Assignment", "Required Parts", "Attachments", "Review & Save"];
 const MAX_PART_ROWS = 8;
 

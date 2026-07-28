@@ -34,24 +34,27 @@ export function getPartsRequestVisibilityFilter(
 }
 
 /**
- * Explicit role check (not a generic permission key) for who may receive
- * materials against a Materials Request — deliberately NOT the broader
- * `store.issue` permission, which would also unlock the rest of Offline
- * Inventory Control (Add Opening Stock, Import, etc.) well beyond what this
- * feature asks for. Manager Dashboard Job Card/Materials Ordering Fix:
- * Manager removed — receiving/sending materials is a Store action, not a
- * Manager one (the Manager approval page showing "Receive Material" was
- * confusing/wrong). Data Entry is left as-is (originally
- * MaterialsRequest-DataEntryReceiveIssue-01 Task 1 — logging supplier
- * paperwork, a different concern from Store's own send/issue flow) since
- * only Manager was reported as wrong. Viewer/Auditor and Technician remain
- * excluded unless a future phase explicitly grants them a qualifying
- * permission. Shared between the server actions and the list/detail pages so
- * the UI and the enforcement never drift apart.
+ * Explicit role check (not a generic permission key) for who may record
+ * materials received against a Materials Request — the single shared gate
+ * for the "Receive Materials" action (creates the Offline Inventory Control
+ * movement and, once fully received, marks the request Received).
+ *
+ * Simplified Workflow Correction Unit: Store is removed from the active
+ * workflow — Data Entry AND Supervisor/Manager (`maintenance_manager`) both
+ * need this action now, reversing an earlier decision that excluded Manager.
+ * `parts_requests.issue`/`store.issue` permission holders are still allowed
+ * too (backward compatible with any role/grant relying on the old
+ * Store-issue permission), but the role-slug check is what the three active
+ * roles (Data Entry, Manager, Super Admin) actually rely on. Viewer/Auditor
+ * and Technician remain excluded. Shared between the server actions and the
+ * list/detail pages so the UI and the enforcement never drift apart.
  */
 export function canReceiveIssueMaterials(context: CurrentUserContext): boolean {
   return (
     context.role?.slug === "super_admin" ||
-    context.role?.slug === "maintenance_data_entry"
+    context.role?.slug === "maintenance_data_entry" ||
+    context.role?.slug === "maintenance_manager" ||
+    context.permissions.includes("parts_requests.issue") ||
+    context.permissions.includes("store.issue")
   );
 }

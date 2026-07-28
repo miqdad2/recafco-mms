@@ -15,6 +15,12 @@ export type MaterialsRequestCreatedModalProps = {
   assetName: string | null;
   itemCount: number | null;
   attachmentWarning: boolean;
+  // Simplified Workflow UI Consistency Cleanup Task 5: whether the linked
+  // Job Card had a pending correction at the moment this Materials Request
+  // was created (e.g. added via the correction banner's "Add Materials"
+  // shortcut) — changes the "Next" guidance from "open the Job Card" to
+  // "resubmit the Job Card".
+  jobCardHasPendingCorrection?: boolean;
   dismissHref: string;
 };
 
@@ -26,6 +32,7 @@ export function MaterialsRequestCreatedModal({
   assetName,
   itemCount,
   attachmentWarning,
+  jobCardHasPendingCorrection = false,
   dismissHref,
 }: MaterialsRequestCreatedModalProps) {
   const router = useRouter();
@@ -132,8 +139,9 @@ export function MaterialsRequestCreatedModal({
 
             <p className="mt-3 text-sm leading-relaxed text-[#111827]">
               <span className="font-bold">Next: </span>
-              The Maintenance Manager will review the request. Once materials are received, they can be
-              added to Offline Inventory Control.
+              {jobCardHasPendingCorrection
+                ? "Resubmit the Job Card for Supervisor / Manager review."
+                : "Open the linked Job Card. Once the Job Card is Open, received materials can be recorded in Offline Inventory Control."}
             </p>
           </div>
 

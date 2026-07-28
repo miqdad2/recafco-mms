@@ -122,7 +122,7 @@ const fallbackTemplates: Record<string, { title: string; message: string; action
   },
   "job_card.approved": {
     title: "Job Card Approved",
-    message: "Job Card {job_card_number} was approved. Store can review the required materials.",
+    message: "Job Card {job_card_number} was approved and is now open.",
     actionLabel: "Open Job Card",
     actionUrl: "/maintenance/work-orders/{entity_id}"
   },
@@ -158,7 +158,7 @@ const fallbackTemplates: Record<string, { title: string; message: string; action
   },
   "material_request.approved": {
     title: "Materials Request Approved",
-    message: "Materials Request {request_number} for Job Card {job_card_number} was approved for Store issue.",
+    message: "Materials Request {request_number} for Job Card {job_card_number} was approved.",
     actionLabel: "Open Materials Request",
     actionUrl: "/store/parts-requests/{entity_id}"
   },
@@ -169,17 +169,14 @@ const fallbackTemplates: Record<string, { title: string; message: string; action
     actionUrl: "/store/parts-requests/{entity_id}"
   },
   "material_request.partially_issued": {
-    // Enterprise Real-Time Notifications Unit Task 3: "Partially Issued" is
-    // banned as a primary label — reworded to lead with "Materials Sent" and
-    // push the partial/remaining detail into the message body only.
-    title: "Materials Sent (Some Remaining)",
-    message: "Some materials were sent for Job Card {job_card_number} ({issued_quantity} sent, {remaining_quantity} still needed).",
+    title: "Materials Partially Received",
+    message: "Some materials were received for Job Card {job_card_number} ({issued_quantity} received, {remaining_quantity} still needed).",
     actionLabel: "Open Materials Request",
     actionUrl: "/store/parts-requests/{entity_id}"
   },
   "material_request.issued": {
-    title: "Materials Issued",
-    message: "Materials for Job Card {job_card_number} were issued. The Job Card is ready for assignment.",
+    title: "Materials Received",
+    message: "Materials for Job Card {job_card_number} were received and recorded in Offline Inventory Control.",
     actionLabel: "Open Materials Request",
     actionUrl: "/store/parts-requests/{entity_id}"
   },

@@ -47,9 +47,9 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
         <div className="flex flex-col items-center gap-4 py-8 text-center">
           <Package className="h-10 w-10 text-[#9CA3AF]" aria-hidden />
           <div>
-            <p className="font-bold text-[#111827]">No materials available to issue</p>
+            <p className="font-bold text-[#111827]">No materials available to record as used</p>
             <p className="mt-1 text-sm text-[#4B5563]">
-              Add opening stock or receive materials first before issuing.
+              Add opening stock or receive materials first before recording usage.
             </p>
           </div>
           <Link
@@ -179,7 +179,7 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
         {/* Issued to */}
         <div>
           <label htmlFor="i-to" className={lbl}>
-            Issued / Sent to <span className="text-[#ED1C24]">*</span>
+            Used by / Sent to <span className="text-[#ED1C24]">*</span>
           </label>
           <input
             id="i-to"
@@ -251,7 +251,7 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
             className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#111827] py-2.5 text-sm font-bold text-white transition hover:bg-gray-700 disabled:opacity-60 sm:flex-none sm:px-8"
           >
             {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-            {isPending ? "Saving…" : "Save Issued Material"}
+            {isPending ? "Saving…" : "Save Used Material"}
           </button>
           <Link
             href="/store/offline-inventory"

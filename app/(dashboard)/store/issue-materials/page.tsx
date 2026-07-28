@@ -12,7 +12,6 @@ import { displayStatus as displayJobCardStatus } from "@/lib/display/work-order-
 import {
   displayPartsRequestStatus,
   partsRequestStatusTone,
-  materialsRequestStoreFollowUpHint,
 } from "@/lib/display/parts-request-labels";
 import { getPartsRequestVisibilityFilter } from "@/lib/parts-requests/visibility";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
@@ -60,7 +59,9 @@ function RequestCard({ row, actionable }: { row: IssueMaterialsRow; actionable: 
   const itemSummary = row.items.length
     ? row.items.map((i) => `${i.description} x${i.quantity_requested}`).join(", ")
     : "No items listed";
-  const followUpHint = materialsRequestStoreFollowUpHint(row.status);
+  const followUpHint =
+    row.status === "Waiting Stock" ? "Arranging materials" :
+    row.status === "Partially Issued" ? "Updating materials" : null;
 
   return (
     <section className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm">

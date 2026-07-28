@@ -122,7 +122,7 @@ export function movementTypeLabel(movementType: string, referenceNumber: string 
   const labels: Record<string, string> = {
     OPENING_STOCK: "Opening Stock",
     RECEIVED: "Received",
-    ISSUED: "Issued",
+    ISSUED: "Used",
     RETURNED: "Returned",
     ADJUSTMENT: "Adjustment",
   };

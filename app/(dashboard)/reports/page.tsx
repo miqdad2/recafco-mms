@@ -116,7 +116,7 @@ export default async function ReportsLandingPage() {
               href="/store/offline-inventory"
               icon={ArrowDownUp}
               title="Offline Inventory Control Report"
-              description="Maintenance Store balance by category, movement history, and materials usage for opening stock, receipts, and issues."
+              description="Offline Inventory Control balance by category, movement history, and materials usage for opening stock, receipts, and usage."
             />
 
             <ReportCard

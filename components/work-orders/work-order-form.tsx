@@ -7,7 +7,11 @@ import Link from "next/link";
 import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/maintenance-types";
 
 const maintenanceTypes = MAINTENANCE_TYPES;
-const workerTypes = ["Auto", "Mechanical", "Electrical", "Civil", "AC", "Plumbing", "Welding/Fabrication", "Other"];
+// Worker Team / Division Option Cleanup: narrowed to the 4 options offered
+// for new selections. A legacy record's existing value (Civil/AC/Plumbing/
+// Welding/Fabrication) is still preserved and shown — see the "(legacy)"
+// option pattern below, matching maintenanceTypes' existing convention.
+const workerTypes = ["Auto", "Mechanical", "Electrical", "Other"];
 const priorities = ["Low", "Normal", "High", "Urgent"];
 const MAX_REQUIRED_PART_ROWS = 8;
 
@@ -476,6 +480,16 @@ export function WorkOrderForm({
         </Field>
         <Field label="Worker type" name="worker_type">
           <select className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="worker_type" defaultValue={workOrder?.worker_type ?? "Mechanical"}>
+            {/* Worker Team / Division Option Cleanup Task 3: a legacy record
+                can hold a pre-cleanup value (Civil/AC/Plumbing/Welding-
+                Fabrication) not in the current list — keep it selectable so
+                re-saving other fields doesn't silently overwrite it with the
+                first option in the list. */}
+            {typeof workOrder?.worker_type === "string" &&
+              workOrder.worker_type &&
+              !workerTypes.includes(workOrder.worker_type) && (
+                <option key={workOrder.worker_type} value={workOrder.worker_type}>{workOrder.worker_type} (legacy)</option>
+              )}
             {workerTypes.map((item) => (
               <option key={item}>{item}</option>
             ))}

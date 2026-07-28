@@ -18,7 +18,11 @@ export type JobCardCreatedModalProps = {
   dismissHref: string;
 };
 
-const WORKFLOW_STAGES = ["Created", "Awaiting Review", "Assigned", "In Progress", "Closed"] as const;
+// Simplified Workflow UI Consistency Cleanup Task 7: mirrors the five
+// plain, user-facing statuses (lib/work-orders/simplified-status.ts) —
+// Draft → Submitted → Open → Closed. "Correction Requested" isn't part of
+// this bar since a just-created Job Card can't have a pending correction yet.
+const WORKFLOW_STAGES = ["Draft", "Submitted", "Open", "Closed"] as const;
 
 export function JobCardCreatedModal({
   jobCardId,
@@ -62,7 +66,7 @@ export function JobCardCreatedModal({
 
   const nextStepText = isDraft
     ? "Continue editing or submit it when you're ready for review."
-    : "Manager will review and assign the work.";
+    : "Supervisor / Manager will review the Job Card.";
 
   return (
     <>
@@ -128,7 +132,7 @@ export function JobCardCreatedModal({
 
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-bold uppercase tracking-wide text-[#4B5563]">Current status</span>
-              <StatusBadge label={isDraft ? "New" : "Awaiting Review"} tone={isDraft ? "gray" : "amber"} />
+              <StatusBadge label={isDraft ? "Draft" : "Submitted"} tone={isDraft ? "gray" : "amber"} />
             </div>
 
             <p className="mt-3 text-sm leading-relaxed text-[#111827]">

@@ -6,6 +6,7 @@ import { Bell, X } from "lucide-react";
 
 import { getClientNotificationsAction, markNotificationReadAction } from "@/app/actions/notifications";
 import { isSafeToRefresh } from "@/lib/realtime/refresh-guards";
+import { useRealtimeConnection } from "@/components/realtime/realtime-connection-provider";
 import type { NotificationListItem } from "@/lib/notifications/types";
 
 // Enterprise Real-Time Notifications Unit — Task 4/5/12. A lightweight,
@@ -16,6 +17,11 @@ import type { NotificationListItem } from "@/lib/notifications/types";
 // modal-style overlay for this page's own action feedback, which Task 4
 // explicitly says a real-time popup must not be ("should not block the
 // whole screen").
+//
+// SSE Connection Consolidation Unit: subscribes to the shared
+// RealtimeConnectionProvider (one EventSource per tab) instead of opening
+// its own — previously this and NotificationLiveCount each opened a
+// separate connection to the same endpoint.
 
 const AUTO_DISMISS_MS = 8000;
 const DEBOUNCE_MS = 800;
@@ -26,8 +32,9 @@ type ToastEntry =
 
 let nextToastId = 1;
 
-export function NotificationToastCenter({ userId }: { userId: string | null | undefined }) {
+export function NotificationToastCenter({ userId: _userId }: { userId: string | null | undefined }) {
   const router = useRouter();
+  const { subscribe } = useRealtimeConnection();
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const shownIds = useRef<Set<string>>(new Set());
   const pendingIds = useRef<Set<string>>(new Set());
@@ -40,10 +47,6 @@ export function NotificationToastCenter({ userId }: { userId: string | null | un
   }
 
   useEffect(() => {
-    if (!userId) return;
-
-    const es = new EventSource("/api/notifications/stream");
-
     async function flush() {
       const ids = [...pendingIds.current];
       pendingIds.current.clear();
@@ -87,14 +90,9 @@ export function NotificationToastCenter({ userId }: { userId: string | null | un
       }, DEBOUNCE_MS);
     }
 
-    function onNotification(evt: MessageEvent) {
-      try {
-        const data = JSON.parse(evt.data) as { id?: string };
-        if (data.id) pendingIds.current.add(data.id);
-        scheduleFlush();
-      } catch {
-        // malformed event payload — ignore, next heartbeat/event keeps the connection alive
-      }
+    function onNotification(data: { id?: string }) {
+      if (data.id) pendingIds.current.add(data.id);
+      scheduleFlush();
     }
 
     function onVisibilityChange() {
@@ -104,16 +102,15 @@ export function NotificationToastCenter({ userId }: { userId: string | null | un
       }
     }
 
-    es.addEventListener("notification", onNotification);
+    const unsubscribe = subscribe<{ id?: string }>("notification", onNotification);
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
-      es.removeEventListener("notification", onNotification);
+      unsubscribe();
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      es.close();
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
     };
-  }, [userId, router]);
+  }, [subscribe, router]);
 
   function openNotification(n: NotificationListItem) {
     startTransition(() => {

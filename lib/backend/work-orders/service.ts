@@ -107,7 +107,7 @@ async function jobCardClosedRecipients(
   actorId: string
 ): Promise<string[]> {
   const [roleIds, assignments] = await Promise.all([
-    getActiveUserIdsByRoleSlugs(tx, ["maintenance_engineer", "maintenance_manager"]),
+    getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager"]),
     tx.work_order_assignments.findMany({ where: { work_order_id: workOrderId, technician_id: { not: null } }, select: { technician_id: true } })
   ]);
   const technicianIds = assignments.map((a) => a.technician_id).filter((id): id is string => Boolean(id));
@@ -122,10 +122,11 @@ export async function submitWorkOrder(context: CurrentUserContext, workOrderId: 
   assertBackendPermission(context, "work_orders.manage");
   const result = await transitionWorkOrder(context, workOrderId, "Under Review");
 
-  // Unit 6: notify Maintenance Engineer only — Manager isn't notified until
-  // Engineer has reviewed (job_card.reviewed), keeping this stage quiet for them.
-  const engineerIds = await withBackendTransaction(context.userId, async (tx) =>
-    dedupeRecipients(await getActiveUserIdsByRoleSlugs(tx, ["maintenance_engineer"]), context.userId)
+  // Simplified Job Card Approval Workflow Unit Task 4/11: notify
+  // Supervisor/Manager directly — there is no Engineer review stage in the
+  // active flow.
+  const managerIds = await withBackendTransaction(context.userId, async (tx) =>
+    dedupeRecipients(await getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager"]), context.userId)
   );
 
   await Promise.all([
@@ -134,11 +135,12 @@ export async function submitWorkOrder(context: CurrentUserContext, workOrderId: 
       entityType: "work_order",
       entityId: result.workOrderId,
       actorId: context.userId,
-      recipientUserIds: engineerIds,
+      recipientUserIds: managerIds,
       metadata: { job_card_number: result.workOrderNumber ?? "Job Card", asset_name: result.assetName ?? "" },
       actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
-    auditWorkflow(context, "work_order.submit", result, `Submitted ${result.workOrderNumber ?? "work order"} for review`)
+    auditWorkflow(context, "work_order.submit", result, `Submitted ${result.workOrderNumber ?? "work order"} for review`),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_SUBMITTED, result.workOrderId, context.userId)
   ]);
 
   return result;
@@ -211,10 +213,11 @@ export async function approveWorkOrder(context: CurrentUserContext, workOrderId:
     throw new AppError("This Job Card is already approved.", { code: "WORKFLOW_ERROR" });
   }
 
-  // Unit 6: notify Store + creator + Engineer (was maintenance_supervisor, a
-  // dormant role not part of the new active set). result.wasAlreadyInStatus
-  // is always false here now — the guard above already returned early
-  // otherwise — so the approvals row is always created for a real approval.
+  // Simplified Job Card Approval Workflow Unit Task 11: notify the creator
+  // (Data Entry) only — Store has left the active workflow and Engineer is
+  // no longer a surfaced reviewer. result.wasAlreadyInStatus is always false
+  // here now — the guard above already returned early otherwise — so the
+  // approvals row is always created for a real approval.
   const recipients = await withBackendTransaction(context.userId, async (tx) => {
     await tx.approvals.create({
       data: { work_order_id: result.workOrderId, status: "Approved", decided_by: context.userId, comments: comments || null }
@@ -224,7 +227,7 @@ export async function approveWorkOrder(context: CurrentUserContext, workOrderId:
     } catch (err) {
       console.error("[workflow] Tracking update failed on work order approve:", err);
     }
-    return jobCardRecipients(tx, ["store_keeper", "maintenance_engineer"], result.createdBy, context.userId);
+    return jobCardRecipients(tx, [], result.createdBy, context.userId);
   });
 
   await Promise.all([
@@ -376,15 +379,10 @@ export async function requestJobCardCorrection(context: CurrentUserContext, work
     };
   });
 
-  // Unit 6: if Engineer requested the correction, notify the Job Card creator;
-  // if Manager (or anyone else authorized) requested it, notify Engineer
-  // instead — the correction goes back to whichever side needs to act on it.
-  const isEngineer = context.role?.slug === "maintenance_engineer";
-  const correctionRecipients = isEngineer
-    ? dedupeRecipients([result.createdBy], context.userId)
-    : await withBackendTransaction(context.userId, async (tx) =>
-        dedupeRecipients(await getActiveUserIdsByRoleSlugs(tx, ["maintenance_engineer"]), context.userId)
-      );
+  // Simplified Job Card Approval Workflow Unit Task 4/11: correction requests
+  // only flow Supervisor/Manager -> Data Entry now — always notify the Job
+  // Card creator.
+  const correctionRecipients = dedupeRecipients([result.createdBy], context.userId);
 
   await Promise.all([
     notifyWorkflowEvent({
@@ -403,7 +401,7 @@ export async function requestJobCardCorrection(context: CurrentUserContext, work
       `Correction requested by ${context.role?.name ?? "reviewer"}: ${result.workOrderNumber ?? "work order"}`,
       { note: note.trim() }
     ),
-    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_UPDATED, result.workOrderId, context.userId)
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_CORRECTION_REQUESTED, result.workOrderId, context.userId)
   ]);
 
   return result;
@@ -425,12 +423,6 @@ export async function respondToJobCardCorrection(context: CurrentUserContext, wo
     if (!existing) {
       throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
     }
-    if (existing.status !== "Under Review") {
-      throw new AppError(
-        `Correction response can only be submitted while the Job Card is Under Review. Current status: "${existing.status}".`,
-        { code: "WORKFLOW_ERROR" }
-      );
-    }
 
     const canRespond =
       context.role?.slug === "super_admin" ||
@@ -440,7 +432,17 @@ export async function respondToJobCardCorrection(context: CurrentUserContext, wo
       throw new AppError("You are not authorized to respond to this correction request.", { code: "FORBIDDEN" });
     }
 
-    await respondToMaintenanceManagerClarification(tx, workOrderId, response.trim(), context.userId);
+    // Gate on an actual pending clarification rather than the Job Card's raw
+    // status: a correction is normally requested and resolved while the Job
+    // Card sits "Under Review", but the clarification step can outlive that
+    // (e.g. materials already progressed to "Materials Issued" while the
+    // maintenance_manager_review step is still clarification_requested) — the
+    // response must still go through in that case instead of hard-blocking
+    // on a status string that no longer reflects what's actually pending.
+    const clarificationId = await respondToMaintenanceManagerClarification(tx, workOrderId, response.trim(), context.userId);
+    if (!clarificationId) {
+      throw new AppError("This Job Card has no pending correction to respond to.", { code: "WORKFLOW_ERROR" });
+    }
 
     return {
       workOrderId: existing.id,
@@ -465,7 +467,13 @@ export async function respondToJobCardCorrection(context: CurrentUserContext, wo
       actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
       actionLabel: "Review correction response"
     }),
-    auditWorkflow(context, "work_order.correction_responded", result, `Correction response submitted for ${result.workOrderNumber ?? "work order"}`, { response: response.trim() })
+    auditWorkflow(context, "work_order.correction_responded", result, `Correction response submitted for ${result.workOrderNumber ?? "work order"}`, { response: response.trim() }),
+    // Enterprise-Wide Real-Time Update Verification Task 7: this was the one
+    // real gap in the resubmit-to-Manager chain — every other step in that
+    // flow already emitted a realtime signal, but resubmission itself only
+    // ever fired a notification (bell), leaving an already-open Manager
+    // dashboard to wait out the AutoRefresh poll instead of updating instantly.
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_CORRECTION_RESPONDED, result.workOrderId, context.userId)
   ]);
 
   return result;

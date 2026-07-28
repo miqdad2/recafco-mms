@@ -5,6 +5,8 @@ import { PageHeader } from "@/components/ui/page-header";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { ACCOUNT_TYPE_SLUGS } from "@/lib/users/account-types";
+import { AutoRefresh } from "@/components/auto-refresh";
+import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 
 const CREATE_USER_ERRORS = new Set([
   "duplicate-email",
@@ -106,6 +108,14 @@ export default async function UsersPage({
 
   return (
     <>
+      {/* Enterprise-Wide Real-Time Update Verification Task 3/8: user.created/
+          user.updated were already emitted (app/actions/admin.ts) but nothing
+          on this page ever consumed them — Super Admin monitoring this page
+          in one tab never saw another admin's change without reloading. The
+          existing isModalOpen guard already keeps this safe while the Create
+          User drawer is open. */}
+      <AutoRefresh intervalMs={20000} />
+      <RealtimeRefresh watch={["user."]} />
       <PageHeader
         title="Users"
         description="Create user accounts and manage system access."

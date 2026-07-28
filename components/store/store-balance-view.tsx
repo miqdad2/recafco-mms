@@ -195,7 +195,7 @@ export function StoreBalanceView({
     <>
       <PageHeader
         title="Offline Inventory Control"
-        description="Current Maintenance Store material balance from opening stock, received, and issued movements."
+        description="Materials received and tracked against Job Cards — opening stock, received, and issued movements."
         actions={
           <Link href="/store/offline-inventory/movements" className={secondaryBtn}>
             <Activity className="h-4 w-4" aria-hidden />
@@ -205,48 +205,60 @@ export function StoreBalanceView({
       />
 
       <div className="space-y-4 p-4 lg:p-6">
-        {/* Quick Actions */}
+        {/* Quick Actions — split into Setup (one-time, before go-live) and
+            Daily (ongoing) so Supervisor/Manager and Super Admin aren't left
+            guessing which actions are routine vs. a one-time setup step. */}
         {canManage && (
-          <section>
-            <div className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-              <Zap className="h-3.5 w-3.5" aria-hidden />
-              Quick Actions
+          <section className="space-y-3">
+            <div>
+              <div className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
+                <Zap className="h-3.5 w-3.5" aria-hidden />
+                Setup Actions
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <QuickActionCard
+                  href="/store/offline-inventory/opening-stock"
+                  icon={PackagePlus}
+                  title="Add Opening Stock"
+                  description="Enter materials already available for maintenance tracking."
+                />
+                <QuickActionCard
+                  href="/store/offline-inventory/import-opening-stock"
+                  icon={Upload}
+                  title="Import Opening Stock"
+                  description="Upload existing maintenance materials from Excel."
+                />
+              </div>
+              <p className="mt-2 text-xs text-[#9CA3AF]">
+                Use Add Opening Stock or Import Opening Stock before system go-live to enter existing
+                maintenance materials.
+              </p>
             </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <QuickActionCard
-                href="/store/offline-inventory/opening-stock"
-                icon={PackagePlus}
-                title="Add Opening Stock"
-                description="Enter materials already available in the Maintenance Store."
-              />
-              <QuickActionCard
-                href="/store/offline-inventory/import-opening-stock"
-                icon={Upload}
-                title="Import Opening Stock"
-                description="Upload existing store materials from Excel."
-              />
-              <QuickActionCard
-                href="/store/offline-inventory/receive"
-                icon={ArrowDownToLine}
-                title="Add Received Material"
-                description="Record new materials received by Maintenance."
-              />
-              <QuickActionCard
-                href="/store/offline-inventory/issue"
-                icon={ArrowUpFromLine}
-                title="Issue Material"
-                description="Issue available materials to a Job Card or maintenance use."
-              />
+            <div>
+              <div className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
+                <Activity className="h-3.5 w-3.5" aria-hidden />
+                Daily Actions
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <QuickActionCard
+                  href="/store/offline-inventory/receive"
+                  icon={ArrowDownToLine}
+                  title="Add Received Material"
+                  description="Record new materials received by Maintenance."
+                />
+                <QuickActionCard
+                  href="/store/offline-inventory/issue"
+                  icon={ArrowUpFromLine}
+                  title="Record Used Material"
+                  description="Record materials used for a Job Card or maintenance work."
+                />
+              </div>
             </div>
-            <p className="mt-2 text-xs text-[#9CA3AF]">
-              Use Add Opening Stock or Import Opening Stock before system go-live to enter materials
-              already available in the Maintenance Store.
-            </p>
           </section>
         )}
         {!canManage && (
           <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3 text-sm font-semibold text-[#4B5563]">
-            Store stock entry is managed by Store users. This page shows material movements and Job Card material tracking.
+            Offline Inventory Control records maintenance material movements linked to Job Cards.
           </div>
         )}
 
@@ -271,19 +283,25 @@ export function StoreBalanceView({
             onClick={() => setMovementFilter((f) => (f === "RECEIVED" ? "ALL" : "RECEIVED"))}
           />
           <SummaryCard
-            title="Total Issued"
+            title="Total Used"
             value={totalIssued}
             tone="red"
             icon={ArrowUpFromLine}
             active={movementFilter === "ISSUED"}
             onClick={() => setMovementFilter((f) => (f === "ISSUED" ? "ALL" : "ISSUED"))}
           />
+          {/* Current Balance's border/ring is deliberately never driven by the
+              "selected filter" active state (unlike the other three cards) —
+              `movementFilter` defaults to "ALL" on load, which used to make
+              this card always render with the red "selected" ring even when
+              nothing was actually wrong, regardless of the real balance. Its
+              only color signal is `balanceTone` (icon badge: green positive /
+              gray zero / red negative), so a positive balance never shows red. */}
           <SummaryCard
             title="Current Balance"
             value={Math.max(0, balance)}
             tone={balanceTone}
             icon={ArrowDownUp}
-            active={movementFilter === "ALL"}
             onClick={() => setMovementFilter("ALL")}
           />
         </section>
@@ -303,7 +321,7 @@ export function StoreBalanceView({
                 <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">
                   {canManage
                     ? "Start by adding opening stock, importing existing stock, or recording received material."
-                    : "Materials added by the store team will appear here."}
+                    : "Materials received and tracked against Job Cards will appear here."}
                 </p>
               </div>
               {canManage && (
@@ -461,7 +479,7 @@ export function StoreBalanceView({
                                   href={`/store/offline-inventory/issue?material=${encodeURIComponent(item.key)}`}
                                   className="text-xs font-bold text-[#ED1C24] hover:underline"
                                 >
-                                  Issue
+                                  Record Used
                                 </Link>
                               )}
                             </div>

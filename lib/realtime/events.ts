@@ -26,7 +26,10 @@ export const REALTIME_EVENTS = {
   // change).
   JOB_CARD_CREATED:            "job_card.created",
   JOB_CARD_UPDATED:            "job_card.updated",
+  JOB_CARD_SUBMITTED:          "job_card.submitted",
   JOB_CARD_REVIEWED:           "job_card.reviewed",
+  JOB_CARD_CORRECTION_REQUESTED: "job_card.correction_requested",
+  JOB_CARD_CORRECTION_RESPONDED: "job_card.correction_responded",
   JOB_CARD_APPROVED:           "job_card.approved",
   JOB_CARD_ASSIGNED:           "job_card.assigned",
   JOB_CARD_IN_PROGRESS:        "job_card.in_progress",
@@ -34,9 +37,24 @@ export const REALTIME_EVENTS = {
   MATERIALS_REQUEST_CREATED:   "materials_request.created",
   MATERIALS_REQUEST_UPDATED:   "materials_request.updated",
   MATERIALS_REQUEST_APPROVED:  "materials_request.approved",
+  // "sent" is the legacy verb from the retired Store-send model — kept as-is
+  // (Enterprise-Wide Real-Time Update Verification Task 2's own instruction:
+  // keep older event names for compatibility) since it already fires exactly
+  // when a Materials Request becomes fully "Issued" i.e. received; every page
+  // that needs to react to a receive watches the "materials_request." prefix,
+  // not this exact event name, so nothing actually depends on the literal verb.
   MATERIALS_REQUEST_SENT:      "materials_request.sent",
   STORE_MATERIALS_SENT:        "store_materials.sent",
   MATERIAL_LEDGER_UPDATED:     "material_ledger.updated",
+  // Enterprise-Wide Real-Time Update Verification Task 2/7: the direct
+  // Offline Inventory Control actions (Add Opening Stock, Import Opening
+  // Stock, Add Received Material, Record Used Material) previously emitted
+  // nothing at all — only materials received *through* a Materials Request
+  // (issueMaterials) triggered a realtime signal, via MATERIAL_LEDGER_UPDATED.
+  OFFLINE_INVENTORY_OPENING_STOCK_ADDED: "offline_inventory.opening_stock_added",
+  OFFLINE_INVENTORY_IMPORTED:            "offline_inventory.imported",
+  OFFLINE_INVENTORY_RECEIVED:            "offline_inventory.received",
+  OFFLINE_INVENTORY_USED:                "offline_inventory.used",
   TECHNICIAN_JOB_UPDATED:      "technician_job.updated",
   NOTIFICATION_CREATED:        "notification.created",
   ASSET_UPDATED:               "asset.updated",
@@ -169,4 +187,16 @@ export function emitMaterialsRequestRealtimeEvent(
   actorId: string
 ): Promise<void> {
   return emitRealtimeEvent({ eventType, entityType: "parts_request", entityId: partsRequestId, actorProfileId: actorId });
+}
+
+// Enterprise-Wide Real-Time Update Verification Task 2/7: same terse
+// one-line-per-call-site convenience the other two entity types already get,
+// for the direct Offline Inventory Control actions (Add Opening Stock,
+// Import Opening Stock, Add Received Material, Record Used Material).
+export function emitOfflineInventoryRealtimeEvent(
+  eventType: RealtimeEventType,
+  movementId: string | null,
+  actorId: string
+): Promise<void> {
+  return emitRealtimeEvent({ eventType, entityType: "offline_inventory_movement", entityId: movementId, actorProfileId: actorId });
 }

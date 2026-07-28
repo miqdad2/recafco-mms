@@ -1,11 +1,12 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   X,
   CheckCircle2,
+  AlertTriangle,
   ArrowRight,
   Package,
   Paperclip,
@@ -17,11 +18,12 @@ import {
   approveJobCardAndMaterialsAction,
   closeWorkOrderAction,
   requestClarificationAction,
-  reviewJobCardModalAction,
   startJobCardProgressAction,
-  type ReviewModalState,
 } from "@/app/actions/workflow";
 import { approvePartsRequestAction } from "@/app/actions/phase4";
+import { displaySimplifiedStatus, simplifiedStatusTone, OPEN_JOB_CARD_STATUSES } from "@/lib/work-orders/simplified-status-display";
+import { materialsReceiptStatus, materialsReceiptStatusTone } from "@/lib/display/parts-request-labels-display";
+import { formatDateTime } from "@/lib/utils";
 
 // ── Data contract ─────────────────────────────────────────────────────────────
 
@@ -92,19 +94,50 @@ export type QuickViewData = {
   // bypasses to true for both, same convention as the other can* flags.
   canReview: boolean;
   canRequestCorrection: boolean;
+  // Simplified Workflow UI Consistency Cleanup Task 1/3: whether this Job
+  // Card has an unresolved maintenance_manager_review clarification right
+  // now — drives the simplified "Correction Requested" status badge and the
+  // Bottom Action Area's Edit & Resubmit / Add Materials shortcuts,
+  // regardless of the record's raw backend status.
+  hasPendingCorrection: boolean;
+  // Data Entry Correction Note Visibility Cleanup Task 1/2: the Supervisor /
+  // Manager's actual clarification note, resolved the same way the Job Card
+  // detail page's correction banner does (getPendingClarificationForWorkOrder),
+  // so the quick-view popup no longer leaves Data Entry guessing what to fix.
+  // Null when there's no pending correction, or when the record predates this
+  // note (question can itself be null on very old rows).
+  pendingCorrectionNote: {
+    question: string | null;
+    requestedByName: string | null;
+    requestedAt: string | null;
+  } | null;
+  isCreator: boolean;
   // Data Entry Job Card Progress Update and Close Action Unit — real
   // work_orders.close / work_orders.update permission checks (Super Admin
   // bypasses to true), replacing the old canApprove||canAssign proxy that
   // happened to work only by coincidence for every role tried so far.
   canClose: boolean;
   canUpdateProgress: boolean;
-  // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 5/7:
-  // whether a work_order.review audit entry already exists for this Job
-  // Card — Job Card status stays "Under Review" through both the Engineer
-  // review and Manager approval steps, so this is the only signal that
-  // distinguishes "not yet reviewed" from "reviewed, waiting on Manager".
+  // Manager Approval Success Popup and Materials Awaiting Receipt Flow Task
+  // 7: mirrors canReceiveIssueMaterials() (lib/parts-requests/visibility.ts)
+  // — Data Entry and Supervisor/Manager (and Super Admin) can receive
+  // materials once the Job Card is Open, same gate the Materials Request
+  // detail page's own Receive Materials panel already enforces.
+  canReceiveMaterials: boolean;
+  // Legacy signal from the retired Engineer-review step — no longer drives
+  // any visible UI in this component (Supervisor/Manager reviews directly),
+  // kept on the data contract only so callers don't need a special case.
   reviewed: boolean;
   closeHref: string;
+  // Manager Approval Success Popup and Materials Awaiting Receipt Flow Task
+  // 1/2: the query-param name THIS host page uses to open this same Job
+  // Card's quick-view again (e.g. "preview" on the dashboard/Job Cards list,
+  // but "jobPreview" on the Materials Requests list, which already uses
+  // "preview" for its own Materials Request quick-view) — threaded through
+  // the Approve form so the server action can send Manager back to
+  // a working "?<param>=<id>&success=job-card-opened" URL on whichever page
+  // they approved from, instead of always forcing the full detail page.
+  previewParamName: string;
 };
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -117,17 +150,26 @@ type Tone = "green" | "amber" | "red" | "blue" | "gray";
 // project's established pattern for small per-file display constants.
 const ACTIVE_MATERIALS_REQUEST_STATUSES = ["Requested", "Approved", "Waiting Stock", "Partially Issued"];
 
+// Text-color equivalent of materialsReceiptStatusTone's green/amber/gray,
+// for the small inline status words in the Materials section (badges
+// elsewhere use <StatusBadge tone=.../> directly instead).
+const RECEIPT_TONE_TEXT_CLASS: Record<"green" | "amber" | "gray", string> = {
+  green: "text-green-700",
+  amber: "text-amber-700",
+  gray: "text-[#6B7280]",
+};
+
 // Plain-language sentence for a Materials Request's overall status — used
 // instead of showing the bare status word alone, so a non-technical user
 // immediately knows what it means for them right now.
 function materialsRequestStageLine(status: string): string {
   switch (status) {
     case "Requested":
-      return "Waiting for approval before Store issue";
+      return "Waiting for approval";
     case "Approved":
-      return "Store can issue materials";
+      return "Approved — ready to be issued";
     case "Waiting Stock":
-      return "Store marked materials as not available yet";
+      return "Marked as not available yet";
     case "Partially Issued":
       return "Some materials were issued; some are still pending";
     case "Issued":
@@ -149,8 +191,8 @@ type MaterialItem = {
 // anchor (bigger, bolder) with quantity/status as smaller supporting text
 // below it, each item in its own bordered card — non-technical staff should
 // be able to read the material name at a glance instead of it blending into
-// the supporting detail lines. Wording only ("Requested quantity" / "Store
-// sent") — no change to the underlying issued/remaining logic below.
+// the supporting detail lines. Wording only ("Requested quantity" /
+// "Received") — no change to the underlying issued/remaining logic below.
 function MaterialItemLine({ item }: { item: MaterialItem }) {
   const requested = item.quantity_requested;
   const issued = item.issued_quantity;
@@ -161,15 +203,15 @@ function MaterialItemLine({ item }: { item: MaterialItem }) {
       <div className="mt-1.5 space-y-0.5 text-xs text-[#6B7280]">
         <p>Requested quantity: <span className="font-semibold text-[#111827]">{requested}</span></p>
         {issued <= 0 ? (
-          <p>Store sent: <span className="font-semibold text-[#6B7280]">Not sent yet</span></p>
+          <p>Received: <span className="font-semibold text-[#6B7280]">Not yet</span></p>
         ) : issued < requested ? (
           <>
-            <p>Sent by Store: <span className="font-semibold text-amber-700">{issued}</span></p>
+            <p>Received: <span className="font-semibold text-amber-700">{issued}</span></p>
             <p>Still pending: <span className="font-semibold text-amber-700">{remaining}</span></p>
-            <p>Status: <span className="font-semibold text-amber-700">Partially Sent</span></p>
+            <p>Status: <span className="font-semibold text-amber-700">Partially Received</span></p>
           </>
         ) : (
-          <p>Store sent: <span className="font-semibold text-green-700">Fully sent</span></p>
+          <p>Received: <span className="font-semibold text-green-700">Fully received</span></p>
         )}
       </div>
     </li>
@@ -181,7 +223,22 @@ function MaterialItemLine({ item }: { item: MaterialItem }) {
 // Wording is driven primarily by the parent Materials Request's status
 // (Requested/Approved/Waiting Stock), falling back to the item's own issued
 // quantity once Store has actually issued something against it.
-function CompactMaterialItemLine({ item, requestStatus }: { item: MaterialItem; requestStatus: string }) {
+function CompactMaterialItemLine({
+  item,
+  requestStatus,
+  jobCardStatus,
+  hasPendingCorrection,
+}: {
+  item: MaterialItem;
+  requestStatus: string;
+  jobCardStatus: string;
+  // Data Entry Correction Note Visibility Cleanup Task 5: a "Requested"
+  // Materials Request sitting under a Job Card that's itself Correction
+  // Requested isn't actually waiting on Supervisor / Manager approval right
+  // now — it's blocked on Data Entry fixing the Job Card first, so it says
+  // so instead of the misleading old "Waiting Approval" wording.
+  hasPendingCorrection: boolean;
+}) {
   const requested = item.quantity_requested;
   const issued = item.issued_quantity;
   const remaining = Math.max(requested - issued, 0);
@@ -189,23 +246,20 @@ function CompactMaterialItemLine({ item, requestStatus }: { item: MaterialItem; 
   let tailText: string;
   let toneClass: string;
   if (issued > 0 && issued < requested) {
-    tailText = `Issued ${issued} · Pending ${remaining}`;
+    tailText = `Received ${issued} · Pending ${remaining}`;
     toneClass = "text-amber-700";
   } else if (requested > 0 && issued >= requested) {
-    tailText = "Fully Issued";
+    tailText = "Received";
     toneClass = "text-green-700";
-  } else if (requestStatus === "Waiting Stock") {
-    tailText = "Waiting Stock";
-    toneClass = "text-amber-700";
-  } else if (requestStatus === "Approved") {
-    tailText = "Ready for Store Issue";
-    toneClass = "text-blue-700";
-  } else if (requestStatus === "Requested") {
-    tailText = "Waiting Approval";
-    toneClass = "text-[#6B7280]";
   } else {
-    tailText = requestStatus;
-    toneClass = "text-[#6B7280]";
+    // Manager Approval Success Popup and Materials Awaiting Receipt Flow
+    // Task 7: a strict Requested / Awaiting Receipt / Received status per
+    // item, sharing the exact same mapping the badge/KPI/tab surfaces use —
+    // replaces the old per-status wording ("Waiting Stock"/"Ready to
+    // Receive") with one consistent vocabulary.
+    const receipt = materialsReceiptStatus(requestStatus, jobCardStatus, hasPendingCorrection);
+    tailText = receipt;
+    toneClass = RECEIPT_TONE_TEXT_CLASS[materialsReceiptStatusTone(receipt)];
   }
 
   return (
@@ -232,8 +286,10 @@ function formatDate(v: string | null | undefined): string {
 // Simplified main status + sub-status for the quick view popup. Assigned,
 // approved, in-progress and completed-but-not-closed statuses are grouped
 // under one "In Progress" heading — users treat assignment as the start of
-// active work, not a separate stage. The exact internal status is still
-// shown as a small "Workflow stage" label so nothing is hidden.
+// active work, not a separate stage. Data Entry Correction Note Visibility
+// Cleanup Task 4: the raw internal status used to also show as a small
+// "Workflow stage: <status>" label — removed, this popup no longer surfaces
+// backend/workflow terminology at all.
 type StatusInfo = { main: string; sub: string; tone: Tone };
 
 function getStatusInfo(
@@ -255,7 +311,7 @@ function getStatusInfo(
     case "Under Review":
       return {
         main: "Under Review",
-        sub: "Waiting for Maintenance Engineer / Manager review.",
+        sub: "Waiting for Supervisor / Manager review.",
         tone: "amber",
       };
     case "Waiting Materials":
@@ -367,67 +423,6 @@ function getStatusInfo(
   }
 }
 
-// Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 4/7/8: a
-// small leaf component (mirrors AssignmentFormModal's own useActionState +
-// onSuccess-callback pattern) so the "stay in the quick-view, refresh, show a
-// success banner" logic lives in the same component that owns the action
-// state — keeping the parent's setState calls in plain callbacks, not inside
-// a useEffect, and giving each panel open/close a fresh action state.
-function ReviewJobCardForm({
-  workOrderId,
-  reviewed,
-  onSuccess,
-}: {
-  workOrderId: string;
-  reviewed: boolean;
-  onSuccess: (workOrderNumber: string | null) => void;
-}) {
-  const [state, formAction, isPending] = useActionState<ReviewModalState, FormData>(
-    reviewJobCardModalAction,
-    null
-  );
-
-  useEffect(() => {
-    if (state?.ok) {
-      onSuccess(state.workOrderNumber ?? null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state]);
-
-  return (
-    <form action={formAction} className="space-y-2 rounded-md border border-[#E5E7EB] p-3">
-      <input type="hidden" name="work_order_id" value={workOrderId} />
-      <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">
-        {reviewed ? "Add Review Note" : "Confirm Review"}
-      </p>
-      {reviewed && (
-        <p className="text-xs text-[#4B5563]">
-          Already reviewed and sent to the Maintenance Manager — this adds another note without repeating
-          the notification.
-        </p>
-      )}
-      {state?.ok === false && state.error && (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
-          {state.error}
-        </div>
-      )}
-      <textarea
-        name="comments"
-        placeholder="Review notes (optional)"
-        disabled={isPending}
-        className="focus-ring min-h-16 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm disabled:bg-gray-50"
-      />
-      <button
-        type="submit"
-        disabled={isPending}
-        className="w-full rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e] disabled:opacity-60"
-      >
-        {isPending ? "Submitting…" : reviewed ? "Add Review Note" : "Confirm Review / Send to Manager"}
-      </button>
-    </form>
-  );
-}
-
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
@@ -435,19 +430,12 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [showAssignPanel, setShowAssignPanel] = useState(false);
   const [assignSuccess, setAssignSuccess] = useState<string | null>(null);
-  // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 4/8: the
-  // Review form used to be a plain <form action={reviewJobCardAction}>,
-  // which redirected straight to the Full Details page with no visible
-  // confirmation — the exact "did it work?" complaint this unit fixes.
-  // ReviewJobCardForm (below) mirrors AssignmentFormModal's own
-  // useActionState + onSuccess-callback pattern so it stays in the quick-view.
-  const [reviewSuccess, setReviewSuccess] = useState<string | null>(null);
   const [showMaterialsPreview, setShowMaterialsPreview] = useState(false);
   const [showAssetPreview, setShowAssetPreview] = useState(false);
-  // Which entry point opened the review/approve/correction panel — only
-  // changes the panel's title; every action the viewer has permission for is
-  // always offered inside it regardless of which button was clicked.
-  const [reviewPanelMode, setReviewPanelMode] = useState<"review" | "approve" | "approveMaterials" | "correction" | null>(null);
+  // Which entry point opened the approve/correction panel — only changes the
+  // panel's title; every action the viewer has permission for is always
+  // offered inside it regardless of which button was clicked.
+  const [reviewPanelMode, setReviewPanelMode] = useState<"approve" | "approveMaterials" | "correction" | "askMaterials" | null>(null);
   // Start Work / Close Job Card — the generic (non-technician) progress
   // actions added in the Data Entry Job Card Progress Update and Close
   // Action Unit. Separate from reviewPanelMode since these are a different
@@ -461,21 +449,6 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
   function handleAssignSuccess() {
     setShowAssignPanel(false);
     setAssignSuccess("Work assigned successfully.");
-    router.refresh();
-  }
-
-  // Maintenance Engineer Dashboard + Review-to-Manager UX Fix Task 4/7/8: on
-  // success, close the review panel, show an inline banner naming the Job
-  // Card and the next step, and refresh so data.reviewed flips to true (which
-  // then relabels the Bottom Action Area button to "Add Review Note"). Called
-  // from ReviewJobCardForm's own onSuccess (mirrors handleAssignSuccess above)
-  // rather than a useEffect here, since the effect (and its setState calls)
-  // belongs to whichever component owns the useActionState call.
-  function handleReviewSuccess(workOrderNumber: string | null) {
-    setReviewPanelMode(null);
-    setReviewSuccess(
-      `${workOrderNumber ?? data.work_order_number ?? "Job Card"} reviewed successfully. Sent to Maintenance Manager for approval. Next step: Waiting Manager Approval.`
-    );
     router.refresh();
   }
 
@@ -510,6 +483,16 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
     data.canAssign,
     data.canManage
   );
+  // Simplified Workflow UI Consistency Cleanup Task 1: the badge/heading
+  // always shows the five plain statuses (Draft/Submitted/Correction
+  // Requested/Open/Closed) — getStatusInfo's granular "sub" text is kept as
+  // secondary detail, overridden only when a correction is actually pending.
+  const simplifiedStatus = displaySimplifiedStatus(data.status, data.hasPendingCorrection);
+  const displayMain = simplifiedStatus;
+  const displayTone = simplifiedStatusTone(simplifiedStatus);
+  const displaySub = data.hasPendingCorrection
+    ? "Waiting on Data Entry to edit and resubmit."
+    : statusInfo.sub;
 
   const title = (() => {
     const raw =
@@ -530,6 +513,15 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
   const activePartsRequest =
     data.all_parts_requests.find((pr) => ACTIVE_MATERIALS_REQUEST_STATUSES.includes(pr.status)) ?? null;
   const hasActiveMaterialsRequest = activePartsRequest !== null;
+  // Manager Approval Success Popup and Materials Awaiting Receipt Flow Task
+  // 7: the same Requested / Awaiting Receipt / Received mapping used
+  // everywhere else, driving the Materials section's heading and badge.
+  const activeReceiptStatus = activePartsRequest
+    ? materialsReceiptStatus(activePartsRequest.status, data.status, data.hasPendingCorrection)
+    : null;
+  const jobCardIsOpen = OPEN_JOB_CARD_STATUSES.includes(data.status) && !data.hasPendingCorrection;
+  const showReceiveMaterialsShortcut =
+    data.canReceiveMaterials && jobCardIsOpen && activePartsRequest !== null && activeReceiptStatus !== "Received";
   // Unified Manager Job Card + Materials Approval Flow Fix Task 3: Requested
   // Materials Request(s) linked to this Job Card — drives whether the
   // approve button reads "Approve Job Card & Materials" (Case A) vs. just
@@ -548,22 +540,37 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
   // Request exists — assignment now waits for Store to finish sending
   // materials, matching "assignment should appear only when: no materials
   // required OR all linked active Materials Requests are Issued."
+  // Simplified Workflow UI Consistency Cleanup Task 3: none of these normal
+  // status actions render while a correction is pending — Edit & Resubmit
+  // is the one clear action offered instead, so a Manager/Data Entry never
+  // sees "Assign Work"/"Close Job Card" next to a card that's actually
+  // waiting on Data Entry to fix something first.
   const showAssign =
+    !data.hasPendingCorrection &&
     (data.canApprove || data.canAssign) &&
     ["Approved", "Partially Issued", "Materials Issued"].includes(data.status) &&
     !hasActiveMaterialsRequest;
-  // Under Review: up to three separate actions, each gated by its own
-  // permission (an Engineer typically has review+correction, a Manager
-  // typically has approve+correction, Super Admin has all three) — all three
-  // open the same inline Review/Approve/Correction panel (never a page
-  // navigation), which only offers the sub-actions the viewer is permitted.
-  const showReviewBtn = data.canReview && data.status === "Under Review";
-  const showApproveBtn = data.canApprove && data.status === "Under Review";
-  const showCorrectionBtn = data.canRequestCorrection && data.status === "Under Review";
+  const showApproveBtn = data.canApprove && data.status === "Under Review" && !data.hasPendingCorrection;
+  const showCorrectionBtn = data.canRequestCorrection && data.status === "Under Review" && !data.hasPendingCorrection;
+  // Simplified Workflow UI Consistency Cleanup Task 3: whoever created this
+  // Job Card (or Super Admin/canManage) gets a direct Edit & Resubmit path
+  // and, if no active Materials Request already exists, an Add Materials
+  // shortcut, whenever a correction is currently pending — regardless of
+  // whether the record's raw status has since moved past "Under Review".
+  const showEditResubmit = data.hasPendingCorrection && (data.isCreator || data.canManage);
+  const showAddMaterialsForCorrection =
+    showEditResubmit && data.canCreateParts && !hasActiveMaterialsRequest;
+  // Data Entry Correction Note Visibility Cleanup Task 3: when materials
+  // were already requested before/alongside the correction, "Add Materials"
+  // would just hit the duplicate-request error — offer "Update Materials"
+  // instead, linking straight to the existing active request.
+  const showUpdateMaterialsForCorrection =
+    showEditResubmit && data.canCreateParts && hasActiveMaterialsRequest && activePartsRequest !== null;
   // Case C: Job Card already Approved (or beyond) but a linked Materials
   // Request is still sitting Requested — Manager's remaining action is to
   // approve the Materials Request, not to assign work yet.
   const showApproveMaterialsBtn =
+    !data.hasPendingCorrection &&
     data.canApprove && data.status !== "Under Review" && requestedMaterialsRequests.length > 0;
   // Generic Close/Start Work — anyone with the real work_orders.close /
   // work_orders.update permission (Data Entry, Engineer, Manager), excluding
@@ -571,25 +578,33 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
   // Start Work flow below (assignment-checked, drives /technician/jobs), and
   // Technician also happens to hold these same permissions, so excluding
   // them here avoids showing two different buttons for the same action.
-  const showClose = !isTech && data.canClose && data.status === "In Progress";
-  const showStartWorkGeneric = !isTech && data.canUpdateProgress && data.status === "Assigned";
+  // Simplified Job Card Approval Workflow Unit Task 4: Close is now available
+  // directly from any "Open"-bucket status, matching the widened
+  // transitions.work_order map (no required Store-issue/assignment step).
+  const showClose =
+    !isTech &&
+    !data.hasPendingCorrection &&
+    data.canClose &&
+    ["Approved", "Waiting Materials", "Partially Issued", "Materials Issued", "Assigned", "In Progress"].includes(data.status);
+  const showStartWorkGeneric = !isTech && !data.hasPendingCorrection && data.canUpdateProgress && data.status === "Assigned";
   const showSubmit =
     data.canManage && data.status === "Created";
-  const showStartWork = isTech && data.status === "Assigned";
-  const showMarkComplete = isTech && data.status === "In Progress";
+  const showStartWork = isTech && !data.hasPendingCorrection && data.status === "Assigned";
+  const showMarkComplete = isTech && !data.hasPendingCorrection && data.status === "In Progress";
   // Re-assigning a technician after the initial assignment isn't a supported
   // backend transition (Assigned → Assigned), so managers can only view the
   // current assignment from here, not change it.
   const showViewAssignment =
-    (data.canApprove || data.canAssign) && data.status === "Assigned";
+    !data.hasPendingCorrection && (data.canApprove || data.canAssign) && data.status === "Assigned";
 
-  // Request Materials: hidden once Closed, and hidden while an active
-  // Materials Request already exists — the Job Card can only ever have one
-  // active request at a time, so "Request Materials" would just fail with a
-  // duplicate-request error. Once every linked request reaches Issued,
-  // hasActiveMaterialsRequest is false again and "Request Materials" reappears.
+  // Request Materials: hidden once Closed, hidden while an active Materials
+  // Request already exists (the Job Card can only ever have one active
+  // request at a time — "Request Materials" would just fail with a
+  // duplicate-request error), and hidden while a correction is pending —
+  // showAddMaterialsForCorrection above already offers the same action from
+  // the Bottom Action Area in that case, so this doesn't need to duplicate it.
   const showRequestParts =
-    data.canCreateParts && data.status !== "Closed" && !hasActiveMaterialsRequest;
+    data.canCreateParts && data.status !== "Closed" && !hasActiveMaterialsRequest && !data.hasPendingCorrection;
   // View Materials: a read-only preview of every linked Materials Request
   // (active or historical) — shown to anyone as soon as at least one exists,
   // regardless of role, so a store keeper no longer needs a separate
@@ -615,10 +630,10 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
   // button row.
   const hasStatusAction =
     showAssign ||
-    showReviewBtn ||
     showApproveBtn ||
     showApproveMaterialsBtn ||
     showCorrectionBtn ||
+    showEditResubmit ||
     showClose ||
     showStartWorkGeneric ||
     showSubmit ||
@@ -665,7 +680,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                 {title}
               </p>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                <StatusBadge label={statusInfo.main} tone={statusInfo.tone} />
+                <StatusBadge label={displayMain} tone={displayTone} />
                 {data.maintenance_type && (
                   <StatusBadge label={data.maintenance_type} tone="gray" />
                 )}
@@ -694,39 +709,31 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                 every action moved to the Bottom Action Area below the
                 two-column decision summary. */}
             <section
-              className={`border-b border-[#E5E7EB] px-5 py-2.5 ${isTerminal ? "bg-gray-50" : "bg-amber-50"}`}
+              className={`border-b border-[#E5E7EB] px-5 py-2.5 ${
+                data.hasPendingCorrection ? "bg-red-50" : isTerminal ? "bg-gray-50" : "bg-amber-50"
+              }`}
             >
               <p
                 className={`text-xs font-black uppercase tracking-wide ${
-                  isTerminal ? "text-[#4B5563]" : "text-amber-800"
+                  data.hasPendingCorrection ? "text-red-800" : isTerminal ? "text-[#4B5563]" : "text-amber-800"
                 }`}
               >
                 Current Status
               </p>
               <p
                 className={`mt-0.5 text-sm font-bold ${
-                  isTerminal ? "text-[#111827]" : "text-amber-900"
+                  data.hasPendingCorrection ? "text-red-900" : isTerminal ? "text-[#111827]" : "text-amber-900"
                 }`}
               >
-                {statusInfo.main}
+                {displayMain}
               </p>
-              {statusInfo.sub && (
+              {displaySub && (
                 <p
                   className={`mt-0.5 text-sm ${
-                    isTerminal ? "text-[#4B5563]" : "text-amber-800"
+                    data.hasPendingCorrection ? "text-red-800" : isTerminal ? "text-[#4B5563]" : "text-amber-800"
                   }`}
                 >
-                  {statusInfo.sub}
-                </p>
-              )}
-              {/* Maintenance Engineer Dashboard + Review-to-Manager UX Fix
-                  Task 7: an Engineer who already reviewed sees this instead
-                  of the generic "waiting for review" sub-text above, so
-                  re-opening the same Job Card never reads as if nothing
-                  happened. */}
-              {data.status === "Under Review" && showReviewBtn && data.reviewed && (
-                <p className="mt-0.5 text-sm font-semibold text-amber-900">
-                  Reviewed — waiting Manager approval.
+                  {displaySub}
                 </p>
               )}
               {/* Unified Manager Job Card + Materials Approval Flow Fix Task
@@ -740,22 +747,47 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
               )}
               {/* Data Entry Job Card Action Clarity Fix Task 2: whoever
                   cannot act on Under Review right now (Data Entry, Store,
-                  Viewer/Auditor — Engineer/Manager get the Review/Approve/
+                  Viewer/Auditor — Supervisor/Manager get the Approve/
                   Correction buttons instead and don't need this) sees an
                   explicit explanation instead of a silent lack of buttons. */}
-              {data.status === "Under Review" && !showReviewBtn && !showApproveBtn && !showCorrectionBtn && (
+              {data.status === "Under Review" && !data.hasPendingCorrection && !showApproveBtn && !showCorrectionBtn && (
                 <p className="mt-0.5 text-sm text-amber-800">
                   {data.canAssign || data.canUpdateProgress || data.canClose
                     ? "You can update this Job Card after it is approved."
                     : "No update available until approval."}
                 </p>
               )}
-              {statusInfo.main !== data.status && (
-                <p className="mt-1 text-[11px] font-medium text-[#9CA3AF]">
-                  Workflow stage: {data.status}
-                </p>
-              )}
             </section>
+
+            {/* Data Entry Correction Note Visibility Cleanup Task 2: the
+                Supervisor / Manager's correction note, shown immediately
+                whenever one is pending — not tucked behind Full Details —
+                so Data Entry always knows exactly what to fix without
+                leaving this popup. */}
+            {data.hasPendingCorrection && (
+              <section className="border-b border-red-200 bg-red-50 px-5 py-3">
+                <p className="text-xs font-black uppercase tracking-wide text-red-800">
+                  Supervisor / Manager request
+                </p>
+                {data.pendingCorrectionNote?.question ? (
+                  <p className="mt-1 text-sm font-semibold leading-relaxed text-red-900">
+                    &ldquo;{data.pendingCorrectionNote.question}&rdquo;
+                  </p>
+                ) : (
+                  <p className="mt-1 text-sm leading-relaxed text-red-900">
+                    Correction was requested. Please review and update the Job Card.
+                  </p>
+                )}
+                {(data.pendingCorrectionNote?.requestedByName || data.pendingCorrectionNote?.requestedAt) && (
+                  <p className="mt-1.5 text-xs text-red-700">
+                    Requested by {data.pendingCorrectionNote?.requestedByName ?? "Supervisor / Manager"}
+                    {data.pendingCorrectionNote?.requestedAt
+                      ? ` · ${formatDateTime(data.pendingCorrectionNote.requestedAt)}`
+                      : ""}
+                  </p>
+                )}
+              </section>
+            )}
 
             {/* Main decision area — two columns on desktop: Key Details +
                 Asset on the left (context), Materials on the right (what's
@@ -861,7 +893,13 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
               {/* Right column: Materials */}
               <div className="rounded-md border border-[#E5E7EB] p-2.5">
                 <p className="mb-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-                  Materials
+                  {activeReceiptStatus === "Awaiting Receipt"
+                    ? "Materials Awaiting Receipt"
+                    : activeReceiptStatus === "Received"
+                      ? "Materials Received"
+                      : activeReceiptStatus === "Requested"
+                        ? "Materials Requested"
+                        : "Materials"}
                 </p>
                 {data.parts_requests_count > 0 ? (
                   <div className="space-y-1.5">
@@ -882,13 +920,25 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                         <p className="text-xs font-bold text-[#111827]">
                           {activePartsRequest.parts_request_number ?? "Materials Request"}
                           {" · "}
-                          <span className="font-semibold text-amber-700">{activePartsRequest.status}</span>
+                          <span
+                            className={`font-semibold ${
+                              activeReceiptStatus ? RECEIPT_TONE_TEXT_CLASS[materialsReceiptStatusTone(activeReceiptStatus)] : ""
+                            }`}
+                          >
+                            {activeReceiptStatus}
+                          </span>
                         </p>
                         {activePartsRequest.items.length > 0 ? (
                           <>
                             <ul className="mt-1.5 space-y-1">
                               {activePartsRequest.items.slice(0, 3).map((item) => (
-                                <CompactMaterialItemLine key={item.id} item={item} requestStatus={activePartsRequest.status} />
+                                <CompactMaterialItemLine
+                                  key={item.id}
+                                  item={item}
+                                  requestStatus={activePartsRequest.status}
+                                  jobCardStatus={data.status}
+                                  hasPendingCorrection={data.hasPendingCorrection}
+                                />
                               ))}
                             </ul>
                             {activePartsRequest.items.length > 3 && (
@@ -923,8 +973,21 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                 ) : (
                   <p className="text-sm text-[#9CA3AF]">No Materials Request yet</p>
                 )}
-                {(showViewMaterialsPreview || showRequestParts) && (
+                {(showViewMaterialsPreview || showRequestParts || showReceiveMaterialsShortcut) && (
                   <div className="mt-2 flex flex-wrap gap-2">
+                    {/* Manager Approval Success Popup and Materials Awaiting
+                        Receipt Flow Task 7: the primary action once the Job
+                        Card is Open and materials are still Awaiting Receipt
+                        — links to the Materials Request detail page, where
+                        the real Receive Materials panel lives. */}
+                    {showReceiveMaterialsShortcut && activePartsRequest && (
+                      <Link
+                        href={`/store/parts-requests/${activePartsRequest.id}`}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#111827] px-3 py-1.5 text-sm font-bold text-white hover:bg-[#2b2b2b]"
+                      >
+                        Receive Materials <ArrowRight className="h-3.5 w-3.5" />
+                      </Link>
+                    )}
                     {showViewMaterialsPreview && (
                       <button
                         type="button"
@@ -973,25 +1036,16 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
 
             {/* Bottom Action Area — every workflow action button lives here,
                 after the Asset and Materials summary have already been shown,
-                so a Manager/Engineer always sees the request context before
-                being offered Review/Approve/Request Correction (or any other
-                status action). */}
-            {(hasStatusAction || assignSuccess || reviewSuccess) && (
+                so a Manager always sees the request context before being
+                offered Approve/Request Correction (or any other status
+                action). */}
+            {(hasStatusAction || assignSuccess) && (
               <section className="border-t border-[#E5E7EB] bg-gray-50 px-5 py-3">
                 <div className="flex flex-wrap gap-2">
                   {assignSuccess && !showAssign && !legacyShowAssign && (
                     <div className="flex w-full items-center gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm font-semibold text-green-700">
                       <CheckCircle2 className="h-4 w-4 shrink-0" />
                       {assignSuccess}
-                    </div>
-                  )}
-                  {/* Maintenance Engineer Dashboard + Review-to-Manager UX Fix
-                      Task 4: the required success message, shown inline
-                      without navigating away from the quick-view. */}
-                  {reviewSuccess && (
-                    <div className="flex w-full items-center gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm font-semibold text-green-700">
-                      <CheckCircle2 className="h-4 w-4 shrink-0" />
-                      {reviewSuccess}
                     </div>
                   )}
                   {(showAssign || legacyShowAssign) && !showAssignPanel && (
@@ -1003,17 +1057,36 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       Assign Work <ArrowRight className="h-4 w-4" />
                     </button>
                   )}
-                  {showReviewBtn && (
-                    <button
-                      type="button"
-                      onClick={() => { setReviewPanelMode("review"); setReviewSuccess(null); }}
+                  {/* Simplified Workflow UI Consistency Cleanup Task 3: the
+                      Job Card creator's (or Manager's) way to clear a pending
+                      correction — links to the detail page, where the actual
+                      question, response field, and Submit Response &
+                      Resubmit action live (this popup never performs a
+                      workflow transition directly, matching every other
+                      status action here). */}
+                  {showEditResubmit && (
+                    <Link
+                      href={`/maintenance/work-orders/${data.id}/edit`}
                       className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
                     >
-                      {/* Maintenance Engineer Dashboard + Review-to-Manager UX
-                          Fix Task 7: once already reviewed, relabels so a
-                          repeat click never reads as "nothing happened yet". */}
-                      {data.reviewed ? "Add Review Note" : "Review Job Card"} <ArrowRight className="h-4 w-4" />
-                    </button>
+                      <AlertTriangle className="h-4 w-4" /> Edit &amp; Resubmit
+                    </Link>
+                  )}
+                  {showAddMaterialsForCorrection && (
+                    <Link
+                      href={`/store/parts-requests/new?repair_order_id=${data.id}`}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-bold text-red-700 hover:bg-red-50"
+                    >
+                      Add Materials <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  )}
+                  {showUpdateMaterialsForCorrection && activePartsRequest && (
+                    <Link
+                      href={`/store/parts-requests/${activePartsRequest.id}`}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-bold text-red-700 hover:bg-red-50"
+                    >
+                      Update Materials <ArrowRight className="h-4 w-4" />
+                    </Link>
                   )}
                   {showApproveBtn && (
                     <button
@@ -1021,12 +1094,10 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       onClick={() => setReviewPanelMode("approve")}
                       className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#16A34A] px-3 py-2 text-sm font-bold text-white hover:bg-[#15803d]"
                     >
-                      {/* Unified Manager Job Card + Materials Approval Flow
-                          Fix Task 3 Case A/B: one main button — approving
-                          also approves any linked Requested Materials
-                          Request(s) in the same action, so the label says so
-                          whenever one exists. */}
-                      {requestedMaterialsRequests.length > 0 ? "Approve Job Card & Materials" : "Approve Job Card"} <ArrowRight className="h-4 w-4" />
+                      {/* Approving also approves any linked Requested
+                          Materials Request in the same action (Simplified Job
+                          Card Approval Workflow Unit Task 4/5). */}
+                      Approve <ArrowRight className="h-4 w-4" />
                     </button>
                   )}
                   {showApproveMaterialsBtn && (
@@ -1045,6 +1116,21 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       className="inline-flex items-center justify-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800 hover:bg-amber-100"
                     >
                       Request Correction <ArrowRight className="h-4 w-4" />
+                    </button>
+                  )}
+                  {/* Simplified Job Card Approval Workflow Unit Task 4: a second
+                      entry point into the exact same requestClarificationAction/
+                      ClarificationRequest mechanism as Request Correction — only
+                      the framing differs, so Supervisor/Manager has a clearer
+                      prompt for "the Job Card itself is fine, but the materials
+                      need work" without a second backend concept. */}
+                  {showCorrectionBtn && (
+                    <button
+                      type="button"
+                      onClick={() => setReviewPanelMode("askMaterials")}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800 hover:bg-amber-100"
+                    >
+                      Ask to Add/Update Materials <ArrowRight className="h-4 w-4" />
                     </button>
                   )}
                   {showClose && (
@@ -1114,6 +1200,13 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                     </Link>
                   )}
                 </div>
+                {showApproveBtn && (
+                  <p className="mt-2 text-xs text-[#6B7280]">
+                    {requestedMaterialsRequests.length > 0
+                      ? "Approving will approve this Job Card and its requested materials. Materials will then move to Awaiting Receipt."
+                      : "Approving will open this Job Card for maintenance work."}
+                  </p>
+                )}
               </section>
             )}
           </div>
@@ -1183,8 +1276,15 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                         <span className="font-semibold text-amber-700">{pr.status}</span>
                       </p>
                       <p className="mt-0.5 text-xs text-[#4B5563]">
-                        Current stage: {materialsRequestStageLine(pr.status)}
+                        {pr.status === "Requested"
+                          ? "Status: Requested — will be approved with the Job Card."
+                          : `Current stage: ${materialsRequestStageLine(pr.status)}`}
                       </p>
+                      {pr.status === "Requested" && (
+                        <p className="mt-1 text-xs text-[#6B7280]">
+                          These materials will be approved together when you click Approve. After approval, they will move to Awaiting Receipt.
+                        </p>
+                      )}
                       {pr.items.length > 0 ? (
                         <ul className="mt-2 space-y-2.5">
                           {pr.items.map((item) => (
@@ -1350,12 +1450,12 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
               <div className="shrink-0 flex items-start justify-between gap-3 rounded-t-xl border-b border-[#E5E7EB] bg-[#F5F6F8] px-5 py-4">
                 <div className="min-w-0">
                   <p id="review-panel-heading" className="text-sm font-black text-[#111827]">
-                    {reviewPanelMode === "review"
-                      ? "Review Job Card"
-                      : reviewPanelMode === "approve"
-                        ? (requestedMaterialsRequests.length > 0 ? "Approve Job Card & Materials" : "Approve Job Card")
-                        : reviewPanelMode === "approveMaterials"
-                          ? "Approve Materials Request"
+                    {reviewPanelMode === "approve"
+                      ? "Approve Job Card"
+                      : reviewPanelMode === "approveMaterials"
+                        ? "Approve Materials Request"
+                        : reviewPanelMode === "askMaterials"
+                          ? "Ask to Add/Update Materials"
                           : "Request Correction"}
                   </p>
                   <p className="mt-0.5 text-xs text-[#4B5563]">{data.work_order_number ?? "Job Card"}</p>
@@ -1392,32 +1492,26 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                 </div>
 
                 <div className="mt-4">
-                  {reviewPanelMode === "review" && showReviewBtn && (
-                    <ReviewJobCardForm
-                      workOrderId={data.id}
-                      reviewed={data.reviewed}
-                      onSuccess={handleReviewSuccess}
-                    />
-                  )}
-
                   {reviewPanelMode === "approve" && showApproveBtn && (
                     <form action={approveJobCardAndMaterialsAction} className="space-y-2 rounded-md border border-[#E5E7EB] p-3">
                       <input type="hidden" name="work_order_id" value={data.id} />
                       <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">
-                        {requestedMaterialsRequests.length > 0 ? "Approve Job Card & Materials" : "Approve Job Card"}
+                        Approval
                       </p>
-                      {requestedMaterialsRequests.length > 0 && (
-                        <p className="text-xs text-[#4B5563]">
-                          Also approves {requestedMaterialsRequests.map((pr) => pr.parts_request_number ?? "this Materials Request").join(", ")} — Store can send materials right after.
-                        </p>
-                      )}
+                      <p className="text-xs text-[#4B5563]">
+                        {requestedMaterialsRequests.length > 0
+                          ? "This will approve the Job Card and requested materials. Materials will be marked as Awaiting Receipt."
+                          : "This will approve the Job Card and make it Open."}
+                      </p>
+                      <input type="hidden" name="return_to" value={data.closeHref} />
+                      <input type="hidden" name="return_to_param" value={data.previewParamName} />
                       <textarea
                         name="comments"
                         placeholder="Approval notes (optional)"
                         className="focus-ring min-h-16 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
                       />
                       <button type="submit" className="w-full rounded-md bg-[#16A34A] px-3 py-2 text-sm font-bold text-white hover:bg-[#15803d]">
-                        {requestedMaterialsRequests.length > 0 ? "Approve Job Card & Materials" : "Approve Job Card"}
+                        Approve
                       </button>
                     </form>
                   )}
@@ -1434,7 +1528,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                         Approve {activePartsRequest.parts_request_number ?? "Materials Request"}
                       </p>
                       <p className="text-xs text-[#4B5563]">
-                        The Job Card is already approved — this only approves the Materials Request so Store can send materials.
+                        The Job Card is already approved — this only approves the additional requested materials.
                       </p>
                       <textarea
                         name="comments"
@@ -1450,6 +1544,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                   {reviewPanelMode === "correction" && showCorrectionBtn && (
                     <form action={requestClarificationAction} className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3">
                       <input type="hidden" name="work_order_id" value={data.id} />
+                      <input type="hidden" name="kind" value="correction" />
                       <p className="text-xs font-black uppercase tracking-wide text-amber-800">Request Correction</p>
                       <textarea
                         name="question"
@@ -1460,6 +1555,23 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       />
                       <button type="submit" className="w-full rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-bold text-amber-800 hover:bg-amber-100">
                         Request Correction
+                      </button>
+                    </form>
+                  )}
+                  {reviewPanelMode === "askMaterials" && showCorrectionBtn && (
+                    <form action={requestClarificationAction} className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3">
+                      <input type="hidden" name="work_order_id" value={data.id} />
+                      <input type="hidden" name="kind" value="materials" />
+                      <p className="text-xs font-black uppercase tracking-wide text-amber-800">Ask to Add/Update Materials</p>
+                      <textarea
+                        name="question"
+                        placeholder="What materials need to be added or changed? (min 10 characters)"
+                        required
+                        minLength={10}
+                        className="focus-ring min-h-16 w-full rounded-md border border-amber-200 bg-white px-3 py-2 text-sm"
+                      />
+                      <button type="submit" className="w-full rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-bold text-amber-800 hover:bg-amber-100">
+                        Ask to Add/Update Materials
                       </button>
                     </form>
                   )}
@@ -1628,7 +1740,9 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                   <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Closing note</p>
                   <textarea
                     name="comments"
-                    placeholder="Completion note (optional)"
+                    placeholder="Describe the work completed (required, min 10 characters)"
+                    required
+                    minLength={10}
                     className="focus-ring min-h-16 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
                   />
                   <button type="submit" className="w-full rounded-md bg-[#16A34A] px-3 py-2 text-sm font-bold text-white hover:bg-[#15803d]">

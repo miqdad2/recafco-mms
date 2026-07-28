@@ -12,7 +12,7 @@ export default async function ImportOpeningStockPage() {
     <>
       <PageHeader
         title="Import Opening Stock"
-        description="Upload existing Maintenance Store materials from Excel and review before saving."
+        description="Upload existing maintenance materials from Excel and review before saving."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <a

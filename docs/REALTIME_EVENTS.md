@@ -3,11 +3,33 @@
 ## Overview
 
 `realtime_events` is an append-only PostgreSQL table that records every
-business event worth broadcasting to connected clients.  Phase 1 only inserts
-rows.  Phase 2 will add a Socket.IO server that tails the table and pushes rows
-to subscribed clients.
+business event worth broadcasting to connected clients.
 
-No application action code needs to change in Phase 2.
+**This is implemented and live**, not a future phase: `/api/notifications/stream`
+(a Server-Sent Events endpoint, also used by the notification bell) polls this
+table every 15 seconds per connected user and forwards new rows as a
+lightweight `realtime` SSE event (`{ event_type, entity_type, entity_id }`,
+no full record, no cost/price fields). Individual pages consume this via
+`<RealtimeRefresh watch={[...]} />` (`components/realtime/realtime-refresh.tsx`),
+which matches incoming `event_type` values against a prefix list and calls
+`router.refresh()` when one matches — debounced, and skipped while the user is
+typing, a modal is open, or the tab is hidden (`lib/realtime/refresh-guards.ts`).
+Every page using `<RealtimeRefresh />` also keeps its existing `<AutoRefresh />`
+poll (typically 15–20s) running as a fallback, so a missed or delayed SSE event
+is never permanently lost. No separate WebSocket/Socket.IO server exists or is
+planned — this SSE + poll-fallback design is the production real-time system.
+
+**One SSE connection per browser tab.** `RealtimeConnectionProvider`
+(`components/realtime/realtime-connection-provider.tsx`, mounted once in
+`components/layout/app-layout.tsx`) opens the single `EventSource` for the
+whole tab and re-broadcasts each event to any number of in-tab subscribers.
+The notification badge (`NotificationLiveCount`), the corner toast
+(`NotificationToastCenter`), and every page's `<RealtimeRefresh />` all
+subscribe to this shared connection via `useRealtimeConnection()` instead of
+each opening its own — previously up to 3 connections per tab, which could
+exhaust the browser's ~6-connections-per-origin cap under HTTP/1.1 once 2+
+tabs were open and stall page navigation (found and fixed in the
+SSEConnectionConsolidation-01 phase).
 
 ---
 
@@ -35,19 +57,45 @@ cascade deletes on the referenced entities.
 
 ## Event types
 
+Legacy `work_order.*` values are kept for compatibility (some are still
+actively emitted by `app/actions/maintenance.ts`) alongside the newer,
+user-facing `job_card.*` vocabulary — pages watch both prefixes together, so
+nothing needed to change at existing call sites when `job_card.*` was added.
+
 | Constant                         | Value                       | Triggered by              |
 |----------------------------------|-----------------------------|---------------------------|
-| `REALTIME_EVENTS.WORK_ORDER_CREATED`   | `work_order.created`  | New work order saved      |
-| `REALTIME_EVENTS.WORK_ORDER_SAVED`     | `work_order.saved`    | Existing work order edited|
-| `REALTIME_EVENTS.WORK_ORDER_SUBMITTED` | `work_order.submitted`| WO submitted for approval |
-| `REALTIME_EVENTS.WORK_ORDER_APPROVED`  | `work_order.approved` | WO approved               |
-| `REALTIME_EVENTS.WORK_ORDER_REJECTED`  | `work_order.rejected` | WO rejected               |
-| `REALTIME_EVENTS.WORK_ORDER_ASSIGNED`  | `work_order.assigned` | Technician assigned       |
-| `REALTIME_EVENTS.WORK_ORDER_COMPLETED` | `work_order.completed`| WO marked completed       |
+| `REALTIME_EVENTS.WORK_ORDER_CREATED`   | `work_order.created`  | New Job Card saved (legacy name) |
+| `REALTIME_EVENTS.WORK_ORDER_SAVED`     | `work_order.saved`    | Existing Job Card edited (legacy name) |
+| `REALTIME_EVENTS.JOB_CARD_CREATED`     | `job_card.created`    | New Job Card created |
+| `REALTIME_EVENTS.JOB_CARD_SUBMITTED`   | `job_card.submitted`  | Job Card submitted for review |
+| `REALTIME_EVENTS.JOB_CARD_REVIEWED`    | `job_card.reviewed`   | Job Card reviewed |
+| `REALTIME_EVENTS.JOB_CARD_CORRECTION_REQUESTED` | `job_card.correction_requested` | Supervisor/Manager requests a correction |
+| `REALTIME_EVENTS.JOB_CARD_CORRECTION_RESPONDED` | `job_card.correction_responded` | Data Entry resubmits after a correction |
+| `REALTIME_EVENTS.JOB_CARD_APPROVED`    | `job_card.approved`   | Job Card approved and opened |
+| `REALTIME_EVENTS.JOB_CARD_ASSIGNED`    | `job_card.assigned`   | Technician assigned |
+| `REALTIME_EVENTS.JOB_CARD_IN_PROGRESS` | `job_card.in_progress`| Work started |
+| `REALTIME_EVENTS.JOB_CARD_CLOSED`      | `job_card.closed`     | Job Card closed |
+| `REALTIME_EVENTS.JOB_CARD_UPDATED`     | `job_card.updated`    | Any other Job Card-affecting change (materials added, etc.) |
+| `REALTIME_EVENTS.MATERIALS_REQUEST_CREATED`  | `materials_request.created`  | New Materials Request |
+| `REALTIME_EVENTS.MATERIALS_REQUEST_APPROVED` | `materials_request.approved` | Materials Request approved |
+| `REALTIME_EVENTS.MATERIALS_REQUEST_SENT`     | `materials_request.sent`     | Materials fully received against a request (legacy "sent" verb, kept for compatibility) |
+| `REALTIME_EVENTS.MATERIALS_REQUEST_UPDATED`  | `materials_request.updated`  | Materials Request partially updated |
+| `REALTIME_EVENTS.MATERIAL_LEDGER_UPDATED`    | `material_ledger.updated`    | Offline Inventory Control ledger changed via a Materials Request receive |
+| `REALTIME_EVENTS.OFFLINE_INVENTORY_OPENING_STOCK_ADDED` | `offline_inventory.opening_stock_added` | Add Opening Stock |
+| `REALTIME_EVENTS.OFFLINE_INVENTORY_IMPORTED`            | `offline_inventory.imported`            | Import Opening Stock (Excel), one event per batch |
+| `REALTIME_EVENTS.OFFLINE_INVENTORY_RECEIVED`            | `offline_inventory.received`            | Add Received Material |
+| `REALTIME_EVENTS.OFFLINE_INVENTORY_USED`                | `offline_inventory.used`                | Record Used Material |
 | `REALTIME_EVENTS.USER_CREATED`         | `user.created`        | New user account created  |
 | `REALTIME_EVENTS.USER_UPDATED`         | `user.updated`        | User profile updated      |
 | `REALTIME_EVENTS.BACKUP_UPDATED`       | `backup.updated`      | Backup job status changed |
-| `REALTIME_EVENTS.NOTIFICATION_UPDATED` | `notification.updated`| Notification read/archived|
+| `REALTIME_EVENTS.NOTIFICATION_UPDATED` | `notification.updated`| Notification read/archived (defined, not currently emitted — the notification bell/toast reads the `notifications` table directly instead, see below) |
+
+Notifications (bell badge + corner toast) do **not** go through
+`realtime_events` at all — `/api/notifications/stream` polls the
+`notifications` table directly every 15s and pushes `unread_count` and
+`notification` SSE events independent of this table. `NOTIFICATION_CREATED`/
+`NOTIFICATION_UPDATED` above are defined for completeness but have no active
+emitter; nothing currently depends on them.
 
 ---
 
@@ -129,15 +177,21 @@ order by cnt desc;
 
 ---
 
-## Phase 2 — Socket.IO broadcast integration
+## Page subscriptions
 
-When Socket.IO is added:
+Every server-rendered page that should reflect other users' changes without a
+manual reload pairs `<AutoRefresh intervalMs={...} />` (poll fallback) with
+`<RealtimeRefresh watch={[...]} />` (instant trigger on a matching event
+prefix). Recommended watch lists by page type:
 
-1. A Node.js server process subscribes to a PostgreSQL `LISTEN` channel or
-   polls `realtime_events` for new rows.
-2. On each new row it maps `event_type` → Socket.IO room name and emits.
-3. The client subscribes to rooms matching its profile ID and role.
-4. No changes are required in any `app/actions/*` file.
+- Dashboards: `job_card.`, `work_order.`, `materials_request.`, `offline_inventory.`, `material_ledger.`, `notification.`
+- Job Cards list/detail: `job_card.`, `work_order.`, `materials_request.`
+- Materials Requests list/detail: `materials_request.`, `job_card.`, `work_order.`, `offline_inventory.`, `material_ledger.`
+- Offline Inventory Control / Movement History: `offline_inventory.`, `material_ledger.`, `materials_request.`, `job_card.`
 
-The `scope`, `target_profile_id`, and `department_id` columns provide the
-necessary routing hints for the broadcast layer.
+Should a heavier real-time layer (WebSockets/Socket.IO) ever become
+necessary, the `scope`, `target_profile_id`, and `department_id` columns
+already provide the routing hints a broadcast server would need — but as of
+this writing, SSE + poll fallback fully satisfies the real-time requirement
+at this system's scale (see `components/realtime/realtime-refresh.tsx` and
+`app/api/notifications/stream/route.ts`).

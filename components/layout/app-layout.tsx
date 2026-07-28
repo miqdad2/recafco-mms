@@ -12,15 +12,13 @@ import { type NavIconKey } from "@/components/layout/nav-link";
 import { CollapsibleNav, type CollapsibleNavGroup } from "@/components/layout/collapsible-nav";
 import { NotificationBell } from "@/components/notifications/notification-bell";
 import { NotificationToastCenter } from "@/components/notifications/notification-toast-center";
+import { RealtimeConnectionProvider } from "@/components/realtime/realtime-connection-provider";
 import { ActionToast } from "@/components/ui/action-toast";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requireUser, type CurrentUserContext } from "@/lib/auth/context";
-import { prisma } from "@/lib/db/prisma";
 import { initials } from "@/lib/utils";
 import type { PermissionKey } from "@/types/database";
-
-const SETTINGS_ID = "00000000-0000-0000-0000-000000000001";
 
 const sidebarFont = Inter({ subsets: ["latin"], weight: ["400", "500", "600", "700"] });
 
@@ -105,6 +103,10 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
+      // Simplified Workflow Correction Unit Task 1: "Materials Requests"
+      // restored to Supervisor/Manager's nav — requested materials must stay
+      // visible/trackable on their own page (Receive Materials happens
+      // there), not only inside the Job Card.
       { href: "/maintenance/work-orders",  label: "Job Cards",                 iconKey: "ClipboardList", permission: "work_orders.view" },
       { href: "/store/parts-requests",     label: "Materials Requests",        iconKey: "ShoppingCart",  permission: "parts_requests.view" },
       { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
@@ -123,12 +125,13 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
 ];
 
 // ── Store Keeper ───────────────────────────────────────────────────────────────
-// Store Issue Materials + Offline Inventory Separation Unit Task 2: Offline
-// Inventory Control (the general balance/ledger page) is no longer Store's
-// primary work page — replaced with Issue Materials (approved requests ready
-// to send) and Sent Materials (the existing movement history page, relabeled
-// for Store's own record-keeping). The route itself is untouched and still
-// reachable directly; it's just no longer advertised as Store's main page.
+// Simplified Job Card Approval Workflow Unit Task 6: Store has left the
+// active workflow (no Job Card approval/materials gate depends on Store any
+// more). Store Keeper can still log in, but its nav now shows only Offline
+// Inventory Control — Materials Requests / Send Materials / Sent Materials /
+// Inventory Check are all removed from the sidebar. None of those routes are
+// deleted; they remain reachable by direct URL (still permission-gated) for
+// anyone who needs historical/print access.
 
 const storeKeeperNavigationGroups: NavGroup[] = [
   {
@@ -140,9 +143,7 @@ const storeKeeperNavigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
-      { href: "/store/parts-requests",              label: "Materials Requests", iconKey: "ShoppingCart", permission: "store.issue" },
-      { href: "/store/issue-materials",              label: "Send Materials",     iconKey: "ArrowDownUp", permission: "store.issue" },
-      { href: "/store/offline-inventory/movements",  label: "Sent Materials",     iconKey: "Activity", permission: "parts.view" }
+      { href: "/store/offline-inventory", label: "Offline Inventory Control", iconKey: "ArrowDownUp", permission: "parts.view" }
     ]
   },
   {
@@ -188,13 +189,11 @@ const technicianNavigationGroups: NavGroup[] = [
 
 // ── Maintenance Engineer ─────────────────────────────────────────────────────
 
-// Sidebar Access Alignment Task 2/3: Offline Inventory Control (read-only —
-// the page itself gates every write action behind store.issue, which
-// Engineer doesn't hold) and Technician (operational tracking of assigned/
-// in-progress/closed work — /maintenance/assignments, gated on
-// work_orders.assign, which Engineer already holds) were both simply absent
-// from this role's nav groups, unlike the earlier Dashboard/Assets/Reports
-// gap which was a missing permission grant, not a missing nav entry.
+// Simplified Job Card Approval Workflow Unit Task 6: Engineer is not one of
+// the three active roles in the new simplified flow (Data Entry,
+// Supervisor/Manager, Super Admin) — the review step it used to perform is
+// no longer required. Its permissions are left untouched (not revoked), but
+// its nav is trimmed to a minimal read-only view: Job Cards + Assets only.
 const maintenanceEngineerNavigationGroups: NavGroup[] = [
   {
     label: null,
@@ -205,19 +204,15 @@ const maintenanceEngineerNavigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
-      { href: "/maintenance/work-orders",  label: "Job Cards",                 iconKey: "ClipboardList", permission: "work_orders.view" },
-      { href: "/store/parts-requests",     label: "Materials Requests",        iconKey: "ShoppingCart",  permission: "parts_requests.view" },
-      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
-      { href: "/assets/service-contracts", label: "Service Contracts",         iconKey: "FileText",      permission: "assets.view" }
+      { href: "/maintenance/work-orders", label: "Job Cards", iconKey: "ClipboardList", permission: "work_orders.view" }
     ]
   },
   {
     label: "Operations",
     items: [
-      { href: "/assets",                  label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
-      { href: "/maintenance/assignments", label: "Technician",          iconKey: "Wrench",    permission: "work_orders.assign" },
-      { href: "/reports",                 label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
-      { href: "/notifications",           label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
+      { href: "/assets",        label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
+      { href: "/reports",       label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
+      { href: "/notifications", label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
     ]
   }
 ];
@@ -254,10 +249,8 @@ const viewerAuditorNavigationGroups: NavGroup[] = [
 
 // ── Normal User (Maintenance Data Entry / Department Requester) ────────────────
 
-// Sidebar Access Alignment Task 3: Technician (/maintenance/assignments,
-// gated on work_orders.assign, which Data Entry already holds) was missing
-// from this role's nav — Data Entry needs it to follow up on assignment
-// after materials are issued, same as Engineer/Manager.
+// Simplified Workflow Correction Unit Task 1: "Materials Requests" restored —
+// requested materials must stay visible/trackable on their own page.
 const normalUserNavigationGroups: NavGroup[] = [
   {
     label: null,
@@ -307,31 +300,11 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
   const isTechnician = roleSlug === "technician";
   const isViewerAuditor = roleSlug === "viewer_auditor";
 
-  // Feature-flag-gated nav injection for Store Keeper: Inventory Check link
-  let activeStoreKeeperGroups = storeKeeperNavigationGroups;
-  if (isStoreKeeper) {
-    const sk = await prisma.app_settings
-      .findUnique({ where: { id: SETTINGS_ID }, select: { inventory_check_enabled: true } })
-      .catch(() => null);
-    if (sk?.inventory_check_enabled) {
-      activeStoreKeeperGroups = [
-        storeKeeperNavigationGroups[0],
-        {
-          label: null,
-          items: [
-            {
-              href: "/store/inventory-check",
-              label: "Inventory Check",
-              iconKey: "ClipboardCheck" as NavIconKey,
-              permission: "store.issue" as PermissionKey
-            },
-            ...storeKeeperNavigationGroups[1].items
-          ]
-        },
-        storeKeeperNavigationGroups[2]
-      ];
-    }
-  }
+  // Simplified Job Card Approval Workflow Unit Task 6: Inventory Check was a
+  // Store-approval-gate feature (E4 in the old flow); no longer injected into
+  // Store Keeper's nav regardless of the inventory_check_enabled setting —
+  // the setting/route/permission themselves are untouched, just unlinked.
+  const activeStoreKeeperGroups = storeKeeperNavigationGroups;
 
   const groups = isCeo ? ceoNavigationGroups
     : isMaintenanceManager ? maintenanceManagerNavigationGroups
@@ -349,53 +322,59 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
   const allVisibleItems = visibleGroups.flatMap((g) => g.items);
 
   return (
-    <div className="min-h-screen overflow-x-clip bg-[#F3F5F8] pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0">
-      <aside
-        className={`${sidebarFont.className} fixed inset-y-0 left-0 z-20 hidden w-64 flex-col border-r border-white/10 bg-[#081225] text-[#E8EDF5] lg:flex`}
-      >
-        <div className="flex flex-none items-center gap-3 border-b border-white/10 px-4 py-4">
-          <BrandLogo variant="dark" size="sm" subtitle="Maintenance & Asset Management" />
-        </div>
-        <nav className="flex-1 overflow-y-auto px-3 py-4" aria-label="Main navigation">
-          <CollapsibleNav groups={visibleGroups} />
-        </nav>
-      </aside>
+    // SSE Connection Consolidation Unit: single shared EventSource per tab,
+    // wrapping everything that used to open its own — NotificationBell (via
+    // NotificationLiveCount), NotificationToastCenter below, and any
+    // <RealtimeRefresh /> rendered inside {children} on the current page.
+    <RealtimeConnectionProvider userId={context.userId}>
+      <div className="min-h-screen overflow-x-clip bg-[#F3F5F8] pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0">
+        <aside
+          className={`${sidebarFont.className} fixed inset-y-0 left-0 z-20 hidden w-64 flex-col border-r border-white/10 bg-[#081225] text-[#E8EDF5] lg:flex`}
+        >
+          <div className="flex flex-none items-center gap-3 border-b border-white/10 px-4 py-4">
+            <BrandLogo variant="dark" size="sm" subtitle="Maintenance & Asset Management" />
+          </div>
+          <nav className="flex-1 overflow-y-auto px-3 py-4" aria-label="Main navigation">
+            <CollapsibleNav groups={visibleGroups} />
+          </nav>
+        </aside>
 
-      <div className="lg:pl-64">
-        <header className="sticky top-0 z-10 flex min-h-16 items-center justify-between gap-3 border-b border-[#DDE2EA] bg-white/95 px-3 backdrop-blur sm:px-6">
-          <div className="min-w-0">
-            <p className="truncate text-[11px] font-bold uppercase text-[#4B5563] sm:text-xs">Maintenance Department System</p>
-            <p className="truncate text-sm font-semibold text-[#111827]">{context.department?.name ?? "No department assigned"}</p>
-          </div>
-          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-            <div className="hidden sm:block">
-              <StatusBadge label={context.role?.name ?? "No role"} tone="blue" />
+        <div className="lg:pl-64">
+          <header className="sticky top-0 z-10 flex min-h-16 items-center justify-between gap-3 border-b border-[#DDE2EA] bg-white/95 px-3 backdrop-blur sm:px-6">
+            <div className="min-w-0">
+              <p className="truncate text-[11px] font-bold uppercase text-[#4B5563] sm:text-xs">Maintenance Department System</p>
+              <p className="truncate text-sm font-semibold text-[#111827]">{context.department?.name ?? "No department assigned"}</p>
             </div>
-            <NotificationBell userId={context.userId} />
-            <Link href="/profile" className="hidden items-center gap-2 sm:flex">
-              <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#2B2B2B] text-sm font-bold text-white">
+            <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+              <div className="hidden sm:block">
+                <StatusBadge label={context.role?.name ?? "No role"} tone="blue" />
+              </div>
+              <NotificationBell userId={context.userId} />
+              <Link href="/profile" className="hidden items-center gap-2 sm:flex">
+                <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#2B2B2B] text-sm font-bold text-white">
+                  {initials(context.profile.full_name)}
+                </span>
+                <span className="max-w-48 truncate text-sm font-semibold text-[#111827]">{context.profile.full_name}</span>
+              </Link>
+              <Link href="/profile" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#2B2B2B] text-sm font-bold text-white sm:hidden" aria-label="Open profile">
                 {initials(context.profile.full_name)}
-              </span>
-              <span className="max-w-48 truncate text-sm font-semibold text-[#111827]">{context.profile.full_name}</span>
-            </Link>
-            <Link href="/profile" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#2B2B2B] text-sm font-bold text-white sm:hidden" aria-label="Open profile">
-              {initials(context.profile.full_name)}
-            </Link>
-            <form action={signOutAction}>
-              <Button variant="secondary" className="px-3" title="Logout">
-                <LogOut className="h-4 w-4" aria-hidden="true" />
-                <span className="hidden sm:inline">Logout</span>
-              </Button>
-            </form>
-          </div>
-        </header>
-        <main className="min-w-0">{children}</main>
+              </Link>
+              <form action={signOutAction}>
+                <Button variant="secondary" className="px-3" title="Logout">
+                  <LogOut className="h-4 w-4" aria-hidden="true" />
+                  <span className="hidden sm:inline">Logout</span>
+                </Button>
+              </form>
+            </div>
+          </header>
+          <main className="min-w-0">{children}</main>
+        </div>
+        <Suspense fallback={null}>
+          <ActionToast />
+        </Suspense>
+        <NotificationToastCenter userId={context.userId} />
+        <MobileNavigation items={allVisibleItems.map(({ href, label, iconKey }) => ({ href, label, iconKey }))} />
       </div>
-      <Suspense fallback={null}>
-        <ActionToast />
-      </Suspense>
-      <NotificationToastCenter userId={context.userId} />
-      <MobileNavigation items={allVisibleItems.map(({ href, label, iconKey }) => ({ href, label, iconKey }))} />
-    </div>
+    </RealtimeConnectionProvider>
   );
 }

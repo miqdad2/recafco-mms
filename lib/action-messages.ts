@@ -32,9 +32,9 @@ const SUCCESS_MAP: Record<string, ToastMessage> = {
   "work-order-saved":       { tone: "success", title: "Job Card saved" },
   "asset-saved":            { tone: "success", title: "Asset saved" },
   "part-saved":             { tone: "success", title: "Part saved" },
-  "opening-stock-saved":    { tone: "success", title: "Opening stock recorded", description: "Movement recorded in the Maintenance Store ledger." },
-  "material-received":      { tone: "success", title: "Material received", description: "Movement recorded in the Maintenance Store ledger." },
-  "material-issued":        { tone: "success", title: "Material issued",   description: "Movement recorded in the Maintenance Store ledger." },
+  "opening-stock-saved":    { tone: "success", title: "Opening stock recorded", description: "Movement recorded in Offline Inventory Control." },
+  "material-received":      { tone: "success", title: "Material received", description: "Movement recorded in Offline Inventory Control." },
+  "material-issued":        { tone: "success", title: "Material recorded as used", description: "Movement recorded in Offline Inventory Control." },
   "settings-saved":       { tone: "success", title: "Settings saved" },
   "department-saved":     { tone: "success", title: "Department saved" },
   approved:               { tone: "success", title: "Approved" },
@@ -54,6 +54,9 @@ const SUPPRESSED_SUCCESS_CODES = new Set<string>([
   "materials-request-created",
   "material-request-received",
   "material-request-issued",
+  "clarification-sent",
+  "job-card-closed",
+  "job-card-opened",
 ]);
 
 const ERROR_MAP: Record<string, ToastMessage> = {
@@ -98,6 +101,7 @@ const ERROR_MAP: Record<string, ToastMessage> = {
   "clarification-question-too-short": { tone: "error", title: "Clarification question too short", description: "Please provide at least 10 characters." },
   "clarification-response-too-short": { tone: "error", title: "Response too short",         description: "Please provide at least 10 characters." },
   "cancel-reason-required":           { tone: "error", title: "Cancellation reason required", description: "Please state why this Job Card is being cancelled." },
+  "closing-note-required":            { tone: "error", title: "Closing note required",       description: "Please describe the work completed before closing (at least 10 characters)." },
 };
 
 export function resolveToastMessage(params: {

@@ -96,7 +96,7 @@ export function MaterialDetailModal({
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <Stat label="Opening Stock" value={item.total_opening_stock} />
               <Stat label="Total Received" value={item.total_received} />
-              <Stat label="Total Issued" value={item.total_issued} />
+              <Stat label="Total Used" value={item.total_issued} />
               <Stat label="Current Balance" value={item.balance} highlight />
             </div>
 
@@ -158,22 +158,22 @@ export function MaterialDetailModal({
                     href={`/store/offline-inventory/issue?material=${encodeURIComponent(item.key)}`}
                     className="flex-1 rounded-md bg-[#ED1C24] px-4 py-2 text-center text-sm font-bold text-white hover:bg-[#c8181e]"
                   >
-                    Issue Material
+                    Record Used Material
                   </Link>
                 ) : (
                   <button
                     type="button"
                     disabled
-                    title="No available balance to issue."
+                    title="No available balance to record as used."
                     className="flex-1 cursor-not-allowed rounded-md bg-gray-100 px-4 py-2 text-center text-sm font-bold text-[#9CA3AF]"
                   >
-                    Issue Material
+                    Record Used Material
                   </button>
                 )
               )}
             </div>
             {canIssue && item.balance <= 0 && (
-              <p className="mt-2 text-xs text-[#9CA3AF]">No available balance to issue.</p>
+              <p className="mt-2 text-xs text-[#9CA3AF]">No available balance to record as used.</p>
             )}
           </div>
         </div>

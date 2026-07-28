@@ -12,7 +12,7 @@ export default async function AddOpeningStockPage() {
     <>
       <PageHeader
         title="Add Opening Stock"
-        description="Enter materials already available in the Maintenance Store before system tracking starts."
+        description="Enter existing maintenance materials before system tracking starts."
         actions={
           <Link
             href="/store/offline-inventory"

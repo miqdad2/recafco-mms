@@ -10,6 +10,7 @@ import { getFileSecuritySettings } from "@/lib/files/settings";
 import { savePrivateFile } from "@/lib/files/local-storage";
 import { writeAuditLog } from "@/lib/audit/log";
 import { requireOfflineInventoryManage } from "@/lib/store/offline-inventory-data";
+import { emitOfflineInventoryRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 
 export type OfflineMovementState =
   | { ok: true }
@@ -176,7 +177,7 @@ export async function addOpeningStockAction(
       }
     }
 
-    await prisma.offline_inventory_movements.create({
+    const created = await prisma.offline_inventory_movements.create({
       data: {
         movement_type:         "OPENING_STOCK",
         movement_date:         todayDateOnly(),
@@ -193,6 +194,8 @@ export async function addOpeningStockAction(
         created_by:            context.userId,
       },
     });
+
+    await emitOfflineInventoryRealtimeEvent(REALTIME_EVENTS.OFFLINE_INVENTORY_OPENING_STOCK_ADDED, created.id, context.userId);
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Failed to save." };
   }
@@ -257,7 +260,7 @@ export async function receiveOfflineMaterialAction(
       }
     }
 
-    await prisma.offline_inventory_movements.create({
+    const created = await prisma.offline_inventory_movements.create({
       data: {
         movement_type:         "RECEIVED",
         movement_date:         new Date(movementDate),
@@ -275,6 +278,11 @@ export async function receiveOfflineMaterialAction(
         created_by:            context.userId,
       },
     });
+
+    await Promise.all([
+      emitOfflineInventoryRealtimeEvent(REALTIME_EVENTS.OFFLINE_INVENTORY_RECEIVED, created.id, context.userId),
+      woIdRaw ? emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_UPDATED, woIdRaw, context.userId) : Promise.resolve(),
+    ]);
 
     // Optional attachment — only linkable when a Related Job Card was selected,
     // since there is no attachments table for offline_inventory_movements itself
@@ -355,10 +363,10 @@ export async function issueOfflineMaterialAction(
       return { ok: false, error: "Movement date is required." };
     }
     if (!counterparty) {
-      return { ok: false, error: '"Issued / Sent to" is required.' };
+      return { ok: false, error: '"Used by / Sent to" is required.' };
     }
     if (!partId && !manualName) {
-      return { ok: false, error: "Select a material to issue." };
+      return { ok: false, error: "Select a material to record as used." };
     }
 
     // Server-side balance check — prevents over-issue even under concurrent saves
@@ -373,7 +381,7 @@ export async function issueOfflineMaterialAction(
       };
     }
 
-    await prisma.offline_inventory_movements.create({
+    const created = await prisma.offline_inventory_movements.create({
       data: {
         movement_type:         "ISSUED",
         movement_date:         new Date(movementDate),
@@ -392,6 +400,11 @@ export async function issueOfflineMaterialAction(
         created_by:            context.userId,
       },
     });
+
+    await Promise.all([
+      emitOfflineInventoryRealtimeEvent(REALTIME_EVENTS.OFFLINE_INVENTORY_USED, created.id, context.userId),
+      woIdRaw ? emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_UPDATED, woIdRaw, context.userId) : Promise.resolve(),
+    ]);
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Failed to save." };
   }

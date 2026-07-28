@@ -36,6 +36,7 @@ import { prisma } from "@/lib/db/prisma";
 import { OPEN_PR_STATUSES } from "@/lib/display/parts-request-labels";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { normalizeCategory } from "@/components/store/offline-inventory-types";
+import { emitOfflineInventoryRealtimeEvent, emitMaterialsRequestRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 
 // ── Form parsing helpers (used for indexed item fields from parts-request form) ──
 
@@ -231,7 +232,7 @@ export async function rejectPartsRequestAction(formData: FormData) {
 // gone) — leaving an item's issued quantity unchanged and checking it as
 // unavailable simply means nothing is recorded for that item this call.
 export async function storeIssueAction(formData: FormData) {
-  const context = await requirePermission("store.issue");
+  const context = await requireReceiveIssuePermission();
   const requestId = idFrom(formData, "parts_request_id");
 
   // Fetch items here to resolve dynamic form keys (issued_{id}).
@@ -299,7 +300,7 @@ export async function storeIssueModalAction(
   _prev: StoreIssueModalState,
   formData: FormData
 ): Promise<StoreIssueModalState> {
-  const context = await requirePermission("store.issue");
+  const context = await requireReceiveIssuePermission();
   const parsedId = z.uuid().safeParse(formData.get("parts_request_id"));
   if (!parsedId.success) {
     return { ok: false, error: "Invalid Materials Request." };
@@ -492,6 +493,14 @@ export async function receiveMaterialsForRequestAction(formData: FormData) {
       // general store stock-in event, decoupled from any one request's
       // lifecycle; issuing (issueMaterials) is what advances request status.
     });
+
+    // Enterprise-Wide Real-Time Update Verification Task 7: one event per
+    // action, not per item in the loop above.
+    await Promise.all([
+      emitOfflineInventoryRealtimeEvent(REALTIME_EVENTS.OFFLINE_INVENTORY_RECEIVED, null, context.userId),
+      emitMaterialsRequestRealtimeEvent(REALTIME_EVENTS.MATERIAL_LEDGER_UPDATED, requestId, context.userId),
+      request.work_order_id ? emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_UPDATED, request.work_order_id, context.userId) : Promise.resolve(),
+    ]);
 
     // Optional attachment — save after main transaction; failure is non-fatal.
     // The form pairs a normal file input with a camera-capture input under the
@@ -745,6 +754,12 @@ export async function receiveMaterialFromRequestAction(formData: FormData) {
         },
       });
     });
+
+    await Promise.all([
+      emitOfflineInventoryRealtimeEvent(REALTIME_EVENTS.OFFLINE_INVENTORY_RECEIVED, null, context.userId),
+      emitMaterialsRequestRealtimeEvent(REALTIME_EVENTS.MATERIAL_LEDGER_UPDATED, requestId, context.userId),
+      request.work_order_id ? emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_UPDATED, request.work_order_id, context.userId) : Promise.resolve(),
+    ]);
 
     await writeAuditLog({
       actorId: context.userId,

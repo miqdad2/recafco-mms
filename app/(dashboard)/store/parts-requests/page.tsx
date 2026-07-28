@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import Link from "next/link";
-import { CheckCircle2, ClipboardList, Package, Plus, ShoppingCart } from "lucide-react";
+import { CheckCircle2, ClipboardList, Plus, ShoppingCart } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { EmptyState } from "@/components/ui/empty-state";
@@ -11,79 +11,86 @@ import {
   RepairOrderQuickView,
   type QuickViewData,
 } from "@/components/work-orders/repair-order-quick-view";
+import { JobCardOpenedModal } from "@/components/work-orders/job-card-opened-modal";
 import { MaterialsRequestCreatedModal } from "@/components/store/materials-request-created-modal";
 import { MaterialsReceivedModal } from "@/components/store/materials-received-modal";
-import { MaterialIssuedModal, type IssuedItem } from "@/components/store/material-issued-modal";
 import {
   MaterialsRequestQuickView,
   type MaterialsRequestQuickViewData,
 } from "@/components/store/materials-request-quick-view";
+import { StoreSendMaterialsPopup, type StoreSendMaterialsData } from "@/components/store/store-send-materials-popup";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import {
   displayPartsRequestStatus,
   partsRequestStatusTone,
   materialsRequestListGroup,
-  materialsRequestListGroupTone,
-  materialsRequestStoreFollowUpHint,
+  materialsRequestJobCardHelper,
+  materialsReceiptStatus,
+  materialsReceiptStatusTone,
   OPEN_PR_STATUSES,
 } from "@/lib/display/parts-request-labels";
-import { displayStatus as displayJobCardStatus } from "@/lib/display/work-order-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { getReviewedWorkOrderIds } from "@/lib/work-orders/review-status";
-import { getPartsRequestVisibilityFilter } from "@/lib/parts-requests/visibility";
+import { getPendingClarificationForWorkOrder } from "@/lib/backend/workflows/queries";
+import {
+  getPendingCorrectionWorkOrderIds,
+  displaySimplifiedStatus,
+  OPEN_JOB_CARD_STATUSES,
+} from "@/lib/work-orders/simplified-status";
+import { getPartsRequestVisibilityFilter, canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
 
-// Materials Request list simplification: the list page groups the 5 real
-// DB statuses into 4 simple buckets — Waiting Stock and Partially Issued are
-// internal Store-side states normal users don't need to distinguish, so both
-// fold into one "Store Follow-up" tab/card ("store-followup" bucket key in
-// the URL). The individual statuses still exist in the database and are
-// still filterable directly (e.g. an existing dashboard deep link to
-// ?status=Waiting+Stock keeps working), they just aren't offered as their
-// own tab/card here. Never uses old words (Draft/Submitted/Pending
-// Approval/Waiting for Store/Waiting for Purchase/Rejected/Cancelled/Closed)
-// as a tab.
+// Manager Approval Success Popup and Materials Awaiting Receipt Flow Task 5:
+// the list page's primary job is daily receipt follow-up, so its tabs now
+// center on the same 3-value materialsReceiptStatus mapping the badge/KPI
+// cards use — "Awaiting Receipt" (approved, Job Card Open, not yet received)
+// replaces the old plain "Requested" tab. A request whose Job Card isn't
+// Open yet only shows under "All" — it's genuinely not a receipt-followup
+// item yet, so it doesn't need its own tab. The individual raw DB statuses
+// still exist and are still filterable directly by an existing deep link
+// (e.g. ?status=Approved). Never uses Store-specific wording (Store
+// Follow-up/Waiting Store/Send Materials/Issue by Store) as a tab.
 const MATERIALS_REQUEST_TABS = [
-  { label: "All",               key: "",              statuses: [] as string[] },
-  { label: "Requested",         key: "Requested",      statuses: ["Requested"] },
-  { label: "Approved",          key: "Approved",       statuses: ["Approved"] },
-  { label: "Store Follow-up",   key: "store-followup", statuses: ["Waiting Stock", "Partially Issued"] },
-  { label: "Issued",            key: "Issued",         statuses: ["Issued"] },
+  { label: "All",              key: "",               statuses: [] as string[] },
+  { label: "Awaiting Receipt", key: "AwaitingReceipt", statuses: ["Requested", "Approved", "Waiting Stock", "Partially Issued"] },
+  { label: "Received",         key: "Received",        statuses: ["Issued"] },
 ];
 
 // Wording for a status tab/deep-link that has zero matching Materials
-// Requests. Raw "Waiting Stock" / "Partially Issued" deep links (e.g. from
-// the dashboard) map to the same Store Follow-up wording as the
-// "store-followup" bucket key, so no internal status word ever surfaces.
+// Requests.
 const TAB_EMPTY_STATE: Record<string, { title: string; message: string }> = {
+  AwaitingReceipt: {
+    title: "Nothing awaiting receipt.",
+    message: "Approved materials not yet received will appear here once a linked Job Card is Open.",
+  },
   Requested: {
     title: "No Materials Requests found.",
     message: "New materials requests will appear here.",
   },
   Approved: {
-    title: "No approved Materials Requests.",
-    message: "Approved requests ready for Store issue will appear here.",
-  },
-  "store-followup": {
-    title: "No Materials Requests need Store follow-up.",
-    message: "Requests Store is arranging or updating materials for will appear here.",
+    title: "No Materials Requests found.",
+    message: "New materials requests will appear here.",
   },
   "Waiting Stock": {
-    title: "No Materials Requests need Store follow-up.",
-    message: "Requests Store is arranging or updating materials for will appear here.",
+    title: "No Materials Requests found.",
+    message: "New materials requests will appear here.",
   },
   "Partially Issued": {
-    title: "No Materials Requests need Store follow-up.",
-    message: "Requests Store is arranging or updating materials for will appear here.",
+    title: "No Materials Requests found.",
+    message: "New materials requests will appear here.",
+  },
+  Received: {
+    title: "No Materials Requests received yet.",
+    message: "Fully received requests will appear here.",
   },
   Issued: {
-    title: "No Materials Requests issued yet.",
-    message: "Fully issued requests will appear here.",
+    title: "No Materials Requests received yet.",
+    message: "Fully received requests will appear here.",
   },
 };
 
@@ -134,6 +141,18 @@ function previewHref(
   return `/store/parts-requests?${p.toString()}`;
 }
 
+function sendPreviewHref(
+  requestId: string,
+  { query, status, page }: { query: string; status: string; page: number }
+) {
+  const p = new URLSearchParams();
+  if (query) p.set("q", query);
+  if (status) p.set("status", status);
+  if (page > 1) p.set("page", String(page));
+  p.set("sendPreview", requestId);
+  return `/store/parts-requests?${p.toString()}`;
+}
+
 function paginationClass(disabled: boolean) {
   return cn(
     "rounded-md border border-[#DDE2EA] px-4 py-2 text-sm font-bold",
@@ -149,21 +168,21 @@ export default async function PartsRequestsPage({
   searchParams?: Promise<SearchParams>;
 }) {
   const context = await requirePermission("parts_requests.view");
+  // Computed once per request, not per row — matches the established
+  // new Date() (not Date.now()) convention used elsewhere on this page.
+  const nowMs = new Date().getTime();
 
   const canCreate =
     context.role?.slug === "super_admin" ||
     context.permissions.includes("parts_requests.create") ||
     context.permissions.includes("work_orders.manage");
 
-  // Task 7's row quick-action gates: Approve (Requested) and Issue (Approved/
-  // Waiting Stock/Partially Issued) — both link to the detail page rather than
-  // acting inline (Task 4/7's "not fully safe from the list" rule).
+  // Row quick-action gates: Approve (Requested, still needs a Manager
+  // decision — e.g. materials added after the Job Card was already Open) and
+  // Receive Materials (Approved/Waiting Stock/Partially Issued).
   const canApprove =
     context.role?.slug === "super_admin" || context.permissions.includes("parts_requests.approve");
-  const canIssue =
-    context.role?.slug === "super_admin" ||
-    context.permissions.includes("parts_requests.issue") ||
-    context.permissions.includes("store.issue");
+  const canReceive = canReceiveIssueMaterials(context);
 
   const params = (await searchParams) ?? {};
   const query = single(params.q)?.trim() ?? "";
@@ -172,6 +191,9 @@ export default async function PartsRequestsPage({
   const jobPreviewId = single(params.jobPreview)?.trim() ?? null;
   const validJobPreviewId =
     jobPreviewId && UUID_RE.test(jobPreviewId) ? jobPreviewId : null;
+  const sendPreviewId = single(params.sendPreview)?.trim() ?? null;
+  const validSendPreviewId =
+    sendPreviewId && UUID_RE.test(sendPreviewId) ? sendPreviewId : null;
   const previewId = single(params.preview)?.trim() ?? null;
   const validPreviewId = previewId && UUID_RE.test(previewId) ? previewId : null;
   const successCode = single(params.success)?.trim() ?? "";
@@ -183,23 +205,23 @@ export default async function PartsRequestsPage({
   const showReceivedModal = successCode === "material-request-received";
   const receivedId = single(params.received)?.trim() ?? null;
   const validReceivedId = receivedId && UUID_RE.test(receivedId) ? receivedId : null;
-  const showIssuedModal = successCode === "material-request-issued";
-  const issuedReqId = single(params.issued)?.trim() ?? null;
-  const validIssuedReqId = issuedReqId && UUID_RE.test(issuedReqId) ? issuedReqId : null;
 
   // ── Visibility: a user can always see requests they created/requested ────
   const partsRequestVisibility = getPartsRequestVisibilityFilter(context);
 
   // ── List query ───────────────────────────────────────────────────────────
+  const NOT_YET_RECEIVED_STATUSES = ["Requested", "Approved", "Waiting Stock", "Partially Issued"];
   const conditions: Prisma.parts_requestsWhereInput[] = [partsRequestVisibility];
-  if (status === "store-followup") {
-    conditions.push({ status: { in: ["Waiting Stock", "Partially Issued"] } });
+  if (status === "AwaitingReceipt") {
+    conditions.push({ status: { in: NOT_YET_RECEIVED_STATUSES } });
+    conditions.push({ work_orders: { status: { in: OPEN_JOB_CARD_STATUSES } } });
+  } else if (status === "Received") {
+    conditions.push({ status: "Issued" });
   } else if (status) {
-    // Covers the 3 single-status tabs (Requested/Approved/Issued) plus
-    // backward-compat direct deep links to a raw status the "store-followup"
-    // bucket folds together (e.g. an existing dashboard link to
-    // ?status=Waiting+Stock) — a literal match, which safely yields zero rows
-    // for any value that isn't a real status.
+    // Backward-compat direct deep link to a raw status (e.g. an existing
+    // dashboard link to ?status=Approved, or the old ?status=Requested) — a
+    // literal match, which safely yields zero rows for any value that isn't
+    // a real status.
     conditions.push({ status });
   }
   if (query) {
@@ -219,39 +241,122 @@ export default async function PartsRequestsPage({
   const where: Prisma.parts_requestsWhereInput =
     conditions.length > 0 ? { AND: conditions } : {};
 
-  const [requests, total, statusSummaries] = await Promise.all([
-    prisma.parts_requests.findMany({
+  // Manager Approval Success Popup and Materials Awaiting Receipt Flow Task
+  // 5: default sort is "Awaiting Receipt first, oldest first within Awaiting
+  // Receipt" — a priority that depends on the linked Job Card's status, not
+  // a raw column, so it can't be expressed as a single Prisma `orderBy`.
+  // Only applied on views where the mix of buckets is actually meaningful
+  // (All / Awaiting Receipt / any raw not-yet-received deep link); the
+  // Received tab keeps the existing newest-first order, matching a normal
+  // "recent activity" list. Fetches a lightweight id/status/job-status/date
+  // projection first (cheap at this system's scale), sorts in memory, then
+  // fetches full row data for just the current page's slice.
+  const useReceiptPrioritySort = status !== "Received";
+
+  let requests: Array<{
+    id: string;
+    parts_request_number: string | null;
+    status: string;
+    created_at: Date;
+    work_orders: { id: string; work_order_number: string | null; status: string } | null;
+    assets: { asset_code: string; asset_name: string; plate_number: string | null } | null;
+    profiles_parts_requests_requested_byToprofiles: { full_name: string } | null;
+    parts_request_items: { description: string; quantity_requested: unknown; issued_quantity: unknown }[];
+    _count: { parts_request_items: number };
+  }>;
+  let total: number;
+
+  if (useReceiptPrioritySort) {
+    const sortable = await prisma.parts_requests.findMany({
       where,
-      orderBy: { created_at: "desc" },
-      skip: (page - 1) * PAGE_SIZE,
-      take: PAGE_SIZE,
+      select: { id: true, status: true, created_at: true, work_orders: { select: { status: true } } },
+    });
+    total = sortable.length;
+    const priority = (r: (typeof sortable)[number]) => {
+      if (displayPartsRequestStatus(r.status) === "Issued") return 2;
+      const isOpen = r.work_orders ? OPEN_JOB_CARD_STATUSES.includes(r.work_orders.status) : false;
+      return isOpen ? 0 : 1;
+    };
+    const orderedIds = sortable
+      .slice()
+      .sort((a, b) => {
+        const pa = priority(a);
+        const pb = priority(b);
+        if (pa !== pb) return pa - pb;
+        return a.created_at.getTime() - b.created_at.getTime(); // oldest first within a bucket
+      })
+      .map((r) => r.id)
+      .slice((page - 1) * PAGE_SIZE, (page - 1) * PAGE_SIZE + PAGE_SIZE);
+
+    const rows = await prisma.parts_requests.findMany({
+      where: { id: { in: orderedIds } },
       select: {
         id: true,
         parts_request_number: true,
         status: true,
+        created_at: true,
         work_orders: { select: { id: true, work_order_number: true, status: true } },
         assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
         profiles_parts_requests_requested_byToprofiles: { select: { full_name: true } },
-        parts_request_items: { select: { quantity_requested: true, issued_quantity: true } },
+        parts_request_items: { select: { description: true, quantity_requested: true, issued_quantity: true } },
         _count: { select: { parts_request_items: true } },
       },
-    }),
-    prisma.parts_requests.count({ where }),
-    // Task 6: bucket counters, scoped by the same visibility filter as the list.
+    });
+    const orderIndex = new Map(orderedIds.map((id, i) => [id, i]));
+    requests = rows.slice().sort((a, b) => (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0));
+  } else {
+    [requests, total] = await Promise.all([
+      prisma.parts_requests.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        skip: (page - 1) * PAGE_SIZE,
+        take: PAGE_SIZE,
+        select: {
+          id: true,
+          parts_request_number: true,
+          status: true,
+          created_at: true,
+          work_orders: { select: { id: true, work_order_number: true, status: true } },
+          assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
+          profiles_parts_requests_requested_byToprofiles: { select: { full_name: true } },
+          parts_request_items: { select: { description: true, quantity_requested: true, issued_quantity: true } },
+          _count: { select: { parts_request_items: true } },
+        },
+      }),
+      prisma.parts_requests.count({ where }),
+    ]);
+  }
+
+  // Task 6: bucket counters, scoped by the same visibility filter as the
+  // list — Awaiting Receipt needs its own join-aware count since it isn't a
+  // single raw status value.
+  const [statusSummaries, awaitingReceiptCount] = await Promise.all([
     prisma.parts_requests.groupBy({
       by: ["status"],
       where: partsRequestVisibility,
       _count: { _all: true },
     }),
+    prisma.parts_requests.count({
+      where: {
+        AND: [
+          partsRequestVisibility,
+          { status: { in: NOT_YET_RECEIVED_STATUSES } },
+          { work_orders: { status: { in: OPEN_JOB_CARD_STATUSES } } },
+        ],
+      },
+    }),
   ]);
+
+  // Simplified Workflow UI Consistency Cleanup Task 4: each row's helper
+  // text/action depends on whether its linked Job Card has a pending
+  // correction, looked up once for every Job Card referenced on this page.
+  const rowJobCardIds = [...new Set(requests.map((r) => r.work_orders?.id).filter((id): id is string => Boolean(id)))];
+  const rowCorrectionIds = await getPendingCorrectionWorkOrderIds(rowJobCardIds);
 
   const totalRequests = statusSummaries.reduce((n, s) => n + s._count._all, 0);
   const countFor = (statuses: string[]) =>
     statusSummaries.filter((s) => statuses.includes(s.status)).reduce((n, s) => n + s._count._all, 0);
-  const requestedCount = countFor(["Requested"]);
-  const approvedCount = countFor(["Approved"]);
-  const storeFollowUpCount = countFor(["Waiting Stock", "Partially Issued"]);
-  const issuedCount = countFor(["Issued"]);
+  const receivedCount = countFor(["Issued"]);
 
   // ── Materials Request created-success modal data ──────────────────────────
   // Best-effort enrichment only — the modal itself must render from query
@@ -265,7 +370,7 @@ export default async function PartsRequestsPage({
           select: {
             id: true,
             parts_request_number: true,
-            work_orders: { select: { id: true, work_order_number: true } },
+            work_orders: { select: { id: true, work_order_number: true, status: true } },
             assets: { select: { asset_name: true, asset_code: true } },
             _count: { select: { parts_request_items: true } },
           },
@@ -291,48 +396,41 @@ export default async function PartsRequestsPage({
         })
       : null;
 
-  // ── Material Issued success modal data ──────────────────────────────────────
-  // Same best-effort-enrichment pattern as the created/received modals above.
-  // A request can only be issued once (status moves straight to "Issued" and
-  // the Action column no longer offers an Issue button), so every ISSUED
-  // movement linked to this request id is exactly what was just issued.
-  const issuedRequest =
-    showIssuedModal && validIssuedReqId
-      ? await prisma.parts_requests.findFirst({
-          where: { AND: [{ id: validIssuedReqId }, partsRequestVisibility] },
-          select: {
-            id: true,
-            parts_request_number: true,
-            work_orders: { select: { id: true, work_order_number: true } },
-            assets: { select: { asset_name: true } },
-          },
-        })
-      : null;
-
-  const issuedMovements = issuedRequest
-    ? await prisma.offline_inventory_movements.findMany({
-        where: { parts_request_id: issuedRequest.id, movement_type: "ISSUED", deleted_at: null },
+  // ── Receive Materials guided popup data ───────────────────────────────────
+  // Opens via ?sendPreview=<id> from the Action column's "Receive Materials"
+  // button. Same permission check the action itself enforces
+  // (assertCanIssueMaterials/canReceiveIssueMaterials) — a user without it
+  // crafting this URL directly sees nothing, matching the popup's own gated
+  // action underneath.
+  const sendPreviewRequest = validSendPreviewId && canReceive
+    ? await prisma.parts_requests.findFirst({
+        where: { AND: [{ id: validSendPreviewId }, partsRequestVisibility] },
         select: {
-          manual_material_name: true,
-          quantity: true,
-          unit: true,
-          parts: { select: { part_name: true } },
+          id: true,
+          parts_request_number: true,
+          status: true,
+          work_orders: {
+            select: {
+              id: true,
+              work_order_number: true,
+              status: true,
+              operator_complaint: true,
+              description_of_work: true,
+              assets: { select: { asset_name: true, plate_number: true } },
+            },
+          },
+          parts_request_items: {
+            select: { id: true, description: true, quantity_requested: true, issued_quantity: true },
+          },
         },
-        orderBy: { created_at: "asc" },
       })
-    : [];
-
-  const issuedItems: IssuedItem[] = issuedMovements.map((m) => ({
-    materialName: m.parts?.part_name ?? m.manual_material_name ?? null,
-    quantity: Number(m.quantity),
-    unit: m.unit,
-  }));
+    : null;
 
   // ── Materials Request quick view data ──────────────────────────────────────
   // Opens via ?preview=<id> when a request number is clicked — Task 7.
-  // Mutually exclusive with the created/received/issued success modals.
+  // Mutually exclusive with the created/received success modals.
   const shouldFetchPreview =
-    !showCreatedModal && !showReceivedModal && !showIssuedModal && validPreviewId !== null;
+    !showCreatedModal && !showReceivedModal && validPreviewId !== null;
   const previewRequest = shouldFetchPreview
     ? await prisma.parts_requests.findFirst({
         where: { AND: [{ id: validPreviewId! }, partsRequestVisibility] },
@@ -361,7 +459,7 @@ export default async function PartsRequestsPage({
 
   // ── Job Card quick view data ──────────────────────────────────────────────
   // Only fetch when the issued-success modal isn't active (mutually exclusive modals)
-  const shouldFetchJobPreview = !showIssuedModal && validJobPreviewId !== null;
+  const shouldFetchJobPreview = validJobPreviewId !== null;
 
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
   const canAssignModal =
@@ -387,6 +485,7 @@ export default async function PartsRequestsPage({
             date_of_order: true,
             created_at: true,
             job_location: true,
+            created_by: true,
             assets: {
               select: {
                 id: true,
@@ -448,13 +547,26 @@ export default async function PartsRequestsPage({
     previewWO && previewWO.status === "Under Review"
       ? (await getReviewedWorkOrderIds([previewWO.id])).has(previewWO.id)
       : false;
+  // Data Entry Correction Note Visibility Cleanup Task 1/6: same single-record
+  // query the Job Card detail page's correction banner uses, so this Job
+  // Card preview drawer (opened from a linked Materials Request) matches too.
+  const previewPendingClarification = previewWO
+    ? await getPendingClarificationForWorkOrder(previewWO.id)
+    : null;
+  const previewHasPendingCorrection = previewPendingClarification !== null;
+  const previewCorrectionRequester = previewPendingClarification?.requested_by
+    ? await prisma.profiles.findUnique({
+        where: { id: previewPendingClarification.requested_by },
+        select: { full_name: true },
+      })
+    : null;
 
   const drawerData: QuickViewData | null = previewWO
     ? {
         id: previewWO.id,
         work_order_number: previewWO.work_order_number,
         status: previewWO.status,
-        displayStatus: displayJobCardStatus(previewWO.status),
+        displayStatus: displaySimplifiedStatus(previewWO.status, previewHasPendingCorrection),
         maintenance_type: previewWO.maintenance_type,
         worker_type: previewWO.worker_type,
         operator_complaint: previewWO.operator_complaint,
@@ -529,12 +641,23 @@ export default async function PartsRequestsPage({
         canRequestCorrection: isAdmin || context.permissions.includes("work_orders.request_correction"),
         canClose: isAdmin || context.permissions.includes("work_orders.close"),
         canUpdateProgress: isAdmin || context.permissions.includes("work_orders.update"),
+        canReceiveMaterials: canReceive,
         canCreateParts:
           isAdmin ||
           context.permissions.includes("parts_requests.create") ||
           context.permissions.includes("work_orders.manage"),
         reviewed: previewReviewed,
+        hasPendingCorrection: previewHasPendingCorrection,
+        pendingCorrectionNote: previewPendingClarification
+          ? {
+              question: previewPendingClarification.question,
+              requestedByName: previewCorrectionRequester?.full_name ?? null,
+              requestedAt: previewPendingClarification.requested_at.toISOString(),
+            }
+          : null,
+        isCreator: previewWO.created_by === context.userId,
         closeHref: jobPreviewCloseHref,
+        previewParamName: "jobPreview",
       }
     : null;
 
@@ -545,6 +668,9 @@ export default async function PartsRequestsPage({
   const createdJobCardHref = createdRequest?.work_orders
     ? jobCardPreviewHref(createdRequest.work_orders.id, { query: "", status: "", page: 1 })
     : null;
+  const createdJobCardHasPendingCorrection = createdRequest?.work_orders
+    ? (await getPendingCorrectionWorkOrderIds([createdRequest.work_orders.id])).has(createdRequest.work_orders.id)
+    : false;
 
   // ── Received-success modal props ──────────────────────────────────────────
   const receivedDismissHref = listHref({ query: "", status: "", page: 1 });
@@ -559,12 +685,6 @@ export default async function PartsRequestsPage({
     : validReceivedId
       ? `/store/parts-requests/${validReceivedId}`
       : null;
-
-  // ── Material Issued success modal props ───────────────────────────────────
-  const issuedDismissHref = listHref({ query: "", status: "", page: 1 });
-  const issuedJobCardHref = issuedRequest?.work_orders
-    ? jobCardPreviewHref(issuedRequest.work_orders.id, { query: "", status: "", page: 1 })
-    : null;
 
   // ── Materials Request quick view props ────────────────────────────────────
   const previewCloseHref = listHref({ query, status, page });
@@ -599,7 +719,13 @@ export default async function PartsRequestsPage({
   return (
     <>
       <AutoRefresh intervalMs={15000} />
-      <RealtimeRefresh watch={["materials_request.", "store_materials.", "job_card.approved"]} />
+      {/* Enterprise-Wide Real-Time Update Verification Task 8: widened from
+          the single "job_card.approved" event to the full "job_card." prefix
+          (a linked Job Card's correction-requested/responded/closed state
+          also changes what this list's "waiting on..." helper text should
+          say) plus "work_order."/"offline_inventory."/"material_ledger." per
+          the recommended Materials Requests watch list. */}
+      <RealtimeRefresh watch={["materials_request.", "store_materials.", "job_card.", "work_order.", "offline_inventory.", "material_ledger."]} />
       {showCreatedModal && (
         <MaterialsRequestCreatedModal
           requestId={createdRequest?.id ?? null}
@@ -609,6 +735,7 @@ export default async function PartsRequestsPage({
           assetName={createdRequest?.assets?.asset_name ?? null}
           itemCount={createdRequest ? createdRequest._count.parts_request_items : null}
           attachmentWarning={attachmentWarning}
+          jobCardHasPendingCorrection={createdJobCardHasPendingCorrection}
           dismissHref={createdDismissHref}
         />
       )}
@@ -624,20 +751,9 @@ export default async function PartsRequestsPage({
           dismissHref={receivedDismissHref}
         />
       )}
-      {showIssuedModal && (
-        <MaterialIssuedModal
-          requestNumber={issuedRequest?.parts_request_number ?? null}
-          jobCardNumber={issuedRequest?.work_orders?.work_order_number ?? null}
-          jobCardPreviewHref={issuedJobCardHref}
-          assetName={issuedRequest?.assets?.asset_name ?? null}
-          issuedItems={issuedItems}
-          attachmentWarning={attachmentWarning}
-          dismissHref={issuedDismissHref}
-        />
-      )}
       <PageHeader
         title="Materials Requests"
-        description="Materials request queue for approval and follow-up."
+        description="Materials requested for Job Cards — track and receive them here."
         actions={
           canCreate ? (
             <Link
@@ -652,16 +768,12 @@ export default async function PartsRequestsPage({
       />
 
       <div className="space-y-4 p-4 lg:p-6">
-        {/* ── Counters — simplified to 5 cards; Waiting Stock and Partially
-              Issued are folded into one "Store Follow-up" card so daily
-              users aren't shown internal Store states as top-level metrics. */}
-        <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        {/* ── Counters — Total / Awaiting Receipt / Received (Task 5). ── */}
+        <section className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {([
             { label: "Total Materials Requests", value: totalRequests, icon: ClipboardList, tone: "blue" as const, status: "" },
-            { label: "Requested",        value: requestedCount,        icon: ShoppingCart, tone: requestedCount > 0 ? "amber" : "gray", status: "Requested" },
-            { label: "Approved",         value: approvedCount,         icon: CheckCircle2, tone: "blue" as const, status: "Approved" },
-            { label: "Store Follow-up",  value: storeFollowUpCount,  icon: Package,      tone: storeFollowUpCount > 0 ? "amber" : "gray", status: "store-followup" },
-            { label: "Issued",           value: issuedCount,           icon: CheckCircle2, tone: "green" as const, status: "Issued" },
+            { label: "Awaiting Receipt", value: awaitingReceiptCount, icon: ShoppingCart, tone: awaitingReceiptCount > 0 ? "amber" : "gray", status: "AwaitingReceipt" },
+            { label: "Received",  value: receivedCount,  icon: CheckCircle2, tone: "green" as const, status: "Received" },
           ] as { label: string; value: number; icon: LucideIcon; tone: "green" | "amber" | "blue" | "gray"; status: string }[]).map((c) => (
             <Link key={c.label} href={listHref({ query: "", status: c.status, page: 1 })} className="block">
               <StatCard label={c.label} value={c.value} icon={c.icon} tone={c.tone} compact />
@@ -688,17 +800,19 @@ export default async function PartsRequestsPage({
           </form>
         </section>
 
-        {/* ── Status tabs — grouped into 4 simple buckets (All/Requested/
-              Approved/Store Follow-up/Issued); a raw ?status=Waiting+Stock
-              or ?status=Partially+Issued deep link (e.g. from the dashboard)
-              still filters correctly and highlights "Store Follow-up" as
-              active, since both fold into that bucket's statuses list. ── */}
+        {/* ── Status tabs — All / Awaiting Receipt / Received; a raw
+              ?status=Approved or ?status=Waiting+Stock deep link still
+              filters correctly and highlights "Awaiting Receipt" as active,
+              since all four pre-receive statuses fold into that bucket. ── */}
         <div className="overflow-x-auto rounded-t-md border border-[#E5E7EB] bg-white shadow-sm">
           <div className="flex min-w-max">
             {MATERIALS_REQUEST_TABS.map((tab) => {
               const isActive =
                 tab.key === "" ? !status : status === tab.key || tab.statuses.includes(status);
-              const itemCount = tab.statuses.length ? countFor(tab.statuses) : totalRequests;
+              const itemCount =
+                tab.key === "AwaitingReceipt" ? awaitingReceiptCount
+                : tab.statuses.length ? countFor(tab.statuses)
+                : totalRequests;
               return (
                 <Link
                   key={tab.key || "all"}
@@ -745,8 +859,9 @@ export default async function PartsRequestsPage({
                     <th className="px-4 py-3">Job Card</th>
                     <th className="px-4 py-3">Asset / Equipment / Vehicle</th>
                     <th className="px-4 py-3">Requester</th>
-                    <th className="px-4 py-3">Requested / Issued</th>
+                    <th className="px-4 py-3">Requested / Received</th>
                     <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Requested</th>
                     <th className="px-4 py-3">Action</th>
                   </tr>
                 </thead>
@@ -754,7 +869,6 @@ export default async function PartsRequestsPage({
                   {requests.map((request) => {
                     const displaySt = displayPartsRequestStatus(request.status);
                     const listGroup = materialsRequestListGroup(displaySt);
-                    const storeFollowUpHint = materialsRequestStoreFollowUpHint(request.status);
                     const woId = request.work_orders?.id ?? null;
                     const woNumber = request.work_orders?.work_order_number ?? null;
                     const woStatus = request.work_orders?.status ?? null;
@@ -767,24 +881,29 @@ export default async function PartsRequestsPage({
                       },
                       { requested: 0, issued: 0 }
                     );
-                    // Row-level helper text — derived from the backend status
-                    // group (not quantities), per the simplified wording rules.
-                    const rowHelperLabel =
-                      listGroup === "Requested"
-                        ? "Waiting approval"
-                        : listGroup === "Approved"
-                          ? "Ready for Store"
-                          : listGroup === "Store Follow-up"
-                            ? "Store follow-up"
-                            : "Issued";
+                    // Row-level helper text — driven by the LINKED JOB CARD's
+                    // status/correction state (Task 4), not by any Materials-
+                    // Request-side "approval" concept.
+                    const jobCardHelper = materialsRequestJobCardHelper(
+                      woStatus,
+                      woId ? rowCorrectionIds.has(woId) : false,
+                      listGroup === "Received"
+                    );
+                    const rowHelperLabel = jobCardHelper.label;
                     const rowHelperClass =
-                      listGroup === "Requested"
-                        ? "text-amber-700"
-                        : listGroup === "Approved"
-                          ? "text-blue-700"
-                          : listGroup === "Store Follow-up"
-                            ? "text-amber-700"
-                            : "text-green-700";
+                      listGroup === "Received" ? "text-green-700" : jobCardHelper.canReceive ? "text-blue-700" : "text-amber-700";
+                    // Task 4/5: the 3-value Requested / Awaiting Receipt /
+                    // Received badge — distinct from the 2-value `listGroup`
+                    // above, which still drives jobCardHelper's isReceived
+                    // input unchanged.
+                    const receiptStatus = materialsReceiptStatus(
+                      request.status,
+                      woStatus,
+                      woId ? rowCorrectionIds.has(woId) : false
+                    );
+                    const materialNames = request.parts_request_items.map((i) => i.description);
+                    const ageDays = Math.floor((nowMs - request.created_at.getTime()) / 86_400_000);
+                    const ageLabel = ageDays <= 0 ? "Today" : ageDays === 1 ? "1 day ago" : `${ageDays} days ago`;
 
                     return (
                       <tr key={request.id} className="hover:bg-gray-50">
@@ -797,7 +916,10 @@ export default async function PartsRequestsPage({
                           >
                             {request.parts_request_number}
                           </Link>
-                          <p className="text-xs text-[#9CA3AF]">{request._count.parts_request_items} item(s)</p>
+                          <p className="text-xs text-[#9CA3AF]">
+                            {materialNames.length > 0 ? materialNames[0] : "—"}
+                            {materialNames.length > 1 ? ` +${materialNames.length - 1} more` : ""}
+                          </p>
                         </td>
 
                         {/* Job Card — clickable to open quick view, plus its own status (Task 7) */}
@@ -812,7 +934,9 @@ export default async function PartsRequestsPage({
                                 {woNumber}
                               </Link>
                               {woStatus && (
-                                <p className="mt-0.5 text-xs text-[#4B5563]">{displayJobCardStatus(woStatus)}</p>
+                                <p className="mt-0.5 text-xs text-[#4B5563]">
+                                  {displaySimplifiedStatus(woStatus, woId ? rowCorrectionIds.has(woId) : false)}
+                                </p>
                               )}
                             </>
                           ) : (
@@ -841,32 +965,35 @@ export default async function PartsRequestsPage({
                             ?.full_name ?? "-"}
                         </td>
 
-                        {/* Requested / Issued quantity summary — simplified, no
-                            "left"/remaining wording in the main list (Task 5). */}
+                        {/* Requested / Received quantity summary. */}
                         <td className="px-4 py-3 text-xs text-[#111827]">
                           <p>Requested: <span className="font-semibold">{formatQty(totals.requested)}</span></p>
-                          <p>Issued: <span className="font-semibold">{formatQty(totals.issued)}</span></p>
+                          <p>Received: <span className="font-semibold">{formatQty(totals.issued)}</span></p>
                           <p className={`mt-0.5 font-semibold ${rowHelperClass}`}>{rowHelperLabel}</p>
                         </td>
 
-                        {/* Status — grouped label (Waiting Stock / Partially
-                            Issued both show as "Store Follow-up" with a small
-                            helper line explaining why). */}
+                        {/* Status — Requested / Awaiting Receipt / Received (Task 4). */}
                         <td className="px-4 py-3">
                           <StatusBadge
-                            label={listGroup}
-                            tone={materialsRequestListGroupTone(listGroup)}
+                            label={receiptStatus}
+                            tone={materialsReceiptStatusTone(receiptStatus)}
                           />
-                          {storeFollowUpHint && (
-                            <p className="mt-1 text-[11px] text-[#6B7280]">{storeFollowUpHint}</p>
-                          )}
                         </td>
 
-                        {/* Action — Task 7: Requested -> Approve if permission,
-                            Approved/Waiting Stock/Partially Issued -> Issue (links
-                            to the detail page's Store Issue panel — the list page
-                            never performs the item-level issue inline), Issued ->
-                            view only. Every row also gets a plain "Open" link. */}
+                        {/* Requested date / age — oldest-first sort makes
+                            this the natural "how long has this been
+                            waiting" cue (Task 5). */}
+                        <td className="px-4 py-3 whitespace-nowrap text-xs text-[#4B5563]">
+                          {ageLabel}
+                        </td>
+
+                        {/* Action — Job Card Open -> Receive Materials (opens
+                            the guided popup); Job Card not yet Open -> Open
+                            Job Card is the Manager's primary action (no
+                            separate Materials Request approval button —
+                            Materials Requests are approved together with
+                            their Job Card); Received -> view only. Every row
+                            also gets a plain "Open" link to the request itself. */}
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
                             <Link
@@ -875,19 +1002,21 @@ export default async function PartsRequestsPage({
                             >
                               Open
                             </Link>
-                            {canApprove && displaySt === "Requested" ? (
+                            {canReceive && jobCardHelper.canReceive ? (
                               <Link
-                                href={`/store/parts-requests/${request.id}`}
-                                className="inline-flex min-h-[30px] items-center rounded-md bg-[#ED1C24] px-3 py-1 text-xs font-semibold text-white hover:bg-[#c9151c]"
-                              >
-                                Approve
-                              </Link>
-                            ) : canIssue && ["Approved", "Waiting Stock", "Partially Issued"].includes(displaySt) ? (
-                              <Link
-                                href={`/store/parts-requests/${request.id}`}
+                                href={sendPreviewHref(request.id, { query, status, page })}
+                                scroll={false}
                                 className="inline-flex min-h-[30px] items-center rounded-md bg-[#111827] px-3 py-1 text-xs font-semibold text-white hover:bg-[#2b2b2b]"
                               >
-                                {displaySt === "Partially Issued" ? "Continue Issue" : "Issue"}
+                                Receive Materials
+                              </Link>
+                            ) : canApprove && woId && listGroup !== "Received" && !jobCardHelper.canReceive && woStatus !== "Closed" ? (
+                              <Link
+                                href={jobCardPreviewHref(woId, { query, status, page })}
+                                scroll={false}
+                                className="inline-flex min-h-[30px] items-center rounded-md bg-[#ED1C24] px-3 py-1 text-xs font-semibold text-white hover:bg-[#c9151c]"
+                              >
+                                Open Job Card
                               </Link>
                             ) : null}
                           </div>
@@ -950,7 +1079,11 @@ export default async function PartsRequestsPage({
       ────────────────────────────────────────────────────────────── */}
       {validJobPreviewId && (
         drawerData ? (
-          <RepairOrderQuickView data={drawerData} />
+          successCode === "job-card-opened" ? (
+            <JobCardOpenedModal data={drawerData} dismissHref={jobPreviewCloseHref} />
+          ) : (
+            <RepairOrderQuickView data={drawerData} />
+          )
         ) : (
           <>
             {/* Backdrop */}
@@ -995,6 +1128,54 @@ export default async function PartsRequestsPage({
                 <div className="mt-4">
                   <Link
                     href={previewCloseHref}
+                    className="inline-block rounded-md border border-[#E5E7EB] px-4 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
+                  >
+                    Close
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </>
+        )
+      )}
+
+      {/* ── Receive Materials guided popup ───────────────────────────
+          Opens via ?sendPreview=<id> from the Action column. */}
+      {validSendPreviewId && canReceive && (
+        sendPreviewRequest ? (
+          <StoreSendMaterialsPopup
+            data={{
+              id: sendPreviewRequest.id,
+              parts_request_number: sendPreviewRequest.parts_request_number,
+              status: sendPreviewRequest.status,
+              work_order_id: sendPreviewRequest.work_orders?.id ?? null,
+              work_order_number: sendPreviewRequest.work_orders?.work_order_number ?? null,
+              work_order_status: sendPreviewRequest.work_orders?.status ?? null,
+              problem_summary: sendPreviewRequest.work_orders?.operator_complaint || sendPreviewRequest.work_orders?.description_of_work || null,
+              asset_name: sendPreviewRequest.work_orders?.assets?.asset_name ?? null,
+              plate_number: sendPreviewRequest.work_orders?.assets?.plate_number ?? null,
+              items: sendPreviewRequest.parts_request_items.map((item) => ({
+                id: item.id,
+                description: item.description,
+                quantity_requested: Number(item.quantity_requested),
+                issued_quantity: Number(item.issued_quantity),
+                balance: undefined,
+              })),
+            } satisfies StoreSendMaterialsData}
+            closeHref={listHref({ query, status, page })}
+          />
+        ) : (
+          <>
+            <div className="fixed inset-0 z-40 bg-black/50" aria-hidden="true" />
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-2xl">
+                <p className="font-bold text-[#111827]">Materials Request not found</p>
+                <p className="mt-1 text-sm text-[#4B5563]">
+                  This request is not available, cannot be received yet, or you do not have access to it.
+                </p>
+                <div className="mt-4">
+                  <Link
+                    href={listHref({ query, status, page })}
                     className="inline-block rounded-md border border-[#E5E7EB] px-4 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
                   >
                     Close
