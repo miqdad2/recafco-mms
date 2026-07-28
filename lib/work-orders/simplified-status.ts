@@ -5,8 +5,11 @@ import { prisma } from "@/lib/db/prisma";
 export type { SimplifiedStatus } from "@/lib/work-orders/simplified-status-display";
 export {
   OPEN_JOB_CARD_STATUSES,
+  ACTIVE_JOB_CARD_STATUSES,
   displaySimplifiedStatus,
   simplifiedStatusTone,
+  NEEDS_UPDATE_LABEL,
+  NEEDS_UPDATE_TONE,
 } from "@/lib/work-orders/simplified-status-display";
 
 // Batched version of getPendingClarificationForWorkOrder (lib/backend/

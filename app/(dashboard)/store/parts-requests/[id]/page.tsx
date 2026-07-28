@@ -31,6 +31,8 @@ import {
   getPendingCorrectionWorkOrderIds,
   displaySimplifiedStatus,
   simplifiedStatusTone,
+  NEEDS_UPDATE_LABEL,
+  NEEDS_UPDATE_TONE,
 } from "@/lib/work-orders/simplified-status";
 import { canReceiveIssueMaterials, getPartsRequestVisibilityFilter } from "@/lib/parts-requests/visibility";
 import { PARTS_REQUEST_ATTACHMENT_CATEGORIES } from "@/lib/files/attachment-constants";
@@ -430,8 +432,15 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
               label="Job Card Status"
               value={
                 jobCard ? (() => {
-                  const simplified = displaySimplifiedStatus(jobCard.status, jobCardHasPendingCorrection);
-                  return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
+                  const simplified = displaySimplifiedStatus(jobCard.status);
+                  return (
+                    <div className="flex flex-wrap items-center gap-1">
+                      <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />
+                      {jobCardHasPendingCorrection && (
+                        <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
+                      )}
+                    </div>
+                  );
                 })() : (
                   "-"
                 )
@@ -623,16 +632,16 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
                 </div>
               );
             }
-            if (receipt === "Awaiting Receipt") {
+            if (receipt === "To Receive") {
               return (
                 <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
-                  Materials are approved and awaiting receipt.
+                  Materials are approved and not received yet.
                 </div>
               );
             }
             return (
               <div className="mb-3 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-2 text-sm font-semibold text-[#4B5563]">
-                Materials can be received after the Job Card is Open.
+                Materials can be received after the Job Card is approved.
               </div>
             );
           })()}

@@ -9,10 +9,20 @@
 // values (chk_work_orders_status is untouched); this is purely a display
 // mapping, the same pattern already used for employeeStatusLabel()/
 // displayStatus() elsewhere in the app.
-export type SimplifiedStatus = "Draft" | "Submitted" | "Correction Requested" | "Open" | "Closed";
+//
+// Job Card Status Simplification Task: "Open" split into "Approved"/"Active"
+// and "Correction Requested" retired as a primary status value — a pending
+// correction is now shown as a small secondary badge (NEEDS_UPDATE_LABEL)
+// next to whatever the Job Card's real lifecycle status already is, never as
+// a status of its own. See displaySimplifiedStatus below.
+export type SimplifiedStatus = "Draft" | "Submitted" | "Approved" | "Active" | "Closed";
 
 // Exported as a plain array (not just the Set below) so Prisma `status: { in: ... }`
 // filters elsewhere (dashboard, Job Cards list) can reuse the same source of truth.
+// This is the raw-backend "past approval, not yet closed" bucket — used for
+// gating (e.g. can materials be received, can a correction still apply), not
+// for display grouping. Kept unchanged so every existing caller relying on
+// its meaning (canReceive, correction-lookup scope, etc.) is unaffected.
 export const OPEN_JOB_CARD_STATUSES = [
   "Approved",
   "Waiting Materials",
@@ -22,30 +32,44 @@ export const OPEN_JOB_CARD_STATUSES = [
   "In Progress",
 ];
 
-const OPEN_BACKEND_STATUSES = new Set(OPEN_JOB_CARD_STATUSES);
+// backend "Approved" is a real, distinct status (not a display trick) that
+// sits between "Under Review" and the materials/assignment/in-progress
+// statuses, so it gets its own UI label ("Approved"). Everything past it —
+// materials moving, technician assigned, work actually started — collapses
+// into "Active". This is OPEN_JOB_CARD_STATUSES minus "Approved".
+export const ACTIVE_JOB_CARD_STATUSES = [
+  "Waiting Materials",
+  "Partially Issued",
+  "Materials Issued",
+  "Assigned",
+  "In Progress",
+];
 
-export function displaySimplifiedStatus(status: string, hasPendingCorrection: boolean): SimplifiedStatus {
+const ACTIVE_BACKEND_STATUSES = new Set(ACTIVE_JOB_CARD_STATUSES);
+
+export function displaySimplifiedStatus(status: string): SimplifiedStatus {
   if (status === "Closed") return "Closed";
-  // A pending correction (unresolved maintenance_manager_review
-  // clarification) always displays as "Correction Requested", regardless of
-  // whether the backend status has since moved past "Under Review" — a Job
-  // Card must never silently hide an outstanding ask from Data Entry just
-  // because some other part of it (e.g. materials) already progressed.
-  if (hasPendingCorrection) return "Correction Requested";
   if (status === "Created") return "Draft";
   if (status === "Under Review") return "Submitted";
-  if (OPEN_BACKEND_STATUSES.has(status)) return "Open";
+  if (status === "Approved") return "Approved";
+  if (ACTIVE_BACKEND_STATUSES.has(status)) return "Active";
   // Legacy pre-Unit3 statuses — defensive fallback only, no live record can
   // hold these (see chk_work_orders_status), but old reports/exports might.
-  return "Open";
+  return "Active";
 }
 
 export function simplifiedStatusTone(status: SimplifiedStatus): "green" | "amber" | "red" | "blue" | "gray" {
   switch (status) {
     case "Draft": return "gray";
     case "Submitted": return "amber";
-    case "Correction Requested": return "red";
-    case "Open": return "blue";
+    case "Approved": return "blue";
+    case "Active": return "blue";
     case "Closed": return "green";
   }
 }
+
+// A pending Supervisor/Manager correction/clarification never changes the
+// Job Card's primary status label above — callers show this as a small,
+// separate badge alongside the primary one instead.
+export const NEEDS_UPDATE_LABEL = "Needs Update";
+export const NEEDS_UPDATE_TONE = "amber";

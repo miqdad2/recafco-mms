@@ -6,6 +6,7 @@ import Link from "next/link";
 import { AlertTriangle, ArrowRight, CheckCircle2, X } from "lucide-react";
 
 import { StatusBadge } from "@/components/ui/status-badge";
+import { submitWorkOrderAction } from "@/app/actions/workflow";
 
 export type JobCardCreatedModalProps = {
   jobCardId: string | null;
@@ -18,11 +19,11 @@ export type JobCardCreatedModalProps = {
   dismissHref: string;
 };
 
-// Simplified Workflow UI Consistency Cleanup Task 7: mirrors the five
-// plain, user-facing statuses (lib/work-orders/simplified-status.ts) —
-// Draft → Submitted → Open → Closed. "Correction Requested" isn't part of
-// this bar since a just-created Job Card can't have a pending correction yet.
-const WORKFLOW_STAGES = ["Draft", "Submitted", "Open", "Closed"] as const;
+// Job Card Status Simplification Task: mirrors the five plain, user-facing
+// statuses (lib/work-orders/simplified-status.ts) — Draft → Submitted →
+// Approved → Active → Closed. "Correction Requested" isn't part of this bar
+// since a just-created Job Card can't have a pending correction yet.
+const WORKFLOW_STAGES = ["Draft", "Submitted", "Approved", "Active", "Closed"] as const;
 
 export function JobCardCreatedModal({
   jobCardId,
@@ -35,14 +36,21 @@ export function JobCardCreatedModal({
   dismissHref,
 }: JobCardCreatedModalProps) {
   const router = useRouter();
-  const primaryButtonRef = useRef<HTMLAnchorElement>(null);
+  // Two element types share the "primary action" focus target — a real
+  // <button> (Submit for Review) when isDraft, otherwise the "Go to Job
+  // Cards" <Link> — so each gets its own typed ref rather than forcing one
+  // ref onto two different element types.
+  const primaryButtonRef = useRef<HTMLButtonElement>(null);
+  const primaryLinkRef = useRef<HTMLAnchorElement>(null);
 
   function dismiss() {
     router.replace(dismissHref, { scroll: false });
   }
 
   useEffect(() => {
-    primaryButtonRef.current?.focus();
+    if (isDraft) primaryButtonRef.current?.focus();
+    else primaryLinkRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -64,9 +72,19 @@ export function JobCardCreatedModal({
   const currentStageIndex = isDraft ? 0 : 1;
   const canViewFull = !!jobCardId;
 
+  // Save Draft Success Popup Submit Option Cleanup Task 2/3/6: this same
+  // modal renders for both outcomes of the create wizard — saved as Draft
+  // (isDraft, driven by the just-created record's real status === "Created")
+  // or submitted directly (status === "Under Review") — never confused,
+  // since isDraft is derived from the actual DB status, not from user intent
+  // guessed some other way.
+  const modalTitle = isDraft ? "Job Card Draft Saved" : "Job Card Submitted";
+  const modalMessage = isDraft
+    ? "has been saved as draft."
+    : "has been submitted for Supervisor / Manager review.";
   const nextStepText = isDraft
-    ? "Continue editing or submit it when you're ready for review."
-    : "Supervisor / Manager will review the Job Card.";
+    ? "Submit this Job Card for Supervisor / Manager review when ready."
+    : "Supervisor / Manager will review this Job Card.";
 
   return (
     <>
@@ -92,11 +110,10 @@ export function JobCardCreatedModal({
               <CheckCircle2 className="h-9 w-9 text-[#16A34A]" aria-hidden />
             </div>
             <h2 id="jc-created-heading" className="mt-4 text-xl font-black text-[#111827]">
-              Job Card Created
+              {modalTitle}
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">
-              Job Card <span className="font-bold text-[#111827]">{jobCardNumber ?? "—"}</span> has been
-              created successfully.
+              Job Card <span className="font-bold text-[#111827]">{jobCardNumber ?? "—"}</span> {modalMessage}
             </p>
 
             {attachmentWarning && (
@@ -163,17 +180,45 @@ export function JobCardCreatedModal({
             </div>
           </div>
 
-          <div className="mt-5 flex flex-col gap-3 border-t border-[#F3F4F6] px-6 pb-6 pt-4 sm:flex-row">
+          <div className="mt-5 flex flex-col gap-3 border-t border-[#F3F4F6] px-6 pb-6 pt-4 sm:flex-row sm:flex-wrap">
+            {/* Save Draft Success Popup Submit Option Cleanup Task 4/5:
+                primary action on the Draft-saved state — submits directly
+                from this popup instead of forcing the user to open the Job
+                Card first. Carries return_to/return_to_param (reusing
+                dismissHref, the same clean base URL Close/X already use)
+                so submitWorkOrderAction redirects back to this same page
+                with ?success=job-card-submitted, which the host page already
+                renders as JobCardSubmittedModal — no new "submitted" UI
+                needed here. */}
+            {isDraft && canViewFull && (
+              <form action={submitWorkOrderAction} className="contents">
+                <input type="hidden" name="work_order_id" value={jobCardId!} />
+                <input type="hidden" name="return_to" value={dismissHref} />
+                <input type="hidden" name="return_to_param" value="preview" />
+                <button
+                  ref={primaryButtonRef}
+                  type="submit"
+                  className="flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md bg-[#ED1C24] px-4 text-sm font-semibold text-white transition hover:bg-red-700"
+                >
+                  Submit for Review
+                </button>
+              </form>
+            )}
             <Link
-              ref={primaryButtonRef}
+              ref={isDraft ? undefined : primaryLinkRef}
               href="/maintenance/work-orders"
               onClick={dismiss}
-              className="flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md bg-[#ED1C24] px-4 text-sm font-semibold text-white transition hover:bg-red-700"
+              className={
+                isDraft
+                  ? "flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md border border-[#E5E7EB] bg-white px-4 text-sm font-semibold text-[#4B5563] transition hover:bg-gray-50"
+                  : "flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md bg-[#ED1C24] px-4 text-sm font-semibold text-white transition hover:bg-red-700"
+              }
             >
               Go to Job Cards
             </Link>
             <Link
               href="/maintenance/work-orders/new"
+              onClick={dismiss}
               className="flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md border border-[#E5E7EB] bg-white px-4 text-sm font-semibold text-[#4B5563] transition hover:bg-gray-50"
             >
               Create Another
@@ -181,11 +226,19 @@ export function JobCardCreatedModal({
             {canViewFull && (
               <Link
                 href={`/maintenance/work-orders/${jobCardId}`}
+                onClick={dismiss}
                 className="flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md border border-[#E5E7EB] bg-white px-4 text-sm font-semibold text-[#4B5563] transition hover:bg-gray-50"
               >
                 View Job Card
               </Link>
             )}
+            <button
+              type="button"
+              onClick={dismiss}
+              className="flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md border border-[#E5E7EB] bg-white px-4 text-sm font-semibold text-[#4B5563] transition hover:bg-gray-50"
+            >
+              Close
+            </button>
           </div>
         </div>
       </div>

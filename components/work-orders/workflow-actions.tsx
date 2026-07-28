@@ -3,7 +3,6 @@ import {
   approveJobCardAndMaterialsAction,
   closeWorkOrderAction,
   markExternalWorkCompletedAction,
-  requestClarificationAction,
   startJobCardProgressAction,
   submitWorkOrderAction
 } from "@/app/actions/workflow";
@@ -104,7 +103,21 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
   // and no correction is already pending — this now uses
   // work_orders.request_correction (Engineer + Manager), not
   // work_orders.approve (Manager only), per the Unit 3 permission grants.
+  // Manager Quick-View Action Simplification Task 6: kept as-is (still drives
+  // hasActions below) but no longer renders its own "Request Correction"/
+  // "Ask to Add/Update Materials" panels — requestClarificationAction and the
+  // ClarificationRequest mechanism it drives are untouched, just no longer
+  // the default path shown here.
   const canRequestCorrection = can(context, "work_orders.request_correction") && status === "Under Review" && !hasPendingCorrection;
+  // Whoever could request a correction here already holds work_orders.manage
+  // in this codebase's current permission grants (Manager and Engineer both
+  // do) — offering a direct Edit Job Card link instead is simpler than
+  // routing a formal correction request through Data Entry. Gated
+  // independently on work_orders.manage (not just canRequestCorrection) so
+  // this never renders for a role that can request a correction but can't
+  // actually edit.
+  const canEditBeforeApproval =
+    can(context, "work_orders.manage") && status === "Under Review" && !hasPendingCorrection;
   // Assignment (and reassignment) is available once materials are resolved or
   // not needed, and while work is still open — matches the Unit 3 transition
   // map. Unified Manager Job Card + Materials Approval Flow Fix Task 4: the
@@ -149,7 +162,7 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
     isExternalAssignment;
 
   const hasActions =
-    canSubmit || canApprove || canRequestCorrection || canAssign || canClose ||
+    canSubmit || canApprove || canRequestCorrection || canEditBeforeApproval || canAssign || canClose ||
     canMarkExternalComplete || canStartProgress;
 
   // Data Entry Job Card Action Clarity Fix Task 3: a Job Card can only ever
@@ -186,7 +199,7 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
           }
         : status === "Under Review"
           ? {
-              title: "Waiting for Supervisor / Manager review.",
+              title: "Waiting on Supervisor / Manager decision.",
               description: canActLaterOnApproval
                 ? "You can assign/start/close after approval."
                 : "No update available until approval.",
@@ -246,8 +259,8 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
             <input type="hidden" name="work_order_id" value={workOrderId} />
             <p className="text-xs text-[#6B7280]">
               {activeMaterialsRequest?.status === "Requested"
-                ? "This will approve the Job Card and requested materials. Materials will be marked as Awaiting Receipt."
-                : "This will approve the Job Card and make it Open."}
+                ? "This will approve the Job Card and requested materials. Materials will be marked as To Receive."
+                : "This will approve the Job Card and make it Approved."}
             </p>
             <textarea
               className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
@@ -310,44 +323,26 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
           </div>
         ) : null}
 
-        {/* Manager/Engineer — request correction (keeps status Under Review) */}
-        {canRequestCorrection ? (
-          <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3">
-            <p className="text-xs font-black text-amber-800">Need a correction before approving?</p>
-            <form action={requestClarificationAction} className="space-y-2">
-              <input type="hidden" name="work_order_id" value={workOrderId} />
-              <input type="hidden" name="kind" value="correction" />
-              <textarea
-                className="focus-ring min-h-20 w-full rounded-md border border-amber-200 bg-white px-3 py-2 text-sm"
-                name="question"
-                placeholder="What needs to be corrected? (min 10 characters)"
-                required
-                minLength={10}
-              />
-              <Button type="submit" variant="secondary" className="w-full">Request Correction</Button>
-            </form>
-          </div>
-        ) : null}
-
-        {/* Supervisor/Manager — ask Data Entry to add/change materials. Same
-            requestClarificationAction/ClarificationRequest mechanism as
-            Request Correction above, just a second, materials-framed entry
-            point (Simplified Job Card Approval Workflow Unit Task 4). */}
-        {canRequestCorrection ? (
-          <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3">
-            <p className="text-xs font-black text-amber-800">Need materials added or changed before approving?</p>
-            <form action={requestClarificationAction} className="space-y-2">
-              <input type="hidden" name="work_order_id" value={workOrderId} />
-              <input type="hidden" name="kind" value="materials" />
-              <textarea
-                className="focus-ring min-h-20 w-full rounded-md border border-amber-200 bg-white px-3 py-2 text-sm"
-                name="question"
-                placeholder="What materials need to be added or changed? (min 10 characters)"
-                required
-                minLength={10}
-              />
-              <Button type="submit" variant="secondary" className="w-full">Ask to Add/Update Materials</Button>
-            </form>
+        {/* Manager Quick-View Action Simplification Task 6 (Option A):
+            replaces the old "Request Correction"/"Ask to Add/Update
+            Materials" panels — whoever can edit the Job Card can just edit
+            it directly instead of routing a formal correction request
+            through Data Entry. requestClarificationAction and the
+            ClarificationRequest mechanism it drives are untouched and still
+            fully reachable (Data Entry's own correction-response flow above
+            this component, and the quick-view popup's now-unused-by-button
+            but still-present review panel) — this only changes which action
+            is offered by default here. */}
+        {canEditBeforeApproval ? (
+          <div className="space-y-2 rounded-md border border-[#E5E7EB] bg-gray-50 p-3">
+            <p className="text-xs font-black text-[#111827]">Need to change something before approving?</p>
+            <p className="text-xs text-[#6B7280]">Use Edit Job Card if details or materials need changes before approval.</p>
+            <Link
+              href={`/maintenance/work-orders/${workOrderId}/edit`}
+              className="focus-ring inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-semibold text-[#111827] transition hover:bg-gray-50"
+            >
+              Edit Job Card
+            </Link>
           </div>
         ) : null}
 

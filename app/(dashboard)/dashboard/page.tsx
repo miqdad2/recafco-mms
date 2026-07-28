@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
+  BadgeCheck,
   BarChart3,
   Bell,
   CheckCircle2,
@@ -34,7 +35,15 @@ import {
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { getReviewedWorkOrderIds } from "@/lib/work-orders/review-status";
 import { getPendingClarificationForWorkOrder } from "@/lib/backend/workflows/queries";
-import { displaySimplifiedStatus, simplifiedStatusTone, getPendingCorrectionWorkOrderIds, OPEN_JOB_CARD_STATUSES } from "@/lib/work-orders/simplified-status";
+import {
+  displaySimplifiedStatus,
+  simplifiedStatusTone,
+  getPendingCorrectionWorkOrderIds,
+  OPEN_JOB_CARD_STATUSES,
+  ACTIVE_JOB_CARD_STATUSES,
+  NEEDS_UPDATE_LABEL,
+  NEEDS_UPDATE_TONE,
+} from "@/lib/work-orders/simplified-status";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import {
@@ -42,6 +51,7 @@ import {
   type QuickViewData,
 } from "@/components/work-orders/repair-order-quick-view";
 import { JobCardOpenedModal } from "@/components/work-orders/job-card-opened-modal";
+import { JobCardSubmittedModal } from "@/components/work-orders/job-card-submitted-modal";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
 import { StoreSendMaterialsPopup } from "@/components/store/store-send-materials-popup";
@@ -102,8 +112,8 @@ async function safeNum(query: Promise<number>): Promise<number> {
 
 // Shared by the Engineer/Technician/Super Admin "recent list" rows below —
 // each is a small (take: 5) list rendered via WoRow/TechJobRow, which must
-// show "Correction Requested" the same way every other surface on this
-// dashboard does (Task 5/6 — no raw backend status wording).
+// show the secondary "Needs Update" badge the same way every other surface
+// on this dashboard does (Task 5/6 — no raw backend status wording).
 async function withPendingCorrection<T extends { id: string }>(
   rows: T[]
 ): Promise<(T & { has_pending_correction: boolean })[]> {
@@ -203,9 +213,12 @@ function WoRow({ row }: { row: WoRow }) {
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
         {(() => {
-          const simplified = displaySimplifiedStatus(row.status, row.has_pending_correction);
+          const simplified = displaySimplifiedStatus(row.status);
           return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
         })()}
+        {row.has_pending_correction && (
+          <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
+        )}
         {showMaterialsBadge && (
           <StatusBadge
             label={materialsRequestBadgeLabel(row.materials_request_status!)}
@@ -259,9 +272,12 @@ function TechJobRow({ row }: { row: TechJobRow }) {
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
         {(() => {
-          const simplified = displaySimplifiedStatus(row.status, row.has_pending_correction);
+          const simplified = displaySimplifiedStatus(row.status);
           return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
         })()}
+        {row.has_pending_correction && (
+          <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
+        )}
         <span className="hidden shrink-0 text-xs text-[#9CA3AF] sm:block">{formatDateTime(row.assigned_at)}</span>
         <span className="shrink-0 rounded bg-[#ED1C24] px-2 py-1 text-xs font-bold text-white transition group-hover:bg-[#c8181e]">
           {action.label}
@@ -288,9 +304,12 @@ function NuJobCardRow({ row }: { row: NuJobCardRow }) {
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 sm:gap-3">
         {(() => {
-          const simplified = displaySimplifiedStatus(row.status, row.has_pending_correction);
+          const simplified = displaySimplifiedStatus(row.status);
           return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
         })()}
+        {row.has_pending_correction && (
+          <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
+        )}
         {showMaterialsBadge && (
           <StatusBadge
             label={materialsRequestBadgeLabel(row.materials_request_status!)}
@@ -354,7 +373,7 @@ function ManagerActionRow({
           />
         )}
         {(() => {
-          const simplified = displaySimplifiedStatus(row.status, false);
+          const simplified = displaySimplifiedStatus(row.status);
           return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
         })()}
         <span className="hidden text-xs text-[#9CA3AF] sm:block">{ageLabel(row.created_at)}</span>
@@ -449,15 +468,21 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         select: { id: true },
       }),
     ]).then(async ([underReviewRows, openRows]) => {
-      // Same broadened check as the Job Cards list (Task 1/10): a pending
-      // correction can outlive "Under Review" if materials already
-      // progressed, so both id sets are checked together.
+      // Job Card Status Simplification Task: correctionCount is still
+      // computed (drives the "needs your correction" alert below and the
+      // per-row secondary "Needs Update" badge) but no longer subtracted
+      // from Submitted/Approved/Active — those are now plain status counts,
+      // same as draft/closed. Both id sets are checked together since a
+      // pending correction can outlive "Under Review" once materials
+      // already progressed (Task 1/10, prior phase).
       const pendingCorrectionIds = await getPendingCorrectionWorkOrderIds([
         ...underReviewRows.map((r) => r.id),
         ...openRows.map((r) => r.id),
       ]);
-      const [draftCount, closedRecentCount, materialsAwaitingReceiptCount] = await Promise.all([
+      const [draftCount, approvedCount, activeCount, closedRecentCount, materialsAwaitingReceiptCount] = await Promise.all([
         safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Created" }] } })),
+        safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Approved" }] } })),
+        safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: { in: ACTIVE_JOB_CARD_STATUSES } }] } })),
         safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Closed", updated_at: { gte: recentlyClosedSince } }] } })),
         // Manager Approval Success Popup and Materials Awaiting Receipt Flow
         // Task 6: same "Materials Awaiting Receipt" definition as Manager's
@@ -470,13 +495,12 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           },
         })),
       ]);
-      const underReviewCorrectionCount = underReviewRows.filter((r) => pendingCorrectionIds.has(r.id)).length;
-      const openCorrectionCount = openRows.filter((r) => pendingCorrectionIds.has(r.id)).length;
       return {
         draftCount,
-        submittedCount: underReviewRows.length - underReviewCorrectionCount,
+        submittedCount: underReviewRows.length,
+        approvedCount,
+        activeCount,
         correctionCount: pendingCorrectionIds.size,
-        openCount: openRows.length - openCorrectionCount,
         closedRecentCount,
         materialsAwaitingReceiptCount,
       };
@@ -565,6 +589,11 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             work_orders: { status: { in: OPEN_JOB_CARD_STATUSES } },
           },
         })),
+        // Job Card Status Simplification Task 6: "Open" split into
+        // "Approved" (nothing has moved yet) and "Active" (materials
+        // moving, assigned, or work started).
+        safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Approved" }] } })),
+        safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: { in: ACTIVE_JOB_CARD_STATUSES } }] } })),
       ])
     : null;
 
@@ -589,9 +618,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       materials_request_status:  r.parts_requests[0]?.status ?? null,
     }));
   const mgCorrectionCount = mgPendingCorrectionIds.size;
-  const mgOpenCount        = mgOpenAll.length - mgOpenAll.filter((r) => mgPendingCorrectionIds.has(r.id)).length;
   const mgClosedRecentCount = mgData?.[2] ?? 0;
   const mgOpenMaterialsRequestsCount = mgData?.[3] ?? 0;
+  const mgApprovedCount = mgData?.[4] ?? 0;
+  const mgActiveCount = mgData?.[5] ?? 0;
 
   // Manager Dashboard Clarity Task 8: "Needs Your Action" also covers Open
   // Job Cards actually ready for the Manager to close (In Progress) — a
@@ -978,7 +1008,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         id: previewWO.id,
         work_order_number: previewWO.work_order_number,
         status: previewWO.status,
-        displayStatus: displaySimplifiedStatus(previewWO.status, previewHasPendingCorrection),
+        displayStatus: displaySimplifiedStatus(previewWO.status),
         maintenance_type: previewWO.maintenance_type,
         worker_type: previewWO.worker_type,
         operator_complaint: previewWO.operator_complaint,
@@ -1128,10 +1158,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               <SectionLabel>My Work Today</SectionLabel>
               <KpiRow cols="sm:grid-cols-3 xl:grid-cols-6" cards={[
                 { label: "Drafts",                value: nuQueue.draftCount,      icon: FileText,      tone: "gray",                                          href: "/maintenance/work-orders?status=Draft" },
-                { label: "Submitted",             value: nuQueue.submittedCount,  icon: Clock,         tone: nuQueue.submittedCount > 0 ? "amber" : "green",  href: "/maintenance/work-orders?status=Submitted" },
-                { label: "Correction Requested",  value: nuQueue.correctionCount, icon: AlertTriangle, tone: nuQueue.correctionCount > 0 ? "red" : "green",   href: "/maintenance/work-orders?status=Correction" },
-                { label: "Open",                  value: nuQueue.openCount,       icon: Wrench,        tone: "blue",                                          href: "/maintenance/work-orders?status=Open" },
-                { label: "Materials Awaiting Receipt", value: nuQueue.materialsAwaitingReceiptCount, icon: ShoppingCart, tone: nuQueue.materialsAwaitingReceiptCount > 0 ? "amber" : "green", href: "/store/parts-requests?status=AwaitingReceipt", detail: "Materials to receive" },
+                { label: "Submitted",             value: nuQueue.submittedCount,  icon: Clock,         tone: nuQueue.submittedCount > 0 ? "amber" : "green",  href: "/maintenance/work-orders?status=Submitted", detail: "Waiting on Supervisor / Manager decision." },
+                { label: "Approved",              value: nuQueue.approvedCount,   icon: BadgeCheck,    tone: "blue",                                          href: "/maintenance/work-orders?status=Approved", detail: "Approved by Manager" },
+                { label: "Active",                value: nuQueue.activeCount,     icon: Wrench,        tone: "blue",                                          href: "/maintenance/work-orders?status=Active", detail: "Work in progress" },
+                { label: "Materials to Receive", value: nuQueue.materialsAwaitingReceiptCount, icon: ShoppingCart, tone: nuQueue.materialsAwaitingReceiptCount > 0 ? "amber" : "green", href: "/store/parts-requests?status=AwaitingReceipt", detail: "Approved materials not received yet" },
                 { label: "Closed recently",       value: nuQueue.closedRecentCount, icon: CheckCircle2, tone: "green",                                        href: "/maintenance/work-orders?status=Closed" },
               ]} />
             </section>
@@ -1167,7 +1197,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
               <QuickAction label="Review Submitted Job Cards" href="/maintenance/work-orders?status=Submitted" icon={ClipboardList} iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
               <QuickAction label="Materials Requests"  href="/store/parts-requests"                      icon={ShoppingCart}  iconBg="bg-violet-50" iconColor="text-violet-600" />
-              <QuickAction label="Assign Work"         href="/maintenance/work-orders?status=Open"       icon={Users}         iconBg="bg-blue-50"   iconColor="text-blue-600" />
+              <QuickAction label="Assign Work"         href="/maintenance/work-orders?status=ReadyToAssign" icon={Users}      iconBg="bg-blue-50"   iconColor="text-blue-600" />
               <QuickAction label="Offline Inventory Control" href="/store/offline-inventory"             icon={Package}       iconBg="bg-amber-50"  iconColor="text-amber-600" />
               <QuickAction label="Service Contracts"   href="/assets/service-contracts"                  icon={FileText}      iconBg="bg-green-50"  iconColor="text-green-600" />
               <QuickAction label="Reports"             href="/reports"                                   icon={BarChart3}     iconBg="bg-gray-100"  iconColor="text-[#4B5563]" />
@@ -1179,9 +1209,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               <SectionLabel>Job Cards</SectionLabel>
               <KpiRow cols="sm:grid-cols-3 xl:grid-cols-6" cards={[
                 { label: "Submitted for Review",     value: mgSubmittedRows.length,   icon: ClipboardList, tone: mgSubmittedRows.length > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Submitted" },
-                { label: "Correction Requested",      value: mgCorrectionCount,        icon: AlertTriangle, tone: mgCorrectionCount > 0 ? "red" : "green",      href: "/maintenance/work-orders?status=Correction", detail: "Waiting on Data Entry" },
-                { label: "Open Job Cards",            value: mgOpenCount,              icon: Wrench,        tone: "blue",                                          href: "/maintenance/work-orders?status=Open" },
-                { label: "Materials Awaiting Receipt", value: mgOpenMaterialsRequestsCount, icon: ShoppingCart, tone: mgOpenMaterialsRequestsCount > 0 ? "amber" : "green", href: "/store/parts-requests?status=AwaitingReceipt", detail: "Approved materials not yet received." },
+                { label: "Approved",                  value: mgApprovedCount,          icon: BadgeCheck,    tone: "blue",                                          href: "/maintenance/work-orders?status=Approved" },
+                { label: "Active",                    value: mgActiveCount,            icon: Wrench,        tone: "blue",                                          href: "/maintenance/work-orders?status=Active", detail: "Work in progress" },
+                { label: "Materials to Receive", value: mgOpenMaterialsRequestsCount, icon: ShoppingCart, tone: mgOpenMaterialsRequestsCount > 0 ? "amber" : "green", href: "/store/parts-requests?status=AwaitingReceipt", detail: "Approved materials not received yet" },
                 { label: "Offline Inventory Control", value: offlineMovementsToday,    icon: Package,       tone: "gray",                                          href: "/store/offline-inventory", detail: "Movements today" },
                 { label: "Closed recently",           value: mgClosedRecentCount,      icon: CheckCircle2,  tone: "green",                                         href: "/maintenance/work-orders?status=Closed" },
               ]} />
@@ -1345,7 +1375,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 { label: "Total Assets",            value: saCount[0], icon: Gauge,         tone: "blue",                              href: "/assets" },
                 { label: "Open Job Cards",           value: saCount[1], icon: ClipboardList, tone: saCount[1] > 0 ? "amber" : "green", href: "/maintenance/work-orders" },
                 { label: "Open Materials Requests",  value: saCount[2], icon: AlertTriangle, tone: saCount[2] > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Materials", detail: "Materials requested for Job Cards" },
-                { label: "Materials Pending Receipt", value: saCount[3], icon: Package,       tone: saCount[3] > 0 ? "amber" : "green", href: "/store/parts-requests", detail: "Awaiting materials receipt" },
+                { label: "Materials Pending Receipt", value: saCount[3], icon: Package,       tone: saCount[3] > 0 ? "amber" : "green", href: "/store/parts-requests", detail: "Approved materials not received yet" },
                 { label: "Active Users",             value: saCount[4], icon: Users,         tone: "blue",                              href: "/admin/users" },
               ]} />
             </section>
@@ -1393,6 +1423,8 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         drawerData ? (
           sp.success === "job-card-opened" ? (
             <JobCardOpenedModal data={drawerData} dismissHref="/dashboard" />
+          ) : sp.success === "job-card-submitted" ? (
+            <JobCardSubmittedModal data={drawerData} dismissHref="/dashboard" />
           ) : (
             <RepairOrderQuickView data={drawerData} />
           )

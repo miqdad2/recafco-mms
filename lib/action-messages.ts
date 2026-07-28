@@ -33,8 +33,9 @@ const SUCCESS_MAP: Record<string, ToastMessage> = {
   "asset-saved":            { tone: "success", title: "Asset saved" },
   "part-saved":             { tone: "success", title: "Part saved" },
   "opening-stock-saved":    { tone: "success", title: "Opening stock recorded", description: "Movement recorded in Offline Inventory Control." },
-  "material-received":      { tone: "success", title: "Material received", description: "Movement recorded in Offline Inventory Control." },
-  "material-issued":        { tone: "success", title: "Material recorded as used", description: "Movement recorded in Offline Inventory Control." },
+  "material-added":         { tone: "success", title: "Material Added", description: "Material has been added to Offline Inventory Control." },
+  "material-received":      { tone: "success", title: "Material Received", description: "Received quantity has been recorded in Offline Inventory Control." },
+  "material-issued":        { tone: "success", title: "Material Usage Recorded", description: "Used quantity has been recorded in Offline Inventory Control." },
   "settings-saved":       { tone: "success", title: "Settings saved" },
   "department-saved":     { tone: "success", title: "Department saved" },
   approved:               { tone: "success", title: "Approved" },
@@ -57,6 +58,7 @@ const SUPPRESSED_SUCCESS_CODES = new Set<string>([
   "clarification-sent",
   "job-card-closed",
   "job-card-opened",
+  "job-card-submitted",
 ]);
 
 const ERROR_MAP: Record<string, ToastMessage> = {

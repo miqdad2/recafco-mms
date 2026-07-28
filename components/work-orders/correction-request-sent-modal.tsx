@@ -101,7 +101,7 @@ export function CorrectionRequestSentModal({
 
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-bold uppercase tracking-wide text-[#4B5563]">Current status</span>
-              <StatusBadge label="Correction Requested" tone="red" />
+              <StatusBadge label="Needs Update" tone="amber" />
             </div>
 
             <p className="mt-3 text-sm leading-relaxed text-[#111827]">

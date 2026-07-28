@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, Loader2 } from "lucide-react";
 
@@ -24,14 +24,22 @@ export interface ReceiveMaterialFormProps {
 
 export function ReceiveMaterialForm({ knownMaterials, workOrders }: ReceiveMaterialFormProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const preselectedKey = searchParams.get("material");
+
   const [state, formAction, isPending] = useActionState<OfflineMovementState, FormData>(
     receiveOfflineMaterialAction,
     null
   );
-  const [selectedKey, setSelectedKey]     = useState("");
-  const [unit, setUnit]                   = useState("PCS");
-  const [manualPartNum, setManualPartNum] = useState("");
-  const [manualSsCode, setManualSsCode]   = useState("");
+  // Row-action pre-select (Simplification Task 6) — if the key matches a
+  // known material, seed identity fields the same way onMaterialChange() would.
+  const preselectedMaterial = preselectedKey
+    ? knownMaterials.find((m) => m.key === preselectedKey) ?? null
+    : null;
+  const [selectedKey, setSelectedKey]     = useState(preselectedMaterial ? preselectedKey! : "");
+  const [unit, setUnit]                   = useState(preselectedMaterial?.unit ?? "PCS");
+  const [manualPartNum, setManualPartNum] = useState(preselectedMaterial?.part_number ?? "");
+  const [manualSsCode, setManualSsCode]   = useState(preselectedMaterial?.ss_rec_code ?? "");
   const [manualCategory, setManualCategory] = useState("");
   const [relatedWoId, setRelatedWoId]     = useState("");
 
@@ -84,7 +92,7 @@ export function ReceiveMaterialForm({ knownMaterials, workOrders }: ReceiveMater
         {/* Date */}
         <div>
           <label htmlFor="r-date" className={lbl}>
-            Movement Date <span className="text-[#ED1C24]">*</span>
+            Received Date <span className="text-[#ED1C24]">*</span>
           </label>
           <input
             id="r-date"
@@ -117,6 +125,14 @@ export function ReceiveMaterialForm({ knownMaterials, workOrders }: ReceiveMater
               </option>
             ))}
           </select>
+          {!isManual && selectedKnown && (
+            <p className="mt-1.5 text-xs font-semibold text-[#4B5563]">
+              Current Balance:{" "}
+              <span className="font-black text-[#111827]">
+                {selectedKnown.balance.toLocaleString("en-US", { maximumFractionDigits: 3 })} {selectedKnown.unit}
+              </span>
+            </p>
+          )}
         </div>
 
         {/* Manual name — shown when no known material is selected */}
@@ -215,7 +231,7 @@ export function ReceiveMaterialForm({ knownMaterials, workOrders }: ReceiveMater
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label htmlFor="r-qty" className={lbl}>
-              Quantity <span className="text-[#ED1C24]">*</span>
+              Quantity Received <span className="text-[#ED1C24]">*</span>
             </label>
             <input
               id="r-qty"
@@ -380,7 +396,7 @@ export function ReceiveMaterialForm({ knownMaterials, workOrders }: ReceiveMater
             className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#ED1C24] py-2.5 text-sm font-bold text-white transition hover:bg-red-700 disabled:opacity-60 sm:flex-none sm:px-8"
           >
             {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-            {isPending ? "Saving…" : "Save Received Material"}
+            {isPending ? "Saving…" : "Receive Material"}
           </button>
           <Link
             href="/store/offline-inventory"

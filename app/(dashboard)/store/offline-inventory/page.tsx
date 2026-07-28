@@ -11,9 +11,13 @@ import {
 export default async function StoreBalancePage() {
   const context = await requirePermission("parts.view");
   const canManage = canManageOfflineInventory(context);
+  // Simplification Task 2: Super Admin alone gets the one-time setup actions
+  // (Add Opening Stock / Import Opening Stock) surfaced on this page — Data
+  // Entry/Manager only see the daily Inventory Actions.
+  const isSuperAdmin = context.role?.slug === "super_admin";
 
   const [{ balanceItems, totalOpeningStock, totalReceived, totalIssued, balance }, recentMovements] =
-    await Promise.all([getOfflineInventoryBalance(), getRecentOfflineInventoryMovements(15)]);
+    await Promise.all([getOfflineInventoryBalance(), getRecentOfflineInventoryMovements(10)]);
 
   return (
     <>
@@ -36,6 +40,7 @@ export default async function StoreBalancePage() {
         totalIssued={totalIssued}
         balance={balance}
         canManage={canManage}
+        isSuperAdmin={isSuperAdmin}
         recentMovements={recentMovements}
       />
     </>

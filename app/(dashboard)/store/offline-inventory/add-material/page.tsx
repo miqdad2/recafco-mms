@@ -2,26 +2,17 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
-import { ReceiveMaterialForm } from "@/components/store/receive-material-form";
-import {
-  getOfflineInventoryBalance,
-  getWorkOrderOptions,
-  requireOfflineInventoryManage,
-} from "@/lib/store/offline-inventory-data";
+import { AddNewMaterialForm } from "@/components/store/add-new-material-form";
+import { requireOfflineInventoryManage } from "@/lib/store/offline-inventory-data";
 
-export default async function AddReceivedMaterialPage() {
+export default async function AddNewMaterialPage() {
   await requireOfflineInventoryManage();
-
-  const [{ balanceItems }, workOrders] = await Promise.all([
-    getOfflineInventoryBalance(),
-    getWorkOrderOptions(),
-  ]);
 
   return (
     <>
       <PageHeader
-        title="Receive Material"
-        description="Record material newly received for maintenance tracking."
+        title="Add New Material"
+        description="Register a new material in Offline Inventory Control."
         actions={
           <Link
             href="/store/offline-inventory"
@@ -33,7 +24,7 @@ export default async function AddReceivedMaterialPage() {
         }
       />
       <div className="p-4 lg:p-6">
-        <ReceiveMaterialForm knownMaterials={balanceItems} workOrders={workOrders} />
+        <AddNewMaterialForm />
       </div>
     </>
   );

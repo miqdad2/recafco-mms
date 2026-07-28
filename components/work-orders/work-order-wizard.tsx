@@ -313,17 +313,6 @@ export function WorkOrderWizard({
                 />
               </label>
             </div>
-
-            <div className="mt-4">
-              <label className="block">
-                <FieldLabel label="Notes" hint="optional" />
-                <textarea
-                  name="notes"
-                  className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm min-h-[3rem] resize-y"
-                  placeholder="Internal notes…"
-                />
-              </label>
-            </div>
           </WizardCard>
         </div>
 

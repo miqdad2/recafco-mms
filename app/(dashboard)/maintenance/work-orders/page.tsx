@@ -1,6 +1,7 @@
 import Link from "next/link";
 import {
   AlertTriangle,
+  BadgeCheck,
   CheckCircle2,
   ClipboardList,
   Clock3,
@@ -35,9 +36,12 @@ import { getReviewedWorkOrderIds } from "@/lib/work-orders/review-status";
 import { getPendingClarificationForWorkOrder } from "@/lib/backend/workflows/queries";
 import {
   OPEN_JOB_CARD_STATUSES,
+  ACTIVE_JOB_CARD_STATUSES,
   getPendingCorrectionWorkOrderIds,
   displaySimplifiedStatus,
   simplifiedStatusTone,
+  NEEDS_UPDATE_LABEL,
+  NEEDS_UPDATE_TONE,
 } from "@/lib/work-orders/simplified-status";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
@@ -48,6 +52,7 @@ import {
 import { QuickViewRow } from "@/components/work-orders/quick-view-row";
 import { JobCardCreatedModal } from "@/components/work-orders/job-card-created-modal";
 import { JobCardOpenedModal } from "@/components/work-orders/job-card-opened-modal";
+import { JobCardSubmittedModal } from "@/components/work-orders/job-card-submitted-modal";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -68,24 +73,25 @@ const OVERDUE_DAYS = 7;
 
 type Tab = { label: string; status: string };
 
-// Simplified Job Card Approval Workflow Unit Task 9: five simplified
-// statuses replace the old 9-status tab bucket set for rendering (tabs + KPI
-// cards). "New" is reused as the "Draft" tab's status key — it already maps
-// to Created via getStatusMap(), no change needed there. "Submitted"/
-// "Correction"/"Open" are new keys, resolved specially in the where-clause
-// builder and tab-count logic below (their counts can't come from a plain
-// status-array lookup — Submitted/Correction both split the same "Under
-// Review" backend status by whether a correction request is pending).
-// getStatusMap()'s other keys (Review/Approved/Materials/Assigned/
-// ReadyToAssign/"In Progress") are kept, unrendered, so any old bookmarked
+// Job Card Status Simplification Task 3/4: five plain, user-facing statuses
+// (Draft/Submitted/Approved/Active/Closed) replace the old six-tab set —
+// "Correction Requested" is no longer a tab (a pending correction still
+// exists and is still visible under "All" plus a small secondary "Needs
+// Update" badge on the affected row, see NEEDS_UPDATE_LABEL), and "Open" is
+// split into "Approved" (backend status "Approved" — nothing has moved yet)
+// and "Active" (materials moving, technician assigned, or work started).
+// "New" is reused as the "Draft" tab's status key — it already maps to
+// Created via getStatusMap(), no change needed there.
+// getStatusMap()'s other keys (Review/Materials/Assigned/ReadyToAssign/
+// "In Progress"/Open/Correction) are kept, unrendered, so any old bookmarked
 // ?status=... link still resolves rows instead of erroring.
 const SIMPLIFIED_JOB_CARD_TABS: Tab[] = [
-  { label: "All",                  status: "" },
-  { label: "Draft",                status: "New" },
-  { label: "Submitted",            status: "Submitted" },
-  { label: "Correction Requested", status: "Correction" },
-  { label: "Open",                 status: "Open" },
-  { label: "Closed",               status: "Closed" },
+  { label: "All",       status: "" },
+  { label: "Draft",     status: "New" },
+  { label: "Submitted", status: "Submitted" },
+  { label: "Approved",  status: "Approved" },
+  { label: "Active",    status: "Active" },
+  { label: "Closed",    status: "Closed" },
 ];
 
 // Single, role-independent mapping from tab/bucket keys → the DB status
@@ -107,7 +113,12 @@ function getStatusMap(): Record<string, string[]> {
   return {
     New:          ["Created"],
     Review:       ["Under Review"],
+    Submitted:    ["Under Review"],
     Approved:     ["Approved"],
+    // Job Card Status Simplification Task 3/4: everything past plain
+    // "Approved" (materials moving, technician assigned, work started)
+    // collapses into the "Active" tab/KPI.
+    Active:       ACTIVE_JOB_CARD_STATUSES,
     Materials:    ["Waiting Materials", "Partially Issued", "Materials Issued"],
     // Job Cards Ready-to-Assign Label and KPI Cleanup Task 1: a virtual
     // bucket, not a tab — only reachable via the "Ready to Assign" KPI card's
@@ -122,6 +133,10 @@ function getStatusMap(): Record<string, string[]> {
     Assigned:     ["Assigned"],
     "In Progress": ["In Progress"],
     Closed:       ["Closed"],
+    // Legacy/back-compat tab keys — no longer rendered as tabs (Job Card
+    // Status Simplification Task 4), kept so an old bookmarked/dashboard
+    // link still resolves rows instead of erroring.
+    Open:         OPEN_JOB_CARD_STATUSES,
   };
 }
 
@@ -150,7 +165,11 @@ const TAB_EMPTY_STATE: Record<string, { title: string; message: string }> = {
   },
   Approved: {
     title: "No approved Job Cards.",
-    message: "Approved Job Cards awaiting materials or assignment will appear here.",
+    message: "Job Cards approved by Manager, not yet closed, will appear here.",
+  },
+  Active: {
+    title: "No active Job Cards.",
+    message: "Job Cards with materials moving, assigned, or work in progress will appear here.",
   },
   Materials: {
     title: "No Job Cards waiting for materials.",
@@ -700,22 +719,20 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   });
   const nonStatusWhere: Prisma.work_ordersWhereInput = { AND: nonStatusConditions };
 
-  // Simplified Job Card Approval Workflow Unit Task 3/9: "Submitted" and
-  // "Correction Requested" both cover the same backend status ("Under
-  // Review") and only differ by whether a correction is currently pending —
-  // not expressible as a plain status-array filter, so the full set of
-  // matching Under Review ids is resolved once, up front, and reused for the
-  // tab counts below and for the Submitted/Correction where-clause branches.
+  // Job Card Status Simplification Task: a pending correction is now a
+  // secondary "Needs Update" badge on whatever the Job Card's real lifecycle
+  // status already is, never its own tab/KPI bucket — but the underlying id
+  // set is still resolved up front, both for that per-row badge and because
+  // the ?status=Correction filter itself stays reachable (e.g. the Manager/
+  // Data Entry dashboards' "View Corrections" links) even though it's no
+  // longer a visible tab. A correction request stays attached to the Job
+  // Card's underlying maintenance_manager_review step even if the record's
+  // own status has since moved into the Open bucket (e.g. Materials
+  // Issued), so both id sets are checked together.
   const underReviewIdsAll = await prisma.work_orders.findMany({
     where: { AND: [...nonStatusConditions, { status: "Under Review" }] },
     select: { id: true },
   }).then((rows) => rows.map((r) => r.id));
-  // A correction request stays attached to the Job Card's underlying
-  // maintenance_manager_review step even if the record's own status has
-  // since moved into the Open bucket (e.g. Materials Issued) — so an Open
-  // Job Card can still be "Waiting on Data Entry" and must not silently show
-  // as ready-to-assign. Both id sets are checked together so nothing with a
-  // pending correction is missed regardless of its raw status.
   const openIdsAll = await prisma.work_orders.findMany({
     where: { AND: [...nonStatusConditions, { status: { in: OPEN_JOB_CARD_STATUSES } }] },
     select: { id: true },
@@ -728,12 +745,8 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   if (status === "Materials") {
     // Show job cards that have at least one open materials request (not just those with WO status "Waiting Materials")
     listConditions.push({ parts_requests: { some: { status: { in: OPEN_PR_STATUSES } } } });
-  } else if (status === "Submitted") {
-    listConditions.push({ status: "Under Review", id: { notIn: [...correctionIdSet] } });
   } else if (status === "Correction") {
     listConditions.push({ id: { in: [...correctionIdSet] } });
-  } else if (status === "Open") {
-    listConditions.push({ status: { in: OPEN_JOB_CARD_STATUSES }, id: { notIn: [...correctionIdSet] } });
   } else if (status) {
     // Bug fix: this used to push `{ status }` (the raw tab key from the URL,
     // e.g. "Review" or "New") instead of the actual mapped DB status
@@ -908,7 +921,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         id: previewWO.id,
         work_order_number: previewWO.work_order_number,
         status: previewWO.status,
-        displayStatus: displaySimplifiedStatus(previewWO.status, previewHasPendingCorrection),
+        displayStatus: displaySimplifiedStatus(previewWO.status),
         maintenance_type: previewWO.maintenance_type,
         worker_type: previewWO.worker_type,
         operator_complaint: previewWO.operator_complaint,
@@ -1027,13 +1040,22 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   const showOpenedModal = sp.success === "job-card-opened" && Boolean(drawerData);
   const openedDismissHref = buildHref({ ...sp, preview: undefined, success: undefined });
 
-  // Simplified Job Card Approval Workflow Unit Task 9: the five simplified
-  // counts — mirror SIMPLIFIED_JOB_CARD_TABS exactly.
+  // Draft Submit UX Cleanup Task 1/2: same pattern as showOpenedModal above —
+  // submitWorkOrderAction now returns here with ?success=job-card-submitted
+  // instead of forcing navigation to the full detail page.
+  const showSubmittedModal = sp.success === "job-card-submitted" && Boolean(drawerData);
+  const submittedDismissHref = buildHref({ ...sp, preview: undefined, success: undefined });
+
+  // Job Card Status Simplification Task 3/4: the five simplified counts —
+  // mirror SIMPLIFIED_JOB_CARD_TABS exactly. A pending correction no longer
+  // carves records out of Submitted/Approved/Active — it's a secondary
+  // per-row badge now (see correctionIdSet usage in the row render below),
+  // so these are now plain status-array counts, same pattern as draft/closed.
   const totalWOs        = statusSummaries.reduce((n, s) => n + s._count._all, 0);
   const draftCount      = countFor(statusSummaries, ["Created"]);
-  const correctionCount = correctionIdSet.size;
-  const submittedCount  = underReviewIdsAll.length - underReviewIdsAll.filter((id) => correctionIdSet.has(id)).length;
-  const openCount       = countFor(statusSummaries, OPEN_JOB_CARD_STATUSES) - openIdsAll.filter((id) => correctionIdSet.has(id)).length;
+  const submittedCount  = countFor(statusSummaries, ["Under Review"]);
+  const approvedCount   = countFor(statusSummaries, ["Approved"]);
+  const activeCount     = countFor(statusSummaries, ACTIVE_JOB_CARD_STATUSES);
   const closed          = countFor(statusSummaries, ["Closed"]);
 
   const hasFilters = search || status || deptId || workerType || dateFrom || dateTo || needsAction;
@@ -1188,6 +1210,8 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         />
       ) : showOpenedModal && drawerData ? (
         <JobCardOpenedModal data={drawerData} dismissHref={openedDismissHref} />
+      ) : showSubmittedModal && drawerData ? (
+        <JobCardSubmittedModal data={drawerData} dismissHref={submittedDismissHref} />
       ) : (
         drawerData && <RepairOrderQuickView data={drawerData} />
       )}
@@ -1207,8 +1231,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
       <div className="space-y-3 p-4 lg:p-6">
         {/* ── Operational KPI cards ─────────────────────────────────────────── */}
-        {/* Simplified Job Card Approval Workflow Unit Task 9: five simplified
-            statuses replace the old 6-card layout — mirrors the tabs below. */}
+        {/* Job Card Status Simplification Task 3: five plain, user-facing
+            statuses (Draft/Submitted/Approved/Active/Closed) — "Correction
+            Requested" is no longer a headline KPI (a pending correction is a
+            secondary "Needs Update" badge on the affected row instead, still
+            reachable via the Correction Requested/Data Entry banners
+            elsewhere), and "Open" is split into "Approved"/"Active". */}
         <section className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
           <KpiCard
             title="All Job Cards"
@@ -1232,25 +1260,24 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             href={buildHref({ status: "Submitted" })}
             tone={submittedCount > 0 ? "amber" : "gray"}
             icon={Clock3}
-            detail="Waiting on Supervisor/Manager decision"
+            detail="Waiting on Supervisor / Manager decision."
             urgent={submittedCount > 0}
           />
           <KpiCard
-            title="Correction Requested"
-            value={correctionCount}
-            href={buildHref({ status: "Correction" })}
-            tone={correctionCount > 0 ? "red" : "gray"}
-            icon={AlertTriangle}
-            detail="Waiting on Data Entry"
-            urgent={correctionCount > 0}
+            title="Approved"
+            value={approvedCount}
+            href={buildHref({ status: "Approved" })}
+            tone="blue"
+            icon={BadgeCheck}
+            detail="Approved by Manager"
           />
           <KpiCard
-            title="Open"
-            value={openCount}
-            href={buildHref({ status: "Open" })}
+            title="Active"
+            value={activeCount}
+            href={buildHref({ status: "Active" })}
             tone="blue"
             icon={Wrench}
-            detail="Approved and being worked on"
+            detail="Work in progress / active job cards"
           />
           <KpiCard
             title="Closed"
@@ -1274,8 +1301,8 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                 tab.status === "" ? totalWOs :
                 tab.status === "New" ? draftCount :
                 tab.status === "Submitted" ? submittedCount :
-                tab.status === "Correction" ? correctionCount :
-                tab.status === "Open" ? openCount :
+                tab.status === "Approved" ? approvedCount :
+                tab.status === "Active" ? activeCount :
                 tab.status === "Closed" ? closed : 0;
               return (
                 <Link
@@ -1408,14 +1435,23 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                           <p className="text-xs text-[#111827]">{materialsColumnText(wo.parts_requests)}</p>
                         </td>
 
-                        {/* Status — simplified user-facing status (Task 1): Draft/
-                            Submitted/Correction Requested/Open/Closed, never the
-                            raw backend "Under Review" wording. */}
+                        {/* Status — simplified user-facing status (Job Card
+                            Status Simplification Task 5): Draft/Submitted/
+                            Approved/Active/Closed, never the raw backend
+                            "Under Review" wording. A pending correction no
+                            longer replaces this with "Correction Requested"
+                            — it shows as a small secondary "Needs Update"
+                            badge next to the normal primary status instead. */}
                         <td className="px-4 py-3">
-                          {(() => {
-                            const simplified = displaySimplifiedStatus(wo.status, correctionIdSet.has(wo.id));
-                            return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
-                          })()}
+                          <div className="flex flex-wrap items-center gap-1">
+                            {(() => {
+                              const simplified = displaySimplifiedStatus(wo.status);
+                              return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
+                            })()}
+                            {correctionIdSet.has(wo.id) && (
+                              <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
+                            )}
+                          </div>
                           {!isTerminal && (
                             <p className={`mt-1 text-xs ${nextAct.mine ? "font-bold text-[#ED1C24]" : "text-[#9CA3AF]"}`}>
                               {nextAct.label}

@@ -12,6 +12,7 @@ import {
   type QuickViewData,
 } from "@/components/work-orders/repair-order-quick-view";
 import { JobCardOpenedModal } from "@/components/work-orders/job-card-opened-modal";
+import { JobCardSubmittedModal } from "@/components/work-orders/job-card-submitted-modal";
 import { MaterialsRequestCreatedModal } from "@/components/store/materials-request-created-modal";
 import { MaterialsReceivedModal } from "@/components/store/materials-received-modal";
 import {
@@ -37,6 +38,7 @@ import {
   getPendingCorrectionWorkOrderIds,
   displaySimplifiedStatus,
   OPEN_JOB_CARD_STATUSES,
+  NEEDS_UPDATE_LABEL,
 } from "@/lib/work-orders/simplified-status";
 import { getPartsRequestVisibilityFilter, canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { AutoRefresh } from "@/components/auto-refresh";
@@ -55,18 +57,22 @@ const PAGE_SIZE = 25;
 // still exist and are still filterable directly by an existing deep link
 // (e.g. ?status=Approved). Never uses Store-specific wording (Store
 // Follow-up/Waiting Store/Send Materials/Issue by Store) as a tab.
+// Materials Receive Wording Simplification Task 3: label changed from
+// "Awaiting Receipt" to "To Receive" — the `key` (URL routing value used by
+// ?status=AwaitingReceipt links elsewhere, e.g. the dashboard cards) is left
+// unchanged since it's an internal filter key, not user-facing text.
 const MATERIALS_REQUEST_TABS = [
-  { label: "All",              key: "",               statuses: [] as string[] },
-  { label: "Awaiting Receipt", key: "AwaitingReceipt", statuses: ["Requested", "Approved", "Waiting Stock", "Partially Issued"] },
-  { label: "Received",         key: "Received",        statuses: ["Issued"] },
+  { label: "All",        key: "",               statuses: [] as string[] },
+  { label: "To Receive", key: "AwaitingReceipt", statuses: ["Requested", "Approved", "Waiting Stock", "Partially Issued"] },
+  { label: "Received",   key: "Received",        statuses: ["Issued"] },
 ];
 
 // Wording for a status tab/deep-link that has zero matching Materials
 // Requests.
 const TAB_EMPTY_STATE: Record<string, { title: string; message: string }> = {
   AwaitingReceipt: {
-    title: "Nothing awaiting receipt.",
-    message: "Approved materials not yet received will appear here once a linked Job Card is Open.",
+    title: "Nothing to receive.",
+    message: "Approved materials not received yet will appear here once a linked Job Card is approved.",
   },
   Requested: {
     title: "No Materials Requests found.",
@@ -566,7 +572,7 @@ export default async function PartsRequestsPage({
         id: previewWO.id,
         work_order_number: previewWO.work_order_number,
         status: previewWO.status,
-        displayStatus: displaySimplifiedStatus(previewWO.status, previewHasPendingCorrection),
+        displayStatus: displaySimplifiedStatus(previewWO.status),
         maintenance_type: previewWO.maintenance_type,
         worker_type: previewWO.worker_type,
         operator_complaint: previewWO.operator_complaint,
@@ -768,11 +774,11 @@ export default async function PartsRequestsPage({
       />
 
       <div className="space-y-4 p-4 lg:p-6">
-        {/* ── Counters — Total / Awaiting Receipt / Received (Task 5). ── */}
+        {/* ── Counters — Total / To Receive / Received (Task 5). ── */}
         <section className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {([
             { label: "Total Materials Requests", value: totalRequests, icon: ClipboardList, tone: "blue" as const, status: "" },
-            { label: "Awaiting Receipt", value: awaitingReceiptCount, icon: ShoppingCart, tone: awaitingReceiptCount > 0 ? "amber" : "gray", status: "AwaitingReceipt" },
+            { label: "To Receive", value: awaitingReceiptCount, icon: ShoppingCart, tone: awaitingReceiptCount > 0 ? "amber" : "gray", status: "AwaitingReceipt" },
             { label: "Received",  value: receivedCount,  icon: CheckCircle2, tone: "green" as const, status: "Received" },
           ] as { label: string; value: number; icon: LucideIcon; tone: "green" | "amber" | "blue" | "gray"; status: string }[]).map((c) => (
             <Link key={c.label} href={listHref({ query: "", status: c.status, page: 1 })} className="block">
@@ -800,9 +806,9 @@ export default async function PartsRequestsPage({
           </form>
         </section>
 
-        {/* ── Status tabs — All / Awaiting Receipt / Received; a raw
+        {/* ── Status tabs — All / To Receive / Received; a raw
               ?status=Approved or ?status=Waiting+Stock deep link still
-              filters correctly and highlights "Awaiting Receipt" as active,
+              filters correctly and highlights "To Receive" as active,
               since all four pre-receive statuses fold into that bucket. ── */}
         <div className="overflow-x-auto rounded-t-md border border-[#E5E7EB] bg-white shadow-sm">
           <div className="flex min-w-max">
@@ -935,7 +941,8 @@ export default async function PartsRequestsPage({
                               </Link>
                               {woStatus && (
                                 <p className="mt-0.5 text-xs text-[#4B5563]">
-                                  {displaySimplifiedStatus(woStatus, woId ? rowCorrectionIds.has(woId) : false)}
+                                  {displaySimplifiedStatus(woStatus)}
+                                  {woId && rowCorrectionIds.has(woId) && ` · ${NEEDS_UPDATE_LABEL}`}
                                 </p>
                               )}
                             </>
@@ -972,7 +979,7 @@ export default async function PartsRequestsPage({
                           <p className={`mt-0.5 font-semibold ${rowHelperClass}`}>{rowHelperLabel}</p>
                         </td>
 
-                        {/* Status — Requested / Awaiting Receipt / Received (Task 4). */}
+                        {/* Status — Requested / To Receive / Received (Task 4). */}
                         <td className="px-4 py-3">
                           <StatusBadge
                             label={receiptStatus}
@@ -1081,6 +1088,8 @@ export default async function PartsRequestsPage({
         drawerData ? (
           successCode === "job-card-opened" ? (
             <JobCardOpenedModal data={drawerData} dismissHref={jobPreviewCloseHref} />
+          ) : successCode === "job-card-submitted" ? (
+            <JobCardSubmittedModal data={drawerData} dismissHref={jobPreviewCloseHref} />
           ) : (
             <RepairOrderQuickView data={drawerData} />
           )

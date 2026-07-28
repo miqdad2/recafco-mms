@@ -10,6 +10,8 @@ import {
   Layers,
   Package,
   PackagePlus,
+  PlusCircle,
+  RotateCcw,
   Search,
   Upload,
   Zap,
@@ -36,6 +38,7 @@ export interface StoreBalanceViewProps {
   totalIssued: number;
   balance: number;
   canManage: boolean;
+  isSuperAdmin: boolean;
   recentMovements: RecentMovementRow[];
 }
 
@@ -117,33 +120,6 @@ function QuickActionCard({
   );
 }
 
-function CategoryCard({
-  label,
-  count,
-  active,
-  onClick,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-md border p-3 text-left shadow-sm transition ${
-        active
-          ? "border-[#ED1C24] bg-red-50 ring-1 ring-[#ED1C24]"
-          : "border-[#E5E7EB] bg-white hover:border-[#ED1C24]/40 hover:bg-gray-50"
-      }`}
-    >
-      <p className={`text-sm font-bold truncate ${active ? "text-[#ED1C24]" : "text-[#111827]"}`}>{label}</p>
-      <p className="mt-1 text-xs text-[#4B5563]">{count} item{count !== 1 ? "s" : ""}</p>
-    </button>
-  );
-}
-
 export function StoreBalanceView({
   balanceItems,
   totalOpeningStock,
@@ -151,6 +127,7 @@ export function StoreBalanceView({
   totalIssued,
   balance,
   canManage,
+  isSuperAdmin,
   recentMovements,
 }: StoreBalanceViewProps) {
   const [search, setSearch]             = useState("");
@@ -161,6 +138,13 @@ export function StoreBalanceView({
 
   const isEmpty = balanceItems.length === 0;
   const balanceTone: Tone5 = balance < 0 ? "red" : balance === 0 ? "gray" : "green";
+  const hasActiveFilters = search.trim() !== "" || category !== null || balanceStatus !== "all";
+
+  function resetFilters() {
+    setSearch("");
+    setCategory(null);
+    setBalanceStatus("all");
+  }
 
   const filteredMovements = useMemo(() => {
     if (movementFilter === "ALL") return recentMovements;
@@ -184,7 +168,7 @@ export function StoreBalanceView({
       if (balanceStatus === "available" && item.balance <= 0) return false;
       if (balanceStatus === "zero" && item.balance > 0) return false;
       if (q) {
-        const haystack = `${item.display_name} ${item.part_number ?? ""} ${item.ss_rec_code ?? ""}`.toLowerCase();
+        const haystack = `${item.display_name} ${item.part_number ?? ""} ${item.ss_rec_code ?? ""} ${item.category} ${item.location ?? ""}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
       return true;
@@ -195,7 +179,7 @@ export function StoreBalanceView({
     <>
       <PageHeader
         title="Offline Inventory Control"
-        description="Materials received and tracked against Job Cards — opening stock, received, and issued movements."
+        description="Track maintenance materials, received quantities, used quantities, and current balance."
         actions={
           <Link href="/store/offline-inventory/movements" className={secondaryBtn}>
             <Activity className="h-4 w-4" aria-hidden />
@@ -205,45 +189,30 @@ export function StoreBalanceView({
       />
 
       <div className="space-y-4 p-4 lg:p-6">
-        {/* Quick Actions — split into Setup (one-time, before go-live) and
-            Daily (ongoing) so Supervisor/Manager and Super Admin aren't left
-            guessing which actions are routine vs. a one-time setup step. */}
+        {/* Simplification Task 2: one unified "Inventory Actions" section —
+            Add New Material / Receive Material / Record Used Material / View
+            Movement History — for every canManage role. Setup actions
+            (Add Opening Stock / Import Opening Stock) are one-time,
+            pre-go-live steps and stay tucked away for Super Admin only so
+            Data Entry/Manager aren't shown actions they don't need daily. */}
         {canManage && (
           <section className="space-y-3">
             <div>
               <div className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-                <Zap className="h-3.5 w-3.5" aria-hidden />
-                Setup Actions
-              </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <QuickActionCard
-                  href="/store/offline-inventory/opening-stock"
-                  icon={PackagePlus}
-                  title="Add Opening Stock"
-                  description="Enter materials already available for maintenance tracking."
-                />
-                <QuickActionCard
-                  href="/store/offline-inventory/import-opening-stock"
-                  icon={Upload}
-                  title="Import Opening Stock"
-                  description="Upload existing maintenance materials from Excel."
-                />
-              </div>
-              <p className="mt-2 text-xs text-[#9CA3AF]">
-                Use Add Opening Stock or Import Opening Stock before system go-live to enter existing
-                maintenance materials.
-              </p>
-            </div>
-            <div>
-              <div className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
                 <Activity className="h-3.5 w-3.5" aria-hidden />
-                Daily Actions
+                Inventory Actions
               </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <QuickActionCard
+                  href="/store/offline-inventory/add-material"
+                  icon={PlusCircle}
+                  title="Add New Material"
+                  description="Register a new material not yet tracked in Offline Inventory Control."
+                />
                 <QuickActionCard
                   href="/store/offline-inventory/receive"
                   icon={ArrowDownToLine}
-                  title="Add Received Material"
+                  title="Receive Material"
                   description="Record new materials received by Maintenance."
                 />
                 <QuickActionCard
@@ -252,8 +221,43 @@ export function StoreBalanceView({
                   title="Record Used Material"
                   description="Record materials used for a Job Card or maintenance work."
                 />
+                <QuickActionCard
+                  href="/store/offline-inventory/movements"
+                  icon={Activity}
+                  title="View Movement History"
+                  description="See every material movement recorded to date."
+                />
               </div>
             </div>
+            {isSuperAdmin && (
+              <div>
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
+                  <Zap className="h-3.5 w-3.5" aria-hidden />
+                  Setup Actions
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <QuickActionCard
+                    href="/store/offline-inventory/opening-stock"
+                    icon={PackagePlus}
+                    title="Add Opening Stock"
+                    description="Enter materials already available for maintenance tracking."
+                  />
+                  <QuickActionCard
+                    href="/store/offline-inventory/import-opening-stock"
+                    icon={Upload}
+                    title="Import Opening Stock"
+                    description="Upload existing maintenance materials from Excel."
+                  />
+                </div>
+                <p className="mt-2 text-xs text-[#9CA3AF]">
+                  Use Add Opening Stock or Import Opening Stock before system go-live to enter existing
+                  maintenance materials.
+                </p>
+              </div>
+            )}
+            <p className="text-xs text-[#9CA3AF]">
+              Search a material, check its balance, then receive or record used materials.
+            </p>
           </section>
         )}
         {!canManage && (
@@ -306,7 +310,7 @@ export function StoreBalanceView({
           />
         </section>
         <p className="-mt-2 text-xs text-[#9CA3AF]">
-          Current Balance = Opening Stock + Received − Issued
+          Current Balance = Opening Stock + Received − Used
         </p>
 
         {/* Empty state */}
@@ -317,60 +321,51 @@ export function StoreBalanceView({
                 <Package className="h-8 w-8 text-[#9CA3AF]" aria-hidden />
               </div>
               <div>
-                <h2 className="text-lg font-black text-[#111827]">No inventory movements yet.</h2>
+                <h2 className="text-lg font-black text-[#111827]">No materials found.</h2>
                 <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">
                   {canManage
-                    ? "Start by adding opening stock, importing existing stock, or recording received material."
+                    ? "Add a new material to start tracking inventory."
                     : "Materials received and tracked against Job Cards will appear here."}
                 </p>
               </div>
               {canManage && (
                 <div className="flex flex-wrap items-center justify-center gap-2">
-                  <Link href="/store/offline-inventory/opening-stock" className={primaryBtn}>
-                    <PackagePlus className="h-4 w-4" aria-hidden />
-                    Add Opening Stock
-                  </Link>
-                  <Link href="/store/offline-inventory/import-opening-stock" className={secondaryBtn}>
-                    <Upload className="h-4 w-4" aria-hidden />
-                    Import Opening Stock
+                  <Link href="/store/offline-inventory/add-material" className={primaryBtn}>
+                    <PlusCircle className="h-4 w-4" aria-hidden />
+                    Add New Material
                   </Link>
                   <Link href="/store/offline-inventory/receive" className={secondaryBtn}>
                     <ArrowDownToLine className="h-4 w-4" aria-hidden />
-                    Add Received Material
+                    Receive Material
                   </Link>
+                  {isSuperAdmin && (
+                    <>
+                      <Link href="/store/offline-inventory/opening-stock" className={secondaryBtn}>
+                        <PackagePlus className="h-4 w-4" aria-hidden />
+                        Add Opening Stock
+                      </Link>
+                      <Link href="/store/offline-inventory/import-opening-stock" className={secondaryBtn}>
+                        <Upload className="h-4 w-4" aria-hidden />
+                        Import Opening Stock
+                      </Link>
+                    </>
+                  )}
                 </div>
               )}
             </div>
           </div>
         ) : (
           <>
-            {/* Category summary cards */}
-            <section>
-              <div className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-                <Layers className="h-3.5 w-3.5" aria-hidden />
-                Categories
-              </div>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-                <CategoryCard
-                  label="All Materials"
-                  count={balanceItems.length}
-                  active={category === null}
-                  onClick={() => setCategory(null)}
-                />
-                {visibleCategories.map((c) => (
-                  <CategoryCard
-                    key={c}
-                    label={c}
-                    count={categoryCounts.get(c) ?? 0}
-                    active={category === c}
-                    onClick={() => setCategory(c)}
-                  />
-                ))}
-              </div>
-            </section>
+            {/* Category summary — Simplification Task 7: compact line instead
+                of a full grid of category cards; category filtering itself
+                still works, just via the dropdown below. */}
+            <p className="flex items-center gap-1.5 text-xs font-bold text-[#4B5563]">
+              <Layers className="h-3.5 w-3.5" aria-hidden />
+              All Materials: {balanceItems.length}
+            </p>
 
             {/* Search + filters */}
-            <section className="grid gap-3 rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm sm:grid-cols-3">
+            <section className="grid gap-3 rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm sm:grid-cols-[2fr_1fr_1fr_auto]">
               <div>
                 <label htmlFor="sb-search" className={lbl}>Search</label>
                 <div className="relative">
@@ -380,7 +375,7 @@ export function StoreBalanceView({
                     type="text"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Material, part no., or SS Rec. Code"
+                    placeholder="Search material name, part no., SS Rec. Code, category, or location…"
                     className={`${inp} pl-9`}
                   />
                 </div>
@@ -395,7 +390,7 @@ export function StoreBalanceView({
                 >
                   <option value="">All Materials</option>
                   {visibleCategories.map((c) => (
-                    <option key={c} value={c}>{c}</option>
+                    <option key={c} value={c}>{c} ({categoryCounts.get(c) ?? 0})</option>
                   ))}
                 </select>
               </div>
@@ -412,12 +407,33 @@ export function StoreBalanceView({
                   <option value="zero">Zero Balance</option>
                 </select>
               </div>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  disabled={!hasActiveFilters}
+                  className={`${secondaryBtn} h-[42px] disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  <RotateCcw className="h-4 w-4" aria-hidden />
+                  Reset
+                </button>
+              </div>
             </section>
 
             {/* Balance table */}
             {filteredItems.length === 0 ? (
               <div className="rounded-md border border-[#E5E7EB] bg-white p-10 text-center shadow-sm">
-                <p className="text-sm font-semibold text-[#4B5563]">No materials match these filters.</p>
+                <h2 className="text-sm font-black text-[#111827]">No matching materials found.</h2>
+                <p className="mt-1.5 text-sm text-[#4B5563]">
+                  Try another material name, part no., or SS Rec. Code.
+                </p>
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="mt-3 text-xs font-bold text-[#ED1C24] hover:underline"
+                >
+                  Reset filters
+                </button>
               </div>
             ) : (
               <div className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
@@ -426,26 +442,24 @@ export function StoreBalanceView({
                     <thead className="border-b border-[#E5E7EB] bg-[#F9FAFB] text-left text-xs font-bold uppercase tracking-wide text-[#4B5563]">
                       <tr>
                         <th className="px-4 py-3">Material</th>
+                        <th className="px-4 py-3 text-right">Balance</th>
+                        <th className="px-4 py-3">Unit</th>
                         <th className="px-4 py-3">Category</th>
                         <th className="px-4 py-3">Part No.</th>
                         <th className="hidden px-4 py-3 lg:table-cell">SS Rec. Code</th>
-                        <th className="px-4 py-3">Unit</th>
-                        <th className="px-4 py-3 text-right">Balance</th>
                         <th className="hidden px-4 py-3 lg:table-cell">Location / Bin</th>
                         <th className="hidden px-4 py-3 lg:table-cell">Last Movement</th>
-                        <th className="px-4 py-3">Action</th>
+                        <th className="px-4 py-3">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#F3F4F6]">
                       {filteredItems.map((item) => (
-                        <tr key={item.key} className="hover:bg-gray-50">
+                        <tr
+                          key={item.key}
+                          onClick={() => setViewItem(item)}
+                          className="cursor-pointer hover:bg-gray-50"
+                        >
                           <td className="px-4 py-3 font-semibold text-[#111827]">{item.display_name}</td>
-                          <td className="px-4 py-3 text-xs text-[#4B5563]">{item.category}</td>
-                          <td className="px-4 py-3 text-xs text-[#4B5563]">{item.part_number ?? "—"}</td>
-                          <td className="hidden px-4 py-3 text-xs text-[#4B5563] lg:table-cell">
-                            {item.ss_rec_code ?? "—"}
-                          </td>
-                          <td className="px-4 py-3 text-[#4B5563]">{item.unit}</td>
                           <td className="px-4 py-3 text-right">
                             <span
                               className={`font-black ${
@@ -453,11 +467,17 @@ export function StoreBalanceView({
                                   ? "text-[#111827]"
                                   : item.balance < 0
                                   ? "text-[#ED1C24]"
-                                  : "text-[#9CA3AF]"
+                                  : "text-amber-600"
                               }`}
                             >
                               {item.balance.toLocaleString("en-US", { maximumFractionDigits: 3 })}
                             </span>
+                          </td>
+                          <td className="px-4 py-3 text-[#4B5563]">{item.unit}</td>
+                          <td className="px-4 py-3 text-xs text-[#4B5563]">{item.category}</td>
+                          <td className="px-4 py-3 text-xs text-[#4B5563]">{item.part_number ?? "—"}</td>
+                          <td className="hidden px-4 py-3 text-xs text-[#4B5563] lg:table-cell">
+                            {item.ss_rec_code ?? "—"}
                           </td>
                           <td className="hidden px-4 py-3 text-xs text-[#4B5563] lg:table-cell">
                             {item.location ?? "—"}
@@ -465,7 +485,7 @@ export function StoreBalanceView({
                           <td className="hidden whitespace-nowrap px-4 py-3 text-xs text-[#4B5563] lg:table-cell">
                             {fmtDate(item.last_movement_date)}
                           </td>
-                          <td className="px-4 py-3">
+                          <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                             <div className="flex items-center gap-3">
                               <button
                                 type="button"
@@ -474,6 +494,14 @@ export function StoreBalanceView({
                               >
                                 View
                               </button>
+                              {canManage && (
+                                <Link
+                                  href={`/store/offline-inventory/receive?material=${encodeURIComponent(item.key)}`}
+                                  className="text-xs font-bold text-[#16A34A] hover:underline"
+                                >
+                                  Receive
+                                </Link>
+                              )}
                               {canManage && item.balance > 0 && (
                                 <Link
                                   href={`/store/offline-inventory/issue?material=${encodeURIComponent(item.key)}`}

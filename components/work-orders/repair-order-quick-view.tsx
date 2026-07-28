@@ -19,9 +19,16 @@ import {
   closeWorkOrderAction,
   requestClarificationAction,
   startJobCardProgressAction,
+  submitWorkOrderAction,
 } from "@/app/actions/workflow";
 import { approvePartsRequestAction } from "@/app/actions/phase4";
-import { displaySimplifiedStatus, simplifiedStatusTone, OPEN_JOB_CARD_STATUSES } from "@/lib/work-orders/simplified-status-display";
+import {
+  displaySimplifiedStatus,
+  simplifiedStatusTone,
+  OPEN_JOB_CARD_STATUSES,
+  NEEDS_UPDATE_LABEL,
+  NEEDS_UPDATE_TONE,
+} from "@/lib/work-orders/simplified-status-display";
 import { materialsReceiptStatus, materialsReceiptStatusTone } from "@/lib/display/parts-request-labels-display";
 import { formatDateTime } from "@/lib/utils";
 
@@ -96,9 +103,9 @@ export type QuickViewData = {
   canRequestCorrection: boolean;
   // Simplified Workflow UI Consistency Cleanup Task 1/3: whether this Job
   // Card has an unresolved maintenance_manager_review clarification right
-  // now — drives the simplified "Correction Requested" status badge and the
-  // Bottom Action Area's Edit & Resubmit / Add Materials shortcuts,
-  // regardless of the record's raw backend status.
+  // now — drives the secondary "Needs Update" badge and the Bottom Action
+  // Area's Edit & Resubmit / Add Materials shortcuts, regardless of the
+  // record's raw backend status.
   hasPendingCorrection: boolean;
   // Data Entry Correction Note Visibility Cleanup Task 1/2: the Supervisor /
   // Manager's actual clarification note, resolved the same way the Job Card
@@ -311,7 +318,7 @@ function getStatusInfo(
     case "Under Review":
       return {
         main: "Under Review",
-        sub: "Waiting for Supervisor / Manager review.",
+        sub: "Waiting on Supervisor / Manager decision.",
         tone: "amber",
       };
     case "Waiting Materials":
@@ -483,11 +490,13 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
     data.canAssign,
     data.canManage
   );
-  // Simplified Workflow UI Consistency Cleanup Task 1: the badge/heading
-  // always shows the five plain statuses (Draft/Submitted/Correction
-  // Requested/Open/Closed) — getStatusInfo's granular "sub" text is kept as
-  // secondary detail, overridden only when a correction is actually pending.
-  const simplifiedStatus = displaySimplifiedStatus(data.status, data.hasPendingCorrection);
+  // Job Card Status Simplification Task: the badge/heading always shows the
+  // five plain statuses (Draft/Submitted/Approved/Active/Closed), never
+  // "Correction Requested" — a pending correction shows as a separate
+  // secondary badge instead (see hasPendingCorrection usage below).
+  // getStatusInfo's granular "sub" text is kept as secondary detail,
+  // overridden only when a correction is actually pending.
+  const simplifiedStatus = displaySimplifiedStatus(data.status);
   const displayMain = simplifiedStatus;
   const displayTone = simplifiedStatusTone(simplifiedStatus);
   const displaySub = data.hasPendingCorrection
@@ -551,7 +560,20 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
     ["Approved", "Partially Issued", "Materials Issued"].includes(data.status) &&
     !hasActiveMaterialsRequest;
   const showApproveBtn = data.canApprove && data.status === "Under Review" && !data.hasPendingCorrection;
+  // Manager Quick-View Action Simplification Task 2/5: "Request Correction"/
+  // "Ask to Add/Update Materials" no longer render as buttons here — kept as
+  // a boolean (still drives hasStatusAction/the fallback-text case below,
+  // and the reviewPanelMode "correction"/"askMaterials" panels further down
+  // still exist, just unreachable from this popup now) so the underlying
+  // requestClarificationAction/ClarificationRequest mechanism is hidden, not
+  // deleted, per that task's explicit instruction.
   const showCorrectionBtn = data.canRequestCorrection && data.status === "Under Review" && !data.hasPendingCorrection;
+  // Manager can edit the Job Card (and its materials) directly instead of
+  // going through a formal correction request — shown in place of the
+  // buttons above whenever Manager holds edit access on an Under Review
+  // Job Card with no correction already pending.
+  const showEditJobCardForReview =
+    data.canManage && data.status === "Under Review" && !data.hasPendingCorrection;
   // Simplified Workflow UI Consistency Cleanup Task 3: whoever created this
   // Job Card (or Super Admin/canManage) gets a direct Edit & Resubmit path
   // and, if no active Materials Request already exists, an Add Materials
@@ -633,6 +655,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
     showApproveBtn ||
     showApproveMaterialsBtn ||
     showCorrectionBtn ||
+    showEditJobCardForReview ||
     showEditResubmit ||
     showClose ||
     showStartWorkGeneric ||
@@ -681,6 +704,9 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
               </p>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 <StatusBadge label={displayMain} tone={displayTone} />
+                {data.hasPendingCorrection && (
+                  <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
+                )}
                 {data.maintenance_type && (
                   <StatusBadge label={data.maintenance_type} tone="gray" />
                 )}
@@ -747,9 +773,9 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
               )}
               {/* Data Entry Job Card Action Clarity Fix Task 2: whoever
                   cannot act on Under Review right now (Data Entry, Store,
-                  Viewer/Auditor — Supervisor/Manager get the Approve/
-                  Correction buttons instead and don't need this) sees an
-                  explicit explanation instead of a silent lack of buttons. */}
+                  Viewer/Auditor — Supervisor/Manager get the Approve/Edit Job
+                  Card buttons instead and don't need this) sees an explicit
+                  explanation instead of a silent lack of buttons. */}
               {data.status === "Under Review" && !data.hasPendingCorrection && !showApproveBtn && !showCorrectionBtn && (
                 <p className="mt-0.5 text-sm text-amber-800">
                   {data.canAssign || data.canUpdateProgress || data.canClose
@@ -893,8 +919,8 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
               {/* Right column: Materials */}
               <div className="rounded-md border border-[#E5E7EB] p-2.5">
                 <p className="mb-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-                  {activeReceiptStatus === "Awaiting Receipt"
-                    ? "Materials Awaiting Receipt"
+                  {activeReceiptStatus === "To Receive"
+                    ? "Materials to Receive"
                     : activeReceiptStatus === "Received"
                       ? "Materials Received"
                       : activeReceiptStatus === "Requested"
@@ -1109,29 +1135,18 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       Approve Materials Request <ArrowRight className="h-4 w-4" />
                     </button>
                   )}
-                  {showCorrectionBtn && (
-                    <button
-                      type="button"
-                      onClick={() => setReviewPanelMode("correction")}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800 hover:bg-amber-100"
+                  {/* Manager Quick-View Action Simplification Task 2/3: replaces
+                      the old "Request Correction"/"Ask to Add/Update Materials"
+                      buttons — Manager can just edit the Job Card (and its
+                      materials, on the same edit page) directly instead of
+                      routing a formal correction request through Data Entry. */}
+                  {showEditJobCardForReview && (
+                    <Link
+                      href={`/maintenance/work-orders/${data.id}/edit`}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
                     >
-                      Request Correction <ArrowRight className="h-4 w-4" />
-                    </button>
-                  )}
-                  {/* Simplified Job Card Approval Workflow Unit Task 4: a second
-                      entry point into the exact same requestClarificationAction/
-                      ClarificationRequest mechanism as Request Correction — only
-                      the framing differs, so Supervisor/Manager has a clearer
-                      prompt for "the Job Card itself is fine, but the materials
-                      need work" without a second backend concept. */}
-                  {showCorrectionBtn && (
-                    <button
-                      type="button"
-                      onClick={() => setReviewPanelMode("askMaterials")}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800 hover:bg-amber-100"
-                    >
-                      Ask to Add/Update Materials <ArrowRight className="h-4 w-4" />
-                    </button>
+                      Edit Job Card <ArrowRight className="h-4 w-4" />
+                    </Link>
                   )}
                   {showClose && (
                     <button
@@ -1183,12 +1198,30 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       View Assignment <ArrowRight className="h-4 w-4" />
                     </Link>
                   )}
+                  {/* Draft Submit UX Cleanup Task 2/4: submits directly from
+                      the popup instead of just linking to the full detail
+                      page — carries return_to/return_to_param so the server
+                      action sends Data Entry back to this same page (with a
+                      success popup) rather than forcing navigation away. */}
+                  {(showSubmit || legacyShowSubmit) && (
+                    <form action={submitWorkOrderAction} className="contents">
+                      <input type="hidden" name="work_order_id" value={data.id} />
+                      <input type="hidden" name="return_to" value={data.closeHref} />
+                      <input type="hidden" name="return_to_param" value={data.previewParamName} />
+                      <button
+                        type="submit"
+                        className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
+                      >
+                        Submit for Review <ArrowRight className="h-4 w-4" />
+                      </button>
+                    </form>
+                  )}
                   {(showSubmit || legacyShowSubmit) && (
                     <Link
-                      href={`/maintenance/work-orders/${data.id}`}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
+                      href={`/maintenance/work-orders/${data.id}/edit`}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
                     >
-                      Submit for Review <ArrowRight className="h-4 w-4" />
+                      Edit Draft <ArrowRight className="h-4 w-4" />
                     </Link>
                   )}
                   {legacyShowReturnToDraft && (
@@ -1203,8 +1236,13 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                 {showApproveBtn && (
                   <p className="mt-2 text-xs text-[#6B7280]">
                     {requestedMaterialsRequests.length > 0
-                      ? "Approving will approve this Job Card and its requested materials. Materials will then move to Awaiting Receipt."
-                      : "Approving will open this Job Card for maintenance work."}
+                      ? "Approving will approve this Job Card and its requested materials. Materials will then move to To Receive."
+                      : "Approving will approve this Job Card."}
+                  </p>
+                )}
+                {showEditJobCardForReview && (
+                  <p className="mt-1 text-xs text-[#6B7280]">
+                    Use Edit Job Card if details or materials need changes before approval.
                   </p>
                 )}
               </section>
@@ -1282,7 +1320,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       </p>
                       {pr.status === "Requested" && (
                         <p className="mt-1 text-xs text-[#6B7280]">
-                          These materials will be approved together when you click Approve. After approval, they will move to Awaiting Receipt.
+                          These materials will be approved together when you click Approve. After approval, they will move to To Receive.
                         </p>
                       )}
                       {pr.items.length > 0 ? (
@@ -1500,8 +1538,8 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       </p>
                       <p className="text-xs text-[#4B5563]">
                         {requestedMaterialsRequests.length > 0
-                          ? "This will approve the Job Card and requested materials. Materials will be marked as Awaiting Receipt."
-                          : "This will approve the Job Card and make it Open."}
+                          ? "This will approve the Job Card and requested materials. Materials will be marked as To Receive."
+                          : "This will approve the Job Card and make it Approved."}
                       </p>
                       <input type="hidden" name="return_to" value={data.closeHref} />
                       <input type="hidden" name="return_to_param" value={data.previewParamName} />

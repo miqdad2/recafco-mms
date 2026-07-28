@@ -144,16 +144,17 @@ export function MaterialDetailModal({
             </div>
           </div>
 
-          <div className="border-t border-[#E5E7EB] px-5 py-3">
-            <div className="flex items-center gap-2">
-              <Link
-                href={`/store/offline-inventory/movements?q=${encodeURIComponent(item.display_name)}`}
-                className="flex-1 rounded-md border border-[#E5E7EB] px-4 py-2 text-center text-sm font-bold text-[#111827] hover:bg-gray-50"
-              >
-                Full Movement History
-              </Link>
-              {canIssue && (
-                item.balance > 0 ? (
+          <div className="space-y-2 border-t border-[#E5E7EB] px-5 py-3">
+            {/* Primary actions */}
+            {canIssue && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Link
+                  href={`/store/offline-inventory/receive?material=${encodeURIComponent(item.key)}`}
+                  className="flex-1 rounded-md bg-[#16A34A] px-4 py-2 text-center text-sm font-bold text-white hover:bg-green-700"
+                >
+                  Receive Material
+                </Link>
+                {item.balance > 0 ? (
                   <Link
                     href={`/store/offline-inventory/issue?material=${encodeURIComponent(item.key)}`}
                     className="flex-1 rounded-md bg-[#ED1C24] px-4 py-2 text-center text-sm font-bold text-white hover:bg-[#c8181e]"
@@ -169,12 +170,28 @@ export function MaterialDetailModal({
                   >
                     Record Used Material
                   </button>
-                )
-              )}
-            </div>
-            {canIssue && item.balance <= 0 && (
-              <p className="mt-2 text-xs text-[#9CA3AF]">No available balance to record as used.</p>
+                )}
+              </div>
             )}
+            {canIssue && item.balance <= 0 && (
+              <p className="text-xs text-[#9CA3AF]">No available balance to record as used.</p>
+            )}
+            {/* Secondary actions */}
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                href={`/store/offline-inventory/movements?q=${encodeURIComponent(item.display_name)}`}
+                className="flex-1 rounded-md border border-[#E5E7EB] px-4 py-2 text-center text-sm font-bold text-[#111827] hover:bg-gray-50"
+              >
+                View Full History
+              </Link>
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex-1 rounded-md border border-[#E5E7EB] px-4 py-2 text-center text-sm font-bold text-[#4B5563] hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       </div>

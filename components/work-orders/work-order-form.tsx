@@ -359,10 +359,7 @@ export function WorkOrderForm({
                 <input type="hidden" name="maintenance_manager_closure" value="" />
                 <input type="hidden" name="next_service_kilometer" value="" />
                 <input type="hidden" name="next_service_running_hours" value="" />
-                <label className="block">
-                  <span className="text-sm font-semibold text-[#111827]">Data entry notes</span>
-                  <textarea className="focus-ring mt-1 min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="notes" />
-                </label>
+                <input type="hidden" name="notes" value="" />
               </div>
             </div>
           </section>
@@ -577,10 +574,11 @@ export function WorkOrderForm({
         <Field label="Next service date" name="next_service_date" type="date" defaultValue={workOrder?.next_service_date} />
         <Field label="Next service kilometer" name="next_service_kilometer" type="number" defaultValue={workOrder?.next_service_kilometer} />
         <Field label="Next service running hours" name="next_service_running_hours" type="number" defaultValue={workOrder?.next_service_running_hours} />
-        <label className="block md:col-span-2">
-          <span className="text-sm font-semibold text-[#111827]">Notes</span>
-          <textarea className="focus-ring mt-1 min-h-24 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="notes" defaultValue={workOrder?.notes ?? ""} />
-        </label>
+        {/* New Job Card Notes Field Removal: Notes is no longer an editable
+            field — hidden here (not omitted) so a record that already has a
+            notes value from before this change keeps it on save instead of
+            being silently nulled out. */}
+        <input type="hidden" name="notes" value={typeof workOrder?.notes === "string" ? workOrder.notes : ""} />
       </FormSection>
 
       <FormSection title="Attachment Metadata Foundation" description="Private file upload flow is completed later; record file references now if needed.">

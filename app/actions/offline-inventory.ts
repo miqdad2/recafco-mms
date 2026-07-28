@@ -205,6 +205,91 @@ export async function addOpeningStockAction(
   return { ok: true };
 }
 
+// ── Add New Material ──────────────────────────────────────────────────────────
+// Daily Actions Cleanup Task 3: registers a material in Offline Inventory
+// Control directly from the daily workflow (distinct from the one-time,
+// pre-go-live "Add Opening Stock" setup action above — same underlying
+// OPENING_STOCK movement type, since the current model has no separate
+// material-master table and balances are derived purely from movements).
+// Unlike Add Opening Stock, a starting quantity of 0 is allowed here: the
+// business flow is "register the material now, receive real quantity later
+// with Receive Material", so a 0-quantity movement just establishes the
+// material's identity (name/category/unit/part no.) without affecting balance.
+
+function parseNonNegativeQty(raw: string): number {
+  const trimmed = raw.trim();
+  if (trimmed === "") return 0;
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error("Opening balance must be a whole number of 0 or more.");
+  }
+  return n;
+}
+
+export async function addNewMaterialAction(
+  _prev: OfflineMovementState,
+  formData: FormData
+): Promise<OfflineMovementState> {
+  const context = await requireOfflineInventoryManage();
+
+  try {
+    const manualName    = toNullable(String(formData.get("manual_material_name") ?? ""));
+    const category      = toNullable(String(formData.get("category") ?? "")) ?? "Other";
+    const manualPartNum = toNullable(String(formData.get("manual_part_number") ?? ""));
+    const ssRecCode     = toNullable(String(formData.get("ss_rec_code") ?? ""));
+    const qty           = parseNonNegativeQty(String(formData.get("opening_balance") ?? ""));
+    const unit          = toNullable(String(formData.get("unit") ?? "")) ?? "PCS";
+    const location      = toNullable(String(formData.get("location") ?? ""));
+    const remarks       = toNullable(String(formData.get("remarks") ?? ""));
+
+    if (!manualName) {
+      return { ok: false, error: "Material name is required." };
+    }
+
+    const isSuperAdmin = context.role?.slug === "super_admin";
+    if (!isSuperAdmin) {
+      const dupe = await findDuplicateOpeningStock({
+        manualName,
+        manualPartNumber: manualPartNum,
+        ssRecCode,
+        unit,
+      });
+      if (dupe) {
+        return {
+          ok: false,
+          error:
+            "This material is already registered in Offline Inventory Control. Use Receive Material to add quantity, or Record Used Material to use it.",
+        };
+      }
+    }
+
+    const created = await prisma.offline_inventory_movements.create({
+      data: {
+        movement_type:         "OPENING_STOCK",
+        movement_date:         todayDateOnly(),
+        part_id:               null,
+        manual_material_name:  manualName,
+        manual_part_number:    manualPartNum,
+        ss_rec_code:           ssRecCode,
+        category:              normalizeCategory(category),
+        quantity:              qty,
+        unit,
+        counterparty:          location,
+        remarks,
+        created_by:            context.userId,
+      },
+    });
+
+    await emitOfflineInventoryRealtimeEvent(REALTIME_EVENTS.OFFLINE_INVENTORY_OPENING_STOCK_ADDED, created.id, context.userId);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Failed to save." };
+  }
+
+  revalidatePath("/store/offline-inventory");
+  revalidatePath("/store/offline-inventory/movements");
+  return { ok: true };
+}
+
 // ── Receive Material ──────────────────────────────────────────────────────────
 
 export async function receiveOfflineMaterialAction(
@@ -356,6 +441,7 @@ export async function issueOfflineMaterialAction(
     const counterparty = toNullable(String(formData.get("counterparty") ?? ""));
     const purpose      = toNullable(String(formData.get("purpose") ?? ""));
     const receiverName = toNullable(String(formData.get("receiver_name") ?? ""));
+    const refNum        = toNullable(String(formData.get("reference_number") ?? ""));
     const woIdRaw       = toNullable(String(formData.get("related_work_order_id") ?? ""));
     const remarks       = toNullable(String(formData.get("remarks") ?? ""));
 
@@ -377,7 +463,7 @@ export async function issueOfflineMaterialAction(
     if (qty > available) {
       return {
         ok: false,
-        error: `Cannot issue this quantity. Available balance is ${available} ${unit}.`,
+        error: "Used quantity cannot be greater than current balance.",
       };
     }
 
@@ -395,6 +481,7 @@ export async function issueOfflineMaterialAction(
         counterparty,
         purpose,
         receiver_name:         receiverName,
+        reference_number:      refNum,
         related_work_order_id: woIdRaw,
         remarks,
         created_by:            context.userId,
@@ -454,7 +541,7 @@ export async function getMaterialRecentMovementsAction(key: string): Promise<Mat
       profiles: { select: { full_name: true } },
     },
     orderBy: [{ movement_date: "desc" }, { created_at: "desc" }],
-    take: 10,
+    take: 5,
   });
 
   return rows.map((r) => ({

@@ -127,7 +127,6 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
         <section className="mt-6 grid gap-4">
           <TextArea title="Operator Complaint" value={wo.operator_complaint} />
           <TextArea title="Description of Work" value={wo.description_of_work} />
-          <TextArea title="Notes" value={wo.notes} />
         </section>
 
         <PrintTable title="Labor" rows={labor ?? []} columns={["labor_name", "employee_number", "hours", "rate", "amount"]} />

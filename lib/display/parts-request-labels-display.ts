@@ -70,7 +70,7 @@ export function materialsRequestJobCardHelper(
   if (jobCardHasPendingCorrection) return { label: "Waiting on Data Entry correction", canReceive: false };
   if (jobCardStatus === "Under Review") return { label: "Waiting Supervisor / Manager review", canReceive: false };
   if (jobCardStatus === "Closed") return { label: "Job Card is closed", canReceive: false };
-  if (OPEN_JOB_CARD_STATUSES.includes(jobCardStatus)) return { label: "Ready to receive", canReceive: true };
+  if (OPEN_JOB_CARD_STATUSES.includes(jobCardStatus)) return { label: "Not received yet", canReceive: true };
   // Created (Draft) or anything else not yet submitted for review.
   return { label: "Waiting for Job Card to be opened", canReceive: false };
 }
@@ -83,7 +83,14 @@ export function materialsRequestJobCardHelper(
 // about when a request counts as ready to receive. Display mapping only —
 // the underlying parts_requests.status value (Requested/Approved/Waiting
 // Stock/Partially Issued/Issued) is never changed.
-export type MaterialsReceiptStatus = "Requested" | "Awaiting Receipt" | "Received";
+//
+// Materials Receive Wording Simplification Task 8: the middle value's label
+// changed from "Awaiting Receipt" to "To Receive" (simpler, plainer wording)
+// — this is the literal display string (the type IS the label), so this one
+// edit propagates everywhere the function's return value is rendered
+// directly. Every call site that separately compared a result against the
+// literal "Awaiting Receipt" string was updated alongside this change.
+export type MaterialsReceiptStatus = "Requested" | "To Receive" | "Received";
 
 export function materialsReceiptStatus(
   prStatus: string,
@@ -93,14 +100,14 @@ export function materialsReceiptStatus(
   const isReceived = displayPartsRequestStatus(prStatus) === "Issued";
   if (isReceived) return "Received";
   const helper = materialsRequestJobCardHelper(jobCardStatus, jobCardHasPendingCorrection, false);
-  return helper.canReceive ? "Awaiting Receipt" : "Requested";
+  return helper.canReceive ? "To Receive" : "Requested";
 }
 
 export function materialsReceiptStatusTone(status: MaterialsReceiptStatus): "green" | "amber" | "gray" {
   switch (status) {
     case "Received":
       return "green";
-    case "Awaiting Receipt":
+    case "To Receive":
       return "amber";
     case "Requested":
       return "gray";

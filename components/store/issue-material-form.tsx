@@ -84,7 +84,7 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
         {/* Date */}
         <div>
           <label htmlFor="i-date" className={lbl}>
-            Movement Date <span className="text-[#ED1C24]">*</span>
+            Used Date <span className="text-[#ED1C24]">*</span>
           </label>
           <input
             id="i-date"
@@ -121,7 +121,7 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
           </select>
           {selectedItem && (
             <p className="mt-1.5 text-xs font-semibold text-[#16A34A]">
-              Available balance:{" "}
+              Current Balance:{" "}
               {selectedItem.balance.toLocaleString("en-US", { maximumFractionDigits: 3 })}{" "}
               {selectedItem.unit}
             </p>
@@ -146,7 +146,7 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label htmlFor="i-qty" className={lbl}>
-              Quantity <span className="text-[#ED1C24]">*</span>
+              Quantity Used <span className="text-[#ED1C24]">*</span>
             </label>
             <input
               id="i-qty"
@@ -231,6 +231,19 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
           />
         </div>
 
+        {/* Reference number */}
+        <div>
+          <label htmlFor="i-ref" className={lbl}>Reference Number</label>
+          <input
+            id="i-ref"
+            type="text"
+            name="reference_number"
+            placeholder="Optional"
+            className={inp}
+            disabled={isPending}
+          />
+        </div>
+
         {/* Remarks */}
         <div>
           <label htmlFor="i-remarks" className={lbl}>Remarks</label>
@@ -251,7 +264,7 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
             className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#111827] py-2.5 text-sm font-bold text-white transition hover:bg-gray-700 disabled:opacity-60 sm:flex-none sm:px-8"
           >
             {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-            {isPending ? "Saving…" : "Save Used Material"}
+            {isPending ? "Saving…" : "Record Used"}
           </button>
           <Link
             href="/store/offline-inventory"

@@ -28,6 +28,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { WorkflowActions } from "@/components/work-orders/workflow-actions";
 import { CorrectionRequestSentModal } from "@/components/work-orders/correction-request-sent-modal";
 import { JobCardClosedModal } from "@/components/work-orders/job-card-closed-modal";
+import { JobCardSubmittedModal } from "@/components/work-orders/job-card-submitted-modal";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { getPendingClarificationForWorkOrder } from "@/lib/backend/workflows/queries";
@@ -35,7 +36,12 @@ import { createSignedFileUrl } from "@/lib/files/signed-url";
 import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/security/permissions";
 import { canViewEntityFile } from "@/lib/security/file-access";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
-import { displaySimplifiedStatus, simplifiedStatusTone } from "@/lib/work-orders/simplified-status";
+import {
+  displaySimplifiedStatus,
+  simplifiedStatusTone,
+  NEEDS_UPDATE_LABEL,
+  NEEDS_UPDATE_TONE,
+} from "@/lib/work-orders/simplified-status";
 import { displayPartsRequestStatus, partsRequestStatusTone } from "@/lib/display/parts-request-labels";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
@@ -50,32 +56,30 @@ const DUPLICATE_MATERIALS_REQUEST_ERROR =
   "This Job Card already has an active Materials Request. Please update the existing request instead.";
 const ACTIVE_MATERIALS_REQUEST_STATUSES = ["Requested", "Approved", "Waiting Stock", "Partially Issued"];
 
-// ── Simplified 4-stage display tracker ────────────────────────────────────────
+// ── Simplified 5-stage display tracker ────────────────────────────────────────
 
-// Manager Correction Tracking and Stage Color Cleanup Task 5/6: the stepper
-// used to show the raw 7-value backend stage (Created/Review/Approved/
-// Materials/Assigned/In Progress/Closed), which is exactly the raw-status
-// wording the simplified user-facing model forbids — it also sat directly
-// below a status badge already correctly showing the simplified label, so
-// the two disagreed on vocabulary. Collapsed to the same 4 simplified
-// stages used everywhere else (Draft/Submitted/Open/Closed); a pending
-// correction is shown as a red highlight on the "Submitted" stage instead
-// of a 5th linear stage, since a correction is a loop back onto Submitted,
-// not further progress.
-const DISPLAY_STAGES = ["Draft", "Submitted", "Open", "Closed"] as const;
+// Job Card Status Simplification Task: the stepper mirrors the five plain
+// user-facing statuses everywhere else (Draft/Submitted/Approved/Active/
+// Closed) — "Open" is now split into "Approved" and "Active", and a pending
+// correction is no longer a stage swap ("Correction Requested" retired as a
+// primary value); it's shown as a small "Needs Update" chip next to whatever
+// the current stage already is, since a correction is a loop back onto that
+// same stage, not further progress.
+const DISPLAY_STAGES = ["Draft", "Submitted", "Approved", "Active", "Closed"] as const;
 
 function statusToStageIndex(status: string): number {
-  const simplified = displaySimplifiedStatus(status, false);
+  const simplified = displaySimplifiedStatus(status);
   switch (simplified) {
     case "Draft":
       return 0;
     case "Submitted":
-    case "Correction Requested":
       return 1;
-    case "Open":
+    case "Approved":
       return 2;
-    case "Closed":
+    case "Active":
       return 3;
+    case "Closed":
+      return 4;
   }
 }
 
@@ -379,6 +383,35 @@ export default async function WorkOrderDetailPage({
           dismissHref={`/maintenance/work-orders/${wo.id}`}
         />
       )}
+      {/* Draft Submit UX Cleanup Task 5 (Option A): the same success popup
+          used by the quick-view's Submit for Review — submitWorkOrderAction
+          falls back to this same detail-page URL (self-redirect) when
+          submitted from the detail page's own WorkflowActions form, which
+          carries no return_to/return_to_param. "View Job Card" is hidden
+          since it would just reload the page already showing. */}
+      {successMessage === "job-card-submitted" && (
+        <JobCardSubmittedModal
+          data={{
+            id: wo.id,
+            work_order_number: wo.work_order_number,
+            operator_complaint: wo.operator_complaint,
+            description_of_work: wo.description_of_work,
+            assets: wo.assets ? { asset_code: wo.assets.asset_code, asset_name: wo.assets.asset_name } : null,
+            all_parts_requests: wo.parts_requests.map((pr) => ({
+              id: pr.id,
+              parts_request_number: pr.parts_request_number,
+              status: pr.status,
+              items: pr.parts_request_items.map((item) => ({
+                id: item.id,
+                description: item.description,
+                quantity_requested: Number(item.quantity_requested),
+              })),
+            })),
+          }}
+          dismissHref={`/maintenance/work-orders/${wo.id}`}
+          hideViewJobCard
+        />
+      )}
       <PageHeader
         title={wo.work_order_number ?? "Job Card"}
         description={summaryTitle.length > 80 ? summaryTitle.slice(0, 80) + "…" : summaryTitle}
@@ -540,9 +573,12 @@ export default async function WorkOrderDetailPage({
         <section className="rounded-md border border-[#DDE2EA] bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-center gap-2">
             {(() => {
-              const simplified = displaySimplifiedStatus(wo.status, hasPendingCorrection);
+              const simplified = displaySimplifiedStatus(wo.status);
               return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
             })()}
+            {hasPendingCorrection && (
+              <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
+            )}
             <StatusBadge label={wo.worker_type} tone="gray" />
           </div>
           <h2 className="mt-2 text-xl font-black text-[#111827]">{summaryTitle}</h2>
@@ -558,30 +594,27 @@ export default async function WorkOrderDetailPage({
           </p>
         </section>
 
-        {/* ── Compact 4-stage stepper ───────────────────────────────────── */}
+        {/* ── Compact 5-stage stepper ───────────────────────────────────── */}
         {!isTerminal ? (
           <section className="rounded-md border border-[#DDE2EA] bg-white px-4 py-3 shadow-sm">
             <div className="flex flex-wrap items-center gap-y-2">
               {DISPLAY_STAGES.map((stage, idx) => {
                 const isDone = stageIndex > idx;
                 const isCurrent = stageIndex === idx;
-                // "Submitted" (idx 1) shows as "Correction Requested" in red
-                // while a correction is pending — a loop back onto this same
-                // stage, not further progress, so it stays idx 1 rather than
-                // becoming a separate 5th stage.
-                const isCorrectionStage = idx === 1 && isCurrent && hasPendingCorrection;
-                const label = isCorrectionStage ? "Correction Requested" : stage;
+                // A pending correction no longer swaps the current stage's
+                // own label/color — it's a loop back onto whatever stage the
+                // Job Card is already at, shown as a small "Needs Update"
+                // chip next to that stage instead of a separate 6th stage.
+                const showNeedsUpdate = isCurrent && hasPendingCorrection;
                 return (
                   <div key={stage} className="flex shrink-0 items-center">
                     <span
                       className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-black leading-none ${
-                        isCorrectionStage
-                          ? "bg-red-100 text-[#DC2626]"
-                          : isCurrent
-                            ? "bg-[#ED1C24] text-white"
-                            : isDone
-                              ? "bg-green-100 text-[#16A34A]"
-                              : "bg-gray-100 text-[#9CA3AF]"
+                        isCurrent
+                          ? "bg-[#ED1C24] text-white"
+                          : isDone
+                            ? "bg-green-100 text-[#16A34A]"
+                            : "bg-gray-100 text-[#9CA3AF]"
                       }`}
                     >
                       {isDone ? (
@@ -589,8 +622,13 @@ export default async function WorkOrderDetailPage({
                       ) : (
                         <span className="shrink-0">{idx + 1}</span>
                       )}
-                      {label}
+                      {stage}
                     </span>
+                    {showNeedsUpdate && (
+                      <span className="ml-1 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black leading-none text-amber-800">
+                        {NEEDS_UPDATE_LABEL}
+                      </span>
+                    )}
                     {idx < DISPLAY_STAGES.length - 1 ? (
                       <span
                         className={`mx-1 text-xs font-bold ${isDone ? "text-[#16A34A]" : "text-gray-300"}`}
@@ -606,7 +644,7 @@ export default async function WorkOrderDetailPage({
           </section>
         ) : (
           <div className="rounded-md border border-[#E5E7EB] bg-gray-50 p-3 text-sm font-bold text-[#4B5563]">
-            This Job Card is {displaySimplifiedStatus(wo.status, hasPendingCorrection).toLowerCase()}.
+            This Job Card is {displaySimplifiedStatus(wo.status).toLowerCase()}.
           </div>
         )}
 
@@ -677,14 +715,6 @@ export default async function WorkOrderDetailPage({
                     <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Description of work required</p>
                     <p className="mt-1 rounded-md border border-[#E5E7EB] bg-gray-50 p-3 text-sm leading-6 text-[#111827]">
                       {wo.description_of_work}
-                    </p>
-                  </div>
-                ) : null}
-                {wo.notes ? (
-                  <div>
-                    <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Notes</p>
-                    <p className="mt-1 rounded-md border border-[#E5E7EB] bg-gray-50 p-3 text-sm leading-6 text-[#111827]">
-                      {wo.notes}
                     </p>
                   </div>
                 ) : null}
@@ -1142,8 +1172,15 @@ export default async function WorkOrderDetailPage({
               <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Quick Facts</p>
               <dl className="mt-3 space-y-3 text-sm">
                 <InfoLine label="Status" value={(() => {
-                  const simplified = displaySimplifiedStatus(wo.status, hasPendingCorrection);
-                  return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
+                  const simplified = displaySimplifiedStatus(wo.status);
+                  return (
+                    <div className="flex flex-wrap items-center gap-1">
+                      <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />
+                      {hasPendingCorrection && (
+                        <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
+                      )}
+                    </div>
+                  );
                 })()} />
                 {wo.maintenance_type ? <InfoLine label="Type" value={wo.maintenance_type} /> : null}
                 {wo.ordered_by ? <InfoLine label="Reported by" value={wo.ordered_by} /> : null}

@@ -85,17 +85,26 @@ function idFrom(formData: FormData, fallbackPath = "/maintenance/work-orders") {
   }
 }
 
+// Draft Submit UX Cleanup Task 1/2: previously always redirected to the full
+// Job Card detail page, forcing Data Entry away from whatever quick-view/
+// list/dashboard they submitted from — now returns to that same page (the
+// quick-view's own data.closeHref, passed through as return_to) with a
+// success popup instead of a hard navigation away. Submitting directly from
+// the detail page's own WorkflowActions form omits return_to/return_to_param,
+// so it falls back to that same detail page — self-redirect, unchanged from
+// before, just now with a success popup too (Task 5).
 export async function submitWorkOrderAction(formData: FormData) {
   const context = await requirePermission("work_orders.manage");
   const id = idFrom(formData);
-  let targetPath = `/maintenance/work-orders/${id}`;
+  let targetPath = safeReturnTo(formData, `/maintenance/work-orders/${id}`);
+  const previewParam = safeReturnToParam(formData);
 
   try {
     const result = await submitWorkOrder(context, id);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/work-orders");
     revalidatePath("/dashboard");
-    targetPath = `/maintenance/work-orders/${result.workOrderId}`;
+    targetPath = appendParams(targetPath, { success: "job-card-submitted", [previewParam]: result.workOrderId });
   } catch (error) {
     redirect(await workflowErrorPath(id, error));
   }
