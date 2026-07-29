@@ -313,7 +313,82 @@ export function StoreBalanceView({
           Current Balance = Opening Stock + Received − Used
         </p>
 
-        {/* Empty state */}
+        {/* Offline Inventory Manager Access and Always-Visible Search Fix
+            Task 4: search/filters used to live inside the "materials exist"
+            branch below, so it vanished entirely whenever balanceItems was
+            empty — the exact bug reported for both Manager and Data Entry.
+            Now rendered unconditionally, right after the KPI cards, so it's
+            always available even before the first material is registered. */}
+        <section className="grid gap-3 rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm sm:grid-cols-[2fr_1fr_1fr_auto]">
+          <div>
+            <label htmlFor="sb-search" className={lbl}>Search</label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9CA3AF]" aria-hidden />
+              <input
+                id="sb-search"
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search material name, part no., SS Rec. Code, category, or location…"
+                className={`${inp} pl-9`}
+              />
+            </div>
+          </div>
+          <div>
+            <label htmlFor="sb-category" className={lbl}>Category</label>
+            <select
+              id="sb-category"
+              value={category ?? ""}
+              onChange={(e) => setCategory(e.target.value || null)}
+              className={inp}
+            >
+              <option value="">All Materials</option>
+              {visibleCategories.map((c) => (
+                <option key={c} value={c}>{c} ({categoryCounts.get(c) ?? 0})</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="sb-status" className={lbl}>Balance Status</label>
+            <select
+              id="sb-status"
+              value={balanceStatus}
+              onChange={(e) => setBalanceStatus(e.target.value as BalanceStatus)}
+              className={inp}
+            >
+              <option value="all">All</option>
+              <option value="available">Available</option>
+              <option value="zero">Zero Balance</option>
+            </select>
+          </div>
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={resetFilters}
+              disabled={!hasActiveFilters}
+              className={`${secondaryBtn} h-[42px] disabled:cursor-not-allowed disabled:opacity-40`}
+            >
+              <RotateCcw className="h-4 w-4" aria-hidden />
+              Reset
+            </button>
+          </div>
+        </section>
+
+        {/* Category summary — Simplification Task 7: compact line instead of
+            a full grid of category cards; category filtering itself still
+            works, just via the dropdown above. Only meaningful once at least
+            one material exists — redundant with the empty-state heading below
+            otherwise. */}
+        {!isEmpty && (
+          <p className="flex items-center gap-1.5 text-xs font-bold text-[#4B5563]">
+            <Layers className="h-3.5 w-3.5" aria-hidden />
+            All Materials: {balanceItems.length}
+          </p>
+        )}
+
+        {/* Results area — three states: no materials registered at all yet,
+            materials exist but the search/filters excluded all of them, or
+            the (filtered) list itself. */}
         {isEmpty ? (
           <div className="rounded-md border border-[#E5E7EB] bg-white shadow-sm">
             <div className="flex flex-col items-center gap-6 px-4 py-20 text-center">
@@ -356,70 +431,6 @@ export function StoreBalanceView({
           </div>
         ) : (
           <>
-            {/* Category summary — Simplification Task 7: compact line instead
-                of a full grid of category cards; category filtering itself
-                still works, just via the dropdown below. */}
-            <p className="flex items-center gap-1.5 text-xs font-bold text-[#4B5563]">
-              <Layers className="h-3.5 w-3.5" aria-hidden />
-              All Materials: {balanceItems.length}
-            </p>
-
-            {/* Search + filters */}
-            <section className="grid gap-3 rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm sm:grid-cols-[2fr_1fr_1fr_auto]">
-              <div>
-                <label htmlFor="sb-search" className={lbl}>Search</label>
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9CA3AF]" aria-hidden />
-                  <input
-                    id="sb-search"
-                    type="text"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search material name, part no., SS Rec. Code, category, or location…"
-                    className={`${inp} pl-9`}
-                  />
-                </div>
-              </div>
-              <div>
-                <label htmlFor="sb-category" className={lbl}>Category</label>
-                <select
-                  id="sb-category"
-                  value={category ?? ""}
-                  onChange={(e) => setCategory(e.target.value || null)}
-                  className={inp}
-                >
-                  <option value="">All Materials</option>
-                  {visibleCategories.map((c) => (
-                    <option key={c} value={c}>{c} ({categoryCounts.get(c) ?? 0})</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="sb-status" className={lbl}>Balance Status</label>
-                <select
-                  id="sb-status"
-                  value={balanceStatus}
-                  onChange={(e) => setBalanceStatus(e.target.value as BalanceStatus)}
-                  className={inp}
-                >
-                  <option value="all">All</option>
-                  <option value="available">Available</option>
-                  <option value="zero">Zero Balance</option>
-                </select>
-              </div>
-              <div className="flex items-end">
-                <button
-                  type="button"
-                  onClick={resetFilters}
-                  disabled={!hasActiveFilters}
-                  className={`${secondaryBtn} h-[42px] disabled:cursor-not-allowed disabled:opacity-40`}
-                >
-                  <RotateCcw className="h-4 w-4" aria-hidden />
-                  Reset
-                </button>
-              </div>
-            </section>
-
             {/* Balance table */}
             {filteredItems.length === 0 ? (
               <div className="rounded-md border border-[#E5E7EB] bg-white p-10 text-center shadow-sm">
