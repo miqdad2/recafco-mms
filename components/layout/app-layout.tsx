@@ -332,7 +332,7 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
           className={`${sidebarFont.className} fixed inset-y-0 left-0 z-20 hidden w-64 flex-col border-r border-white/10 bg-[#081225] text-[#E8EDF5] lg:flex`}
         >
           <div className="flex flex-none items-center gap-3 border-b border-white/10 px-4 py-4">
-            <BrandLogo variant="dark" size="sm" subtitle="Maintenance & Asset Management" />
+            <BrandLogo variant="dark" size="sm" subtitle="Maintenance Management System" />
           </div>
           <nav className="flex-1 overflow-y-auto px-3 py-4" aria-label="Main navigation">
             <CollapsibleNav groups={visibleGroups} />
@@ -340,11 +340,7 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
         </aside>
 
         <div className="lg:pl-64">
-          <header className="sticky top-0 z-10 flex min-h-16 items-center justify-between gap-3 border-b border-[#DDE2EA] bg-white/95 px-3 backdrop-blur sm:px-6">
-            <div className="min-w-0">
-              <p className="truncate text-[11px] font-bold uppercase text-[#4B5563] sm:text-xs">Maintenance Department System</p>
-              <p className="truncate text-sm font-semibold text-[#111827]">{context.department?.name ?? "No department assigned"}</p>
-            </div>
+          <header className="sticky top-0 z-10 flex min-h-16 items-center justify-end gap-3 border-b border-[#DDE2EA] bg-white/95 px-3 backdrop-blur sm:px-6">
             <div className="flex min-w-0 items-center gap-2 sm:gap-3">
               <div className="hidden sm:block">
                 <StatusBadge label={context.role?.name ?? "No role"} tone="blue" />

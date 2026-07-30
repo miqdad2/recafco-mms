@@ -20,8 +20,7 @@ export function PageLoading({ message = "Loading page", fullScreen = false }: Pa
         </div>
 
         <div className="mt-7 w-full">
-          <p className="text-[11px] font-black uppercase tracking-[0.1em] text-[#ED1C24]">RECAFCO MMS</p>
-          <h1 className="mt-3 text-2xl font-black text-[#111827]">{message}</h1>
+          <h1 className="text-2xl font-black text-[#111827]">{message}</h1>
           <p className="mx-auto mt-2 max-w-xs text-sm font-semibold leading-6 text-[#4B5563]">Preparing your maintenance workspace.</p>
           <div className="mx-auto mt-6 h-1.5 w-48 overflow-hidden rounded-full bg-[#DDE2EA]">
             <div className="page-loading-bar h-full w-1/2 rounded-full bg-[#ED1C24]" />
