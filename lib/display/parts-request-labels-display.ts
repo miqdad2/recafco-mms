@@ -65,14 +65,18 @@ export function materialsRequestJobCardHelper(
   jobCardHasPendingCorrection: boolean,
   isReceived: boolean
 ): MaterialsRequestJobCardHelper {
-  if (isReceived) return { label: "Received", canReceive: false };
+  // Materials Requests Status Wording Simplification: helper text uses
+  // plain, simple wording — "Waiting for material" (approved, not yet
+  // received), "Material received" (completed), "Job Card not submitted
+  // yet" (Draft), "Waiting for Job Card approval" (Submitted).
+  if (isReceived) return { label: "Material received", canReceive: false };
   if (!jobCardStatus) return { label: "No linked Job Card", canReceive: false };
   if (jobCardHasPendingCorrection) return { label: "Waiting on Data Entry correction", canReceive: false };
-  if (jobCardStatus === "Under Review") return { label: "Waiting Supervisor / Manager review", canReceive: false };
+  if (jobCardStatus === "Under Review") return { label: "Waiting for Job Card approval", canReceive: false };
   if (jobCardStatus === "Closed") return { label: "Job Card is closed", canReceive: false };
-  if (OPEN_JOB_CARD_STATUSES.includes(jobCardStatus)) return { label: "Not received yet", canReceive: true };
+  if (OPEN_JOB_CARD_STATUSES.includes(jobCardStatus)) return { label: "Waiting for material", canReceive: true };
   // Created (Draft) or anything else not yet submitted for review.
-  return { label: "Waiting for Job Card to be opened", canReceive: false };
+  return { label: "Job Card not submitted yet", canReceive: false };
 }
 
 // ── Manager Approval Success Popup and Materials Awaiting Receipt Flow ─────
@@ -84,13 +88,15 @@ export function materialsRequestJobCardHelper(
 // the underlying parts_requests.status value (Requested/Approved/Waiting
 // Stock/Partially Issued/Issued) is never changed.
 //
-// Materials Receive Wording Simplification Task 8: the middle value's label
-// changed from "Awaiting Receipt" to "To Receive" (simpler, plainer wording)
-// — this is the literal display string (the type IS the label), so this one
-// edit propagates everywhere the function's return value is rendered
-// directly. Every call site that separately compared a result against the
-// literal "Awaiting Receipt" string was updated alongside this change.
-export type MaterialsReceiptStatus = "Requested" | "To Receive" | "Received";
+// Materials Requests Status Wording Simplification: the middle and completed
+// values' labels changed from "To Receive"/"Received" to "Pending"/"Completed"
+// (plain request-completion wording) — this is the literal display string
+// (the type IS the label), so this one edit propagates everywhere the
+// function's return value is rendered directly. Every call site that
+// separately compared a result against the literal "To Receive"/"Received"
+// strings was updated alongside this change. "Requested" (linked Job Card
+// not yet approved) is unchanged.
+export type MaterialsReceiptStatus = "Requested" | "Pending" | "Completed";
 
 export function materialsReceiptStatus(
   prStatus: string,
@@ -98,16 +104,16 @@ export function materialsReceiptStatus(
   jobCardHasPendingCorrection: boolean
 ): MaterialsReceiptStatus {
   const isReceived = displayPartsRequestStatus(prStatus) === "Issued";
-  if (isReceived) return "Received";
+  if (isReceived) return "Completed";
   const helper = materialsRequestJobCardHelper(jobCardStatus, jobCardHasPendingCorrection, false);
-  return helper.canReceive ? "To Receive" : "Requested";
+  return helper.canReceive ? "Pending" : "Requested";
 }
 
 export function materialsReceiptStatusTone(status: MaterialsReceiptStatus): "green" | "amber" | "gray" {
   switch (status) {
-    case "Received":
+    case "Completed":
       return "green";
-    case "To Receive":
+    case "Pending":
       return "amber";
     case "Requested":
       return "gray";

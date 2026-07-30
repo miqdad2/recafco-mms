@@ -530,7 +530,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
     : null;
   const jobCardIsOpen = OPEN_JOB_CARD_STATUSES.includes(data.status) && !data.hasPendingCorrection;
   const showReceiveMaterialsShortcut =
-    data.canReceiveMaterials && jobCardIsOpen && activePartsRequest !== null && activeReceiptStatus !== "Received";
+    data.canReceiveMaterials && jobCardIsOpen && activePartsRequest !== null && activeReceiptStatus !== "Completed";
   // Unified Manager Job Card + Materials Approval Flow Fix Task 3: Requested
   // Materials Request(s) linked to this Job Card — drives whether the
   // approve button reads "Approve Job Card & Materials" (Case A) vs. just
@@ -919,10 +919,10 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
               {/* Right column: Materials */}
               <div className="rounded-md border border-[#E5E7EB] p-2.5">
                 <p className="mb-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-                  {activeReceiptStatus === "To Receive"
-                    ? "Materials to Receive"
-                    : activeReceiptStatus === "Received"
-                      ? "Materials Received"
+                  {activeReceiptStatus === "Pending"
+                    ? "Materials Pending"
+                    : activeReceiptStatus === "Completed"
+                      ? "Materials Completed"
                       : activeReceiptStatus === "Requested"
                         ? "Materials Requested"
                         : "Materials"}
@@ -1236,7 +1236,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                 {showApproveBtn && (
                   <p className="mt-2 text-xs text-[#6B7280]">
                     {requestedMaterialsRequests.length > 0
-                      ? "Approving will approve this Job Card and its requested materials. Materials will then move to To Receive."
+                      ? "Approving will approve this Job Card and its requested materials. Materials will then move to Pending."
                       : "Approving will approve this Job Card."}
                   </p>
                 )}
@@ -1320,7 +1320,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       </p>
                       {pr.status === "Requested" && (
                         <p className="mt-1 text-xs text-[#6B7280]">
-                          These materials will be approved together when you click Approve. After approval, they will move to To Receive.
+                          These materials will be approved together when you click Approve. After approval, they will move to Pending.
                         </p>
                       )}
                       {pr.items.length > 0 ? (
@@ -1538,7 +1538,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       </p>
                       <p className="text-xs text-[#4B5563]">
                         {requestedMaterialsRequests.length > 0
-                          ? "This will approve the Job Card and requested materials. Materials will be marked as To Receive."
+                          ? "This will approve the Job Card and requested materials. Materials will be marked as Pending."
                           : "This will approve the Job Card and make it Approved."}
                       </p>
                       <input type="hidden" name="return_to" value={data.closeHref} />

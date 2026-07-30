@@ -79,15 +79,28 @@ export const MATERIAL_CATEGORIES = [
 
 export const OTHER_CATEGORY = "Other";
 
+// Add New Material Category Flexibility Cleanup: the sentinel <select> value
+// that means "user wants to type a brand-new category name" — never saved to
+// the database itself, only ever resolved server-side into a real category
+// string before the record is created.
+export const ADD_NEW_CATEGORY_VALUE = "__add_new_category__";
+
 const CATEGORY_LOOKUP = new Map(MATERIAL_CATEGORIES.map((c) => [c.toLowerCase(), c]));
 
 // Maps a raw category string (from a form field or an Excel cell) to one of the
-// known categories, case-insensitively. Blank or unrecognized values fall back
-// to "Other" — no material is ever blocked for missing/unknown category.
+// known categories, case-insensitively, preserving its canonical spelling.
+// Blank values fall back to "Other" — no material is ever blocked for missing
+// category. Add New Material Category Flexibility Cleanup: a non-blank value
+// that isn't one of the known categories is no longer forced to "Other" —
+// it's returned as-is (trimmed), since it may be a legitimate custom category
+// a user just added. This never loses information (previously such values were
+// silently discarded into "Other"); it only affects categories outside the
+// original fixed list, so every existing recognized category still normalizes
+// exactly as before.
 export function normalizeCategory(raw: string | null | undefined): string {
   const trimmed = (raw ?? "").trim();
   if (!trimmed) return OTHER_CATEGORY;
-  return CATEGORY_LOOKUP.get(trimmed.toLowerCase()) ?? OTHER_CATEGORY;
+  return CATEGORY_LOOKUP.get(trimmed.toLowerCase()) ?? trimmed;
 }
 
 export const inputCls =
@@ -104,11 +117,11 @@ export function fmtDate(iso: string) {
   return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(new Date(iso));
 }
 
-// Shared movement-type display logic — used by the Movement History page, the
-// per-material detail modal, and the Offline Inventory Control Recent
-// Movements section, so all three read the ledger the same way. Imports use
-// the same OPENING_STOCK movement type as manual entries (no separate DB
-// status), distinguished only by their `OPENING-IMPORT-...` batch reference.
+// Shared movement-type display logic — used by the Movement History page and
+// the per-material detail modal, so both read the ledger the same way.
+// Imports use the same OPENING_STOCK movement type as manual entries (no
+// separate DB status), distinguished only by their `OPENING-IMPORT-...`
+// batch reference.
 export type MovementBadgeTone = "green" | "amber" | "red" | "blue" | "gray";
 
 const IMPORT_REFERENCE_PREFIX = "OPENING-IMPORT-";
@@ -118,11 +131,13 @@ export function isImportedOpeningStock(movementType: string, referenceNumber: st
 }
 
 export function movementTypeLabel(movementType: string, referenceNumber: string | null | undefined): string {
-  if (isImportedOpeningStock(movementType, referenceNumber)) return "Imported Opening Stock";
+  // Simple Wording Cleanup: "Initial Stock" is display wording only — the
+  // underlying movement_type value is still literally "OPENING_STOCK".
+  if (isImportedOpeningStock(movementType, referenceNumber)) return "Imported Initial Stock";
   const labels: Record<string, string> = {
-    OPENING_STOCK: "Opening Stock",
+    OPENING_STOCK: "Initial Stock",
     RECEIVED: "Received",
-    ISSUED: "Used",
+    ISSUED: "Issued",
     RETURNED: "Returned",
     ADJUSTMENT: "Adjustment",
   };

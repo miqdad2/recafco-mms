@@ -24,6 +24,16 @@ type SelectedFile = { name: string; size: number };
  *
  * Each row pairs a normal file input with a camera-capture input under the same
  * `name` — only one is ever filled, and the server picks whichever has content.
+ *
+ * New Job Card Required Materials and Attachment Simplification Task 3/4:
+ * `showCategory`/`showCamera` default to `true` so the Materials Request
+ * wizard (the other caller of this shared component) keeps its existing
+ * category dropdown + Take Photo button unchanged — only the New Job Card
+ * wizard passes `showCategory={false} showCamera={false}` for its simplified
+ * single-button upload. When the category picker is hidden, `defaultCategory`
+ * is still submitted via a hidden field of the same name, so the server's
+ * existing category handling (and its own "Other Document" fallback) is
+ * completely unaffected either way.
  */
 export function AttachmentUploadFields({
   namePrefix,
@@ -32,6 +42,8 @@ export function AttachmentUploadFields({
   accept,
   maxRows,
   helperText,
+  showCategory = true,
+  showCamera = true,
 }: {
   namePrefix: string;
   categories: readonly string[];
@@ -39,6 +51,8 @@ export function AttachmentUploadFields({
   accept: string;
   maxRows: number;
   helperText?: string;
+  showCategory?: boolean;
+  showCamera?: boolean;
 }) {
   const [rowCount, setRowCount] = useState(1);
   const [selected, setSelected] = useState<Record<number, SelectedFile | undefined>>({});
@@ -69,19 +83,23 @@ export function AttachmentUploadFields({
           key={i}
           className={`rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3 ${i >= rowCount ? "hidden" : ""}`}
         >
-          <div className="grid gap-2 sm:grid-cols-[180px_1fr]">
-            <label className="block">
-              <span className="mb-1 block text-[11px] font-semibold text-[#4B5563]">Category</span>
-              <select
-                name={`${namePrefix}_category_${i}`}
-                defaultValue={defaultCategory}
-                className={inp}
-              >
-                {categories.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
-            </label>
+          <div className={showCategory ? "grid gap-2 sm:grid-cols-[180px_1fr]" : ""}>
+            {showCategory ? (
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold text-[#4B5563]">Category</span>
+                <select
+                  name={`${namePrefix}_category_${i}`}
+                  defaultValue={defaultCategory}
+                  className={inp}
+                >
+                  {categories.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <input type="hidden" name={`${namePrefix}_category_${i}`} value={defaultCategory} />
+            )}
             <label className="block">
               <span className="mb-1 block text-[11px] font-semibold text-[#4B5563]">Remarks (optional)</span>
               <input
@@ -92,8 +110,9 @@ export function AttachmentUploadFields({
             </label>
           </div>
 
-          {/* Hidden file inputs — triggered by the Upload File / Take Photo buttons below.
-              Both share one `name` so the server picks whichever one was actually filled. */}
+          {/* Hidden file inputs — triggered by the Upload Attachment / Take
+              Photo buttons below. Both share one `name` so the server picks
+              whichever one was actually filled. */}
           <input
             ref={(el) => { fileRefs.current[`${i}-file`] = el; }}
             type="file"
@@ -102,15 +121,17 @@ export function AttachmentUploadFields({
             onChange={(e) => onPick(i, "file", e.target.files?.[0] ?? null)}
             className="hidden"
           />
-          <input
-            ref={(el) => { fileRefs.current[`${i}-camera`] = el; }}
-            type="file"
-            name={`${namePrefix}_file_${i}`}
-            accept="image/*"
-            capture="environment"
-            onChange={(e) => onPick(i, "camera", e.target.files?.[0] ?? null)}
-            className="hidden"
-          />
+          {showCamera && (
+            <input
+              ref={(el) => { fileRefs.current[`${i}-camera`] = el; }}
+              type="file"
+              name={`${namePrefix}_file_${i}`}
+              accept="image/*"
+              capture="environment"
+              onChange={(e) => onPick(i, "camera", e.target.files?.[0] ?? null)}
+              className="hidden"
+            />
+          )}
 
           <div className="mt-2 flex gap-2">
             <button
@@ -119,16 +140,18 @@ export function AttachmentUploadFields({
               className={actionBtnCls}
             >
               <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-              Upload File
+              Upload Attachment
             </button>
-            <button
-              type="button"
-              onClick={() => fileRefs.current[`${i}-camera`]?.click()}
-              className={actionBtnCls}
-            >
-              <Camera className="h-3.5 w-3.5" aria-hidden="true" />
-              Take Photo
-            </button>
+            {showCamera && (
+              <button
+                type="button"
+                onClick={() => fileRefs.current[`${i}-camera`]?.click()}
+                className={actionBtnCls}
+              >
+                <Camera className="h-3.5 w-3.5" aria-hidden="true" />
+                Take Photo
+              </button>
+            )}
           </div>
 
           {selected[i] ? (

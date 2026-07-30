@@ -99,11 +99,11 @@ export function OpeningStockForm() {
           <p className="mt-1 text-xs text-[#9CA3AF]">Reserved for SAP material/reference mapping.</p>
         </div>
 
-        {/* Opening Quantity + Unit */}
+        {/* Initial Quantity + Unit */}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label htmlFor="os-qty" className={lbl}>
-              Opening Quantity <span className="text-[#ED1C24]">*</span>
+              Initial Quantity <span className="text-[#ED1C24]">*</span>
             </label>
             <input
               id="os-qty"
@@ -117,6 +117,7 @@ export function OpeningStockForm() {
               className={inp}
               disabled={isPending}
             />
+            <p className="mt-1 text-xs text-[#9CA3AF]">Enter quantity already available when adding this material.</p>
           </div>
           <div>
             <label htmlFor="os-unit" className={lbl}>

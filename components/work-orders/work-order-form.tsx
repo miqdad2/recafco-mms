@@ -544,7 +544,7 @@ export function WorkOrderForm({
         ))}
       </FormSection>
 
-      <FormSection title="Required Parts (if known)" description="List parts or materials expected for this job. Store Keeper will check availability.">
+      <FormSection title="Required Materials (if known)" description="List materials required for this Job Card.">
         {/* New Job Card Wizard Cleanup Unit Task 5: this form has no client-side
             "Add Row" control, so the row count must always cover every
             existing required-part row up front — the save action deletes and
@@ -557,8 +557,8 @@ export function WorkOrderForm({
         ).map((index) => (
           <div key={index} className="rounded-md border border-[#E5E7EB] p-3 md:col-span-2">
             <div className="grid gap-3 md:grid-cols-5">
-              <Field label="Description / part name" name={`req_part_description_${index}`} defaultValue={requiredPartRows[index]?.description} />
-              <Field label="Part number" name={`req_part_part_number_${index}`} defaultValue={requiredPartRows[index]?.part_number} />
+              <Field label="Material name / description" name={`req_part_description_${index}`} defaultValue={requiredPartRows[index]?.description} />
+              <Field label="Part number / code" name={`req_part_part_number_${index}`} defaultValue={requiredPartRows[index]?.part_number} />
               <Field label="Quantity" name={`req_part_quantity_${index}`} type="number" min="1" step="1" inputMode="numeric" defaultValue={requiredPartRows[index]?.quantity_required ?? "1"} />
               <Field label="Unit" name={`req_part_uom_${index}`} defaultValue={requiredPartRows[index]?.unit_of_measure ?? "PCS"} />
               <Field label="Notes" name={`req_part_notes_${index}`} defaultValue={requiredPartRows[index]?.notes} />

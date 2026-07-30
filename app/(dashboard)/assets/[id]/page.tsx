@@ -30,6 +30,8 @@ import { isVehicleCategory } from "@/lib/assets/categories";
 import { getExpiryStatus } from "@/lib/assets/vehicle-status";
 import { BackLink } from "@/components/ui/back-link";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
+import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
+import { getAssetPickerOptions } from "@/lib/assets/picker-options";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -161,6 +163,12 @@ export default async function AssetDetailPage({
   const canEdit =
     context.role?.slug === "super_admin" || context.permissions.includes("assets.manage");
 
+  // New Job Card Modal Wizard Refactor: opened via ?new_job_card=1 as an
+  // overlay on top of this asset's own detail page, preselecting this asset.
+  const showNewJobCardModal = sp.new_job_card === "1" && canManage;
+  const newJobCardAssets = showNewJobCardModal ? await getAssetPickerOptions() : [];
+  const newJobCardDismissHref = activeTab && activeTab !== "overview" ? `/assets/${id}?tab=${activeTab}` : `/assets/${id}`;
+
   // Maintenance summary
   const {
     workOrders,
@@ -262,6 +270,16 @@ export default async function AssetDetailPage({
 
   return (
     <>
+      {/* New Job Card Modal Wizard Refactor: opened via ?new_job_card=1,
+          overlaid on top of this asset's own detail page with this asset
+          preselected. */}
+      {showNewJobCardModal && (
+        <WorkOrderWizard
+          assets={newJobCardAssets}
+          preselectedAssetId={asset.id}
+          dismissHref={newJobCardDismissHref}
+        />
+      )}
       {/* ── Asset Identity Header ──────────────────────────────────────────── */}
       <div className="border-b border-[#DDE2EA] bg-white px-4 pb-0 pt-4 sm:px-6 sm:pt-5">
         <PageBreadcrumb
@@ -316,7 +334,7 @@ export default async function AssetDetailPage({
           <div className="flex flex-wrap gap-2 pb-2">
             {canManage && (
               <Link
-                href={`/maintenance/work-orders/new?asset_id=${asset.id}`}
+                href={`?new_job_card=1&asset_id=${asset.id}${activeTab ? `&tab=${activeTab}` : ""}`}
                 className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
@@ -646,7 +664,7 @@ export default async function AssetDetailPage({
                   </div>
                   {canManage && (
                     <Link
-                      href={`/maintenance/work-orders/new?asset_id=${asset.id}`}
+                      href={`?new_job_card=1&asset_id=${asset.id}${activeTab ? `&tab=${activeTab}` : ""}`}
                       className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-1.5 text-xs font-bold text-white hover:bg-[#c8181e]"
                     >
                       <Plus className="h-3.5 w-3.5" aria-hidden="true" />
@@ -730,7 +748,7 @@ export default async function AssetDetailPage({
                 </div>
                 {canManage && (
                   <Link
-                    href={`/maintenance/work-orders/new?asset_id=${asset.id}`}
+                    href={`?new_job_card=1&asset_id=${asset.id}${activeTab ? `&tab=${activeTab}` : ""}`}
                     className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-1.5 text-xs font-semibold text-[#111827] hover:bg-gray-50"
                   >
                     <Plus className="h-3.5 w-3.5" aria-hidden="true" />
@@ -752,7 +770,7 @@ export default async function AssetDetailPage({
                   </div>
                   {canManage && (
                     <Link
-                      href={`/maintenance/work-orders/new?asset_id=${asset.id}`}
+                      href={`?new_job_card=1&asset_id=${asset.id}${activeTab ? `&tab=${activeTab}` : ""}`}
                       className="inline-flex items-center gap-2 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
                     >
                       <Plus className="h-4 w-4" aria-hidden="true" />

@@ -95,7 +95,7 @@ export function JobCardOpenedModal({ data, dismissHref }: JobCardOpenedModalProp
               </p>
               {hasMaterials && (
                 <p className="mt-1 text-sm leading-relaxed text-[#4B5563]">
-                  Requested materials are approved and ready to receive when they arrive.
+                  Requested materials are approved and waiting to be received.
                 </p>
               )}
             </div>
@@ -142,7 +142,7 @@ export function JobCardOpenedModal({ data, dismissHref }: JobCardOpenedModalProp
               {hasMaterials && (
                 <div className="mt-2 flex items-center justify-between gap-2">
                   <span className="text-xs font-bold uppercase tracking-wide text-[#4B5563]">Materials status</span>
-                  <StatusBadge label="To Receive" tone="amber" />
+                  <StatusBadge label="Pending" tone="amber" />
                 </div>
               )}
 

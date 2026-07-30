@@ -251,7 +251,7 @@ export function OpeningStockImportForm() {
               <div className="flex-1">
                 <p className="font-bold text-amber-900">Review before importing</p>
                 <ul className="mt-2 space-y-1 text-sm text-amber-800">
-                  <li>Only the <strong>{validRows.length} valid</strong> row{validRows.length !== 1 ? "s" : ""} will be imported as Opening Stock.</li>
+                  <li>Only the <strong>{validRows.length} valid</strong> row{validRows.length !== 1 ? "s" : ""} will be imported as Initial Stock.</li>
                   {invalidRows.length + duplicateRows.length > 0 && (
                     <li>
                       The <strong>{invalidRows.length + duplicateRows.length} row{invalidRows.length + duplicateRows.length !== 1 ? "s" : ""}</strong> marked invalid or duplicate will be skipped.
@@ -266,7 +266,7 @@ export function OpeningStockImportForm() {
                     checked={confirmed}
                     onChange={(e) => setConfirmed(e.target.checked)}
                   />
-                  I have reviewed the rows above and confirm I want to import {validRows.length} item{validRows.length !== 1 ? "s" : ""} as Opening Stock.
+                  I have reviewed the rows above and confirm I want to import {validRows.length} item{validRows.length !== 1 ? "s" : ""} as Initial Stock.
                 </label>
               </div>
             </div>

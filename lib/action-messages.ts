@@ -35,7 +35,7 @@ const SUCCESS_MAP: Record<string, ToastMessage> = {
   "opening-stock-saved":    { tone: "success", title: "Opening stock recorded", description: "Movement recorded in Offline Inventory Control." },
   "material-added":         { tone: "success", title: "Material Added", description: "Material has been added to Offline Inventory Control." },
   "material-received":      { tone: "success", title: "Material Received", description: "Received quantity has been recorded in Offline Inventory Control." },
-  "material-issued":        { tone: "success", title: "Material Usage Recorded", description: "Used quantity has been recorded in Offline Inventory Control." },
+  "material-issued":        { tone: "success", title: "Material Issued", description: "Issued quantity has been recorded in Offline Inventory Control." },
   "settings-saved":       { tone: "success", title: "Settings saved" },
   "department-saved":     { tone: "success", title: "Department saved" },
   approved:               { tone: "success", title: "Approved" },
@@ -110,9 +110,16 @@ export function resolveToastMessage(params: {
   success?: string | null;
   error?: string | null;
   saved?: string | null;
+  category?: string | null;
 }): ToastMessage | null {
   if (params.success) {
     if (SUPPRESSED_SUCCESS_CODES.has(params.success)) return null;
+    // Add New Material Category Flexibility Cleanup Task 7: when a category
+    // name is supplied alongside "material-added", show the resolved
+    // category in the description instead of the static generic text.
+    if (params.success === "material-added" && params.category) {
+      return { tone: "success", title: "Material Added", description: `Material has been added under ${params.category}.` };
+    }
     return SUCCESS_MAP[params.success] ?? { tone: "success", title: "Done" };
   }
   if (params.error) {

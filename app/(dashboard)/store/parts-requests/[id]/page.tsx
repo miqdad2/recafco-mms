@@ -625,17 +625,17 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
               status mapping as the badge/KPI/quick-view surfaces. */}
           {(() => {
             const receipt = materialsReceiptStatus(request.status, jobCard?.status ?? null, jobCardHasPendingCorrection);
-            if (receipt === "Received") {
+            if (receipt === "Completed") {
               return (
                 <div className="mb-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm font-semibold text-green-800">
                   Materials received and recorded in Offline Inventory Control.
                 </div>
               );
             }
-            if (receipt === "To Receive") {
+            if (receipt === "Pending") {
               return (
                 <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
-                  Materials are approved and not received yet.
+                  Materials are approved and waiting to be received.
                 </div>
               );
             }

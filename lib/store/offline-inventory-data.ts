@@ -7,6 +7,7 @@ import { requireUser, type CurrentUserContext } from "@/lib/auth/context";
 import {
   normalizeCategory,
   OTHER_CATEGORY,
+  MATERIAL_CATEGORIES,
   type BalanceItem,
   type RecentMovementRow,
   type WorkOrderOption,
@@ -220,6 +221,30 @@ export async function getRecentOfflineInventoryMovements(limit = 15): Promise<Re
     created_by_name: m.profiles.full_name,
     remarks: m.remarks,
   }));
+}
+
+// Add New Material Category Flexibility Cleanup Task 2/3: resolves a
+// user-typed new category name against every category already known to the
+// system — the fixed MATERIAL_CATEGORIES list plus any custom category a
+// previous "+ Add New Category" already saved — case-insensitively, so
+// e.g. "electrical materials" reuses the existing "Electrical Materials"
+// canonical spelling instead of creating a near-duplicate. Returns null only
+// when the name is genuinely new, in which case the caller saves it as-is.
+export async function findExistingCategoryMatch(name: string): Promise<string | null> {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+
+  const knownMatch = MATERIAL_CATEGORIES.find((c) => c.toLowerCase() === lower);
+  if (knownMatch) return knownMatch;
+
+  const distinct = await prisma.offline_inventory_movements.findMany({
+    where: { deleted_at: null, category: { not: null } },
+    select: { category: true },
+    distinct: ["category"],
+  });
+  const existing = distinct.find((d) => (d.category ?? "").trim().toLowerCase() === lower);
+  return existing?.category ?? null;
 }
 
 export async function getWorkOrderOptions(): Promise<WorkOrderOption[]> {

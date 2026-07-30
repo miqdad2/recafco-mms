@@ -16,6 +16,8 @@ import {
   type ExpiryFilterValue,
 } from "@/lib/assets/vehicle-status";
 import { cn } from "@/lib/utils";
+import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
+import { getAssetPickerOptions } from "@/lib/assets/picker-options";
 
 const PAGE_SIZE = 25;
 
@@ -30,6 +32,8 @@ type SearchParams = {
   insurance?: string;
   registration?: string;
   page?: string;
+  new_job_card?: string;
+  asset_id?: string;
 };
 
 type VehicleRow = {
@@ -68,6 +72,25 @@ function listHref(params: {
   return qs ? `/assets/vehicles?${qs}` : "/assets/vehicles";
 }
 
+// New Job Card Modal Wizard Refactor: same filter set as listHref, plus the
+// modal's own new_job_card/asset_id flags, so opening "New Job Card" for a
+// row doesn't lose the list's current search/filter/page state.
+function newJobCardHref(
+  vehicleId: string,
+  params: { q?: string; category?: string; status?: string; insurance?: string; registration?: string; page?: number }
+) {
+  const p = new URLSearchParams();
+  if (params.q) p.set("q", params.q);
+  if (params.category) p.set("category", params.category);
+  if (params.status) p.set("status", params.status);
+  if (params.insurance && params.insurance !== "all") p.set("insurance", params.insurance);
+  if (params.registration && params.registration !== "all") p.set("registration", params.registration);
+  if (params.page && params.page > 1) p.set("page", String(params.page));
+  p.set("new_job_card", "1");
+  p.set("asset_id", vehicleId);
+  return `/assets/vehicles?${p.toString()}`;
+}
+
 function shortDate(d: Date | null): string {
   if (!d) return "—";
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -91,6 +114,14 @@ export default async function VehiclesPage({
   const insuranceFilter: ExpiryFilterValue = isExpiryValue(insuranceFilterRaw) ? insuranceFilterRaw : "all";
   const registrationFilter: ExpiryFilterValue = isExpiryValue(registrationFilterRaw) ? registrationFilterRaw : "all";
   const page = Math.max(1, Number(single(params.page) ?? 1) || 1);
+
+  // New Job Card Modal Wizard Refactor: opened via ?new_job_card=1 as an
+  // overlay on top of this list, preselecting whichever vehicle row it was
+  // triggered from.
+  const showNewJobCardModal = single(params.new_job_card) === "1" && canManage;
+  const newJobCardAssetId = single(params.asset_id) ?? null;
+  const newJobCardAssets = showNewJobCardModal ? await getAssetPickerOptions() : [];
+  const newJobCardDismissHref = listHref({ q: query, category, status, insurance: insuranceFilter, registration: registrationFilter, page });
 
   // ── Fleet-wide data (unaffected by the table's own filters) — feeds the
   // top summary cards and the per-category cards, matching the main Assets
@@ -206,6 +237,16 @@ export default async function VehiclesPage({
 
   return (
     <>
+      {/* New Job Card Modal Wizard Refactor: opened via ?new_job_card=1,
+          overlaid on top of this list with the triggering vehicle
+          preselected. */}
+      {showNewJobCardModal && (
+        <WorkOrderWizard
+          assets={newJobCardAssets}
+          preselectedAssetId={newJobCardAssetId}
+          dismissHref={newJobCardDismissHref}
+        />
+      )}
       <PageHeader
         title="Vehicles & Mobile Equipment"
         description="Manage company vehicles, mobile equipment, expiry dates, renewals, and repair history."
@@ -403,7 +444,7 @@ export default async function VehiclesPage({
                               View
                             </Link>
                             {canManage && (
-                              <Link href={`/maintenance/work-orders/new?asset_id=${v.id}`} className="rounded-md bg-[#111827] px-3 py-1.5 text-xs font-bold text-white hover:bg-[#2b2b2b]">
+                              <Link href={newJobCardHref(v.id, { q: query, category, status, insurance: insuranceFilter, registration: registrationFilter, page })} className="rounded-md bg-[#111827] px-3 py-1.5 text-xs font-bold text-white hover:bg-[#2b2b2b]">
                                 Open Job Card
                               </Link>
                             )}

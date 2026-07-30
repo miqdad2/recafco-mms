@@ -152,15 +152,16 @@ export function ActionToast() {
   const shownRef              = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    const success = searchParams.get("success");
-    const error   = searchParams.get("error");
-    const saved   = searchParams.get("saved");
-    const key     = `${success ?? ""}|${error ?? ""}|${saved ?? ""}`;
+    const success  = searchParams.get("success");
+    const error    = searchParams.get("error");
+    const saved    = searchParams.get("saved");
+    const category = searchParams.get("category");
+    const key      = `${success ?? ""}|${error ?? ""}|${saved ?? ""}|${category ?? ""}`;
 
-    if (key === "||") return;
+    if (key === "|||") return;
     if (shownRef.current.has(key)) return;
 
-    const msg = resolveToastMessage({ success, error, saved });
+    const msg = resolveToastMessage({ success, error, saved, category });
     if (!msg) return;
 
     shownRef.current.add(key);
@@ -175,6 +176,7 @@ export function ActionToast() {
     url.searchParams.delete("success");
     url.searchParams.delete("error");
     url.searchParams.delete("saved");
+    url.searchParams.delete("category");
     window.history.replaceState(null, "", url.pathname + (url.search || ""));
 
     // Kick the enter animation one frame after mount.

@@ -4,16 +4,22 @@ import { revalidatePath } from "next/cache";
 
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
-import { normalizeCategory } from "@/components/store/offline-inventory-types";
+import { normalizeCategory, ADD_NEW_CATEGORY_VALUE } from "@/components/store/offline-inventory-types";
 import { pickUploadedFile, validatePrivateFileWithOptions } from "@/lib/files/validation";
 import { getFileSecuritySettings } from "@/lib/files/settings";
 import { savePrivateFile } from "@/lib/files/local-storage";
 import { writeAuditLog } from "@/lib/audit/log";
-import { requireOfflineInventoryManage } from "@/lib/store/offline-inventory-data";
+import { requireOfflineInventoryManage, findExistingCategoryMatch } from "@/lib/store/offline-inventory-data";
 import { emitOfflineInventoryRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 
 export type OfflineMovementState =
-  | { ok: true }
+  // Add New Material Category Flexibility Cleanup Task 7: `category` is only
+  // ever set by addNewMaterialAction, carrying the final resolved category
+  // name (which may differ in casing/spelling from what the user typed, if
+  // it matched an existing category) back to the client for the success
+  // message — every other action leaves it undefined, which is a no-op here
+  // since the field is optional.
+  | { ok: true; category?: string }
   | { ok: false; error: string }
   | null;
 
@@ -28,7 +34,7 @@ function parseQty(raw: string): number {
 function parseOpeningQty(raw: string): number {
   const n = Number(raw);
   if (!Number.isInteger(n) || n <= 0) {
-    throw new Error("Opening quantity must be a whole number greater than 0.");
+    throw new Error("Initial quantity must be a whole number greater than 0.");
   }
   return n;
 }
@@ -172,7 +178,7 @@ export async function addOpeningStockAction(
         return {
           ok: false,
           error:
-            "This material already has an opening stock entry. Use Add Received Material to increase balance, or edit the existing record if allowed.",
+            "This material already has an initial stock entry. Use Receive Material to increase balance, or edit the existing record if allowed.",
         };
       }
     }
@@ -221,7 +227,7 @@ function parseNonNegativeQty(raw: string): number {
   if (trimmed === "") return 0;
   const n = Number(trimmed);
   if (!Number.isInteger(n) || n < 0) {
-    throw new Error("Opening balance must be a whole number of 0 or more.");
+    throw new Error("Initial quantity must be a whole number of 0 or more.");
   }
   return n;
 }
@@ -233,17 +239,34 @@ export async function addNewMaterialAction(
   const context = await requireOfflineInventoryManage();
 
   try {
-    const manualName    = toNullable(String(formData.get("manual_material_name") ?? ""));
-    const category      = toNullable(String(formData.get("category") ?? "")) ?? "Other";
-    const manualPartNum = toNullable(String(formData.get("manual_part_number") ?? ""));
-    const ssRecCode     = toNullable(String(formData.get("ss_rec_code") ?? ""));
-    const qty           = parseNonNegativeQty(String(formData.get("opening_balance") ?? ""));
-    const unit          = toNullable(String(formData.get("unit") ?? "")) ?? "PCS";
-    const location      = toNullable(String(formData.get("location") ?? ""));
-    const remarks       = toNullable(String(formData.get("remarks") ?? ""));
+    const manualName     = toNullable(String(formData.get("manual_material_name") ?? ""));
+    const categoryField  = toNullable(String(formData.get("category") ?? "")) ?? "Other";
+    const newCategoryRaw = String(formData.get("new_category_name") ?? "");
+    const manualPartNum  = toNullable(String(formData.get("manual_part_number") ?? ""));
+    const ssRecCode      = toNullable(String(formData.get("ss_rec_code") ?? ""));
+    const qty            = parseNonNegativeQty(String(formData.get("opening_balance") ?? ""));
+    const unit           = toNullable(String(formData.get("unit") ?? "")) ?? "PCS";
+    const location       = toNullable(String(formData.get("location") ?? ""));
+    const remarks        = toNullable(String(formData.get("remarks") ?? ""));
 
     if (!manualName) {
       return { ok: false, error: "Material name is required." };
+    }
+
+    // Add New Material Category Flexibility Cleanup Task 2/3: resolve the
+    // final category — either the dropdown's existing selection, or (when
+    // "+ Add New Category" was chosen) a validated, trimmed new name, reusing
+    // an existing category's exact spelling if one matches case-insensitively
+    // rather than creating a near-duplicate.
+    let resolvedCategory: string;
+    if (categoryField === ADD_NEW_CATEGORY_VALUE) {
+      const trimmedNew = newCategoryRaw.trim();
+      if (!trimmedNew) {
+        return { ok: false, error: "New category name is required." };
+      }
+      resolvedCategory = (await findExistingCategoryMatch(trimmedNew)) ?? trimmedNew;
+    } else {
+      resolvedCategory = normalizeCategory(categoryField);
     }
 
     const isSuperAdmin = context.role?.slug === "super_admin";
@@ -258,7 +281,7 @@ export async function addNewMaterialAction(
         return {
           ok: false,
           error:
-            "This material is already registered in Offline Inventory Control. Use Receive Material to add quantity, or Record Used Material to use it.",
+            "This material is already registered in Offline Inventory Control. Use Receive Material to add quantity, or Issue Material to issue it.",
         };
       }
     }
@@ -271,7 +294,7 @@ export async function addNewMaterialAction(
         manual_material_name:  manualName,
         manual_part_number:    manualPartNum,
         ss_rec_code:           ssRecCode,
-        category:              normalizeCategory(category),
+        category:              resolvedCategory,
         quantity:              qty,
         unit,
         counterparty:          location,
@@ -281,13 +304,13 @@ export async function addNewMaterialAction(
     });
 
     await emitOfflineInventoryRealtimeEvent(REALTIME_EVENTS.OFFLINE_INVENTORY_OPENING_STOCK_ADDED, created.id, context.userId);
+
+    revalidatePath("/store/offline-inventory");
+    revalidatePath("/store/offline-inventory/movements");
+    return { ok: true, category: resolvedCategory };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Failed to save." };
   }
-
-  revalidatePath("/store/offline-inventory");
-  revalidatePath("/store/offline-inventory/movements");
-  return { ok: true };
 }
 
 // ── Receive Material ──────────────────────────────────────────────────────────
@@ -452,7 +475,7 @@ export async function issueOfflineMaterialAction(
       return { ok: false, error: '"Used by / Sent to" is required.' };
     }
     if (!partId && !manualName) {
-      return { ok: false, error: "Select a material to record as used." };
+      return { ok: false, error: "Select a material to issue." };
     }
 
     // Server-side balance check — prevents over-issue even under concurrent saves
@@ -463,7 +486,7 @@ export async function issueOfflineMaterialAction(
     if (qty > available) {
       return {
         ok: false,
-        error: "Used quantity cannot be greater than current balance.",
+        error: "Issued quantity cannot be greater than current balance.",
       };
     }
 

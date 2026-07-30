@@ -54,6 +54,8 @@ import { JobCardCreatedModal } from "@/components/work-orders/job-card-created-m
 import { JobCardOpenedModal } from "@/components/work-orders/job-card-opened-modal";
 import { JobCardSubmittedModal } from "@/components/work-orders/job-card-submitted-modal";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
+import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
+import { getAssetPickerOptions } from "@/lib/assets/picker-options";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -213,6 +215,8 @@ type SP = {
   jc?: string;
   scope?: string;
   created?: string;
+  new_job_card?: string;
+  asset_id?: string;
 };
 
 type PageProps = {
@@ -893,6 +897,14 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       ];
 
   const isAdmin = context.role?.slug === "super_admin";
+
+  // New Job Card Modal Wizard Refactor: opened via ?new_job_card=1, same
+  // convention as ?preview below — overlaid on top of this list page rather
+  // than navigating to the old standalone full page.
+  const canCreateJobCard = isAdmin || context.permissions.includes("work_orders.manage");
+  const showNewJobCardModal = sp.new_job_card === "1" && canCreateJobCard;
+  const newJobCardAssets = showNewJobCardModal ? await getAssetPickerOptions() : [];
+
   // The previewed Job Card may not be one of the rows currently on this page
   // (e.g. opened via a direct/bookmarked ?preview= link), so its reviewed
   // status is looked up on its own rather than assumed to be in reviewedIds.
@@ -1126,6 +1138,13 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
     return (
       <>
+        {showNewJobCardModal && (
+          <WorkOrderWizard
+            assets={newJobCardAssets}
+            preselectedAssetId={sp.asset_id ?? null}
+            dismissHref={buildHref({ ...sp, new_job_card: undefined, asset_id: undefined })}
+          />
+        )}
         {showCreatedModal && (
           <JobCardCreatedModal
             jobCardId={previewId}
@@ -1143,7 +1162,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           description="Track job cards, technician work, waiting materials, and repair history."
           actions={
             <Link
-              href="/maintenance/work-orders/new"
+              href={buildHref({ ...sp, new_job_card: "1" })}
               className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
             >
               <Plus className="h-4 w-4" aria-hidden="true" />
@@ -1163,7 +1182,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             {showCreateButtons && (
               <div className="flex flex-col gap-3 sm:flex-row">
                 <Link
-                  href="/maintenance/work-orders/new"
+                  href={buildHref({ ...sp, new_job_card: "1" })}
                   className="inline-flex items-center gap-2 rounded-md bg-[#ED1C24] px-5 py-2.5 text-sm font-bold text-white transition hover:bg-[#c8181e]"
                 >
                   <Plus className="h-4 w-4" aria-hidden="true" />
@@ -1197,7 +1216,13 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
     <>
       <AutoRefresh intervalMs={15000} />
       <RealtimeRefresh watch={["job_card.", "work_order.", "materials_request.", "store_materials."]} />
-      {showCreatedModal ? (
+      {showNewJobCardModal ? (
+        <WorkOrderWizard
+          assets={newJobCardAssets}
+          preselectedAssetId={sp.asset_id ?? null}
+          dismissHref={buildHref({ ...sp, new_job_card: undefined, asset_id: undefined })}
+        />
+      ) : showCreatedModal ? (
         <JobCardCreatedModal
           jobCardId={previewId}
           jobCardNumber={drawerData?.work_order_number ?? sp.jc ?? null}
@@ -1220,7 +1245,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         description="Search, filter, and track Job Cards."
         actions={
           <Link
-            href="/maintenance/work-orders/new"
+            href={buildHref({ ...sp, new_job_card: "1" })}
             className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
           >
             <Plus className="h-4 w-4" aria-hidden="true" />
@@ -1529,7 +1554,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                                 <Button variant="secondary">Clear filters</Button>
                               </Link>
                               <Link
-                                href="/maintenance/work-orders/new"
+                                href={buildHref({ ...sp, new_job_card: "1" })}
                                 className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
                               >
                                 <Plus className="h-4 w-4" aria-hidden="true" />

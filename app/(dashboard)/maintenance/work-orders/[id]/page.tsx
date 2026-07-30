@@ -868,10 +868,10 @@ export default async function WorkOrderDetailPage({
               {wo.work_order_required_parts.length > 0 ? (
                 <div className="mt-5">
                   <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-                    Required parts — listed at creation
+                    Required materials — listed at creation
                   </p>
                   <Table
-                    columns={["Description", "Part no.", "Qty", "Unit", "Materials status"]}
+                    columns={["Material Name / Description", "Part No. / Code", "Qty", "Unit", "Materials status"]}
                     rows={wo.work_order_required_parts.map((row) => [
                       row.description,
                       row.part_number ?? "-",

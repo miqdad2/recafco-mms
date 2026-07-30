@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Check, ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 
 import { upsertWorkOrderAction } from "@/app/actions/maintenance";
 import { AttachmentUploadFields } from "@/components/files/attachment-upload-fields";
@@ -19,7 +20,7 @@ import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/m
 // work_orders_worker_type_check — this list only controls what a NEW Job
 // Card can select, it does not migrate or block existing records.
 const WORKER_TYPES = ["Auto", "Mechanical", "Electrical", "Other"];
-const STEP_LABELS = ["Select Asset", "Request Details", "Assignment", "Required Parts", "Attachments", "Review & Save"];
+const STEP_LABELS = ["Select Asset", "Request Details", "Assignment", "Required Materials", "Attachments", "Review & Save"];
 const MAX_PART_ROWS = 8;
 
 type AssetOption = AssetPickerOption;
@@ -28,7 +29,7 @@ type AssetOption = AssetPickerOption;
 
 function StepIndicator({ current }: { current: number }) {
   return (
-    <nav aria-label="Wizard progress" className="mb-8">
+    <nav aria-label="Wizard progress">
       <ol className="flex items-start">
         {STEP_LABELS.map((label, idx) => {
           const n = idx + 1;
@@ -82,16 +83,51 @@ const ta = "focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] bg-white p
 export function WorkOrderWizard({
   assets,
   preselectedAssetId,
+  dismissHref,
 }: {
   assets: AssetOption[];
   preselectedAssetId?: string | null;
+  // New Job Card Modal Wizard Refactor: where "Cancel"/"X"/"Discard and Exit"
+  // navigate to once the modal is dismissed — the Job Cards list when opened
+  // from its own standalone route, or the current page with the modal's own
+  // query param stripped when opened as an overlay from Dashboard/Asset
+  // Details/Vehicles.
+  dismissHref: string;
 }) {
+  const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
   const [step, setStep] = useState(1);
   const [selectedAssetId, setSelectedAssetId] = useState(preselectedAssetId ?? "");
   const [numPartRows, setNumPartRows] = useState(3);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [reviewData, setReviewData] = useState<Record<string, string>>({});
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  // Cancel/Close Confirmation Task 8: only interrupt with a confirmation
+  // dialog once the user has actually entered something — a fresh, untouched
+  // wizard can be dismissed immediately with nothing to lose.
+  const [dirty, setDirty] = useState(false);
+
+  function requestClose() {
+    if (dirty) {
+      setShowCancelConfirm(true);
+    } else {
+      router.push(dismissHref);
+    }
+  }
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      if (showCancelConfirm) {
+        setShowCancelConfirm(false);
+      } else {
+        requestClose();
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showCancelConfirm, dirty]);
 
   const selectedAsset = assets.find((a) => a.id === selectedAssetId) ?? null;
 
@@ -164,10 +200,46 @@ export function WorkOrderWizard({
   const today = new Date().toISOString().slice(0, 10);
 
   return (
-    <div className="mx-auto max-w-3xl">
-      <StepIndicator current={step} />
+    <>
+      <div className="fixed inset-0 z-40 bg-black/50" aria-hidden="true" onClick={requestClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="presentation">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="new-job-card-heading"
+          className="flex max-h-[90vh] w-[min(92vw,1280px)] flex-col rounded-xl bg-white shadow-2xl"
+        >
+          {/* Header — non-scrolling, stepper stays visible above the body's own scroll area */}
+          <div className="shrink-0 border-b border-[#E5E7EB] px-6 py-5 sm:px-8">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 id="new-job-card-heading" className="text-xl font-black text-[#111827] sm:text-2xl">
+                  New Job Card
+                </h2>
+                <p className="mt-1 text-sm text-[#4B5563]">
+                  Capture the job request as structured maintenance data. Reference number is generated on save.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={requestClose}
+                className="shrink-0 rounded-md p-1.5 text-[#4B5563] hover:bg-gray-100"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" aria-hidden="true" />
+              </button>
+            </div>
+            <div className="mt-6">
+              <StepIndicator current={step} />
+            </div>
+          </div>
 
-      <form ref={formRef} action={upsertWorkOrderAction}>
+          <form
+            ref={formRef}
+            action={upsertWorkOrderAction}
+            onChange={() => setDirty(true)}
+            className="flex min-h-0 flex-1 flex-col"
+          >
         {/* Controlled fields derived from selected asset */}
         <input type="hidden" name="asset_category" value={selectedAsset?.category ?? ""} />
         <input type="hidden" name="serial_number" value={selectedAsset?.serial_number ?? ""} />
@@ -176,6 +248,9 @@ export function WorkOrderWizard({
         <input type="hidden" name="supervisor_verification" value="" />
         <input type="hidden" name="maintenance_manager_closure" value="" />
         <input type="hidden" name="operator_requester_confirmation" value="" />
+
+        {/* Body — the only scrolling region */}
+        <div className="flex-1 overflow-y-auto px-6 py-6 sm:px-8">
 
         {/* ── Step 1: Select Asset ───────────────────────────────────────── */}
         <div className={step !== 1 ? "hidden" : ""}>
@@ -193,6 +268,7 @@ export function WorkOrderWizard({
                   onChange={(id) => {
                     setSelectedAssetId(id);
                     setErrors({});
+                    setDirty(true);
                   }}
                   required
                 />
@@ -353,19 +429,19 @@ export function WorkOrderWizard({
           </WizardCard>
         </div>
 
-        {/* ── Step 4: Required Parts ─────────────────────────────────────── */}
+        {/* ── Step 4: Required Materials ─────────────────────────────────── */}
         <div className={step !== 4 ? "hidden" : ""}>
           <WizardCard
-            title="Required Parts"
-            description="List expected parts for this job. This is not a purchase order — it is a planned parts list."
+            title="Required Materials"
+            description="List materials required for this Job Card. This is not a purchase order."
           >
             <div className="overflow-x-auto">
               <table className="w-full min-w-[560px] border-collapse text-sm">
                 <thead>
                   <tr className="bg-[#F3F4F6] text-left text-[10px] font-black uppercase tracking-wide text-[#4B5563]">
                     <th className="w-8 border border-[#E5E7EB] px-2 py-2">#</th>
-                    <th className="border border-[#E5E7EB] px-3 py-2">Description / Part Name</th>
-                    <th className="w-28 border border-[#E5E7EB] px-3 py-2">Part No.</th>
+                    <th className="border border-[#E5E7EB] px-3 py-2">Material Name / Description</th>
+                    <th className="w-28 border border-[#E5E7EB] px-3 py-2">Part No. / Code</th>
                     <th className="w-16 border border-[#E5E7EB] px-3 py-2">Qty</th>
                     <th className="w-20 border border-[#E5E7EB] px-3 py-2">Unit</th>
                     <th className="border border-[#E5E7EB] px-3 py-2">Notes</th>
@@ -438,20 +514,33 @@ export function WorkOrderWizard({
         </div>
 
         {/* ── Step 5: Attachments ─────────────────────────────────── */}
+        {/* New Job Card Required Materials and Attachment Simplification
+            Task 3/4: category dropdown and the desktop-confusing Take Photo
+            button are hidden here (showCategory={false} showCamera={false})
+            — every attachment on this form is silently filed under
+            "Other Document" (the existing safest category, already the
+            server's own fallback in parsePendingAttachments when no category
+            is submitted at all — kept explicit here via the hidden field
+            rather than relying on that implicit fallback). Mobile camera
+            capture was only ever reachable through the now-removed separate
+            Take Photo button, so there is no progressive-mobile behavior to
+            preserve inside the single Upload Attachment button itself. */}
         <div className={step !== 5 ? "hidden" : ""}>
           <WizardCard
             title="Attachments"
-            description="Optional — upload problem photos, PDFs, Excel files, Word documents, or supporting files. On mobile, you can take a live photo."
+            description="Optional — upload photos, PDFs, Excel files, Word documents, quotations, invoices, or supporting files."
           >
             <AttachmentUploadFields
               namePrefix="doc_attachment"
               categories={JOB_CARD_ATTACHMENT_CATEGORIES}
-              defaultCategory="Problem Photo"
+              defaultCategory="Other Document"
               accept={ATTACHMENT_FILE_ACCEPT}
               maxRows={MAX_ATTACHMENT_ROWS}
+              showCategory={false}
+              showCamera={false}
             />
             <p className="mt-4 text-xs text-[#9CA3AF]">
-              Accepted: PDF, JPG, JPEG, PNG, WEBP, XLS, XLSX, DOC, DOCX
+              Allowed files: JPG, PNG, PDF, WEBP, XLS, XLSX, DOC, DOCX
             </p>
           </WizardCard>
         </div>
@@ -530,14 +619,14 @@ export function WorkOrderWizard({
                 </dl>
               </ReviewSection>
 
-              <ReviewSection title="Required Parts">
+              <ReviewSection title="Required Materials">
                 {reviewParts.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="bg-[#F3F4F6] text-left text-[10px] font-bold text-[#4B5563]">
-                          <th className="px-3 py-1.5">Description</th>
-                          <th className="px-3 py-1.5">Part No.</th>
+                          <th className="px-3 py-1.5">Material Name / Description</th>
+                          <th className="px-3 py-1.5">Part No. / Code</th>
                           <th className="px-3 py-1.5">Qty</th>
                           <th className="px-3 py-1.5">Unit</th>
                         </tr>
@@ -559,56 +648,113 @@ export function WorkOrderWizard({
                 )}
               </ReviewSection>
             </div>
-
-            <div className="mt-6 space-y-2 border-t border-[#E5E7EB] pt-5">
-              <button
-                type="submit"
-                name="intent"
-                value="submit_for_approval"
-                className="focus-ring w-full rounded-md bg-[#ED1C24] py-2.5 text-sm font-bold text-white transition hover:bg-red-700"
-              >
-                Submit Job Card
-              </button>
-              <button
-                type="submit"
-                name="intent"
-                value="save_draft"
-                className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white py-2.5 text-sm font-semibold text-[#4B5563] transition hover:bg-[#F3F4F6]"
-              >
-                Save Draft
-              </button>
-              <p className="text-center text-xs text-[#9CA3AF]">Draft can be edited and submitted later.</p>
-            </div>
           </WizardCard>
         </div>
+        </div>
 
-        {/* ── Navigation ────────────────────────────────────────────────── */}
-        <div className="mt-4 flex items-center justify-between">
-          <div>
-            {step > 1 && (
+        {/* Footer — sticky, non-scrolling, always-visible action buttons */}
+        <div className="shrink-0 border-t border-[#E5E7EB] px-6 py-4 sm:px-8">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={handleBack}
-                className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-semibold text-[#4B5563] shadow-sm transition hover:bg-[#F3F4F6]"
+                onClick={requestClose}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-semibold text-[#ED1C24] shadow-sm transition hover:bg-red-50"
               >
-                <ChevronLeft className="h-4 w-4" aria-hidden="true" />
-                Back
+                Cancel
               </button>
-            )}
+              {step > 1 && (
+                <button
+                  type="button"
+                  onClick={handleBack}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-semibold text-[#4B5563] shadow-sm transition hover:bg-[#F3F4F6]"
+                >
+                  <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                  Back
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {step === 6 && (
+                <p className="hidden text-xs text-[#9CA3AF] sm:block">Draft can be edited and submitted later.</p>
+              )}
+              {step < 6 ? (
+                <button
+                  type="button"
+                  onClick={handleNext}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-5 py-2 text-sm font-bold text-white transition hover:bg-red-700"
+                >
+                  Next
+                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="submit"
+                    name="intent"
+                    value="save_draft"
+                    className="focus-ring inline-flex items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-5 py-2 text-sm font-semibold text-[#4B5563] transition hover:bg-[#F3F4F6]"
+                  >
+                    Save Draft
+                  </button>
+                  <button
+                    type="submit"
+                    name="intent"
+                    value="submit_for_approval"
+                    className="focus-ring inline-flex items-center justify-center rounded-md bg-[#ED1C24] px-5 py-2 text-sm font-bold text-white transition hover:bg-red-700"
+                  >
+                    Submit for Review
+                  </button>
+                </>
+              )}
+            </div>
           </div>
-          {step < 6 && (
-            <button
-              type="button"
-              onClick={handleNext}
-              className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-5 py-2 text-sm font-bold text-white transition hover:bg-red-700"
-            >
-              Next
-              <ChevronRight className="h-4 w-4" aria-hidden="true" />
-            </button>
-          )}
         </div>
       </form>
-    </div>
+        </div>
+      </div>
+
+      {showCancelConfirm && (
+        <>
+          <div
+            className="fixed inset-0 z-[60] bg-black/50"
+            aria-hidden="true"
+            onClick={() => setShowCancelConfirm(false)}
+          />
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" role="presentation">
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="cancel-jc-heading"
+              className="w-full max-w-sm rounded-xl bg-white p-6 shadow-2xl"
+            >
+              <h2 id="cancel-jc-heading" className="text-lg font-black text-[#111827]">
+                Discard Job Card?
+              </h2>
+              <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">
+                You have entered information that has not been saved. Are you sure you want to discard it?
+              </p>
+              <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={() => router.push(dismissHref)}
+                  className="flex-1 rounded-md border border-[#E5E7EB] bg-white py-2.5 text-sm font-bold text-[#4B5563] transition hover:bg-gray-50"
+                >
+                  Discard and Exit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCancelConfirm(false)}
+                  className="flex-1 rounded-md bg-[#ED1C24] py-2.5 text-sm font-bold text-white transition hover:bg-red-700"
+                >
+                  Continue Editing
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </>
   );
 }
 

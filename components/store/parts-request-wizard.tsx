@@ -5,6 +5,7 @@ import { Check, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 
 import { createPartsRequestAction } from "@/app/actions/phase4";
 import { AttachmentUploadFields } from "@/components/files/attachment-upload-fields";
+import { useLargeFormModal } from "@/components/ui/large-form-modal";
 import {
   ATTACHMENT_FILE_ACCEPT,
   MAX_ATTACHMENT_ROWS,
@@ -92,15 +93,26 @@ const inp =
 
 // ── Main wizard export ────────────────────────────────────────────────────────
 
+// Large Popup Conversion: `modalMode` is set when this wizard is rendered
+// inside <LargeFormModal> from the Materials Requests page instead of its
+// own /store/parts-requests/new page — drops the outer page-level width
+// wrapper and adds a Cancel button routed through the modal's dirty-aware
+// close. Submission itself is unchanged (a plain form POST to
+// createPartsRequestAction, which redirects to /store/parts-requests on
+// success either way — that naturally drops the ?newRequest= query param
+// and closes the modal).
 export function PartsRequestWizard({
   workOrders,
   preselectedWorkOrderId,
   preselectedWorkOrder,
+  modalMode = false,
 }: {
   workOrders: WorkOrderOption[];
   preselectedWorkOrderId?: string;
   preselectedWorkOrder?: WorkOrderOption | null;
+  modalMode?: boolean;
 }) {
+  const modal = useLargeFormModal();
   const isPreselected = !!preselectedWorkOrderId;
 
   const formRef = useRef<HTMLFormElement>(null);
@@ -200,7 +212,7 @@ export function PartsRequestWizard({
   }).filter((a): a is { category: string; fileName: string; remarks: string } => a !== null);
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className={modalMode ? "" : "mx-auto max-w-3xl"}>
       <StepIndicator current={step} labels={stepLabels} />
 
       <form ref={formRef} action={createPartsRequestAction}>
@@ -597,8 +609,8 @@ export function PartsRequestWizard({
         </div>
 
         {/* ── Navigation ────────────────────────────────────────────────── */}
-        <div className="mt-4 flex items-center justify-between">
-          <div>
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
             {step > 1 && (
               <button
                 type="button"
@@ -607,6 +619,15 @@ export function PartsRequestWizard({
               >
                 <ChevronLeft className="h-4 w-4" aria-hidden="true" />
                 Back
+              </button>
+            )}
+            {modalMode && (
+              <button
+                type="button"
+                onClick={() => modal?.requestClose()}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-semibold text-[#ED1C24] shadow-sm transition hover:bg-red-50"
+              >
+                Cancel
               </button>
             )}
           </div>

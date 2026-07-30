@@ -21,8 +21,8 @@ export default async function IssueMaterialPage() {
   return (
     <>
       <PageHeader
-        title="Record Used Material"
-        description="Record materials used for a Job Card or maintenance work."
+        title="Issue Material"
+        description="Issue materials for a Job Card or maintenance work."
         actions={
           <Link
             href="/store/offline-inventory"

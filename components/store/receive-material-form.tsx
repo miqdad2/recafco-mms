@@ -15,17 +15,31 @@ import {
   type BalanceItem,
   type WorkOrderOption,
 } from "@/components/store/offline-inventory-types";
+import { useLargeFormModal } from "@/components/ui/large-form-modal";
 import { cn } from "@/lib/utils";
 
 export interface ReceiveMaterialFormProps {
   knownMaterials: BalanceItem[];
   workOrders: WorkOrderOption[];
+  // Large Popup Conversion: when rendered inside <LargeFormModal> from the
+  // Offline Inventory Control page, the parent resolves its own
+  // ?receiveMaterial= query param into this prop instead of the form reading
+  // ?material= off its own standalone-page URL — the two entry points never
+  // conflict since presetMaterialKey only applies when modalMode is true.
+  modalMode?: boolean;
+  presetMaterialKey?: string | null;
 }
 
-export function ReceiveMaterialForm({ knownMaterials, workOrders }: ReceiveMaterialFormProps) {
+export function ReceiveMaterialForm({
+  knownMaterials,
+  workOrders,
+  modalMode = false,
+  presetMaterialKey = null,
+}: ReceiveMaterialFormProps) {
   const router = useRouter();
+  const modal = useLargeFormModal();
   const searchParams = useSearchParams();
-  const preselectedKey = searchParams.get("material");
+  const preselectedKey = modalMode ? presetMaterialKey : searchParams.get("material");
 
   const [state, formAction, isPending] = useActionState<OfflineMovementState, FormData>(
     receiveOfflineMaterialAction,
@@ -71,8 +85,7 @@ export function ReceiveMaterialForm({ knownMaterials, workOrders }: ReceiveMater
     }
   }
 
-  return (
-    <div className="mx-auto w-full max-w-2xl rounded-md border border-[#E5E7EB] bg-white p-6 shadow-sm">
+  const formEl = (
       <form action={formAction} className="space-y-4">
         {state?.ok === false && (
           <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -398,14 +411,31 @@ export function ReceiveMaterialForm({ knownMaterials, workOrders }: ReceiveMater
             {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
             {isPending ? "Saving…" : "Receive Material"}
           </button>
-          <Link
-            href="/store/offline-inventory"
-            className="rounded-md border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-bold text-[#4B5563] transition hover:bg-gray-50"
-          >
-            Cancel
-          </Link>
+          {modalMode ? (
+            <button
+              type="button"
+              onClick={() => modal?.requestClose()}
+              className="rounded-md border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-bold text-[#4B5563] transition hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+          ) : (
+            <Link
+              href="/store/offline-inventory"
+              className="rounded-md border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-bold text-[#4B5563] transition hover:bg-gray-50"
+            >
+              Cancel
+            </Link>
+          )}
         </div>
       </form>
+  );
+
+  if (modalMode) return formEl;
+
+  return (
+    <div className="mx-auto w-full max-w-2xl rounded-md border border-[#E5E7EB] bg-white p-6 shadow-sm">
+      {formEl}
     </div>
   );
 }

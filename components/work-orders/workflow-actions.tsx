@@ -259,7 +259,7 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
             <input type="hidden" name="work_order_id" value={workOrderId} />
             <p className="text-xs text-[#6B7280]">
               {activeMaterialsRequest?.status === "Requested"
-                ? "This will approve the Job Card and requested materials. Materials will be marked as To Receive."
+                ? "This will approve the Job Card and requested materials. Materials will be marked as Pending."
                 : "This will approve the Job Card and make it Approved."}
             </p>
             <textarea

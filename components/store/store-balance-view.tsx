@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Activity,
@@ -18,17 +19,18 @@ import {
 } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { MaterialDetailModal } from "@/components/store/material-detail-modal";
+import { AddNewMaterialForm } from "@/components/store/add-new-material-form";
+import { ReceiveMaterialForm } from "@/components/store/receive-material-form";
+import { IssueMaterialForm } from "@/components/store/issue-material-form";
+import { LargeFormModal } from "@/components/ui/large-form-modal";
 import {
   MATERIAL_CATEGORIES,
   fmtDate,
   inputCls as inp,
   labelCls as lbl,
-  movementTypeLabel,
-  movementTypeTone,
   type BalanceItem,
-  type RecentMovementRow,
+  type WorkOrderOption,
 } from "@/components/store/offline-inventory-types";
 
 export interface StoreBalanceViewProps {
@@ -39,12 +41,19 @@ export interface StoreBalanceViewProps {
   balance: number;
   canManage: boolean;
   isSuperAdmin: boolean;
-  recentMovements: RecentMovementRow[];
+  // Large Popup Conversion — Add New Material / Receive Material / Issue
+  // Material open as modals from this page (server-resolved from the
+  // ?addMaterial= / ?receiveMaterial= / ?issueMaterial= query params).
+  workOrders: WorkOrderOption[];
+  showAddMaterial: boolean;
+  showReceiveMaterial: boolean;
+  showIssueMaterial: boolean;
+  receiveMaterialKey: string | null;
+  issueMaterialKey: string | null;
 }
 
 type Tone5 = "green" | "red" | "blue" | "amber" | "gray";
 type BalanceStatus = "all" | "available" | "zero";
-type MovementFilter = "ALL" | "OPENING_STOCK" | "RECEIVED" | "ISSUED";
 
 const secondaryBtn =
   "inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50";
@@ -128,13 +137,18 @@ export function StoreBalanceView({
   balance,
   canManage,
   isSuperAdmin,
-  recentMovements,
+  workOrders,
+  showAddMaterial,
+  showReceiveMaterial,
+  showIssueMaterial,
+  receiveMaterialKey,
+  issueMaterialKey,
 }: StoreBalanceViewProps) {
+  const router = useRouter();
   const [search, setSearch]             = useState("");
   const [category, setCategory]         = useState<string | null>(null);
   const [balanceStatus, setBalanceStatus] = useState<BalanceStatus>("all");
   const [viewItem, setViewItem]         = useState<BalanceItem | null>(null);
-  const [movementFilter, setMovementFilter] = useState<MovementFilter>("ALL");
 
   const isEmpty = balanceItems.length === 0;
   const balanceTone: Tone5 = balance < 0 ? "red" : balance === 0 ? "gray" : "green";
@@ -146,10 +160,13 @@ export function StoreBalanceView({
     setBalanceStatus("all");
   }
 
-  const filteredMovements = useMemo(() => {
-    if (movementFilter === "ALL") return recentMovements;
-    return recentMovements.filter((m) => m.movement_type === movementFilter);
-  }, [recentMovements, movementFilter]);
+  // Large Popup Conversion: closing any of the three form modals just
+  // removes its query param, landing back on the plain Offline Inventory
+  // Control URL — no full page reload, and it re-renders with fresh
+  // server data if anything changed underneath.
+  function closeFormModal() {
+    router.push("/store/offline-inventory", { scroll: false });
+  }
 
   const categoryCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -159,7 +176,19 @@ export function StoreBalanceView({
     return counts;
   }, [balanceItems]);
 
-  const visibleCategories = MATERIAL_CATEGORIES.filter((c) => (categoryCounts.get(c) ?? 0) > 0);
+  // Add New Material Category Flexibility Cleanup Task 6: derive the filter
+  // options from the actual balance data instead of only the fixed
+  // MATERIAL_CATEGORIES list, so a custom category added via "+ Add New
+  // Category" shows up here too. Known categories keep their original
+  // display order; any custom categories are appended, sorted alphabetically.
+  const visibleCategories = useMemo(() => {
+    const known = MATERIAL_CATEGORIES.filter((c) => (categoryCounts.get(c) ?? 0) > 0);
+    const knownSet = new Set<string>(MATERIAL_CATEGORIES);
+    const custom = Array.from(categoryCounts.keys())
+      .filter((c) => !knownSet.has(c))
+      .sort((a, b) => a.localeCompare(b));
+    return [...known, ...custom];
+  }, [categoryCounts]);
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -179,7 +208,7 @@ export function StoreBalanceView({
     <>
       <PageHeader
         title="Offline Inventory Control"
-        description="Track maintenance materials, received quantities, used quantities, and current balance."
+        description="Track maintenance materials, received quantities, issued quantities, and current balance."
         actions={
           <Link href="/store/offline-inventory/movements" className={secondaryBtn}>
             <Activity className="h-4 w-4" aria-hidden />
@@ -189,8 +218,8 @@ export function StoreBalanceView({
       />
 
       <div className="space-y-4 p-4 lg:p-6">
-        {/* Simplification Task 2: one unified "Inventory Actions" section —
-            Add New Material / Receive Material / Record Used Material / View
+        {/* Simplification Task 2: one unified "Material Actions" section —
+            Add New Material / Receive Material / Issue Material / View
             Movement History — for every canManage role. Setup actions
             (Add Opening Stock / Import Opening Stock) are one-time,
             pre-go-live steps and stay tucked away for Super Admin only so
@@ -200,26 +229,26 @@ export function StoreBalanceView({
             <div>
               <div className="mb-2 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
                 <Activity className="h-3.5 w-3.5" aria-hidden />
-                Inventory Actions
+                Material Actions
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <QuickActionCard
-                  href="/store/offline-inventory/add-material"
+                  href="?addMaterial=1"
                   icon={PlusCircle}
                   title="Add New Material"
                   description="Register a new material not yet tracked in Offline Inventory Control."
                 />
                 <QuickActionCard
-                  href="/store/offline-inventory/receive"
+                  href="?receiveMaterial=1"
                   icon={ArrowDownToLine}
                   title="Receive Material"
                   description="Record new materials received by Maintenance."
                 />
                 <QuickActionCard
-                  href="/store/offline-inventory/issue"
+                  href="?issueMaterial=1"
                   icon={ArrowUpFromLine}
-                  title="Record Used Material"
-                  description="Record materials used for a Job Card or maintenance work."
+                  title="Issue Material"
+                  description="Issue materials for a Job Card or maintenance work."
                 />
                 <QuickActionCard
                   href="/store/offline-inventory/movements"
@@ -256,7 +285,7 @@ export function StoreBalanceView({
               </div>
             )}
             <p className="text-xs text-[#9CA3AF]">
-              Search a material, check its balance, then receive or record used materials.
+              Search a material, check its balance, then receive or issue materials.
             </p>
           </section>
         )}
@@ -266,51 +295,37 @@ export function StoreBalanceView({
           </div>
         )}
 
-        {/* KPI cards — Opening Stock, Received, Issued, Balance */}
+        {/* KPI cards — Initial Stock, Received, Issued, Balance. "Initial
+            Stock" is display wording only — internally this is still the
+            OPENING_STOCK movement type / totalOpeningStock value, unchanged. */}
         <section className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
           <SummaryCard
-            title="Opening Stock"
+            title="Initial Stock"
             value={totalOpeningStock}
             tone="blue"
             icon={PackagePlus}
-            active={movementFilter === "OPENING_STOCK"}
-            onClick={() =>
-              setMovementFilter((f) => (f === "OPENING_STOCK" ? "ALL" : "OPENING_STOCK"))
-            }
           />
           <SummaryCard
             title="Total Received"
             value={totalReceived}
             tone="green"
             icon={ArrowDownToLine}
-            active={movementFilter === "RECEIVED"}
-            onClick={() => setMovementFilter((f) => (f === "RECEIVED" ? "ALL" : "RECEIVED"))}
           />
           <SummaryCard
-            title="Total Used"
+            title="Total Issued"
             value={totalIssued}
             tone="red"
             icon={ArrowUpFromLine}
-            active={movementFilter === "ISSUED"}
-            onClick={() => setMovementFilter((f) => (f === "ISSUED" ? "ALL" : "ISSUED"))}
           />
-          {/* Current Balance's border/ring is deliberately never driven by the
-              "selected filter" active state (unlike the other three cards) —
-              `movementFilter` defaults to "ALL" on load, which used to make
-              this card always render with the red "selected" ring even when
-              nothing was actually wrong, regardless of the real balance. Its
-              only color signal is `balanceTone` (icon badge: green positive /
-              gray zero / red negative), so a positive balance never shows red. */}
           <SummaryCard
             title="Current Balance"
             value={Math.max(0, balance)}
             tone={balanceTone}
             icon={ArrowDownUp}
-            onClick={() => setMovementFilter("ALL")}
           />
         </section>
         <p className="-mt-2 text-xs text-[#9CA3AF]">
-          Current Balance = Opening Stock + Received − Used
+          Current Balance = Initial Stock + Received − Issued
         </p>
 
         {/* Offline Inventory Manager Access and Always-Visible Search Fix
@@ -405,11 +420,11 @@ export function StoreBalanceView({
               </div>
               {canManage && (
                 <div className="flex flex-wrap items-center justify-center gap-2">
-                  <Link href="/store/offline-inventory/add-material" className={primaryBtn}>
+                  <Link href="?addMaterial=1" className={primaryBtn}>
                     <PlusCircle className="h-4 w-4" aria-hidden />
                     Add New Material
                   </Link>
-                  <Link href="/store/offline-inventory/receive" className={secondaryBtn}>
+                  <Link href="?receiveMaterial=1" className={secondaryBtn}>
                     <ArrowDownToLine className="h-4 w-4" aria-hidden />
                     Receive Material
                   </Link>
@@ -431,7 +446,6 @@ export function StoreBalanceView({
           </div>
         ) : (
           <>
-            {/* Balance table */}
             {filteredItems.length === 0 ? (
               <div className="rounded-md border border-[#E5E7EB] bg-white p-10 text-center shadow-sm">
                 <h2 className="text-sm font-black text-[#111827]">No matching materials found.</h2>
@@ -507,7 +521,8 @@ export function StoreBalanceView({
                               </button>
                               {canManage && (
                                 <Link
-                                  href={`/store/offline-inventory/receive?material=${encodeURIComponent(item.key)}`}
+                                  href={`?receiveMaterial=${encodeURIComponent(item.key)}`}
+                                  scroll={false}
                                   className="text-xs font-bold text-[#16A34A] hover:underline"
                                 >
                                   Receive
@@ -515,10 +530,11 @@ export function StoreBalanceView({
                               )}
                               {canManage && item.balance > 0 && (
                                 <Link
-                                  href={`/store/offline-inventory/issue?material=${encodeURIComponent(item.key)}`}
+                                  href={`?issueMaterial=${encodeURIComponent(item.key)}`}
+                                  scroll={false}
                                   className="text-xs font-bold text-[#ED1C24] hover:underline"
                                 >
-                                  Record Used
+                                  Issue
                                 </Link>
                               )}
                             </div>
@@ -530,90 +546,54 @@ export function StoreBalanceView({
                 </div>
               </div>
             )}
-
-            {/* Recent Movements */}
-            <section className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E5E7EB] px-5 py-3">
-                <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-                  <Activity className="h-3.5 w-3.5" aria-hidden />
-                  Recent Movements
-                </div>
-                <Link
-                  href="/store/offline-inventory/movements"
-                  className="text-xs font-bold text-[#ED1C24] hover:underline"
-                >
-                  View Full Movement History
-                </Link>
-              </div>
-              {filteredMovements.length === 0 ? (
-                <p className="px-5 py-6 text-sm text-[#4B5563]">
-                  No movements of this type yet.
-                </p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="border-b border-[#E5E7EB] bg-[#F9FAFB] text-left text-xs font-bold uppercase tracking-wide text-[#4B5563]">
-                      <tr>
-                        <th className="px-4 py-3">Date</th>
-                        <th className="px-4 py-3">Type</th>
-                        <th className="px-4 py-3">Material</th>
-                        <th className="hidden px-4 py-3 lg:table-cell">Category</th>
-                        <th className="px-4 py-3 text-right">Quantity</th>
-                        <th className="px-4 py-3">Unit</th>
-                        <th className="hidden px-4 py-3 lg:table-cell">Related Job Card</th>
-                        <th className="hidden px-4 py-3 lg:table-cell">Reference No.</th>
-                        <th className="px-4 py-3">Entered By</th>
-                        <th className="hidden px-4 py-3 lg:table-cell">Remarks</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#F3F4F6]">
-                      {filteredMovements.map((m) => (
-                        <tr key={m.id} className="hover:bg-gray-50">
-                          <td className="whitespace-nowrap px-4 py-3 text-[#111827]">{fmtDate(m.movement_date)}</td>
-                          <td className="px-4 py-3">
-                            <StatusBadge
-                              label={movementTypeLabel(m.movement_type, m.reference_number)}
-                              tone={movementTypeTone(m.movement_type)}
-                            />
-                          </td>
-                          <td className="px-4 py-3 font-semibold text-[#111827]">{m.material_name}</td>
-                          <td className="hidden px-4 py-3 text-xs text-[#4B5563] lg:table-cell">{m.category}</td>
-                          <td className="whitespace-nowrap px-4 py-3 text-right font-bold text-[#111827]">
-                            {m.quantity.toLocaleString("en-US", { maximumFractionDigits: 3 })}
-                          </td>
-                          <td className="px-4 py-3 text-[#4B5563]">{m.unit}</td>
-                          <td className="hidden px-4 py-3 lg:table-cell">
-                            {m.related_work_order_id ? (
-                              <Link
-                                href={`/maintenance/work-orders/${m.related_work_order_id}`}
-                                className="text-xs font-bold text-[#ED1C24] hover:underline"
-                              >
-                                {m.work_order_number ?? "View"}
-                              </Link>
-                            ) : (
-                              <span className="text-[#9CA3AF]">—</span>
-                            )}
-                          </td>
-                          <td className="hidden px-4 py-3 text-xs text-[#4B5563] lg:table-cell">
-                            {m.reference_number ?? "—"}
-                          </td>
-                          <td className="px-4 py-3 text-xs text-[#4B5563]">{m.created_by_name}</td>
-                          <td className="hidden max-w-[200px] truncate px-4 py-3 text-xs text-[#4B5563] lg:table-cell">
-                            {m.remarks ?? "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </section>
           </>
         )}
       </div>
 
       {viewItem && (
         <MaterialDetailModal item={viewItem} canIssue={canManage} onClose={() => setViewItem(null)} />
+      )}
+
+      {/* Large Popup Conversion — Add New Material / Receive Material /
+          Issue Material open as modals from this page; their standalone
+          pages (/add-material, /receive, /issue) still exist and still work
+          for direct URL access. */}
+      {showAddMaterial && (
+        <LargeFormModal
+          title="Add New Material"
+          subtitle="Register a new material in Offline Inventory Control."
+          onClose={closeFormModal}
+        >
+          <AddNewMaterialForm modalMode />
+        </LargeFormModal>
+      )}
+      {showReceiveMaterial && (
+        <LargeFormModal
+          title="Receive Material"
+          subtitle="Record material received for maintenance."
+          onClose={closeFormModal}
+        >
+          <ReceiveMaterialForm
+            modalMode
+            presetMaterialKey={receiveMaterialKey}
+            knownMaterials={balanceItems}
+            workOrders={workOrders}
+          />
+        </LargeFormModal>
+      )}
+      {showIssueMaterial && (
+        <LargeFormModal
+          title="Issue Material"
+          subtitle="Issue materials for a Job Card or maintenance work."
+          onClose={closeFormModal}
+        >
+          <IssueMaterialForm
+            modalMode
+            presetMaterialKey={issueMaterialKey}
+            availableItems={balanceItems.filter((b) => b.balance > 0)}
+            workOrders={workOrders}
+          />
+        </LargeFormModal>
       )}
     </>
   );

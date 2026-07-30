@@ -13,17 +13,27 @@ import {
   type BalanceItem,
   type WorkOrderOption,
 } from "@/components/store/offline-inventory-types";
+import { useLargeFormModal } from "@/components/ui/large-form-modal";
 import { cn } from "@/lib/utils";
 
 export interface IssueMaterialFormProps {
   availableItems: BalanceItem[];
   workOrders: WorkOrderOption[];
+  // Large Popup Conversion — see the matching prop in ReceiveMaterialForm.
+  modalMode?: boolean;
+  presetMaterialKey?: string | null;
 }
 
-export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialFormProps) {
+export function IssueMaterialForm({
+  availableItems,
+  workOrders,
+  modalMode = false,
+  presetMaterialKey = null,
+}: IssueMaterialFormProps) {
   const router = useRouter();
+  const modal = useLargeFormModal();
   const searchParams = useSearchParams();
-  const preselectedKey = searchParams.get("material");
+  const preselectedKey = modalMode ? presetMaterialKey : searchParams.get("material");
 
   const [state, formAction, isPending] = useActionState<OfflineMovementState, FormData>(
     issueOfflineMaterialAction,
@@ -42,29 +52,42 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
 
   // No available balance — show informational state instead of a form
   if (availableItems.length === 0) {
-    return (
-      <div className="mx-auto w-full max-w-2xl rounded-md border border-[#E5E7EB] bg-white p-6 shadow-sm">
-        <div className="flex flex-col items-center gap-4 py-8 text-center">
-          <Package className="h-10 w-10 text-[#9CA3AF]" aria-hidden />
-          <div>
-            <p className="font-bold text-[#111827]">No materials available to record as used</p>
-            <p className="mt-1 text-sm text-[#4B5563]">
-              Add opening stock or receive materials first before recording usage.
-            </p>
-          </div>
+    const emptyState = (
+      <div className="flex flex-col items-center gap-4 py-8 text-center">
+        <Package className="h-10 w-10 text-[#9CA3AF]" aria-hidden />
+        <div>
+          <p className="font-bold text-[#111827]">No materials available to issue</p>
+          <p className="mt-1 text-sm text-[#4B5563]">
+            Add initial stock or receive materials first before issuing.
+          </p>
+        </div>
+        {modalMode ? (
+          <button
+            type="button"
+            onClick={() => modal?.requestClose()}
+            className="rounded-md border border-[#E5E7EB] bg-white px-5 py-2 text-sm font-bold text-[#4B5563] hover:bg-gray-50"
+          >
+            Close
+          </button>
+        ) : (
           <Link
             href="/store/offline-inventory"
             className="rounded-md border border-[#E5E7EB] bg-white px-5 py-2 text-sm font-bold text-[#4B5563] hover:bg-gray-50"
           >
             Back to Offline Inventory Control
           </Link>
-        </div>
+        )}
+      </div>
+    );
+    if (modalMode) return emptyState;
+    return (
+      <div className="mx-auto w-full max-w-2xl rounded-md border border-[#E5E7EB] bg-white p-6 shadow-sm">
+        {emptyState}
       </div>
     );
   }
 
-  return (
-    <div className="mx-auto w-full max-w-2xl rounded-md border border-[#E5E7EB] bg-white p-6 shadow-sm">
+  const formEl = (
       <form action={formAction} className="space-y-4">
         {state?.ok === false && (
           <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -84,7 +107,7 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
         {/* Date */}
         <div>
           <label htmlFor="i-date" className={lbl}>
-            Used Date <span className="text-[#ED1C24]">*</span>
+            Issued Date <span className="text-[#ED1C24]">*</span>
           </label>
           <input
             id="i-date"
@@ -146,7 +169,7 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label htmlFor="i-qty" className={lbl}>
-              Quantity Used <span className="text-[#ED1C24]">*</span>
+              Quantity Issued <span className="text-[#ED1C24]">*</span>
             </label>
             <input
               id="i-qty"
@@ -264,16 +287,33 @@ export function IssueMaterialForm({ availableItems, workOrders }: IssueMaterialF
             className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#111827] py-2.5 text-sm font-bold text-white transition hover:bg-gray-700 disabled:opacity-60 sm:flex-none sm:px-8"
           >
             {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-            {isPending ? "Saving…" : "Record Used"}
+            {isPending ? "Saving…" : "Issue Material"}
           </button>
-          <Link
-            href="/store/offline-inventory"
-            className="rounded-md border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-bold text-[#4B5563] transition hover:bg-gray-50"
-          >
-            Cancel
-          </Link>
+          {modalMode ? (
+            <button
+              type="button"
+              onClick={() => modal?.requestClose()}
+              className="rounded-md border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-bold text-[#4B5563] transition hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+          ) : (
+            <Link
+              href="/store/offline-inventory"
+              className="rounded-md border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-bold text-[#4B5563] transition hover:bg-gray-50"
+            >
+              Cancel
+            </Link>
+          )}
         </div>
       </form>
+  );
+
+  if (modalMode) return formEl;
+
+  return (
+    <div className="mx-auto w-full max-w-2xl rounded-md border border-[#E5E7EB] bg-white p-6 shadow-sm">
+      {formEl}
     </div>
   );
 }

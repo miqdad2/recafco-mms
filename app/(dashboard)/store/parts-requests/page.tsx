@@ -20,6 +20,8 @@ import {
   type MaterialsRequestQuickViewData,
 } from "@/components/store/materials-request-quick-view";
 import { StoreSendMaterialsPopup, type StoreSendMaterialsData } from "@/components/store/store-send-materials-popup";
+import { PartsRequestWizard, type WorkOrderOption as PRWorkOrderOption } from "@/components/store/parts-request-wizard";
+import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import {
@@ -43,7 +45,7 @@ import {
 import { getPartsRequestVisibilityFilter, canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
-import { cn } from "@/lib/utils";
+import { cn, formatExactDateTime } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
 
@@ -57,22 +59,23 @@ const PAGE_SIZE = 25;
 // still exist and are still filterable directly by an existing deep link
 // (e.g. ?status=Approved). Never uses Store-specific wording (Store
 // Follow-up/Waiting Store/Send Materials/Issue by Store) as a tab.
-// Materials Receive Wording Simplification Task 3: label changed from
-// "Awaiting Receipt" to "To Receive" — the `key` (URL routing value used by
-// ?status=AwaitingReceipt links elsewhere, e.g. the dashboard cards) is left
+// Materials Requests Status Wording Simplification: labels changed from
+// "To Receive"/"Received" to plain request-completion wording, "Pending"/
+// "Completed" — the `key` (URL routing value used by ?status=AwaitingReceipt/
+// ?status=Received links elsewhere, e.g. the dashboard cards) is left
 // unchanged since it's an internal filter key, not user-facing text.
 const MATERIALS_REQUEST_TABS = [
-  { label: "All",        key: "",               statuses: [] as string[] },
-  { label: "To Receive", key: "AwaitingReceipt", statuses: ["Requested", "Approved", "Waiting Stock", "Partially Issued"] },
-  { label: "Received",   key: "Received",        statuses: ["Issued"] },
+  { label: "All",       key: "",               statuses: [] as string[] },
+  { label: "Pending",   key: "AwaitingReceipt", statuses: ["Requested", "Approved", "Waiting Stock", "Partially Issued"] },
+  { label: "Completed", key: "Received",        statuses: ["Issued"] },
 ];
 
 // Wording for a status tab/deep-link that has zero matching Materials
 // Requests.
 const TAB_EMPTY_STATE: Record<string, { title: string; message: string }> = {
   AwaitingReceipt: {
-    title: "Nothing to receive.",
-    message: "Approved materials not received yet will appear here once a linked Job Card is approved.",
+    title: "Nothing pending.",
+    message: "Approved materials waiting to be received will appear here once a linked Job Card is approved.",
   },
   Requested: {
     title: "No Materials Requests found.",
@@ -91,12 +94,12 @@ const TAB_EMPTY_STATE: Record<string, { title: string; message: string }> = {
     message: "New materials requests will appear here.",
   },
   Received: {
-    title: "No Materials Requests received yet.",
-    message: "Fully received requests will appear here.",
+    title: "No Materials Requests completed yet.",
+    message: "Completed requests will appear here.",
   },
   Issued: {
-    title: "No Materials Requests received yet.",
-    message: "Fully received requests will appear here.",
+    title: "No Materials Requests completed yet.",
+    message: "Completed requests will appear here.",
   },
 };
 
@@ -174,9 +177,6 @@ export default async function PartsRequestsPage({
   searchParams?: Promise<SearchParams>;
 }) {
   const context = await requirePermission("parts_requests.view");
-  // Computed once per request, not per row — matches the established
-  // new Date() (not Date.now()) convention used elsewhere on this page.
-  const nowMs = new Date().getTime();
 
   const canCreate =
     context.role?.slug === "super_admin" ||
@@ -211,6 +211,12 @@ export default async function PartsRequestsPage({
   const showReceivedModal = successCode === "material-request-received";
   const receivedId = single(params.received)?.trim() ?? null;
   const validReceivedId = receivedId && UUID_RE.test(receivedId) ? receivedId : null;
+  // Large Popup Conversion: New Materials Request opens as a modal from this
+  // page via ?newRequest=1 (optionally with ?jobCardId=<id> to preselect a
+  // Job Card, same as the standalone /new page's ?repair_order_id=). The
+  // standalone page itself is untouched and still works for direct URL access.
+  const showNewRequest = canCreate && single(params.newRequest) !== undefined;
+  const newRequestJobCardId = single(params.jobCardId)?.trim() ?? "";
 
   // ── Visibility: a user can always see requests they created/requested ────
   const partsRequestVisibility = getPartsRequestVisibilityFilter(context);
@@ -468,6 +474,63 @@ export default async function PartsRequestsPage({
   const shouldFetchJobPreview = validJobPreviewId !== null;
 
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
+
+  // ── New Materials Request modal data — same query shape as the standalone
+  // /store/parts-requests/new page, only run when that modal is actually open. ──
+  const newRequestWoSelect = {
+    id: true,
+    work_order_number: true,
+    ordered_by: true,
+    worker_type: true,
+    maintenance_type: true,
+    operator_complaint: true,
+    created_at: true,
+    assets: {
+      select: { asset_code: true, asset_name: true, location: true, category: true, status: true },
+    },
+  } as const;
+
+  function mapNewRequestWo(w: {
+    id: string;
+    work_order_number: string | null;
+    ordered_by: string | null;
+    worker_type: string | null;
+    maintenance_type: string | null;
+    operator_complaint: string | null;
+    created_at: Date;
+    assets: {
+      asset_code: string;
+      asset_name: string;
+      location: string | null;
+      category: string | null;
+      status: string;
+    } | null;
+  }): PRWorkOrderOption {
+    return { ...w, created_at: w.created_at.toISOString() };
+  }
+
+  const [newRequestWorkOrdersRaw, newRequestPreselectedRaw] = showNewRequest
+    ? await Promise.all([
+        prisma.work_orders.findMany({
+          where: { AND: [{ deleted_at: null }, visibilityFilter] },
+          select: newRequestWoSelect,
+          orderBy: { created_at: "desc" },
+          take: 100,
+        }),
+        newRequestJobCardId
+          ? prisma.work_orders.findFirst({
+              where: { id: newRequestJobCardId, deleted_at: null, ...visibilityFilter },
+              select: newRequestWoSelect,
+            })
+          : Promise.resolve(null),
+      ])
+    : [[], null];
+
+  const newRequestWorkOrders: PRWorkOrderOption[] = newRequestWorkOrdersRaw.map(mapNewRequestWo);
+  const newRequestPreselectedWo: PRWorkOrderOption | null = newRequestPreselectedRaw
+    ? mapNewRequestWo(newRequestPreselectedRaw)
+    : null;
+
   const canAssignModal =
     context.role?.slug === "super_admin" ||
     context.permissions.includes("work_orders.assign") ||
@@ -764,7 +827,8 @@ export default async function PartsRequestsPage({
           canCreate ? (
             <Link
               className="focus-ring inline-flex min-h-10 items-center gap-2 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-semibold text-white hover:bg-[#c9151c]"
-              href="/store/parts-requests/new"
+              href="?newRequest=1"
+              scroll={false}
             >
               <Plus className="h-4 w-4" />
               New materials request
@@ -774,12 +838,12 @@ export default async function PartsRequestsPage({
       />
 
       <div className="space-y-4 p-4 lg:p-6">
-        {/* ── Counters — Total / To Receive / Received (Task 5). ── */}
+        {/* ── Counters — Total / Pending / Completed. ── */}
         <section className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {([
             { label: "Total Materials Requests", value: totalRequests, icon: ClipboardList, tone: "blue" as const, status: "" },
-            { label: "To Receive", value: awaitingReceiptCount, icon: ShoppingCart, tone: awaitingReceiptCount > 0 ? "amber" : "gray", status: "AwaitingReceipt" },
-            { label: "Received",  value: receivedCount,  icon: CheckCircle2, tone: "green" as const, status: "Received" },
+            { label: "Pending", value: awaitingReceiptCount, icon: ShoppingCart, tone: awaitingReceiptCount > 0 ? "amber" : "gray", status: "AwaitingReceipt" },
+            { label: "Completed",  value: receivedCount,  icon: CheckCircle2, tone: "green" as const, status: "Received" },
           ] as { label: string; value: number; icon: LucideIcon; tone: "green" | "amber" | "blue" | "gray"; status: string }[]).map((c) => (
             <Link key={c.label} href={listHref({ query: "", status: c.status, page: 1 })} className="block">
               <StatCard label={c.label} value={c.value} icon={c.icon} tone={c.tone} compact />
@@ -806,9 +870,9 @@ export default async function PartsRequestsPage({
           </form>
         </section>
 
-        {/* ── Status tabs — All / To Receive / Received; a raw
+        {/* ── Status tabs — All / Pending / Completed; a raw
               ?status=Approved or ?status=Waiting+Stock deep link still
-              filters correctly and highlights "To Receive" as active,
+              filters correctly and highlights "Pending" as active,
               since all four pre-receive statuses fold into that bucket. ── */}
         <div className="overflow-x-auto rounded-t-md border border-[#E5E7EB] bg-white shadow-sm">
           <div className="flex min-w-max">
@@ -867,7 +931,7 @@ export default async function PartsRequestsPage({
                     <th className="px-4 py-3">Requester</th>
                     <th className="px-4 py-3">Requested / Received</th>
                     <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3">Requested</th>
+                    <th className="px-4 py-3">Requested Date &amp; Time</th>
                     <th className="px-4 py-3">Action</th>
                   </tr>
                 </thead>
@@ -908,8 +972,11 @@ export default async function PartsRequestsPage({
                       woId ? rowCorrectionIds.has(woId) : false
                     );
                     const materialNames = request.parts_request_items.map((i) => i.description);
-                    const ageDays = Math.floor((nowMs - request.created_at.getTime()) / 86_400_000);
-                    const ageLabel = ageDays <= 0 ? "Today" : ageDays === 1 ? "1 day ago" : `${ageDays} days ago`;
+                    // Materials Requests Requested Date & Time Column
+                    // Cleanup: exact "DD MMM YYYY, hh:mm AM/PM" timestamp —
+                    // relative wording ("Today", "2 days ago") was confusing
+                    // during tracking/reporting.
+                    const requestedDateTime = formatExactDateTime(request.created_at);
 
                     return (
                       <tr key={request.id} className="hover:bg-gray-50">
@@ -979,7 +1046,7 @@ export default async function PartsRequestsPage({
                           <p className={`mt-0.5 font-semibold ${rowHelperClass}`}>{rowHelperLabel}</p>
                         </td>
 
-                        {/* Status — Requested / To Receive / Received (Task 4). */}
+                        {/* Status — Requested / Pending / Completed. */}
                         <td className="px-4 py-3">
                           <StatusBadge
                             label={receiptStatus}
@@ -987,11 +1054,11 @@ export default async function PartsRequestsPage({
                           />
                         </td>
 
-                        {/* Requested date / age — oldest-first sort makes
-                            this the natural "how long has this been
-                            waiting" cue (Task 5). */}
+                        {/* Requested date & time — exact timestamp, not
+                            relative wording (Materials Requests Requested
+                            Date & Time Column Cleanup). */}
                         <td className="px-4 py-3 whitespace-nowrap text-xs text-[#4B5563]">
-                          {ageLabel}
+                          {requestedDateTime}
                         </td>
 
                         {/* Action — Job Card Open -> Receive Materials (opens
@@ -1196,6 +1263,28 @@ export default async function PartsRequestsPage({
         )
       )}
 
+      {/* ── New Materials Request modal ───────────────────────────────
+          Opens via ?newRequest=1 (optionally ?jobCardId=<id> to preselect a
+          Job Card). The standalone /store/parts-requests/new page is
+          untouched and still works for direct URL access. Submitting the
+          wizard redirects to this same page on success (without
+          ?newRequest=), which naturally closes the modal and shows a fresh
+          list + the existing success toast/modal.
+      ────────────────────────────────────────────────────────────── */}
+      {showNewRequest && (
+        <LargeFormModal
+          title="New Materials Request"
+          subtitle="Request materials linked to a Job Card."
+          closeHref={listHref({ query, status, page })}
+        >
+          <PartsRequestWizard
+            modalMode
+            workOrders={newRequestWorkOrders}
+            preselectedWorkOrderId={newRequestJobCardId || undefined}
+            preselectedWorkOrder={newRequestPreselectedWo}
+          />
+        </LargeFormModal>
+      )}
     </>
   );
 }

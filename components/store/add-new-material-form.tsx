@@ -6,27 +6,46 @@ import Link from "next/link";
 import { AlertCircle, Loader2 } from "lucide-react";
 
 import { addNewMaterialAction, type OfflineMovementState } from "@/app/actions/offline-inventory";
-import { MATERIAL_CATEGORIES, UNITS, inputCls as inp, labelCls as lbl } from "@/components/store/offline-inventory-types";
+import {
+  MATERIAL_CATEGORIES,
+  ADD_NEW_CATEGORY_VALUE,
+  UNITS,
+  inputCls as inp,
+  labelCls as lbl,
+} from "@/components/store/offline-inventory-types";
+import { useLargeFormModal } from "@/components/ui/large-form-modal";
 import { cn } from "@/lib/utils";
 
-export function AddNewMaterialForm() {
+// Large Popup Conversion: `modalMode` is set when this form is rendered
+// inside <LargeFormModal> from the Offline Inventory Control page instead of
+// its own standalone /store/offline-inventory/add-material page — drops the
+// outer page-level card wrapper (the modal shell already provides that) and
+// routes Cancel through the modal's dirty-aware close instead of a plain
+// link. Success handling is unchanged either way: the server action still
+// redirects to /store/offline-inventory, which naturally drops the
+// ?addMaterial= query param and closes the modal on success.
+export function AddNewMaterialForm({ modalMode = false }: { modalMode?: boolean } = {}) {
   const router = useRouter();
+  const modal = useLargeFormModal();
   const [state, formAction, isPending] = useActionState<OfflineMovementState, FormData>(
     addNewMaterialAction,
     null
   );
   const [unit, setUnit] = useState("PCS");
   const [category, setCategory] = useState("Other");
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const isAddingCategory = category === ADD_NEW_CATEGORY_VALUE;
 
   useEffect(() => {
     if (state?.ok) {
-      router.push("/store/offline-inventory?success=material-added");
+      const params = new URLSearchParams({ success: "material-added" });
+      if (state.category) params.set("category", state.category);
+      router.push(`/store/offline-inventory?${params.toString()}`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.ok]);
 
-  return (
-    <div className="mx-auto w-full max-w-2xl rounded-md border border-[#E5E7EB] bg-white p-6 shadow-sm">
+  const formEl = (
       <form action={formAction} className="space-y-4">
         {state?.ok === false && (
           <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -65,7 +84,26 @@ export function AddNewMaterialForm() {
             {MATERIAL_CATEGORIES.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
+            <option value={ADD_NEW_CATEGORY_VALUE}>+ Add New Category</option>
           </select>
+          {isAddingCategory && (
+            <div className="mt-2">
+              <label htmlFor="nm-new-category" className={lbl}>
+                New Category Name <span className="text-[#ED1C24]">*</span>
+              </label>
+              <input
+                id="nm-new-category"
+                type="text"
+                name="new_category_name"
+                required
+                value={newCategoryName}
+                onChange={(e) => setNewCategoryName(e.target.value)}
+                placeholder="e.g. Hydraulic Materials"
+                className={inp}
+                disabled={isPending}
+              />
+            </div>
+          )}
         </div>
 
         {/* Part Number */}
@@ -95,7 +133,7 @@ export function AddNewMaterialForm() {
           <p className="mt-1 text-xs text-[#9CA3AF]">Reserved for SAP material/reference mapping.</p>
         </div>
 
-        {/* Unit + Opening Balance */}
+        {/* Unit + Initial Quantity */}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label htmlFor="nm-unit" className={lbl}>
@@ -116,7 +154,7 @@ export function AddNewMaterialForm() {
             </select>
           </div>
           <div>
-            <label htmlFor="nm-balance" className={lbl}>Opening Balance</label>
+            <label htmlFor="nm-balance" className={lbl}>Initial Quantity</label>
             <input
               id="nm-balance"
               type="number"
@@ -129,7 +167,9 @@ export function AddNewMaterialForm() {
               className={inp}
               disabled={isPending}
             />
-            <p className="mt-1 text-xs text-[#9CA3AF]">Leave as 0 to register the material now and receive quantity later.</p>
+            <p className="mt-1 text-xs text-[#9CA3AF]">
+              Enter quantity already available when adding this material. Leave as 0 to register the material now and receive quantity later.
+            </p>
           </div>
         </div>
 
@@ -168,14 +208,31 @@ export function AddNewMaterialForm() {
             {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
             {isPending ? "Saving…" : "Add Material"}
           </button>
-          <Link
-            href="/store/offline-inventory"
-            className="rounded-md border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-bold text-[#4B5563] transition hover:bg-gray-50"
-          >
-            Cancel
-          </Link>
+          {modalMode ? (
+            <button
+              type="button"
+              onClick={() => modal?.requestClose()}
+              className="rounded-md border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-bold text-[#4B5563] transition hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+          ) : (
+            <Link
+              href="/store/offline-inventory"
+              className="rounded-md border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-bold text-[#4B5563] transition hover:bg-gray-50"
+            >
+              Cancel
+            </Link>
+          )}
         </div>
       </form>
+  );
+
+  if (modalMode) return formEl;
+
+  return (
+    <div className="mx-auto w-full max-w-2xl rounded-md border border-[#E5E7EB] bg-white p-6 shadow-sm">
+      {formEl}
     </div>
   );
 }

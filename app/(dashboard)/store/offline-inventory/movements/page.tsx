@@ -45,7 +45,7 @@ export default async function MovementHistoryPage({
   // not a description of every movement type still visible in the filter.
   const pageDescription = isStoreKeeper
     ? "Materials sent by Store for Job Cards."
-    : "Materials received, used, and tracked against Job Cards.";
+    : "Materials received, issued, and tracked against Job Cards.";
 
   const params = (await searchParams) ?? {};
   const q    = single(params.q)?.trim() ?? "";
@@ -136,6 +136,14 @@ export default async function MovementHistoryPage({
       />
 
       <div className="space-y-4 p-4 lg:p-6">
+        {/* Simple Wording Cleanup Task 5: subtle, one-line explanation of
+            "Initial Stock" — Store Keeper's reduced view never shows the
+            Movement Type column, so the explanation would be irrelevant there. */}
+        {!isStoreKeeper && (
+          <p className="text-xs text-[#9CA3AF]">
+            Initial Stock means quantity entered when the material was first added to the system.
+          </p>
+        )}
         {/* Sidebar Access Alignment Task 7: same wording as the Offline
             Inventory Control balance page, so Engineer/Data Entry/Manager
             never read this page as "where I do store entry". */}
@@ -159,9 +167,9 @@ export default async function MovementHistoryPage({
                 defaultValue={type}
               >
                 <option value="">All types</option>
-                <option value="OPENING_STOCK">Opening Stock</option>
+                <option value="OPENING_STOCK">Initial Stock</option>
                 <option value="RECEIVED">Received</option>
-                <option value="ISSUED">Used</option>
+                <option value="ISSUED">Issued</option>
               </select>
               <input
                 className="focus-ring min-h-10 rounded-md border border-[#DDE2EA] px-3 py-2 text-sm"
@@ -205,7 +213,7 @@ export default async function MovementHistoryPage({
                 <div>
                   <h2 className="text-lg font-black text-[#111827]">No material movements recorded yet.</h2>
                   <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">
-                    Received and used materials will appear here.
+                    Received and issued materials will appear here.
                   </p>
                 </div>
               )}
@@ -222,8 +230,8 @@ export default async function MovementHistoryPage({
               <table className="w-full text-sm">
                 <thead className="border-b border-[#E5E7EB] bg-[#F9FAFB] text-left text-xs font-bold uppercase tracking-wide text-[#4B5563]">
                   <tr>
-                    <th className="px-4 py-3">Date</th>
-                    {!isStoreKeeper && <th className="px-4 py-3">Type</th>}
+                    <th className="px-4 py-3">Record Date</th>
+                    {!isStoreKeeper && <th className="px-4 py-3">Movement Type</th>}
                     <th className="px-4 py-3">Material</th>
                     {!isStoreKeeper && <th className="px-4 py-3">Category</th>}
                     {!isStoreKeeper && <th className="px-4 py-3">Part No.</th>}

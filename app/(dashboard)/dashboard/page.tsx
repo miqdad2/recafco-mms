@@ -55,6 +55,8 @@ import { JobCardSubmittedModal } from "@/components/work-orders/job-card-submitt
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
 import { StoreSendMaterialsPopup } from "@/components/store/store-send-materials-popup";
+import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
+import { getAssetPickerOptions } from "@/lib/assets/picker-options";
 
 // ── Types ─────────────────────────────────────────────────────────────
 type WoRow = {
@@ -431,7 +433,15 @@ function KpiRow({ cards, cols }: { cards: KpiCard[]; cols: string }) {
 }
 
 // ── Page ──────────────────────────────────────────────────────────────
-type PageProps = { searchParams?: Promise<{ preview?: string; sendPreview?: string; success?: string }> };
+type PageProps = {
+  searchParams?: Promise<{
+    preview?: string;
+    sendPreview?: string;
+    success?: string;
+    new_job_card?: string;
+    asset_id?: string;
+  }>;
+};
 
 export default async function DashboardPage({ searchParams }: PageProps) {
   const context = await requireUser();
@@ -479,21 +489,11 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         ...underReviewRows.map((r) => r.id),
         ...openRows.map((r) => r.id),
       ]);
-      const [draftCount, approvedCount, activeCount, closedRecentCount, materialsAwaitingReceiptCount] = await Promise.all([
+      const [draftCount, approvedCount, activeCount, closedRecentCount] = await Promise.all([
         safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Created" }] } })),
         safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Approved" }] } })),
         safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: { in: ACTIVE_JOB_CARD_STATUSES } }] } })),
         safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Closed", updated_at: { gte: recentlyClosedSince } }] } })),
-        // Manager Approval Success Popup and Materials Awaiting Receipt Flow
-        // Task 6: same "Materials Awaiting Receipt" definition as Manager's
-        // dashboard card and the Materials Requests page — approved, not yet
-        // received, and the linked Job Card (mine) is Open.
-        safeNum(prisma.parts_requests.count({
-          where: {
-            status: { in: OPEN_PR_STATUSES },
-            work_orders: { AND: [{ deleted_at: null }, visibilityFilter, { status: { in: OPEN_JOB_CARD_STATUSES } }] },
-          },
-        })),
       ]);
       return {
         draftCount,
@@ -502,7 +502,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         activeCount,
         correctionCount: pendingCorrectionIds.size,
         closedRecentCount,
-        materialsAwaitingReceiptCount,
       };
     }),
     prisma.work_orders
@@ -579,16 +578,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           select: { id: true },
         }),
         safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Closed", updated_at: { gte: recentlyClosedSince } }] } })),
-        // Manager Approval Success Popup and Materials Awaiting Receipt Flow
-        // Task 6: "Materials Awaiting Receipt" — not yet received AND its
-        // Job Card is actually Open, matching the same materialsReceiptStatus
-        // definition the Materials Requests page uses, not just "requested".
-        safeNum(prisma.parts_requests.count({
-          where: {
-            status: { in: OPEN_PR_STATUSES },
-            work_orders: { status: { in: OPEN_JOB_CARD_STATUSES } },
-          },
-        })),
         // Job Card Status Simplification Task 6: "Open" split into
         // "Approved" (nothing has moved yet) and "Active" (materials
         // moving, assigned, or work started).
@@ -619,9 +608,8 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     }));
   const mgCorrectionCount = mgPendingCorrectionIds.size;
   const mgClosedRecentCount = mgData?.[2] ?? 0;
-  const mgOpenMaterialsRequestsCount = mgData?.[3] ?? 0;
-  const mgApprovedCount = mgData?.[4] ?? 0;
-  const mgActiveCount = mgData?.[5] ?? 0;
+  const mgApprovedCount = mgData?.[3] ?? 0;
+  const mgActiveCount = mgData?.[4] ?? 0;
 
   // Manager Dashboard Clarity Task 8: "Needs Your Action" also covers Open
   // Job Cards actually ready for the Manager to close (In Progress) — a
@@ -827,6 +815,16 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const rawPreview = sp.preview ?? null;
   const previewId =
     rawPreview && /^[0-9a-f-]{36}$/i.test(rawPreview) ? rawPreview : null;
+
+  // New Job Card Modal Wizard Refactor: opened via ?new_job_card=1 as an
+  // overlay on top of the dashboard, same convention as ?sendPreview below —
+  // the asset picker list is only fetched when the modal is actually open,
+  // and only for users who actually hold work_orders.manage (same gate the
+  // standalone /maintenance/work-orders/new route enforces).
+  const canCreateJobCard =
+    context.role?.slug === "super_admin" || context.permissions.includes("work_orders.manage");
+  const showNewJobCardModal = sp.new_job_card === "1" && canCreateJobCard;
+  const newJobCardAssets = showNewJobCardModal ? await getAssetPickerOptions() : [];
 
   // Store Guided Send Materials Popup Workflow Unit Task 2: a second,
   // independent preview param (never conflated with the Job Card ?preview)
@@ -1144,24 +1142,28 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 Materials Requests restored (requested materials are tracked
                 and received there). */}
             <div className="grid grid-cols-2 gap-2 xl:grid-cols-5">
-              <QuickAction label="Create New Job Card" href="/maintenance/work-orders/new" icon={PlusCircle}   iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
+              <QuickAction label="Create New Job Card" href="?new_job_card=1" icon={PlusCircle}   iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
               <QuickAction label="View My Job Cards"   href="/maintenance/work-orders"     icon={ClipboardList} iconBg="bg-green-50"  iconColor="text-green-600" />
               <QuickAction label="Materials Requests"  href="/store/parts-requests"        icon={ShoppingCart}  iconBg="bg-violet-50" iconColor="text-violet-600" />
               <QuickAction label="Offline Inventory Control" href="/store/offline-inventory" icon={Package}    iconBg="bg-amber-50"  iconColor="text-amber-600" />
               <QuickAction label="Assets & Equipment"  href="/assets"                      icon={Gauge}        iconBg="bg-blue-50"   iconColor="text-blue-600" />
             </div>
 
-            {/* KPI Queue — five simplified statuses plus Materials Awaiting
-                Receipt (Task 8, extended by Manager Approval Success Popup
-                and Materials Awaiting Receipt Flow Task 6). */}
+            {/* Dashboard Materials to Receive Card Removal Task 2/3: the
+                "Materials to Receive" KPI was removed per the business
+                decision that materials receiving belongs on the Materials
+                Requests page, not the main dashboard — the Materials
+                Requests quick action above and the Materials Requests page's
+                own "Pending" tab remain the place to track this. Five
+                cards now (was six) — same "5 simplified cards" grid used by
+                Manager's Job Cards row and Super Admin's System Overview. */}
             <section className="space-y-2">
               <SectionLabel>My Work Today</SectionLabel>
-              <KpiRow cols="sm:grid-cols-3 xl:grid-cols-6" cards={[
+              <KpiRow cols="sm:grid-cols-3 xl:grid-cols-5" cards={[
                 { label: "Drafts",                value: nuQueue.draftCount,      icon: FileText,      tone: "gray",                                          href: "/maintenance/work-orders?status=Draft" },
                 { label: "Submitted",             value: nuQueue.submittedCount,  icon: Clock,         tone: nuQueue.submittedCount > 0 ? "amber" : "green",  href: "/maintenance/work-orders?status=Submitted", detail: "Waiting on Supervisor / Manager decision." },
                 { label: "Approved",              value: nuQueue.approvedCount,   icon: BadgeCheck,    tone: "blue",                                          href: "/maintenance/work-orders?status=Approved", detail: "Approved by Manager" },
                 { label: "Active",                value: nuQueue.activeCount,     icon: Wrench,        tone: "blue",                                          href: "/maintenance/work-orders?status=Active", detail: "Work in progress" },
-                { label: "Materials to Receive", value: nuQueue.materialsAwaitingReceiptCount, icon: ShoppingCart, tone: nuQueue.materialsAwaitingReceiptCount > 0 ? "amber" : "green", href: "/store/parts-requests?status=AwaitingReceipt", detail: "Approved materials not received yet" },
                 { label: "Closed recently",       value: nuQueue.closedRecentCount, icon: CheckCircle2, tone: "green",                                        href: "/maintenance/work-orders?status=Closed" },
               ]} />
             </section>
@@ -1176,7 +1178,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                   <p className="text-sm font-semibold text-[#111827]">No Job Cards yet.</p>
                   <p className="text-xs text-[#6B7280]">Create your first Job Card to start tracking maintenance work.</p>
                   <Link
-                    href="/maintenance/work-orders/new"
+                    href="?new_job_card=1"
                     className="mt-1 rounded-md bg-[#ED1C24] px-4 py-2 text-xs font-bold text-white transition hover:bg-red-700"
                   >
                     Create Job Card
@@ -1203,15 +1205,20 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               <QuickAction label="Reports"             href="/reports"                                   icon={BarChart3}     iconBg="bg-gray-100"  iconColor="text-[#4B5563]" />
             </div>
 
-            {/* Simplified Workflow Correction Unit Task 7: Materials Requests
-                KPI restored alongside the five simplified Job Card statuses. */}
+            {/* Dashboard Materials to Receive Card Removal Task 2/3: the
+                "Materials to Receive" KPI was removed per the business
+                decision that materials receiving belongs on the Materials
+                Requests page, not the main dashboard — the Materials
+                Requests quick action above and the Materials Requests page's
+                own "Pending" tab remain the place to track this. Five
+                cards now (was six) — cols matches the same "5 simplified
+                cards" grid already used by System Overview below. */}
             <section className="space-y-2">
               <SectionLabel>Job Cards</SectionLabel>
-              <KpiRow cols="sm:grid-cols-3 xl:grid-cols-6" cards={[
+              <KpiRow cols="sm:grid-cols-3 xl:grid-cols-5" cards={[
                 { label: "Submitted for Review",     value: mgSubmittedRows.length,   icon: ClipboardList, tone: mgSubmittedRows.length > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Submitted" },
                 { label: "Approved",                  value: mgApprovedCount,          icon: BadgeCheck,    tone: "blue",                                          href: "/maintenance/work-orders?status=Approved" },
                 { label: "Active",                    value: mgActiveCount,            icon: Wrench,        tone: "blue",                                          href: "/maintenance/work-orders?status=Active", detail: "Work in progress" },
-                { label: "Materials to Receive", value: mgOpenMaterialsRequestsCount, icon: ShoppingCart, tone: mgOpenMaterialsRequestsCount > 0 ? "amber" : "green", href: "/store/parts-requests?status=AwaitingReceipt", detail: "Approved materials not received yet" },
                 { label: "Offline Inventory Control", value: offlineMovementsToday,    icon: Package,       tone: "gray",                                          href: "/store/offline-inventory", detail: "Movements today" },
                 { label: "Closed recently",           value: mgClosedRecentCount,      icon: CheckCircle2,  tone: "green",                                         href: "/maintenance/work-orders?status=Closed" },
               ]} />
@@ -1362,7 +1369,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         {isSuperAdmin && saCount && (
           <>
             <div className="grid grid-cols-2 gap-2 xl:grid-cols-5">
-              <QuickAction label="Create Job Card"     href="/maintenance/work-orders/new" icon={PlusCircle}   iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
+              <QuickAction label="Create Job Card"     href="?new_job_card=1" icon={PlusCircle}   iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
               <QuickAction label="Assets & Equipment"  href="/assets"                      icon={Gauge}        iconBg="bg-blue-50"   iconColor="text-blue-600" />
               <QuickAction label="Materials Requests"  href="/store/parts-requests"        icon={ShoppingCart} iconBg="bg-amber-50"  iconColor="text-amber-600" />
               <QuickAction label="Offline Inventory Control" href="/store/offline-inventory" icon={Package}   iconBg="bg-green-50"  iconColor="text-green-600" />
@@ -1500,6 +1507,17 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             </div>
           </>
         )
+      )}
+
+      {/* New Job Card Modal Wizard Refactor: opened via ?new_job_card=1,
+          overlaid on top of the dashboard exactly like the preview/send
+          popups above — closing strips the param and returns to /dashboard. */}
+      {showNewJobCardModal && (
+        <WorkOrderWizard
+          assets={newJobCardAssets}
+          preselectedAssetId={sp.asset_id ?? null}
+          dismissHref="/dashboard"
+        />
       )}
     </>
   );
