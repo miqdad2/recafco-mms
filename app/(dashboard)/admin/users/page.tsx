@@ -21,6 +21,12 @@ const ERROR_LABELS: Record<string, string> = {
   "update-failed": "Failed to save changes.",
   "not-found": "User not found.",
   "forbidden": "You do not have permission to perform this action.",
+  "insufficient-permissions": "You do not have permission to perform this action.",
+};
+
+const SUCCESS_LABELS: Record<string, string> = {
+  "user-created": "User account created successfully.",
+  "user-deleted": "User Deleted — the user account has been permanently deleted.",
 };
 
 async function getAuthUsers(): Promise<SerializedAuthUser[]> {
@@ -30,16 +36,36 @@ async function getAuthUsers(): Promise<SerializedAuthUser[]> {
         profile_id: true,
         email: true,
         must_reset_password: true,
+        last_login_at: true,
+        last_active_at: true,
+        login_count: true,
+        failed_login_count: true,
+        last_failed_login_at: true,
+        locked_until: true,
       },
     });
     return rows.map((r) => ({
       profile_id: r.profile_id,
       email: r.email,
       must_reset_password: r.must_reset_password,
+      last_login_at: r.last_login_at ? r.last_login_at.toISOString() : null,
+      last_active_at: r.last_active_at ? r.last_active_at.toISOString() : null,
+      login_count: r.login_count,
+      failed_login_count: r.failed_login_count,
+      last_failed_login_at: r.last_failed_login_at ? r.last_failed_login_at.toISOString() : null,
+      locked_until: r.locked_until ? r.locked_until.toISOString() : null,
     }));
   } catch {
     return [];
   }
+}
+
+function isSameCalendarDay(a: Date, b: Date) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
 }
 
 export const dynamic = "force-dynamic";
@@ -72,8 +98,6 @@ export default async function UsersPage({
       getAuthUsers(),
     ]);
 
-  const superAdminRoleId = roles.find((r) => r.slug === "super_admin")?.id ?? "";
-
   const serialize = (
     p: (typeof nonArchivedProfilesRaw)[number],
     archived: boolean
@@ -95,15 +119,24 @@ export default async function UsersPage({
     ...archivedProfilesRaw.map((p) => serialize(p, true)),
   ];
 
+  const authByProfileId = new Map(authUsers.map((a) => [a.profile_id, a]));
+  const now = new Date();
+
   const totalCount = nonArchivedProfilesRaw.length;
   const activeCount = nonArchivedProfilesRaw.filter((p) => p.is_active).length;
-  const sysAdminCount = nonArchivedProfilesRaw.filter(
-    (p) => p.role_id === superAdminRoleId
+  const loggedInTodayCount = nonArchivedProfilesRaw.filter((p) => {
+    const lastLogin = authByProfileId.get(p.id)?.last_login_at;
+    return lastLogin != null && isSameCalendarDay(new Date(lastLogin), now);
+  }).length;
+  const neverLoggedInCount = nonArchivedProfilesRaw.filter(
+    (p) => !authByProfileId.get(p.id)?.last_login_at
   ).length;
-  const normalUserCount = totalCount - sysAdminCount;
+  const lockedCount = nonArchivedProfilesRaw.filter((p) => {
+    const lockedUntil = authByProfileId.get(p.id)?.locked_until;
+    return lockedUntil != null && new Date(lockedUntil) > now;
+  }).length;
 
-  const successMessage =
-    sp.success === "user-created" ? "User account created successfully." : null;
+  const successMessage = sp.success ? (SUCCESS_LABELS[sp.success] ?? null) : null;
   const errorMessage = sp.error ? (ERROR_LABELS[sp.error] ?? "An error occurred.") : null;
 
   return (
@@ -137,8 +170,8 @@ export default async function UsersPage({
           </div>
         )}
 
-        {/* KPI cards — compact, 2-col mobile, 4-col sm+ */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {/* KPI cards — login-adoption monitoring, 2-col mobile, 5-col lg+ */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <div className="rounded-md border border-[#DDE2EA] bg-white px-4 py-3 shadow-sm">
             <p className="text-[10px] font-black uppercase tracking-widest text-[#4B5563]">
               Total Users
@@ -147,21 +180,31 @@ export default async function UsersPage({
           </div>
           <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 shadow-sm">
             <p className="text-[10px] font-black uppercase tracking-widest text-green-700">
-              Active
+              Active Users
             </p>
             <p className="mt-1 text-2xl font-black text-[#111827]">{activeCount}</p>
+            <p className="mt-0.5 text-[10px] text-green-700/80">Can access the system</p>
           </div>
-          <div className="rounded-md border border-[#DDE2EA] bg-white px-4 py-3 shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-widest text-[#4B5563]">
-              Sys Admins
+          <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 shadow-sm">
+            <p className="text-[10px] font-black uppercase tracking-widest text-blue-700">
+              Logged In Today
             </p>
-            <p className="mt-1 text-2xl font-black text-[#111827]">{sysAdminCount}</p>
+            <p className="mt-1 text-2xl font-black text-[#111827]">{loggedInTodayCount}</p>
+            <p className="mt-0.5 text-[10px] text-blue-700/80">Users who logged in today</p>
           </div>
-          <div className="rounded-md border border-[#DDE2EA] bg-white px-4 py-3 shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-widest text-[#4B5563]">
-              Normal Users
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 shadow-sm">
+            <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">
+              Never Logged In
             </p>
-            <p className="mt-1 text-2xl font-black text-[#111827]">{normalUserCount}</p>
+            <p className="mt-1 text-2xl font-black text-[#111827]">{neverLoggedInCount}</p>
+            <p className="mt-0.5 text-[10px] text-amber-700/80">Accounts not used yet</p>
+          </div>
+          <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 shadow-sm">
+            <p className="text-[10px] font-black uppercase tracking-widest text-red-700">
+              Locked Accounts
+            </p>
+            <p className="mt-1 text-2xl font-black text-[#111827]">{lockedCount}</p>
+            <p className="mt-0.5 text-[10px] text-red-700/80">Blocked after failed attempts</p>
           </div>
         </div>
 

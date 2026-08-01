@@ -146,6 +146,12 @@ export async function upsertProfileAction(formData: FormData) {
     actionUrl: "/admin/users",
     actionLabel: "Open users"
   });
+  await emitRealtimeEvent({
+    eventType: REALTIME_EVENTS.USER_UPDATED,
+    entityType: "profile",
+    entityId: record.id,
+    actorProfileId: context.userId
+  });
 
   revalidatePath("/admin/users");
   revalidatePath("/dashboard");
@@ -418,6 +424,12 @@ export async function resetUserPasswordAction(formData: FormData) {
     entityId: parsed.data.profile_id,
     summary: `Admin reset password for user — must change on next login`,
     metadata: { reset_by: context.userId }
+  });
+  await emitRealtimeEvent({
+    eventType: REALTIME_EVENTS.USER_PASSWORD_RESET,
+    entityType: "profile",
+    entityId: parsed.data.profile_id,
+    actorProfileId: context.userId
   });
 
   revalidatePath(`/admin/users/${parsed.data.profile_id}`);

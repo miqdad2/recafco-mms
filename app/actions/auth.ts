@@ -9,6 +9,7 @@ import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { writeAuditLog } from "@/lib/audit/log";
 import { prisma } from "@/lib/db/prisma";
 import { checkLoginEmailRateLimit, resetLoginEmailRateLimit } from "@/lib/security/rate-limit";
+import { emitRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 
 // How many wrong passwords before the account is locked.
 const LOCKOUT_THRESHOLD = 5;
@@ -115,6 +116,7 @@ export async function signInAction(formData: FormData) {
       where: { id: user.user_id },
       data: {
         failed_login_count: newCount,
+        last_failed_login_at: new Date(),
         ...(shouldLock ? { locked_until: lockedUntil } : {})
       }
     });
@@ -129,7 +131,18 @@ export async function signInAction(formData: FormData) {
         summary: `Account locked for 15 minutes after ${newCount} consecutive failed login attempts`,
         metadata: { email: user.email, failed_attempts: newCount, locked_until: lockedUntil?.toISOString() }
       });
+      await emitRealtimeEvent({
+        eventType: REALTIME_EVENTS.USER_ACCOUNT_LOCKED,
+        entityType: "profile",
+        entityId: user.profile_id
+      });
     }
+
+    await emitRealtimeEvent({
+      eventType: REALTIME_EVENTS.USER_LOGIN_FAILED,
+      entityType: "profile",
+      entityId: user.profile_id
+    });
 
     await writeLoginAttemptAudit({
       profileId: user.profile_id,
@@ -155,12 +168,15 @@ export async function signInAction(formData: FormData) {
   }
 
   // ── Successful login — reset counters and create session ─────────────────
+  const loginTime = new Date();
   await prisma.auth_users.update({
     where: { id: user.user_id },
     data: {
       failed_login_count: 0,
       locked_until: null, // always clear on success in case an admin had set it
-      last_login_at: new Date()
+      last_login_at: loginTime,
+      last_active_at: loginTime,
+      login_count: { increment: 1 }
     }
   });
 
@@ -177,6 +193,12 @@ export async function signInAction(formData: FormData) {
     summary: "User signed in with local authentication",
     metadata: { email: user.email }
   });
+  await emitRealtimeEvent({
+    eventType: REALTIME_EVENTS.USER_LOGIN_SUCCESS,
+    entityType: "profile",
+    entityId: user.profile_id,
+    actorProfileId: user.profile_id
+  });
 
   redirect(safeNext(parsed.data.next));
 }
@@ -191,6 +213,12 @@ export async function signOutAction() {
       entityId: context.userId,
       summary: "User signed out",
       metadata: { email: context.email }
+    });
+    await emitRealtimeEvent({
+      eventType: REALTIME_EVENTS.USER_LOGOUT,
+      entityType: "profile",
+      entityId: context.userId,
+      actorProfileId: context.userId
     });
   }
   await revokeCurrentSession();

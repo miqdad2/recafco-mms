@@ -1,5 +1,6 @@
 "use server";
 
+import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -8,6 +9,8 @@ import { requirePermission } from "@/lib/auth/context";
 import { writeAuditLog } from "@/lib/audit/log";
 import { prisma } from "@/lib/db/prisma";
 import { notifyByEvent } from "@/lib/notifications/service";
+import { emitRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
+import { countActiveSuperAdmins, getUserDeletionImpact } from "@/lib/user-lifecycle/impact";
 import type { CurrentUserContext } from "@/lib/auth/context";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -102,6 +105,12 @@ export async function changeUserRoleAction(formData: FormData) {
     metadata: { new_role: newRole?.name ?? "none" },
     actionUrl: backUrl,
     actionLabel: "View user"
+  });
+  await emitRealtimeEvent({
+    eventType: REALTIME_EVENTS.USER_ROLE_CHANGED,
+    entityType: "profile",
+    entityId: profile_id,
+    actorProfileId: context.userId
   });
 
   revalidatePath(backUrl);
@@ -202,6 +211,12 @@ export async function toggleUserActiveAction(formData: FormData) {
     summary: `${is_active ? "Activated" : "Deactivated"} user account for ${target.full_name}`,
     metadata: { is_active, sessions_revoked_on_deactivate: !is_active }
   });
+  await emitRealtimeEvent({
+    eventType: REALTIME_EVENTS.USER_UPDATED,
+    entityType: "profile",
+    entityId: profile_id,
+    actorProfileId: context.userId
+  });
 
   revalidatePath(backUrl);
   revalidatePath("/admin/users");
@@ -247,9 +262,64 @@ export async function unlockUserAccountAction(formData: FormData) {
     actionUrl: backUrl,
     actionLabel: "View user"
   });
+  await emitRealtimeEvent({
+    eventType: REALTIME_EVENTS.USER_ACCOUNT_UNLOCKED,
+    entityType: "profile",
+    entityId: profile_id,
+    actorProfileId: context.userId
+  });
 
   revalidatePath(backUrl);
   redirect(`${backUrl}?success=unlocked`);
+}
+
+// ── Force password change on next login ───────────────────────────────────────
+
+export async function forcePasswordChangeAction(formData: FormData) {
+  const context = await requirePermission("admin.users.manage");
+
+  const parsed = z
+    .object({ profile_id: z.string().uuid() })
+    .safeParse(Object.fromEntries(formData));
+
+  if (!parsed.success) redirect("/admin/users?error=invalid-input");
+  const { profile_id } = parsed.data;
+  const backUrl = `/admin/users/${profile_id}`;
+
+  if (profile_id === context.userId) {
+    redirect(`${backUrl}?error=cannot-force-own-password-change`);
+  }
+
+  await assertCanModify(context, profile_id, backUrl);
+
+  const authRows = await prisma.$queryRaw<{ id: string }[]>`
+    select id from public.auth_users where profile_id = ${profile_id}::uuid limit 1
+  `;
+  if (!authRows[0]) redirect(`${backUrl}?error=no-login-account`);
+
+  await prisma.auth_users.update({
+    where: { id: authRows[0].id },
+    data: { must_reset_password: true, updated_at: new Date() }
+  });
+
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "user.password_change_forced",
+    entityType: "profile",
+    entityId: profile_id,
+    summary: "Admin required password change on next login",
+    metadata: {}
+  });
+  await emitRealtimeEvent({
+    eventType: REALTIME_EVENTS.USER_PASSWORD_CHANGE_FORCED,
+    entityType: "profile",
+    entityId: profile_id,
+    actorProfileId: context.userId
+  });
+
+  revalidatePath(backUrl);
+  revalidatePath("/admin/users");
+  redirect(`${backUrl}?success=password-change-forced`);
 }
 
 // ── Revoke all user sessions ──────────────────────────────────────────────────
@@ -411,6 +481,12 @@ export async function archiveUserAction(formData: FormData) {
     summary: `Archived user account for ${target.full_name}. All sessions revoked.`,
     metadata: { archived_at: now.toISOString() }
   });
+  await emitRealtimeEvent({
+    eventType: REALTIME_EVENTS.USER_ARCHIVED,
+    entityType: "profile",
+    entityId: profile_id,
+    actorProfileId: context.userId
+  });
 
   revalidatePath(backUrl);
   revalidatePath("/admin/users");
@@ -465,10 +541,115 @@ export async function restoreUserAction(formData: FormData) {
     summary: `Restored archived user account for ${target.full_name}. Account remains inactive.`,
     metadata: { restored_at: now.toISOString() }
   });
+  await emitRealtimeEvent({
+    eventType: REALTIME_EVENTS.USER_RESTORED,
+    entityType: "profile",
+    entityId: profile_id,
+    actorProfileId: context.userId
+  });
 
   revalidatePath(backUrl);
   revalidatePath("/admin/users");
   redirect(`${backUrl}?success=user-restored`);
+}
+
+// ── Delete user permanently (Super Admin only) ─────────────────────────────────
+
+export async function deleteUserAction(formData: FormData) {
+  const context = await requirePermission("admin.users.manage");
+
+  // Only Super Admin can permanently delete accounts.
+  if (context.role?.slug !== "super_admin") {
+    redirect("/admin/users?error=insufficient-permissions");
+  }
+
+  const parsed = z
+    .object({ profile_id: z.string().uuid() })
+    .safeParse(Object.fromEntries(formData));
+
+  if (!parsed.success) redirect("/admin/users?error=invalid-input");
+  const { profile_id } = parsed.data;
+  const backUrl = `/admin/users/${profile_id}`;
+
+  // Safety: cannot delete the account currently signed in.
+  if (profile_id === context.userId) {
+    redirect(`${backUrl}?error=cannot-delete-self`);
+  }
+
+  const target = await prisma.$queryRaw<
+    Array<{ full_name: string; deleted_at: Date | null; role_slug: string | null; email: string | null }>
+  >`
+    select p.full_name, p.deleted_at, r.slug as role_slug, au.email
+    from public.profiles p
+    left join public.roles r on r.id = p.role_id
+    left join public.auth_users au on au.profile_id = p.id
+    where p.id = ${profile_id}::uuid
+    limit 1
+  `;
+  const targetUser = target[0];
+  if (!targetUser) redirect("/admin/users?error=not-found");
+
+  // Safety: cannot delete the last System Administrator.
+  if (targetUser.role_slug === "super_admin") {
+    const remaining = await countActiveSuperAdmins();
+    if (remaining <= 1) {
+      redirect(`${backUrl}?error=cannot-delete-last-admin`);
+    }
+  }
+
+  // Safety: refuse permanent delete when linked business records exist —
+  // recommend Archive instead. See lib/user-lifecycle/impact.ts for exactly
+  // which tables this checks (including the one table, technician notes,
+  // that would otherwise cascade-delete silently rather than block).
+  const impact = await getUserDeletionImpact(profile_id);
+  if (!impact.canPermanentDelete) {
+    redirect(`${backUrl}?error=has-linked-records`);
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Delete auth-only data first. auth_sessions/auth_users both already
+      // cascade from profiles, but doing this explicitly keeps the delete
+      // order obvious and matches the archive/restore actions' style above.
+      await tx.auth_sessions.deleteMany({ where: { profile_id } });
+      await tx.profiles.delete({ where: { id: profile_id } });
+    });
+  } catch (err) {
+    // Backstop for any FK this app doesn't already know to check for —
+    // every other table referencing profiles.id is ON DELETE
+    // NO ACTION/RESTRICT, so an unexpected linked record surfaces here as a
+    // constraint violation instead of silently deleting or crashing.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+      redirect(`${backUrl}?error=has-linked-records`);
+    }
+    throw err;
+  }
+
+  // The profile row is gone — audit against its id with the details
+  // captured before deletion. No password, hash, or token is ever included.
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "user.deleted",
+    entityType: "profile",
+    entityId: profile_id,
+    summary: `Permanently deleted user account for ${targetUser.full_name}`,
+    metadata: {
+      deleted_profile_id: profile_id,
+      deleted_email: targetUser.email,
+      deleted_name: targetUser.full_name,
+      deleted_by: context.userId,
+      deleted_at: new Date().toISOString()
+    }
+  });
+  await emitRealtimeEvent({
+    eventType: REALTIME_EVENTS.USER_DELETED,
+    entityType: "profile",
+    entityId: profile_id,
+    actorProfileId: context.userId
+  });
+
+  revalidatePath("/admin/users");
+  redirect("/admin/users?success=user-deleted");
 }
 
 // ── Remove permission override ────────────────────────────────────────────────

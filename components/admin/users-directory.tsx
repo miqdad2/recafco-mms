@@ -8,6 +8,7 @@ import { upsertProfileAction as upsertProfileFromAdmin } from "@/app/actions/adm
 import { restoreUserAction } from "@/app/actions/user-access";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { ACCOUNT_TYPE_LABEL } from "@/lib/users/account-types";
+import { formatExactDateTime, resolveDisplayLoginCount, resolveLastSeen } from "@/lib/utils";
 
 export type SerializedProfile = {
   id: string;
@@ -26,14 +27,63 @@ export type SerializedAuthUser = {
   profile_id: string;
   email: string;
   must_reset_password: boolean;
+  last_login_at: string | null;
+  last_active_at: string | null;
+  login_count: number;
+  failed_login_count: number;
+  last_failed_login_at: string | null;
+  locked_until: string | null;
 };
 
-type StatusFilter = "all" | "active" | "inactive";
+type StatusFilter = "all" | "active" | "inactive" | "logged-in-today" | "never-logged-in" | "archived";
+
+const FILTERS: Array<{ value: StatusFilter; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+  { value: "logged-in-today", label: "Logged In Today" },
+  { value: "never-logged-in", label: "Never Logged In" },
+  { value: "archived", label: "Archived" },
+];
 
 const AVATAR_COLORS = [
   "bg-[#ED1C24]", "bg-[#2563EB]", "bg-[#16A34A]", "bg-[#7C3AED]",
   "bg-[#D97706]", "bg-[#0891B2]", "bg-[#DB2777]", "bg-[#374151]",
 ];
+
+function isSameCalendarDay(a: Date, b: Date) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function LastEventCell({ value }: { value: string | Date | null }) {
+  return value ? (
+    <span className="text-[#4B5563]">{formatExactDateTime(value)}</span>
+  ) : (
+    <span className="text-[#9CA3AF]">Never</span>
+  );
+}
+
+function isLockedNow(auth: SerializedAuthUser | undefined, now: Date) {
+  return !!auth?.locked_until && new Date(auth.locked_until) > now;
+}
+
+// Users Page Monitoring Accuracy and Real-Time Unit Task 7: one badge per
+// row, chosen by priority, instead of stacking every applicable signal —
+// Locked is the most actionable (blocks the user right now), then a pending
+// forced password change, then adoption signals (never logged in / logged
+// in today) which are informational rather than urgent.
+function primaryBadge(auth: SerializedAuthUser | undefined, now: Date) {
+  if (isLockedNow(auth, now)) return { label: "Locked", tone: "red" as const };
+  if (auth?.must_reset_password) return { label: "Must reset password", tone: "amber" as const };
+  if (!auth) return null;
+  if (!auth.last_login_at) return { label: "Never logged in", tone: "gray" as const };
+  if (isSameCalendarDay(new Date(auth.last_login_at), now)) return { label: "Logged in today", tone: "green" as const };
+  return null;
+}
 
 function UserAvatar({ name }: { name: string }) {
   const parts = name.trim().split(/\s+/);
@@ -76,23 +126,42 @@ export function UsersDirectory({
   );
 
   const filtered = useMemo(() => {
+    const now = new Date();
     return profiles.filter((p) => {
-      if (statusFilter === "active" && !p.is_active) return false;
-      if (statusFilter === "inactive" && p.is_active) return false;
+      const auth = authMap.get(p.id);
+
+      if (statusFilter === "archived") {
+        if (!p.is_archived) return false;
+      } else {
+        if (p.is_archived) return false;
+        if (statusFilter === "active" && !p.is_active) return false;
+        if (statusFilter === "inactive" && p.is_active) return false;
+        if (statusFilter === "never-logged-in" && auth?.last_login_at) return false;
+        if (statusFilter === "logged-in-today") {
+          if (!auth?.last_login_at || !isSameCalendarDay(new Date(auth.last_login_at), now)) {
+            return false;
+          }
+        }
+      }
+
       if (search) {
         const q = search.toLowerCase();
-        const email = authMap.get(p.id)?.email ?? "";
+        const email = auth?.email ?? "";
+        const roleLabel = ACCOUNT_TYPE_LABEL[roleById.get(p.role_id ?? "") ?? ""] ?? "";
         if (
           !p.full_name.toLowerCase().includes(q) &&
           !email.toLowerCase().includes(q) &&
-          !(p.employee_number ?? "").toLowerCase().includes(q)
+          !(p.employee_number ?? "").toLowerCase().includes(q) &&
+          !roleLabel.toLowerCase().includes(q)
         ) {
           return false;
         }
       }
       return true;
     });
-  }, [profiles, search, statusFilter, authMap]);
+  }, [profiles, search, statusFilter, authMap, roleById]);
+
+  const now = new Date();
 
   return (
     <section className="overflow-hidden rounded-md border border-[#DDE2EA] bg-white shadow-sm">
@@ -101,7 +170,7 @@ export function UsersDirectory({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-black text-[#111827]">User Directory</h2>
-            <p className="mt-0.5 text-sm text-[#4B5563]">Manage user role / access type and access status.</p>
+            <p className="mt-0.5 text-sm text-[#4B5563]">Manage user role / access type, access status, and login activity.</p>
           </div>
           {/* Toolbar */}
           <div className="flex flex-wrap items-center gap-2">
@@ -110,27 +179,27 @@ export function UsersDirectory({
               <Search className="h-3.5 w-3.5 shrink-0 text-[#9CA3AF]" aria-hidden="true" />
               <input
                 type="text"
-                placeholder="Search name or email..."
+                placeholder="Search name, email, employee ID, or role..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-[#9CA3AF]"
                 aria-label="Search users"
               />
             </div>
-            {/* Status filter toggle */}
-            <div className="flex overflow-hidden rounded-md border border-[#E5E7EB] text-xs font-semibold">
-              {(["all", "active", "inactive"] as const).map((s) => (
+            {/* Status filter pills */}
+            <div className="flex flex-wrap gap-1.5">
+              {FILTERS.map((f) => (
                 <button
-                  key={s}
+                  key={f.value}
                   type="button"
-                  onClick={() => setStatusFilter(s)}
-                  className={`px-3 py-1.5 capitalize transition-colors ${
-                    statusFilter === s
-                      ? "bg-[#111827] text-white"
-                      : "bg-white text-[#4B5563] hover:bg-[#F8FAFC]"
+                  onClick={() => setStatusFilter(f.value)}
+                  className={`rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    statusFilter === f.value
+                      ? "border-[#111827] bg-[#111827] text-white"
+                      : "border-[#E5E7EB] bg-white text-[#4B5563] hover:bg-[#F8FAFC]"
                   }`}
                 >
-                  {s}
+                  {f.label}
                 </button>
               ))}
             </div>
@@ -143,23 +212,28 @@ export function UsersDirectory({
 
       {/* Table */}
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[640px] text-left text-sm">
+        <table className="w-full min-w-[980px] text-left text-sm">
           <thead>
             <tr className="border-b border-[#DDE2EA] bg-[#F8FAFC]">
               <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">User</th>
               <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Login</th>
               <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Role / Access Type</th>
               <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Status</th>
+              <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Last Login</th>
+              <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Login Count</th>
+              <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Last Seen</th>
               <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#4B5563]" />
             </tr>
           </thead>
           <tbody className="divide-y divide-[#EEF2F6]">
             {filtered.map((profile) => {
               const auth = authMap.get(profile.id);
+              const badge = primaryBadge(auth, now);
+              const muted = profile.is_archived || !profile.is_active;
               return (
                 <tr
                   key={profile.id}
-                  className={`transition-colors hover:bg-[#F8FAFC] ${profile.is_archived ? "opacity-70" : ""}`}
+                  className={`transition-colors hover:bg-[#F8FAFC] ${muted ? "opacity-70" : ""}`}
                 >
                   {/* User */}
                   <td className="px-4 py-3">
@@ -179,9 +253,9 @@ export function UsersDirectory({
                     {auth ? (
                       <div className="space-y-1">
                         <span className="text-sm text-[#111827]">{auth.email}</span>
-                        {auth.must_reset_password && (
+                        {badge && (
                           <div>
-                            <StatusBadge label="Must reset password" tone="amber" />
+                            <StatusBadge label={badge.label} tone={badge.tone} />
                           </div>
                         )}
                       </div>
@@ -239,6 +313,21 @@ export function UsersDirectory({
                         tone={profile.is_active ? "green" : "gray"}
                       />
                     )}
+                  </td>
+
+                  {/* Last Login */}
+                  <td className="px-4 py-3 whitespace-nowrap text-xs">
+                    <LastEventCell value={auth?.last_login_at ?? null} />
+                  </td>
+
+                  {/* Login Count */}
+                  <td className="px-4 py-3 text-xs font-semibold text-[#111827]">
+                    {resolveDisplayLoginCount(auth?.login_count, auth?.last_login_at ?? null)}
+                  </td>
+
+                  {/* Last Seen */}
+                  <td className="px-4 py-3 whitespace-nowrap text-xs">
+                    <LastEventCell value={resolveLastSeen(auth?.last_active_at ?? null, auth?.last_login_at ?? null)} />
                   </td>
 
                   {/* Actions */}

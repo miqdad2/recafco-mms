@@ -15,6 +15,28 @@ export const REALTIME_EVENTS = {
   WORK_ORDER_COMPLETED: "work_order.completed",
   USER_CREATED:         "user.created",
   USER_UPDATED:         "user.updated",
+
+  // Users Page Monitoring Accuracy and Real-Time Unit Task 8: login/session
+  // and admin-account-management events, all under the same "user." prefix
+  // the Users page already watches (<RealtimeRefresh watch={["user."]} />)
+  // — no new subscription needed on that page. USER_ACCOUNT_UNLOCKED is not
+  // in the task's literal event list but is added for symmetry with
+  // USER_ACCOUNT_LOCKED so the Locked Accounts KPI/badge also updates live
+  // when an admin unlocks an account, not only when one locks.
+  USER_LOGIN_SUCCESS:          "user.login_success",
+  USER_LOGIN_FAILED:           "user.login_failed",
+  USER_ACCOUNT_LOCKED:         "user.account_locked",
+  USER_ACCOUNT_UNLOCKED:       "user.account_unlocked",
+  USER_LOGOUT:                 "user.logout",
+  USER_ROLE_CHANGED:           "user.role_changed",
+  USER_ARCHIVED:               "user.archived",
+  USER_RESTORED:               "user.restored",
+  USER_PASSWORD_RESET:         "user.password_reset",
+  USER_PASSWORD_CHANGE_FORCED: "user.password_change_forced",
+  // Admin Delete User Option Unit: fired after a permanent delete commits.
+  // Still under "user." so the Users page's existing watch picks it up.
+  USER_DELETED:                "user.deleted",
+
   BACKUP_UPDATED:       "backup.updated",
   NOTIFICATION_UPDATED: "notification.updated",
 

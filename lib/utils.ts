@@ -39,6 +39,30 @@ export function formatExactDateTime(value: Date | string | null | undefined) {
   return formatted.replace(/\b(am|pm)\b/i, (m) => m.toUpperCase());
 }
 
+// Users Page Monitoring Accuracy Unit: users who logged in before
+// login_count/last_active_at existed (added by migration
+// 20260801000000_login_activity_tracking) have a real last_login_at but a
+// login_count of 0 and a null last_active_at — not a bug, just history that
+// predates the columns. Rather than backfilling (a write to every historical
+// row for a purely cosmetic gap), these two helpers resolve a display value
+// that never contradicts last_login_at. The underlying DB values are never
+// changed.
+export function resolveDisplayLoginCount(
+  loginCount: number | null | undefined,
+  lastLoginAt: Date | string | null | undefined
+) {
+  const count = loginCount ?? 0;
+  if (lastLoginAt && count < 1) return 1;
+  return count;
+}
+
+export function resolveLastSeen(
+  lastActiveAt: Date | string | null | undefined,
+  lastLoginAt: Date | string | null | undefined
+) {
+  return lastActiveAt ?? lastLoginAt ?? null;
+}
+
 export function initials(name: string | null | undefined) {
   if (!name) {
     return "RC";

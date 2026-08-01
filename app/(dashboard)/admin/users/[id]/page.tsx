@@ -7,6 +7,8 @@ import {
   Lock,
   LogOut,
   RotateCcw,
+  ShieldAlert,
+  Trash2,
   User,
   UserCheck,
   UserX,
@@ -18,19 +20,23 @@ import type { ReactNode } from "react";
 import {
   archiveUserAction,
   changeUserRoleAction,
+  forcePasswordChangeAction,
   restoreUserAction,
   revokeUserSessionsAction,
   toggleUserActiveAction,
   unlockUserAccountAction
 } from "@/app/actions/user-access";
 import { resetUserPasswordAction } from "@/app/actions/admin";
+import { AutoRefresh } from "@/components/auto-refresh";
+import { DeleteUserDialog } from "@/components/admin/delete-user-dialog";
+import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
-import { cn, formatDateTime } from "@/lib/utils";
-import { getUserDeletionImpact } from "@/lib/user-lifecycle/impact";
+import { cn, formatExactDateTime, resolveDisplayLoginCount, resolveLastSeen } from "@/lib/utils";
+import { countActiveSuperAdmins, getUserDeletionImpact } from "@/lib/user-lifecycle/impact";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -40,7 +46,10 @@ export const revalidate = 0;
 type AuthRow = {
   email: string;
   last_login_at: Date | null;
+  last_active_at: Date | null;
+  login_count: number;
   failed_login_count: number;
+  last_failed_login_at: Date | null;
   locked_until: Date | null;
   must_reset_password: boolean;
   password_changed_at: Date | null;
@@ -59,12 +68,15 @@ async function loadUserData(profileId: string) {
 
   if (!profile) return null;
 
-  const [authRows, activeSessions, roles, impact] = await Promise.all([
+  const [authRows, activeSessions, roles, impact, activeSuperAdminCount] = await Promise.all([
     prisma.$queryRaw<AuthRow[]>`
       select
         email,
         last_login_at,
+        last_active_at,
+        login_count,
         failed_login_count,
+        last_failed_login_at,
         locked_until,
         must_reset_password,
         password_changed_at,
@@ -81,10 +93,11 @@ async function loadUserData(profileId: string) {
       where slug in ('super_admin', 'maintenance_data_entry')
       order by name
     `,
-    getUserDeletionImpact(profileId)
+    getUserDeletionImpact(profileId),
+    countActiveSuperAdmins()
   ]);
 
-  return { profile, auth: authRows[0] ?? null, activeSessions, roles, impact };
+  return { profile, auth: authRows[0] ?? null, activeSessions, roles, impact, activeSuperAdminCount };
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -103,12 +116,13 @@ export default async function UserDetailPage({
   const data = await loadUserData(profileId);
   if (!data) notFound();
 
-  const { profile, auth, activeSessions, roles, impact } = data;
+  const { profile, auth, activeSessions, roles, impact, activeSuperAdminCount } = data;
 
   const isOwnAccount = context.userId === profileId;
   const isSuperAdminViewer = context.role?.slug === "super_admin";
   const targetRoleSlug = profile.roles?.slug ?? null;
   const isTargetSuperAdmin = targetRoleSlug === "super_admin";
+  const isLastSuperAdmin = isTargetSuperAdmin && activeSuperAdminCount <= 1;
 
   const isLocked = auth?.locked_until != null && new Date(auth.locked_until) > new Date();
 
@@ -118,7 +132,8 @@ export default async function UserDetailPage({
     deactivated: "Account deactivated and all sessions revoked.",
     unlocked: "Account unlocked.",
     "sessions-revoked": "All active sessions revoked.",
-    "password-reset": "Temporary password set. User must change it on next login."
+    "password-reset": "Temporary password set. User must change it on next login.",
+    "password-change-forced": "User will be required to change their password on next login."
   };
 
   const errorMessages: Record<string, string> = {
@@ -128,11 +143,20 @@ export default async function UserDetailPage({
     "invalid-input": "Invalid request. Please try again.",
     "passwords-mismatch": "New password and confirmation do not match.",
     "cannot-reset-own-password": "Use /change-password to change your own password.",
-    "no-login-account": "This profile has no login account."
+    "cannot-force-own-password-change": "You cannot force a password change on your own account.",
+    "no-login-account": "This profile has no login account.",
+    "cannot-delete-self": "You cannot delete your own account.",
+    "cannot-delete-last-admin": "Cannot delete the last System Administrator.",
+    "has-linked-records": "This user has linked system records, so permanent delete is not allowed. Use Archive to disable the account while keeping history safe."
   };
+
+  const lastSeenValue = resolveLastSeen(auth?.last_active_at ?? null, auth?.last_login_at ?? null);
+  const displayLoginCount = resolveDisplayLoginCount(auth?.login_count, auth?.last_login_at ?? null);
 
   return (
     <>
+      <AutoRefresh intervalMs={20000} />
+      <RealtimeRefresh watch={["user."]} />
       <PageHeader
         title={profile.full_name}
         description={auth?.email ?? "No login account"}
@@ -202,16 +226,34 @@ export default async function UserDetailPage({
                 label="Account type"
                 value={profile.roles?.slug === "super_admin" ? "System Administrator" : "Normal User"}
               />
-              <DetailRow label="Profile created" value={formatDateTime(profile.created_at.toISOString())} />
             </Card>
 
             {auth && (
-              <Card title="Login details">
+              <Card title="Account activity">
                 <DetailRow label="Login email" value={auth.email} />
                 <DetailRow
                   label="Last login"
-                  value={auth.last_login_at ? formatDateTime(auth.last_login_at.toISOString()) : "Never"}
+                  value={auth.last_login_at ? formatExactDateTime(auth.last_login_at) : "Never"}
                 />
+                <DetailRow
+                  label="Last seen"
+                  value={lastSeenValue ? formatExactDateTime(lastSeenValue) : "Never"}
+                />
+                <DetailRow label="Login count" value={String(displayLoginCount)} />
+                <DetailRow
+                  label="Failed login count"
+                  value={String(auth.failed_login_count)}
+                  highlight={auth.failed_login_count > 0 ? "amber" : undefined}
+                />
+                <DetailRow
+                  label="Last failed login"
+                  value={auth.last_failed_login_at ? formatExactDateTime(auth.last_failed_login_at) : "Never"}
+                />
+                <DetailRow
+                  label="Password changed"
+                  value={auth.password_changed_at ? formatExactDateTime(auth.password_changed_at) : "Never"}
+                />
+                <DetailRow label="Account created" value={formatExactDateTime(profile.created_at)} />
                 {auth.must_reset_password && (
                   <DetailRow
                     label="Password status"
@@ -360,6 +402,26 @@ export default async function UserDetailPage({
                     detail={isOwnAccount ? "This will also sign you out." : "User will be logged out immediately."}
                   />
                 </form>
+
+                {auth && !isOwnAccount ? (
+                  auth.must_reset_password ? (
+                    <DisabledActionRow
+                      icon={<ShieldAlert className="h-4 w-4 text-[#9CA3AF]" />}
+                      label="Force password change"
+                      reason="Already required to change password on next login."
+                    />
+                  ) : (
+                    <form action={forcePasswordChangeAction}>
+                      <input type="hidden" name="profile_id" value={profileId} />
+                      <ActionButton
+                        tone="amber"
+                        icon={<ShieldAlert className="h-4 w-4" />}
+                        label="Force password change on next login"
+                        detail="Keeps the current password but requires the user to set a new one at next login."
+                      />
+                    </form>
+                  )
+                ) : null}
               </div>
 
               {isSuperAdminViewer && !isOwnAccount && !isTargetSuperAdmin && (
@@ -424,6 +486,36 @@ export default async function UserDetailPage({
                 </form>
               )}
             </Card>
+
+            {isSuperAdminViewer && (
+              <section className="rounded-md border border-red-200 bg-white p-4 shadow-sm">
+                <h2 className="mb-3 text-sm font-black uppercase text-red-600">Danger Zone</h2>
+                <p className="mb-3 text-xs text-[#4B5563]">Delete this user account permanently.</p>
+                {isOwnAccount ? (
+                  <DisabledActionRow
+                    icon={<Trash2 className="h-4 w-4 text-[#9CA3AF]" />}
+                    label="Delete User"
+                    reason="You cannot delete your own account."
+                  />
+                ) : isLastSuperAdmin ? (
+                  <DisabledActionRow
+                    icon={<Trash2 className="h-4 w-4 text-[#9CA3AF]" />}
+                    label="Delete User"
+                    reason="Cannot delete the last System Administrator."
+                  />
+                ) : (
+                  <DeleteUserDialog
+                    profileId={profileId}
+                    fullName={profile.full_name}
+                    email={auth?.email ?? "No login account"}
+                    roleLabel={isTargetSuperAdmin ? "System Administrator" : "Normal User"}
+                    statusLabel={profile.deleted_at ? "Archived" : profile.is_active ? "Active" : "Inactive"}
+                    lastLoginLabel={auth?.last_login_at ? formatExactDateTime(auth.last_login_at) : "Never"}
+                    loginCount={displayLoginCount}
+                  />
+                )}
+              </section>
+            )}
 
           </div>
         </div>

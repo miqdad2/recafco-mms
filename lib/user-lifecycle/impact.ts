@@ -9,6 +9,7 @@ export type DeletionImpact = {
   auditLogsActed:        number;
   partsRequestsLinked:   number;
   purchaseRequestsLinked: number;
+  technicianNotes:       number;
   totalSessions:         number;
   /** true only when no linked business records exist */
   canPermanentDelete:    boolean;
@@ -21,6 +22,7 @@ type ImpactRow = {
   audit_logs_acted:         bigint | number;
   parts_requests_linked:    bigint | number;
   purchase_requests_linked: bigint | number;
+  technician_notes:         bigint | number;
   total_sessions:           bigint | number;
 };
 
@@ -57,6 +59,9 @@ export async function getUserDeletionImpact(profileId: string): Promise<Deletion
             or finance_approved_by = ${profileId}::uuid
             or ceo_approved_by     = ${profileId}::uuid)::int as purchase_requests_linked,
 
+      (select count(*) from public.work_order_technician_notes
+         where technician_id = ${profileId}::uuid)::int       as technician_notes,
+
       (select count(*) from public.auth_sessions
          where profile_id = ${profileId}::uuid)::int          as total_sessions
   `;
@@ -71,15 +76,22 @@ export async function getUserDeletionImpact(profileId: string): Promise<Deletion
   const auditLogsActed        = n(r.audit_logs_acted);
   const partsRequestsLinked   = n(r.parts_requests_linked);
   const purchaseRequestsLinked = n(r.purchase_requests_linked);
+  const technicianNotes       = n(r.technician_notes);
   const totalSessions         = n(r.total_sessions);
 
+  // work_order_technician_notes.technician_id is ON DELETE CASCADE (unlike
+  // every other table checked here, which is ON DELETE NO ACTION/RESTRICT
+  // and would simply block a permanent delete at the database level). A
+  // technician's Job Card notes must be included here explicitly — the DB
+  // would otherwise silently destroy that history instead of erroring.
   const hasHistory =
     workOrdersCreated     > 0 ||
     approvalsDecided      > 0 ||
     workOrderAssignments  > 0 ||
     auditLogsActed        > 0 ||
     partsRequestsLinked   > 0 ||
-    purchaseRequestsLinked > 0;
+    purchaseRequestsLinked > 0 ||
+    technicianNotes       > 0;
 
   return {
     workOrdersCreated,
@@ -88,7 +100,23 @@ export async function getUserDeletionImpact(profileId: string): Promise<Deletion
     auditLogsActed,
     partsRequestsLinked,
     purchaseRequestsLinked,
+    technicianNotes,
     totalSessions,
     canPermanentDelete: !hasHistory,
   };
+}
+
+/**
+ * Count of non-archived System Administrator profiles. Used to block
+ * deleting (or, in principle, demoting) the last remaining admin account.
+ */
+export async function countActiveSuperAdmins(): Promise<number> {
+  const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`
+    select count(*)::bigint as count
+    from public.profiles p
+    join public.roles r on r.id = p.role_id
+    where r.slug = 'super_admin'
+      and p.deleted_at is null
+  `;
+  return Number(rows[0]?.count ?? 0);
 }
