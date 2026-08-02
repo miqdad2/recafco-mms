@@ -827,6 +827,19 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                     Key Details
                   </p>
                   <div className="grid grid-cols-2 gap-2.5">
+                    {/* Work Team / Division shown right next to the actual
+                        Assignment field below — the two are easy to confuse
+                        (both describe "who/what handles this Job Card") so
+                        they're kept visually adjacent and separately
+                        labeled: this is the maintenance team/category picked
+                        at creation, not who Manager later assigns the work
+                        to via Assign Work. */}
+                    {data.worker_type && (
+                      <div>
+                        <p className="text-xs text-[#9CA3AF]">Work Team / Division</p>
+                        <p className="text-sm text-[#111827]">{data.worker_type}</p>
+                      </div>
+                    )}
                     <div>
                       <p className="text-xs text-[#9CA3AF]">
                         {data.primary_assignment?.assignment_type === "FREELANCER"

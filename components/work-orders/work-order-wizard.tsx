@@ -20,7 +20,7 @@ import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/m
 // work_orders_worker_type_check — this list only controls what a NEW Job
 // Card can select, it does not migrate or block existing records.
 const WORKER_TYPES = ["Auto", "Mechanical", "Electrical", "Other"];
-const STEP_LABELS = ["Select Asset", "Request Details", "Assignment", "Required Materials", "Attachments", "Review & Save"];
+const STEP_LABELS = ["Select Asset", "Request Details", "Work Team", "Required Materials", "Attachments", "Review & Save"];
 const MAX_PART_ROWS = 8;
 
 type AssetOption = AssetPickerOption;
@@ -392,11 +392,16 @@ export function WorkOrderWizard({
           </WizardCard>
         </div>
 
-        {/* ── Step 3: Assignment Planning ────────────────────────────────── */}
+        {/* ── Step 3: Work Team / Division ─────────────────────────────────
+            Worker team / division is a maintenance category/team type, not
+            the actual work assignment — Manager assigns Internal/Freelancer/
+            Company later, from the Assign Work flow. Kept as its own step
+            (not merged into Request Details) and titled distinctly from
+            "Assignment" so the two are never confused. */}
         <div className={step !== 3 ? "hidden" : ""}>
           <WizardCard
-            title="Assignment Planning"
-            description="Select the maintenance team. A technician is assigned later, after approval and materials are resolved."
+            title="Work Team / Division"
+            description="Select the maintenance team/category for this Job Card. Actual work assignment is handled later by Manager."
           >
             <div>
               <FieldLabel label="Worker team / division" required />
@@ -613,10 +618,13 @@ export function WorkOrderWizard({
                 )}
               </ReviewSection>
 
-              <ReviewSection title="Assignment">
+              <ReviewSection title="Work Team / Division">
                 <dl className="grid gap-3 sm:grid-cols-2">
                   <ReviewRow label="Worker team / division" value={reviewData.worker_type} />
                 </dl>
+                <p className="mt-3 text-xs text-[#9CA3AF]">
+                  This is not the final work assignment. Manager assigns Internal, Freelancer, or Company later.
+                </p>
               </ReviewSection>
 
               <ReviewSection title="Required Materials">
