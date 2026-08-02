@@ -148,7 +148,15 @@ export function StoreBalanceView({
   const [search, setSearch]             = useState("");
   const [category, setCategory]         = useState<string | null>(null);
   const [balanceStatus, setBalanceStatus] = useState<BalanceStatus>("all");
-  const [viewItem, setViewItem]         = useState<BalanceItem | null>(null);
+  // Task 9 (Offline Inventory Action Visibility Fix): store the key of the
+  // viewed row, not a snapshot of the item — AutoRefresh/RealtimeRefresh
+  // re-fetch balanceItems and re-render this component with new objects, so
+  // deriving viewItem from the current balanceItems on every render (instead
+  // of holding a stale BalanceItem in state) keeps an open Material Details
+  // modal's Current Balance in sync with a concurrent Receive/Issue. If the
+  // material disappeared entirely, the modal simply closes.
+  const [viewKey, setViewKey]           = useState<string | null>(null);
+  const viewItem = viewKey ? balanceItems.find((b) => b.key === viewKey) ?? null : null;
 
   const isEmpty = balanceItems.length === 0;
   const balanceTone: Tone5 = balance < 0 ? "red" : balance === 0 ? "gray" : "green";
@@ -481,7 +489,7 @@ export function StoreBalanceView({
                       {filteredItems.map((item) => (
                         <tr
                           key={item.key}
-                          onClick={() => setViewItem(item)}
+                          onClick={() => setViewKey(item.key)}
                           className="cursor-pointer hover:bg-gray-50"
                         >
                           <td className="px-4 py-3 font-semibold text-[#111827]">{item.display_name}</td>
@@ -514,7 +522,7 @@ export function StoreBalanceView({
                             <div className="flex items-center gap-3">
                               <button
                                 type="button"
-                                onClick={() => setViewItem(item)}
+                                onClick={() => setViewKey(item.key)}
                                 className="text-xs font-bold text-[#4B5563] hover:text-[#111827] hover:underline"
                               >
                                 View
@@ -525,7 +533,7 @@ export function StoreBalanceView({
                                   scroll={false}
                                   className="text-xs font-bold text-[#16A34A] hover:underline"
                                 >
-                                  Receive
+                                  Receive More
                                 </Link>
                               )}
                               {canManage && item.balance > 0 && (
@@ -551,7 +559,7 @@ export function StoreBalanceView({
       </div>
 
       {viewItem && (
-        <MaterialDetailModal item={viewItem} canIssue={canManage} onClose={() => setViewItem(null)} />
+        <MaterialDetailModal item={viewItem} canIssue={canManage} onClose={() => setViewKey(null)} />
       )}
 
       {/* Large Popup Conversion — Add New Material / Receive Material /

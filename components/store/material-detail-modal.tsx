@@ -212,7 +212,7 @@ export function MaterialDetailModal({
                     onClick={onClose}
                     className="inline-flex items-center justify-center rounded-md bg-[#16A34A] px-5 py-2.5 text-sm font-bold text-white hover:bg-green-700"
                   >
-                    Receive Material
+                    Receive More
                   </Link>
                 )}
                 {canIssue && (

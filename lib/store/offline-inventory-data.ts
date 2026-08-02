@@ -14,20 +14,27 @@ import {
 } from "@/components/store/offline-inventory-types";
 
 // Offline Inventory Control's own "can manage" gate — deliberately separate
-// from broader work_orders/parts_requests permissions. Store issues
-// materials; Data Entry / Engineer / Manager track what's issued and update
-// consumed/used materials for their Job Cards, but do not manage opening
-// stock, imports, receiving, or issuing themselves unless they hold the real
-// `store.issue` permission (Data Entry Dashboard/Job Card Tabs/Material
-// Tracking Alignment, Task 6 — this previously also special-cased the
-// maintenance_data_entry role slug directly, silently granting every Data
-// Entry account full store-management actions regardless of their actual
-// granted permissions; that bypass has been removed so this now matches
-// "Do not broaden permissions silently"). Store Keeper / Maintenance Manager
-// / Super Admin keep working exactly as before via `store.issue`.
+// from broader work_orders/parts_requests permissions.
+//
+// Offline Inventory canManage Fix: the role-slug-only removal below this
+// comment previously left this gate checking `store.issue` alone. On the
+// deployed environment, Maintenance Manager was granted the dedicated
+// `offline_inventory.issue` permission (seeded in migration
+// 20260720130100_workflow_redesign_unit3_roles_permissions) instead of/in
+// addition to `store.issue` — a permission this function never checked — so
+// canManage came back false even though the DB grant was correct. Mirrors
+// the same explicit role-slug + permission-fallback pattern already used by
+// `canReceiveIssueMaterials()` in lib/parts-requests/visibility.ts: System
+// Administrator (super_admin), Maintenance Manager, and Maintenance Data
+// Entry are always allowed regardless of which permission key their grant
+// happens to use; anyone else still needs the real `offline_inventory.issue`
+// or `store.issue` permission. Viewer/read-only roles remain excluded.
 export function canManageOfflineInventory(context: CurrentUserContext): boolean {
   return (
     context.role?.slug === "super_admin" ||
+    context.role?.slug === "maintenance_manager" ||
+    context.role?.slug === "maintenance_data_entry" ||
+    context.permissions.includes("offline_inventory.issue") ||
     context.permissions.includes("store.issue")
   );
 }
