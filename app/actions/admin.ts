@@ -12,6 +12,7 @@ import { prisma } from "@/lib/db/prisma";
 import { notifyByEvent } from "@/lib/notifications/service";
 import { emitRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { ACCOUNT_TYPE_SLUGS } from "@/lib/users/account-types";
+import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 
 
 const checkbox = z.preprocess((value) => value === "on" || value === "true", z.boolean());
@@ -398,23 +399,30 @@ export async function resetUserPasswordAction(formData: FormData) {
 
   const newHash = await hashPassword(parsed.data.new_password);
 
-  await prisma.auth_users.update({
-    where: { id: authRows[0].id },
-    data: {
-      password_hash: newHash,
-      must_reset_password: true,
-      temporary_password_set_at: new Date(),
-      password_changed_at: null,
-      failed_login_count: 0,
-      locked_until: null,
-      updated_at: new Date()
-    }
-  });
+  // Backend Reliability Fix Unit 1, Task 4: password-hash update and session
+  // revocation now run inside one transaction — previously two separate,
+  // unguarded statements, so a revocation failure after a successful password
+  // reset could leave the target user's old sessions still live. Preserves
+  // the existing must_reset_password/locked_until reset behavior exactly.
+  await withBackendTransaction(context.userId, async (tx) => {
+    await tx.auth_users.update({
+      where: { id: authRows[0].id },
+      data: {
+        password_hash: newHash,
+        must_reset_password: true,
+        temporary_password_set_at: new Date(),
+        password_changed_at: null,
+        failed_login_count: 0,
+        locked_until: null,
+        updated_at: new Date()
+      }
+    });
 
-  // Revoke all active sessions for the target user so they must re-login.
-  await prisma.auth_sessions.updateMany({
-    where: { profile_id: parsed.data.profile_id, revoked_at: null },
-    data: { revoked_at: new Date() }
+    // Revoke all active sessions for the target user so they must re-login.
+    await tx.auth_sessions.updateMany({
+      where: { profile_id: parsed.data.profile_id, revoked_at: null },
+      data: { revoked_at: new Date() }
+    });
   });
 
   await writeAuditLog({

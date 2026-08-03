@@ -9,8 +9,9 @@ import { pickUploadedFile, validatePrivateFileWithOptions } from "@/lib/files/va
 import { getFileSecuritySettings } from "@/lib/files/settings";
 import { savePrivateFile } from "@/lib/files/local-storage";
 import { writeAuditLog } from "@/lib/audit/log";
-import { requireOfflineInventoryManage, findExistingCategoryMatch } from "@/lib/store/offline-inventory-data";
+import { requireOfflineInventoryManage, findExistingCategoryMatch, buildBalanceKey } from "@/lib/store/offline-inventory-data";
 import { emitOfflineInventoryRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
+import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 
 export type OfflineMovementState =
   // Add New Material Category Flexibility Cleanup Task 7: `category` is only
@@ -478,37 +479,70 @@ export async function issueOfflineMaterialAction(
       return { ok: false, error: "Select a material to issue." };
     }
 
-    // Server-side balance check — prevents over-issue even under concurrent saves
-    const available = await computeBalance({ partId, manualName, unit });
-    if (available <= 0) {
-      return { ok: false, error: "No available balance for this material." };
-    }
-    if (qty > available) {
-      return {
-        ok: false,
-        error: "Issued quantity cannot be greater than current balance.",
-      };
-    }
+    // Backend Reliability Fix Unit 1, Task 1: balance-check + insert now run
+    // inside a single transaction, serialized per material identity with a
+    // Postgres advisory transaction lock (`pg_advisory_xact_lock`, auto-released
+    // on commit/rollback) — the same "lock, then re-read, then write" shape as
+    // `lockPartsRequestForUpdate()` in lib/backend/parts-requests/repository.ts,
+    // adapted for a table with no single per-material row to SELECT ... FOR
+    // UPDATE on (balance here is derived by summing movements, not stored).
+    // `buildBalanceKey()` (shared with the read-side balance aggregation in
+    // lib/store/offline-inventory-data.ts) guarantees two concurrent Issue
+    // Material submissions for the SAME material serialize on the same lock key
+    // instead of both reading the same stale balance and both passing the
+    // qty <= available check — which could previously drive the derived
+    // balance negative.
+    const lockKey = buildBalanceKey({ part_id: partId, manual_material_name: manualName, unit });
 
-    const created = await prisma.offline_inventory_movements.create({
-      data: {
-        movement_type:         "ISSUED",
-        movement_date:         new Date(movementDate),
-        part_id:               partId,
-        manual_material_name:  isManual ? manualName : null,
-        manual_part_number:    isManual ? manualPartNum : null,
-        ss_rec_code:           ssRecCode,
-        category:              normalizeCategory(category),
-        quantity:              qty,
-        unit,
-        counterparty,
-        purpose,
-        receiver_name:         receiverName,
-        reference_number:      refNum,
-        related_work_order_id: woIdRaw,
-        remarks,
-        created_by:            context.userId,
-      },
+    const created = await withBackendTransaction(context.userId, async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+
+      const movements = await tx.offline_inventory_movements.findMany({
+        where: partId
+          ? { part_id: partId, deleted_at: null }
+          : {
+              part_id: null,
+              manual_material_name: { equals: manualName ?? "", mode: "insensitive" },
+              unit: { equals: unit, mode: "insensitive" },
+              deleted_at: null,
+            },
+        select: { movement_type: true, quantity: true },
+      });
+
+      let available = 0;
+      for (const m of movements) {
+        const q = Number(m.quantity);
+        if (m.movement_type === "RECEIVED" || m.movement_type === "OPENING_STOCK") available += q;
+        else if (m.movement_type === "ISSUED") available -= q;
+      }
+
+      if (available <= 0) {
+        throw new Error("No available balance for this material.");
+      }
+      if (qty > available) {
+        throw new Error("Issued quantity cannot be greater than current balance.");
+      }
+
+      return tx.offline_inventory_movements.create({
+        data: {
+          movement_type:         "ISSUED",
+          movement_date:         new Date(movementDate),
+          part_id:               partId,
+          manual_material_name:  isManual ? manualName : null,
+          manual_part_number:    isManual ? manualPartNum : null,
+          ss_rec_code:           ssRecCode,
+          category:              normalizeCategory(category),
+          quantity:              qty,
+          unit,
+          counterparty,
+          purpose,
+          receiver_name:         receiverName,
+          reference_number:      refNum,
+          related_work_order_id: woIdRaw,
+          remarks,
+          created_by:            context.userId,
+        },
+      });
     });
 
     await Promise.all([

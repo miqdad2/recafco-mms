@@ -81,7 +81,12 @@ export async function getMaterialBalancesForItems(
   return results;
 }
 
-function buildBalanceKey(m: {
+// Exported so app/actions/offline-inventory.ts can derive the same per-material
+// identity key for its advisory-lock-based concurrency guard on Issue Material
+// (Backend Reliability Fix Unit 1, Task 1) — the lock key must match this
+// function exactly, or two different code paths could compute different keys
+// for the same physical material and fail to serialize against each other.
+export function buildBalanceKey(m: {
   part_id: string | null;
   manual_material_name: string | null;
   unit: string;

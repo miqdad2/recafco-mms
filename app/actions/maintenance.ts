@@ -465,10 +465,46 @@ export async function upsertWorkOrderAction(formData: FormData) {
         await createMaintenanceWorkflowInstanceForWorkOrder(tx, wo.id, context.userId);
         return wo;
       });
+    } else if (id) {
+      // Backend Reliability Fix Unit 1, Task 2: the Job Card update and its
+      // full line-item replacement (deleteMany old rows + createMany new rows
+      // for labor/materials/attachments/required parts) now run inside a
+      // single transaction. Previously these were separate, unguarded
+      // statements after this block — a createMany failure after the
+      // deleteMany calls could leave an edited Job Card with its line items
+      // wiped. Any failure below rolls back the update and every delete/
+      // recreate together, so no partial edit can persist.
+      data = await withBackendTransaction(context.userId, async (tx) => {
+        const wo = await tx.work_orders.update({
+          where: { id },
+          data: updatePayload,
+          select: { id: true, work_order_number: true }
+        });
+
+        await Promise.all([
+          tx.work_order_labor.deleteMany({ where: { work_order_id: id } }),
+          tx.work_order_materials.deleteMany({ where: { work_order_id: id } }),
+          tx.work_order_attachments.deleteMany({ where: { work_order_id: id } }),
+          tx.workOrderRequiredPart.deleteMany({ where: { work_order_id: id } })
+        ]);
+
+        if (laborRows.length) {
+          await tx.work_order_labor.createMany({ data: laborRows.map((row) => ({ ...row!, work_order_id: id })) });
+        }
+        if (materialRows.length) {
+          await tx.work_order_materials.createMany({ data: materialRows.map((row) => ({ ...row!, work_order_id: id })) });
+        }
+        if (attachmentRows.length) {
+          await tx.work_order_attachments.createMany({ data: attachmentRows.map((row) => ({ ...row!, work_order_id: id, uploaded_by: context.userId })) });
+        }
+        if (requiredPartRows.length) {
+          await tx.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id: id, created_by: context.userId })) });
+        }
+
+        return wo;
+      });
     } else {
-      data = id
-        ? await prisma.work_orders.update({ where: { id }, data: updatePayload, select: { id: true, work_order_number: true } })
-        : await prisma.work_orders.create({ data: insertPayload, select: { id: true, work_order_number: true } });
+      data = await prisma.work_orders.create({ data: insertPayload, select: { id: true, work_order_number: true } });
     }
   } catch (saveError) {
     const rawMessage = saveError instanceof Error ? saveError.message : "save failed";
@@ -550,20 +586,19 @@ export async function upsertWorkOrderAction(formData: FormData) {
   }
   if (!data) redirect(`${formBackHref}?error=save-failed`);
 
-  if (id) {
-    await Promise.all([
-      prisma.work_order_labor.deleteMany({ where: { work_order_id: id } }),
-      prisma.work_order_materials.deleteMany({ where: { work_order_id: id } }),
-      prisma.work_order_attachments.deleteMany({ where: { work_order_id: id } }),
-      prisma.workOrderRequiredPart.deleteMany({ where: { work_order_id: id } })
-    ]);
-  }
-
   const work_order_id = data.id;
-  if (laborRows.length) await prisma.work_order_labor.createMany({ data: laborRows.map((row) => ({ ...row!, work_order_id })) });
-  if (materialRows.length) await prisma.work_order_materials.createMany({ data: materialRows.map((row) => ({ ...row!, work_order_id })) });
-  if (attachmentRows.length) await prisma.work_order_attachments.createMany({ data: attachmentRows.map((row) => ({ ...row!, work_order_id, uploaded_by: context.userId })) });
-  if (requiredPartRows.length) await prisma.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id, created_by: context.userId })) });
+
+  // Backend Reliability Fix Unit 1, Task 2: for a new Job Card there are no
+  // existing line items to wipe, so this create-then-insert sequence carries
+  // no partial-wipe risk and is left as-is. The edit path's equivalent
+  // delete+recreate now runs inside the transaction above instead (see the
+  // `id` branch of the save block).
+  if (!id) {
+    if (laborRows.length) await prisma.work_order_labor.createMany({ data: laborRows.map((row) => ({ ...row!, work_order_id })) });
+    if (materialRows.length) await prisma.work_order_materials.createMany({ data: materialRows.map((row) => ({ ...row!, work_order_id })) });
+    if (attachmentRows.length) await prisma.work_order_attachments.createMany({ data: attachmentRows.map((row) => ({ ...row!, work_order_id, uploaded_by: context.userId })) });
+    if (requiredPartRows.length) await prisma.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id, created_by: context.userId })) });
+  }
 
   // Critical Workflow Bug Fix: a Job Card created with "Required Parts" lines
   // must produce a real, linked Materials Request — otherwise those lines

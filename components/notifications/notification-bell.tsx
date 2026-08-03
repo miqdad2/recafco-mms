@@ -7,6 +7,21 @@ import { Button } from "@/components/ui/button";
 import { getUnreadNotificationCount, getUserNotifications } from "@/lib/notifications/service";
 import { formatDateTime } from "@/lib/utils";
 
+// Backend Reliability Fix Unit 1, Task 5: markAllNotificationsReadAction/
+// markNotificationReadAction now return a safe { ok, error } result instead
+// of throwing raw exceptions, but a plain `<form action={...}>` target must
+// return void|Promise<void> — these thin inline server actions adapt one to
+// the other without discarding the safer error handling underneath.
+async function submitMarkAllRead(): Promise<void> {
+  "use server";
+  await markAllNotificationsReadAction();
+}
+
+async function submitMarkRead(formData: FormData): Promise<void> {
+  "use server";
+  await markNotificationReadAction(formData);
+}
+
 export async function NotificationBell({ userId }: { userId: string }) {
   const [unreadCount, notifications] = await Promise.all([
     getUnreadNotificationCount(userId),
@@ -32,7 +47,7 @@ export async function NotificationBell({ userId }: { userId: string }) {
             <p className="text-sm font-black text-[#111827]">Notifications</p>
             <p className="text-xs font-semibold text-[#64748B]">{unreadCount} unread</p>
           </div>
-          <form action={markAllNotificationsReadAction}>
+          <form action={submitMarkAllRead}>
             <Button variant="ghost" className="min-h-8 px-2 text-xs">
               <CheckCheck className="h-4 w-4" aria-hidden="true" />
               Mark all
@@ -50,7 +65,7 @@ export async function NotificationBell({ userId }: { userId: string }) {
                     <p className="mt-1 text-[11px] font-semibold text-[#64748B]">{formatDateTime(notification.created_at)}</p>
                   </div>
                   {!notification.read_at ? (
-                    <form action={markNotificationReadAction}>
+                    <form action={submitMarkRead}>
                       <input type="hidden" name="notification_id" value={notification.id} />
                       <Button variant="ghost" className="min-h-8 px-2 text-xs">Read</Button>
                     </form>

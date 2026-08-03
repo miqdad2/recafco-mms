@@ -11,6 +11,7 @@ import { prisma } from "@/lib/db/prisma";
 import { notifyByEvent } from "@/lib/notifications/service";
 import { emitRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { countActiveSuperAdmins, getUserDeletionImpact } from "@/lib/user-lifecycle/impact";
+import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import type { CurrentUserContext } from "@/lib/auth/context";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -189,19 +190,28 @@ export async function toggleUserActiveAction(formData: FormData) {
 
   await assertCanModify(context, profile_id, backUrl);
 
-  const target = await prisma.profiles.update({
-    where: { id: profile_id },
-    data: { is_active },
-    select: { full_name: true }
-  });
-
-  // When deactivating, also revoke all sessions immediately.
-  if (!is_active) {
-    await prisma.auth_sessions.updateMany({
-      where: { profile_id, revoked_at: null },
-      data: { revoked_at: new Date() }
+  // Backend Reliability Fix Unit 1, Task 3: profile deactivation and session
+  // revocation now run inside one transaction — previously two separate,
+  // unguarded statements, so a session-revocation failure after a successful
+  // deactivation could leave a deactivated user with a still-live session.
+  // If the revocation fails, the profile update rolls back with it.
+  const target = await withBackendTransaction(context.userId, async (tx) => {
+    const updated = await tx.profiles.update({
+      where: { id: profile_id },
+      data: { is_active },
+      select: { full_name: true }
     });
-  }
+
+    // When deactivating, also revoke all sessions immediately.
+    if (!is_active) {
+      await tx.auth_sessions.updateMany({
+        where: { profile_id, revoked_at: null },
+        data: { revoked_at: new Date() }
+      });
+    }
+
+    return updated;
+  });
 
   await writeAuditLog({
     actorId: context.userId,

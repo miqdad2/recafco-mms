@@ -4,14 +4,31 @@
  * reachable from work_orders.ordered_by = "Unit10 E2E" — never touches
  * assets, roles, permissions, schema, or any other data.
  *
+ * Guard: set CONFIRM_E2E_UNIT10_CLEANUP=true to execute. Without the env var
+ * the script prints a warning and exits without deleting anything — this
+ * previously ran its deleteMany calls unconditionally against whatever
+ * DATABASE_URL was active, unlike the other cleanup/purge scripts in this
+ * folder (Backend Reliability Fix Unit 1, Task 6).
+ *
  * Usage:
- *   node --env-file=.env scripts/e2e-unit10-cleanup.mjs
+ *   CONFIRM_E2E_UNIT10_CLEANUP=true node --env-file=.env scripts/e2e-unit10-cleanup.mjs
  */
 
 import { PrismaClient } from "@prisma/client";
 
-const prisma = new PrismaClient({ log: ["error"] });
 const MARKER = "Unit10 E2E";
+
+if (process.env.CONFIRM_E2E_UNIT10_CLEANUP !== "true") {
+  console.warn(
+    "[e2e-unit10-cleanup] Refusing to run: this script permanently deletes Unit10 E2E test data " +
+    "from whichever database DATABASE_URL currently points to, with no dry-run mode. " +
+    "Set CONFIRM_E2E_UNIT10_CLEANUP=true to proceed.\n" +
+    "  Usage: CONFIRM_E2E_UNIT10_CLEANUP=true node --env-file=.env scripts/e2e-unit10-cleanup.mjs"
+  );
+  process.exit(0);
+}
+
+const prisma = new PrismaClient({ log: ["error"] });
 
 const workOrders = await prisma.work_orders.findMany({ where: { ordered_by: MARKER }, select: { id: true } });
 const woIds = workOrders.map((w) => w.id);

@@ -22,6 +22,27 @@ type NotificationsPageProps = {
 const categories = ["", "Work Orders", "Approvals", "Technician Jobs", "Parts Requests", "Store / Inventory", "Purchase", "Finance", "CEO / Management", "Assets", "Reports", "System"];
 const priorities = ["", "low", "normal", "high", "urgent"];
 
+// Backend Reliability Fix Unit 1, Task 5: markAllNotificationsReadAction/
+// markNotificationReadAction/archiveNotificationAction now return a safe
+// { ok, error } result instead of throwing raw exceptions, but a plain
+// `<form action={...}>` target must return void|Promise<void> — these thin
+// inline server actions adapt one to the other without discarding the safer
+// error handling in the underlying actions themselves.
+async function submitMarkAllRead(): Promise<void> {
+  "use server";
+  await markAllNotificationsReadAction();
+}
+
+async function submitMarkRead(formData: FormData): Promise<void> {
+  "use server";
+  await markNotificationReadAction(formData);
+}
+
+async function submitArchive(formData: FormData): Promise<void> {
+  "use server";
+  await archiveNotificationAction(formData);
+}
+
 export default async function NotificationsPage({ searchParams }: NotificationsPageProps) {
   const context = await requirePermission("notifications.view");
   const params = await searchParams;
@@ -50,7 +71,7 @@ export default async function NotificationsPage({ searchParams }: NotificationsP
         title="Notification Center"
         description="Review workflow alerts, approvals, assignments, and system messages."
         actions={
-          <form action={markAllNotificationsReadAction}>
+          <form action={submitMarkAllRead}>
             <Button type="submit" variant="secondary">
               <CheckCheck className="h-4 w-4" aria-hidden="true" />
               Mark all read
@@ -118,13 +139,13 @@ export default async function NotificationsPage({ searchParams }: NotificationsP
                   </div>
                   <div className="flex flex-wrap items-start gap-2">
                     {!notification.read_at ? (
-                      <form action={markNotificationReadAction}>
+                      <form action={submitMarkRead}>
                         <input type="hidden" name="notification_id" value={notification.id} />
                         <Button type="submit" variant="secondary">Mark read</Button>
                       </form>
                     ) : null}
                     {!notification.archived_at ? (
-                      <form action={archiveNotificationAction}>
+                      <form action={submitArchive}>
                         <input type="hidden" name="notification_id" value={notification.id} />
                         <Button type="submit" variant="ghost">
                           <Archive className="h-4 w-4" aria-hidden="true" />
