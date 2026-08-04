@@ -19,12 +19,29 @@ import {
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
+// Performance Optimization Unit 3, Task 1: replaces the previous flat
+// `take: 500` cap (which silently hid any movement past the 500 most recent,
+// with no way to reach them) with real page-based pagination — each page
+// loads only PAGE_SIZE rows, so the query cost no longer grows with total
+// history size, and every movement remains reachable via Next/Previous.
+const PAGE_SIZE = 50;
+
 function single(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
 }
 
 function fmtDate(iso: string) {
   return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(new Date(iso));
+}
+
+function buildHref(base: string, params: SearchParams): string {
+  const p = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    const val = single(v);
+    if (val) p.set(k, val);
+  });
+  const q = p.toString();
+  return q ? `${base}?${q}` : base;
 }
 
 export default async function MovementHistoryPage({
@@ -52,6 +69,7 @@ export default async function MovementHistoryPage({
   const type = single(params.type)?.trim() ?? "";
   const from = single(params.from)?.trim() ?? "";
   const to   = single(params.to)?.trim() ?? "";
+  const page = Math.max(1, Number(single(params.page)) || 1);
 
   const hasAnyRecords = await prisma.offline_inventory_movements.count({
     where: { deleted_at: null },
@@ -75,17 +93,22 @@ export default async function MovementHistoryPage({
     ];
   }
 
-  const movementsRaw = await prisma.offline_inventory_movements.findMany({
-    where,
-    include: {
-      parts:          { select: { part_name: true, part_number: true } },
-      work_orders:    { select: { work_order_number: true, assets: { select: { asset_name: true, plate_number: true } } } },
-      parts_requests: { select: { id: true, parts_request_number: true } },
-      profiles:       { select: { full_name: true } },
-    },
-    orderBy: [{ movement_date: "desc" }, { created_at: "desc" }],
-    take: 500,
-  });
+  const [filteredCount, movementsRaw] = await Promise.all([
+    prisma.offline_inventory_movements.count({ where }),
+    prisma.offline_inventory_movements.findMany({
+      where,
+      include: {
+        parts:          { select: { part_name: true, part_number: true } },
+        work_orders:    { select: { work_order_number: true, assets: { select: { asset_name: true, plate_number: true } } } },
+        parts_requests: { select: { id: true, parts_request_number: true } },
+        profiles:       { select: { full_name: true } },
+      },
+      orderBy: [{ movement_date: "desc" }, { created_at: "desc" }],
+      skip: (page - 1) * PAGE_SIZE,
+      take: PAGE_SIZE,
+    }),
+  ]);
+  const totalPages = Math.max(1, Math.ceil(filteredCount / PAGE_SIZE));
 
   const movements: MovementRow[] = movementsRaw.map((m) => ({
     id:                    m.id,
@@ -223,7 +246,8 @@ export default async function MovementHistoryPage({
           <div className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
             <div className="border-b border-[#E5E7EB] px-5 py-3">
               <p className="text-xs text-[#4B5563]">
-                {movements.length} record{movements.length !== 1 ? "s" : ""}
+                {filteredCount.toLocaleString()} record{filteredCount !== 1 ? "s" : ""}
+                {totalPages > 1 ? ` · Page ${page} of ${totalPages}` : ""}
               </p>
             </div>
             <div className="overflow-x-auto">
@@ -325,6 +349,32 @@ export default async function MovementHistoryPage({
                   })}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between rounded-md border border-[#E5E7EB] bg-white p-3 text-sm font-semibold text-[#4B5563]">
+            <span>
+              Page {page} of {totalPages}
+            </span>
+            <div className="flex gap-2">
+              {page > 1 && (
+                <Link
+                  href={buildHref("/store/offline-inventory/movements", { ...params, page: String(page - 1) })}
+                  className="rounded-md border border-[#E5E7EB] px-3 py-2 text-[#111827] hover:bg-gray-50"
+                >
+                  Previous
+                </Link>
+              )}
+              {page < totalPages && (
+                <Link
+                  href={buildHref("/store/offline-inventory/movements", { ...params, page: String(page + 1) })}
+                  className="rounded-md border border-[#E5E7EB] px-3 py-2 text-[#111827] hover:bg-gray-50"
+                >
+                  Next
+                </Link>
+              )}
             </div>
           </div>
         )}

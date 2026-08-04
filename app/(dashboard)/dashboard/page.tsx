@@ -57,6 +57,7 @@ import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data"
 import { StoreSendMaterialsPopup } from "@/components/store/store-send-materials-popup";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
+import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
 
 // ── Types ─────────────────────────────────────────────────────────────
 type WoRow = {
@@ -557,10 +558,45 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   // review split, no more separate Materials Request approval queue (it's
   // auto-approved alongside the Job Card by approveJobCardAndMaterials) —
   // one queue (Under Review, full detail) plus three plain counts.
-  const mgData = isManager
-    ? await Promise.all([
-        prisma.work_orders.findMany({
-          where: { AND: [mgBase, { status: "Under Review" }] },
+  // Performance Optimization Unit 3, Task 7: mgInProgressAll's query and
+  // offlineMovementsToday's count (further below) previously ran as separate
+  // sequential awaits after this block, even though neither depends on
+  // mgData or on each other — folded into the same Promise.all so all 7
+  // queries run concurrently instead of 5 concurrent + 2 sequential.
+  const [mgData, mgInProgressAll, offlineMovementsToday] = await Promise.all([
+    isManager
+      ? Promise.all([
+          prisma.work_orders.findMany({
+            where: { AND: [mgBase, { status: "Under Review" }] },
+            select: {
+              id: true,
+              work_order_number: true,
+              status: true,
+              updated_at: true,
+              created_at: true,
+              description_of_work: true,
+              assets: { select: { asset_name: true } },
+              parts_requests: { select: { status: true }, orderBy: { created_at: "desc" }, take: 1 },
+            },
+            orderBy: { updated_at: "asc" },
+          }),
+          prisma.work_orders.findMany({
+            where: { AND: [mgBase, { status: { in: OPEN_JOB_CARD_STATUSES } }] },
+            select: { id: true },
+          }),
+          safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Closed", updated_at: { gte: recentlyClosedSince } }] } })),
+          // Job Card Status Simplification Task 6: "Open" split into
+          // "Approved" (nothing has moved yet) and "Active" (materials
+          // moving, assigned, or work started).
+          safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Approved" }] } })),
+          safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: { in: ACTIVE_JOB_CARD_STATUSES } }] } })),
+        ])
+      : Promise.resolve(null),
+    // Manager Dashboard Clarity Task 8: "Needs Your Action" also covers Open
+    // Job Cards actually ready for the Manager to close (In Progress).
+    isManager
+      ? prisma.work_orders.findMany({
+          where: { AND: [mgBase, { status: "In Progress" }] },
           select: {
             id: true,
             work_order_number: true,
@@ -572,19 +608,24 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             parts_requests: { select: { status: true }, orderBy: { created_at: "desc" }, take: 1 },
           },
           orderBy: { updated_at: "asc" },
-        }),
-        prisma.work_orders.findMany({
-          where: { AND: [mgBase, { status: { in: OPEN_JOB_CARD_STATUSES } }] },
-          select: { id: true },
-        }),
-        safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Closed", updated_at: { gte: recentlyClosedSince } }] } })),
-        // Job Card Status Simplification Task 6: "Open" split into
-        // "Approved" (nothing has moved yet) and "Active" (materials
-        // moving, assigned, or work started).
-        safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Approved" }] } })),
-        safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: { in: ACTIVE_JOB_CARD_STATUSES } }] } })),
-      ])
-    : null;
+        })
+      : Promise.resolve([] as Array<{
+          id: string;
+          work_order_number: string | null;
+          status: string;
+          updated_at: Date;
+          created_at: Date;
+          description_of_work: string | null;
+          assets: { asset_name: string } | null;
+          parts_requests: { status: string }[];
+        }>),
+    // Shared by Manager's and Store Keeper's "Offline Inventory Control" KPI.
+    (isManager || isStoreKeeper)
+      ? safeNum(prisma.offline_inventory_movements.count({
+          where: { deleted_at: null, movement_date: { gte: todayStart } },
+        }))
+      : Promise.resolve(0),
+  ]);
 
   const mgUnderReviewAll = mgData?.[0] ?? [];
   const mgOpenAll = mgData?.[1] ?? [];
@@ -611,26 +652,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const mgApprovedCount = mgData?.[3] ?? 0;
   const mgActiveCount = mgData?.[4] ?? 0;
 
-  // Manager Dashboard Clarity Task 8: "Needs Your Action" also covers Open
-  // Job Cards actually ready for the Manager to close (In Progress) — a
-  // pending correction on one of these means it's actually waiting on Data
-  // Entry, not Manager, so it's excluded here the same way Submitted rows are.
-  const mgInProgressAll = isManager
-    ? await prisma.work_orders.findMany({
-        where: { AND: [mgBase, { status: "In Progress" }] },
-        select: {
-          id: true,
-          work_order_number: true,
-          status: true,
-          updated_at: true,
-          created_at: true,
-          description_of_work: true,
-          assets: { select: { asset_name: true } },
-          parts_requests: { select: { status: true }, orderBy: { created_at: "desc" }, take: 1 },
-        },
-        orderBy: { updated_at: "asc" },
-      })
-    : [];
+  // Manager Dashboard Clarity Task 8: a pending correction on an In Progress
+  // Job Card means it's actually waiting on Data Entry, not Manager, so it's
+  // excluded here the same way Submitted rows are. (mgInProgressAll and
+  // offlineMovementsToday are now fetched above, alongside mgData.)
   const mgInProgressCorrectionIds = isManager ? await getPendingCorrectionWorkOrderIds(mgInProgressAll.map((r) => r.id)) : new Set<string>();
   const mgCloseRows: MgActionRow[] = mgInProgressAll
     .filter((r) => !mgInProgressCorrectionIds.has(r.id))
@@ -645,13 +670,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       materials_request_status:  r.parts_requests[0]?.status ?? null,
     }));
   const mgActionRows: MgActionRow[] = [...mgSubmittedRows, ...mgCloseRows];
-
-  // Shared by Manager's and Store Keeper's "Offline Inventory Control" KPI.
-  const offlineMovementsToday = (isManager || isStoreKeeper)
-    ? await safeNum(prisma.offline_inventory_movements.count({
-        where: { deleted_at: null, movement_date: { gte: todayStart } },
-      }))
-    : 0;
 
   // ── Maintenance Engineer data ─────────────────────────────────────
   // Simplified Job Card Approval Workflow Unit Task 8: Engineer is not one
@@ -936,11 +954,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           take: 20,
         }),
         canAssignModal
-          ? prisma.profiles.findMany({
-              where: { is_active: true, deleted_at: null },
-              select: { id: true, full_name: true },
-              orderBy: { full_name: "asc" },
-            })
+          ? getTechnicianPickerOptions()
           : Promise.resolve([] as Array<{ id: string; full_name: string }>),
       ])
     : [
@@ -984,16 +998,20 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   }
 
   const isAdmin = context.role?.slug === "super_admin";
-  const previewReviewed =
+  // Performance Optimization Unit 3, Task 7: these two only depend on
+  // previewWO, not on each other — Promise.all instead of two sequential
+  // awaits. previewCorrectionRequester below still has a genuine dependency
+  // on previewPendingClarification's result, so it stays sequential after.
+  const [previewReviewedIds, previewPendingClarification] = await Promise.all([
     previewWO && previewWO.status === "Under Review"
-      ? (await getReviewedWorkOrderIds([previewWO.id])).has(previewWO.id)
-      : false;
-  // Data Entry Correction Note Visibility Cleanup Task 1/6: same single-record
-  // query the Job Card detail page's correction banner uses, so the note
-  // content shown here never disagrees with the full detail page.
-  const previewPendingClarification = previewWO
-    ? await getPendingClarificationForWorkOrder(previewWO.id)
-    : null;
+      ? getReviewedWorkOrderIds([previewWO.id])
+      : Promise.resolve(null),
+    // Data Entry Correction Note Visibility Cleanup Task 1/6: same single-record
+    // query the Job Card detail page's correction banner uses, so the note
+    // content shown here never disagrees with the full detail page.
+    previewWO ? getPendingClarificationForWorkOrder(previewWO.id) : Promise.resolve(null),
+  ]);
+  const previewReviewed = previewReviewedIds ? previewReviewedIds.has(previewWO!.id) : false;
   const previewHasPendingCorrection = previewPendingClarification !== null;
   const previewCorrectionRequester = previewPendingClarification?.requested_by
     ? await prisma.profiles.findUnique({

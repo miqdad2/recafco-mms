@@ -36,6 +36,7 @@ import { createSignedFileUrl } from "@/lib/files/signed-url";
 import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/security/permissions";
 import { canViewEntityFile } from "@/lib/security/file-access";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
 import {
   displaySimplifiedStatus,
   simplifiedStatusTone,
@@ -85,12 +86,31 @@ function statusToStageIndex(status: string): number {
 
 // ── DB include ────────────────────────────────────────────────────────────────
 
+// Performance Optimization Unit 3, Task 4: this include previously had no
+// `take` on any nested list, meaning a long-lived Job Card's entire history
+// (every status change, every technician note, every attachment, every labor/
+// material line) loaded in full on every view and every 20s AutoRefresh tick.
+// `parts_requests`/`purchase_requests` and their nested chains are left
+// unbounded on purpose — real business logic downstream (activeMaterialsRequest,
+// hasIssuedMaterialsRequest, the "View/Request Materials" button) scans the
+// FULL set to find a specific record, so truncating them could silently pick
+// the wrong "active" request; they're also naturally small in practice (a Job
+// Card rarely has more than a handful). The append-only history/activity-log
+// relations below get a generous take limit instead — large enough that no
+// real Job Card today is anywhere close to it (see context/progress-tracker.md's
+// baseline: 20 seeded work orders total), so this changes nothing observable
+// today, but caps worst-case growth for a long-lived Job Card years from now.
+// If a genuine need for "see everything, not just recent" ever arises for one
+// of these, that should be its own paginated section/action, not a bigger
+// default load here.
+const RECENT_HISTORY_TAKE = 200;
+
 const workOrderControlInclude = {
   assets: true,
   departments: true,
   profiles: true,
-  approvals: { orderBy: { decided_at: "desc" } },
-  inventory_movements: { include: { parts: true, parts_requests: true, purchase_requests: true }, orderBy: { created_at: "desc" } },
+  approvals: { orderBy: { decided_at: "desc" }, take: RECENT_HISTORY_TAKE },
+  inventory_movements: { include: { parts: true, parts_requests: true, purchase_requests: true }, orderBy: { created_at: "desc" }, take: RECENT_HISTORY_TAKE },
   parts_requests: {
     include: {
       parts_request_items: { include: { parts: true } },
@@ -117,12 +137,15 @@ const workOrderControlInclude = {
     orderBy: { created_at: "desc" }
   },
   work_order_assignments: { include: { profiles: true }, orderBy: { assigned_at: "asc" } },
-  work_order_attachments: { orderBy: { created_at: "desc" } },
-  work_order_labor: { include: { profiles: true }, orderBy: { created_at: "desc" } },
-  work_order_materials: { include: { parts: true }, orderBy: { created_at: "desc" } },
+  work_order_attachments: { orderBy: { created_at: "desc" }, take: RECENT_HISTORY_TAKE },
+  work_order_labor: { include: { profiles: true }, orderBy: { created_at: "desc" }, take: RECENT_HISTORY_TAKE },
+  work_order_materials: { include: { parts: true }, orderBy: { created_at: "desc" }, take: RECENT_HISTORY_TAKE },
   work_order_required_parts: { orderBy: { created_at: "asc" } },
-  work_order_status_history: { orderBy: { changed_at: "asc" } },
-  work_order_technician_notes: { include: { profiles: true }, orderBy: { created_at: "desc" } }
+  // Fetched newest-first (with the cap) so a truncation keeps the most recent
+  // entries, not the oldest — buildTimeline() below re-sorts everything by
+  // timestamp for display anyway, so the fetch order itself is otherwise moot.
+  work_order_status_history: { orderBy: { changed_at: "desc" }, take: RECENT_HISTORY_TAKE },
+  work_order_technician_notes: { include: { profiles: true }, orderBy: { created_at: "desc" }, take: RECENT_HISTORY_TAKE }
 } satisfies Prisma.work_ordersInclude;
 
 type WorkOrderControl = Prisma.work_ordersGetPayload<{ include: typeof workOrderControlInclude }>;
@@ -260,11 +283,7 @@ export default async function WorkOrderDetailPage({
       orderBy: { created_at: "desc" },
     }),
     getPendingClarificationForWorkOrder(wo.id),
-    prisma.profiles.findMany({
-      where: { is_active: true, deleted_at: null },
-      select: { id: true, full_name: true },
-      orderBy: { full_name: "asc" },
-    }),
+    getTechnicianPickerOptions(),
   ]);
 
   const actorIds = [

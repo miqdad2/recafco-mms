@@ -29,7 +29,6 @@ import { canViewCosts } from "@/lib/reports/data";
 import {
   OPEN_PR_STATUSES,
   displayPartsRequestStatus,
-  materialsRequestListGroup,
 } from "@/lib/display/parts-request-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { getReviewedWorkOrderIds } from "@/lib/work-orders/review-status";
@@ -56,6 +55,7 @@ import { JobCardSubmittedModal } from "@/components/work-orders/job-card-submitt
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
+import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -418,14 +418,17 @@ function formatTime(v: Date | string | null | undefined): string {
 // Materials column text — reuses the same Requested/Received grouping as
 // the Materials Request list page, so wording stays consistent across both
 // pages instead of exposing a bare icon.
-function materialsColumnText(requests: { status: string }[]): string {
-  if (requests.length === 0) return "No Materials Request";
-  const groups = requests.map((r) => materialsRequestListGroup(displayPartsRequestStatus(r.status)));
-  const openCount = groups.filter((g) => g === "Requested").length;
-  if (openCount > 0) {
-    return openCount === 1 ? "1 Materials Request open" : `${openCount} Materials Requests open`;
+// Performance Optimization Unit 3, Task 3: takes the pre-aggregated
+// { total, openCount } summary (computed once per page via a single groupBy,
+// see materialsSummaryByWoId below) instead of the full per-row
+// parts_requests array — a work order with many linked Materials Requests no
+// longer means loading every one of them just to count/classify them here.
+function materialsColumnText(summary: { total: number; openCount: number }): string {
+  if (summary.total === 0) return "No Materials Request";
+  if (summary.openCount > 0) {
+    return summary.openCount === 1 ? "1 Materials Request open" : `${summary.openCount} Materials Requests open`;
   }
-  return requests.length === 1 ? "Materials received" : "All received";
+  return summary.total === 1 ? "Materials received" : "All received";
 }
 
 function countFor(summaries: StatusSummary[], statuses: string[]): number {
@@ -733,14 +736,18 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   // Card's underlying maintenance_manager_review step even if the record's
   // own status has since moved into the Open bucket (e.g. Materials
   // Issued), so both id sets are checked together.
-  const underReviewIdsAll = await prisma.work_orders.findMany({
-    where: { AND: [...nonStatusConditions, { status: "Under Review" }] },
-    select: { id: true },
-  }).then((rows) => rows.map((r) => r.id));
-  const openIdsAll = await prisma.work_orders.findMany({
-    where: { AND: [...nonStatusConditions, { status: { in: OPEN_JOB_CARD_STATUSES } }] },
-    select: { id: true },
-  }).then((rows) => rows.map((r) => r.id));
+  // Performance Optimization Unit 3, Task 3: these two id lookups are
+  // independent of each other — Promise.all instead of two sequential awaits.
+  const [underReviewIdsAll, openIdsAll] = await Promise.all([
+    prisma.work_orders.findMany({
+      where: { AND: [...nonStatusConditions, { status: "Under Review" }] },
+      select: { id: true },
+    }).then((rows) => rows.map((r) => r.id)),
+    prisma.work_orders.findMany({
+      where: { AND: [...nonStatusConditions, { status: { in: OPEN_JOB_CARD_STATUSES } }] },
+      select: { id: true },
+    }).then((rows) => rows.map((r) => r.id)),
+  ]);
   const correctionIdSet = await getPendingCorrectionWorkOrderIds([...underReviewIdsAll, ...openIdsAll]);
 
   // Full WHERE for the list: shared filters + the status/tab condition +
@@ -795,7 +802,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               profiles: { select: { full_name: true } },
             },
           },
-          parts_requests: { select: { status: true } },
         },
       }),
       prisma.work_orders.count({ where }),
@@ -807,6 +813,28 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
     ]);
 
   const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE));
+
+  // Performance Optimization Unit 3, Task 3: replaces the previous
+  // `parts_requests: { select: { status: true } }` on the main list query
+  // (which loaded every linked Materials Request's row for every one of the
+  // 25 work orders on the page, unbounded per row) with one groupBy scoped to
+  // just this page's work order ids, aggregated in SQL.
+  const pageWorkOrderIds = workOrders.map((w) => w.id);
+  const materialsStatusCounts = pageWorkOrderIds.length
+    ? await prisma.parts_requests.groupBy({
+        by: ["work_order_id", "status"],
+        where: { work_order_id: { in: pageWorkOrderIds } },
+        _count: { _all: true },
+      })
+    : [];
+  const materialsSummaryByWoId = new Map<string, { total: number; openCount: number }>();
+  for (const row of materialsStatusCounts) {
+    if (!row.work_order_id) continue;
+    const entry = materialsSummaryByWoId.get(row.work_order_id) ?? { total: 0, openCount: 0 };
+    entry.total += row._count._all;
+    if (row.status !== "Issued") entry.openCount += row._count._all;
+    materialsSummaryByWoId.set(row.work_order_id, entry);
+  }
 
   // ── Quick-view preview data ───────────────────────────────────────────────
   // `created` (set on the post-create redirect) is a fallback source for the
@@ -883,11 +911,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           take: 20,
         }),
         canAssignModal
-          ? prisma.profiles.findMany({
-              where: { is_active: true, deleted_at: null },
-              select: { id: true, full_name: true },
-              orderBy: { full_name: "asc" },
-            })
+          ? getTechnicianPickerOptions()
           : Promise.resolve([] as Array<{ id: string; full_name: string }>),
       ])
     : [
@@ -1457,7 +1481,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
                         {/* Materials — plain wording instead of a bare icon */}
                         <td className="px-4 py-3">
-                          <p className="text-xs text-[#111827]">{materialsColumnText(wo.parts_requests)}</p>
+                          <p className="text-xs text-[#111827]">{materialsColumnText(materialsSummaryByWoId.get(wo.id) ?? { total: 0, openCount: 0 })}</p>
                         </td>
 
                         {/* Status — simplified user-facing status (Job Card

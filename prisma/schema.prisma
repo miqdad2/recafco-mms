@@ -156,6 +156,9 @@ model offline_inventory_movements {
   @@index([parts_request_id], map: "idx_oim_parts_request_id")
   @@index([created_by], map: "idx_oim_created_by")
   @@index([deleted_at], map: "idx_oim_deleted_at")
+  // Performance Optimization Unit 3, Task 8.
+  @@index([deleted_at, part_id, manual_material_name, unit], map: "idx_oim_balance_identity")
+  @@index([deleted_at, movement_date(sort: Desc)], map: "idx_oim_deleted_movement_date")
 }
 
 model service_contracts {
@@ -515,6 +518,8 @@ model parts_requests {
   @@index([request_date, status, department_id], map: "idx_parts_requests_report_filters")
   @@index([status], map: "idx_parts_requests_status")
   @@index([work_order_id], map: "idx_parts_requests_work_order")
+  // Performance Optimization Unit 3, Task 8.
+  @@index([created_at], map: "idx_parts_requests_created_at")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -845,6 +850,8 @@ model work_orders {
   @@index([work_order_number], map: "idx_work_orders_number")
   @@index([date_of_order, status, maintenance_type, worker_type, priority], map: "idx_work_orders_report_filters")
   @@index([status], map: "idx_work_orders_status")
+  // Performance Optimization Unit 3, Task 8.
+  @@index([status, updated_at], map: "idx_work_orders_status_updated_at")
 }
 
 model auth_sessions {

@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { CreateUserDrawer } from "@/components/admin/create-user-drawer";
 import { UsersDirectory } from "@/components/admin/users-directory";
 import type { SerializedAuthUser, SerializedProfile } from "@/components/admin/users-directory";
@@ -79,18 +80,38 @@ export default async function UsersPage({
   const sp = (await searchParams) ?? {};
   const isSuperAdmin = context.role?.slug === "super_admin";
 
+  // Performance Optimization Unit 3, Task 6: UsersDirectory filters/tabs
+  // (All/Active/Inactive/Logged In Today/Never Logged In/Archived) all run
+  // client-side over the full loaded list (see components/admin/users-
+  // directory.tsx) — there's no server-side pagination to move this behind,
+  // so the real win here is trimming the query to exactly the columns
+  // SerializedProfile actually uses instead of `SELECT *`.
+  const profileSelect = {
+    id: true,
+    full_name: true,
+    employee_number: true,
+    phone: true,
+    job_title: true,
+    department_id: true,
+    can_view_costs: true,
+    is_active: true,
+    role_id: true,
+  } as const;
+
   const [nonArchivedProfilesRaw, archivedProfilesRaw, roles, authUsers] =
     await Promise.all([
       prisma.profiles.findMany({
         where: { deleted_at: null },
         orderBy: { full_name: "asc" },
+        select: profileSelect,
       }),
       isSuperAdmin
         ? prisma.profiles.findMany({
             where: { deleted_at: { not: null } },
             orderBy: { full_name: "asc" },
+            select: profileSelect,
           })
-        : Promise.resolve([] as Awaited<ReturnType<typeof prisma.profiles.findMany>>),
+        : Promise.resolve([] as Array<Prisma.profilesGetPayload<{ select: typeof profileSelect }>>),
       prisma.roles.findMany({
         where: { slug: { in: ACCOUNT_TYPE_SLUGS } },
         select: { id: true, slug: true },

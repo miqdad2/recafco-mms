@@ -43,6 +43,7 @@ import {
   NEEDS_UPDATE_LABEL,
 } from "@/lib/work-orders/simplified-status";
 import { getPartsRequestVisibilityFilter, canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
+import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { cn, formatExactDateTime } from "@/lib/utils";
@@ -253,19 +254,19 @@ export default async function PartsRequestsPage({
   const where: Prisma.parts_requestsWhereInput =
     conditions.length > 0 ? { AND: conditions } : {};
 
-  // Manager Approval Success Popup and Materials Awaiting Receipt Flow Task
-  // 5: default sort is "Awaiting Receipt first, oldest first within Awaiting
-  // Receipt" — a priority that depends on the linked Job Card's status, not
-  // a raw column, so it can't be expressed as a single Prisma `orderBy`.
-  // Only applied on views where the mix of buckets is actually meaningful
-  // (All / Awaiting Receipt / any raw not-yet-received deep link); the
-  // Received tab keeps the existing newest-first order, matching a normal
-  // "recent activity" list. Fetches a lightweight id/status/job-status/date
-  // projection first (cheap at this system's scale), sorts in memory, then
-  // fetches full row data for just the current page's slice.
-  const useReceiptPrioritySort = status !== "Received";
+  const requestRowSelect = {
+    id: true,
+    parts_request_number: true,
+    status: true,
+    created_at: true,
+    work_orders: { select: { id: true, work_order_number: true, status: true } },
+    assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
+    profiles_parts_requests_requested_byToprofiles: { select: { full_name: true } },
+    parts_request_items: { select: { description: true, quantity_requested: true, issued_quantity: true } },
+    _count: { select: { parts_request_items: true } },
+  } as const;
 
-  let requests: Array<{
+  type RequestRow = {
     id: string;
     parts_request_number: string | null;
     status: string;
@@ -275,47 +276,76 @@ export default async function PartsRequestsPage({
     profiles_parts_requests_requested_byToprofiles: { full_name: string } | null;
     parts_request_items: { description: string; quantity_requested: unknown; issued_quantity: unknown }[];
     _count: { parts_request_items: number };
-  }>;
+  };
+
+  let requests: RequestRow[];
   let total: number;
 
-  if (useReceiptPrioritySort) {
-    const sortable = await prisma.parts_requests.findMany({
-      where,
-      select: { id: true, status: true, created_at: true, work_orders: { select: { status: true } } },
-    });
-    total = sortable.length;
-    const priority = (r: (typeof sortable)[number]) => {
-      if (displayPartsRequestStatus(r.status) === "Issued") return 2;
-      const isOpen = r.work_orders ? OPEN_JOB_CARD_STATUSES.includes(r.work_orders.status) : false;
-      return isOpen ? 0 : 1;
-    };
-    const orderedIds = sortable
-      .slice()
-      .sort((a, b) => {
-        const pa = priority(a);
-        const pb = priority(b);
-        if (pa !== pb) return pa - pb;
-        return a.created_at.getTime() - b.created_at.getTime(); // oldest first within a bucket
-      })
-      .map((r) => r.id)
-      .slice((page - 1) * PAGE_SIZE, (page - 1) * PAGE_SIZE + PAGE_SIZE);
+  // Manager Approval Success Popup and Materials Awaiting Receipt Flow Task
+  // 5: default sort is "Awaiting Receipt first, oldest first within Awaiting
+  // Receipt" — a priority that depends on the linked Job Card's status, not
+  // a raw column, so it can't be expressed as a single Prisma `orderBy`.
+  // Only applied on views where the mix of buckets is actually meaningful
+  // (All / Awaiting Receipt / any raw not-yet-received deep link); the
+  // Received tab keeps the existing newest-first order, matching a normal
+  // "recent activity" list.
+  //
+  // Performance Optimization Unit 3, Task 2: previously fetched every
+  // matching row (unbounded — grows with total history) just to compute this
+  // priority order in JS, then re-fetched the current page's slice by id.
+  // Since the 3 priority buckets are each expressible as a normal Prisma
+  // `where` (status === "Issued" is bucket 2; linked Job Card status is one
+  // of OPEN_JOB_CARD_STATUSES is bucket 0; everything else is bucket 1 — see
+  // displayPartsRequestStatus()/OPEN_JOB_CARD_STATUSES), the page can instead
+  // be assembled from 3 cheap `count()` calls plus at most 2 bounded
+  // `findMany` calls (a page only ever straddles one bucket boundary), with
+  // the exact same bucket-then-oldest-first ordering as before.
+  const useReceiptPrioritySort = status !== "Received";
 
-    const rows = await prisma.parts_requests.findMany({
-      where: { id: { in: orderedIds } },
-      select: {
-        id: true,
-        parts_request_number: true,
-        status: true,
-        created_at: true,
-        work_orders: { select: { id: true, work_order_number: true, status: true } },
-        assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
-        profiles_parts_requests_requested_byToprofiles: { select: { full_name: true } },
-        parts_request_items: { select: { description: true, quantity_requested: true, issued_quantity: true } },
-        _count: { select: { parts_request_items: true } },
-      },
-    });
-    const orderIndex = new Map(orderedIds.map((id, i) => [id, i]));
-    requests = rows.slice().sort((a, b) => (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0));
+  if (useReceiptPrioritySort) {
+    // parts_requests.work_order_id is a required (non-nullable) FK — every
+    // request has exactly one linked work order — so bucket 1 is simply "not
+    // Issued, and not in bucket 0"; there's no "no linked work order" case to
+    // account for (the original JS priority() function's `r.work_orders ?`
+    // null-check was defensive-only, matching this).
+    const notIssued = { status: { not: "Issued" } };
+    const bucketWheres: Prisma.parts_requestsWhereInput[] = [
+      { AND: [...conditions, notIssued, { work_orders: { status: { in: OPEN_JOB_CARD_STATUSES } } }] },
+      { AND: [...conditions, notIssued, { work_orders: { status: { notIn: OPEN_JOB_CARD_STATUSES } } }] },
+      { AND: [...conditions, { status: "Issued" }] },
+    ];
+
+    const bucketCounts = await Promise.all(bucketWheres.map((w) => prisma.parts_requests.count({ where: w })));
+    total = bucketCounts.reduce((sum, c) => sum + c, 0);
+
+    // Figure out which bucket(s) the current page's row range falls into.
+    let remainingSkip = (page - 1) * PAGE_SIZE;
+    let remainingTake = PAGE_SIZE;
+    const slices: { bucketIndex: number; skip: number; take: number }[] = [];
+    for (let i = 0; i < bucketCounts.length && remainingTake > 0; i++) {
+      const bucketSize = bucketCounts[i];
+      if (remainingSkip >= bucketSize) {
+        remainingSkip -= bucketSize;
+        continue;
+      }
+      const takeHere = Math.min(bucketSize - remainingSkip, remainingTake);
+      slices.push({ bucketIndex: i, skip: remainingSkip, take: takeHere });
+      remainingSkip = 0;
+      remainingTake -= takeHere;
+    }
+
+    const sliceResults = await Promise.all(
+      slices.map((s) =>
+        prisma.parts_requests.findMany({
+          where: bucketWheres[s.bucketIndex],
+          orderBy: { created_at: "asc" }, // oldest first within a bucket
+          skip: s.skip,
+          take: s.take,
+          select: requestRowSelect,
+        })
+      )
+    );
+    requests = sliceResults.flat();
   } else {
     [requests, total] = await Promise.all([
       prisma.parts_requests.findMany({
@@ -323,17 +353,7 @@ export default async function PartsRequestsPage({
         orderBy: { created_at: "desc" },
         skip: (page - 1) * PAGE_SIZE,
         take: PAGE_SIZE,
-        select: {
-          id: true,
-          parts_request_number: true,
-          status: true,
-          created_at: true,
-          work_orders: { select: { id: true, work_order_number: true, status: true } },
-          assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
-          profiles_parts_requests_requested_byToprofiles: { select: { full_name: true } },
-          parts_request_items: { select: { description: true, quantity_requested: true, issued_quantity: true } },
-          _count: { select: { parts_request_items: true } },
-        },
+        select: requestRowSelect,
       }),
       prisma.parts_requests.count({ where }),
     ]);
@@ -597,11 +617,7 @@ export default async function PartsRequestsPage({
           take: 20,
         }),
         canAssignModal
-          ? prisma.profiles.findMany({
-              where: { is_active: true, deleted_at: null },
-              select: { id: true, full_name: true },
-              orderBy: { full_name: "asc" },
-            })
+          ? getTechnicianPickerOptions()
           : Promise.resolve([] as Array<{ id: string; full_name: string }>),
       ])
     : [

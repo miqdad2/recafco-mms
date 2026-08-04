@@ -52,32 +52,61 @@ export async function requireOfflineInventoryManage() {
 // (issueMaterials has no balance check at all). It only drives a soft
 // "no store balance recorded" helper note so Store isn't left wondering why
 // the number here doesn't match what's physically on the shelf.
+//
+// Performance Optimization Unit 3, Task 1: previously ran one unaggregated
+// findMany per requested item (loading every matching movement row and
+// summing in JS) — now a single SQL-side groupBy covering every requested
+// item at once, summing quantities in Postgres instead of pulling full rows.
+// Matches the original per-item semantics exactly: manual-name matching is
+// case-insensitive and NOT scoped by unit (this function never filtered by
+// unit, unlike buildBalanceKey() elsewhere), so quantities across different
+// units for the same manual name are still summed together, same as before.
 export async function getMaterialBalancesForItems(
   items: { part_id: string | null; description: string }[]
 ): Promise<Map<string, number>> {
   const results = new Map<string, number>();
-  await Promise.all(
-    items.map(async (item) => {
-      const key = item.part_id ?? item.description;
-      const movements = await prisma.offline_inventory_movements.findMany({
-        where: item.part_id
-          ? { part_id: item.part_id, deleted_at: null }
-          : {
-              part_id: null,
-              manual_material_name: { equals: item.description, mode: "insensitive" },
-              deleted_at: null,
-            },
-        select: { movement_type: true, quantity: true },
-      });
-      let balance = 0;
-      for (const m of movements) {
-        const qty = Number(m.quantity);
-        if (m.movement_type === "RECEIVED" || m.movement_type === "OPENING_STOCK") balance += qty;
-        else if (m.movement_type === "ISSUED") balance -= qty;
-      }
-      results.set(key, balance);
-    })
-  );
+  if (items.length === 0) return results;
+
+  const partIds = [...new Set(items.filter((i) => i.part_id).map((i) => i.part_id!))];
+  const manualNames = [...new Set(items.filter((i) => !i.part_id).map((i) => i.description))];
+
+  const orConditions: Array<Record<string, unknown>> = [];
+  if (partIds.length) orConditions.push({ part_id: { in: partIds }, deleted_at: null });
+  if (manualNames.length) {
+    orConditions.push({
+      part_id: null,
+      deleted_at: null,
+      OR: manualNames.map((name) => ({ manual_material_name: { equals: name, mode: "insensitive" } })),
+    });
+  }
+  if (orConditions.length === 0) return results;
+
+  const grouped = await prisma.offline_inventory_movements.groupBy({
+    by: ["part_id", "manual_material_name", "movement_type"],
+    where: { OR: orConditions },
+    _sum: { quantity: true },
+  });
+
+  const balanceByPartId = new Map<string, number>();
+  const balanceByManualNameLower = new Map<string, number>();
+  for (const g of grouped) {
+    const qty = Number(g._sum.quantity ?? 0);
+    const delta = g.movement_type === "ISSUED" ? -qty : g.movement_type === "RECEIVED" || g.movement_type === "OPENING_STOCK" ? qty : 0;
+    if (g.part_id) {
+      balanceByPartId.set(g.part_id, (balanceByPartId.get(g.part_id) ?? 0) + delta);
+    } else if (g.manual_material_name) {
+      const nameKey = g.manual_material_name.toLowerCase();
+      balanceByManualNameLower.set(nameKey, (balanceByManualNameLower.get(nameKey) ?? 0) + delta);
+    }
+  }
+
+  for (const item of items) {
+    const key = item.part_id ?? item.description;
+    const bal = item.part_id
+      ? balanceByPartId.get(item.part_id) ?? 0
+      : balanceByManualNameLower.get(item.description.toLowerCase()) ?? 0;
+    results.set(key, bal);
+  }
   return results;
 }
 
@@ -103,99 +132,124 @@ export type OfflineInventoryBalance = {
   balance: number;
 };
 
+// Performance Optimization Unit 3, Task 1: previously loaded every non-deleted
+// movement row (unbounded — grows forever with history) and aggregated
+// balances in JS. Now does the summing in Postgres via groupBy, and fetches
+// only ONE metadata row per material identity (via distinct+orderBy, which
+// Prisma/Postgres implement as `DISTINCT ON`) instead of every row — so this
+// query's cost scales with the number of distinct materials, not the number
+// of movements ever recorded. Returns the exact same BalanceItem[] shape the
+// UI already expects; the client-side search/filter behavior in
+// store-balance-view.tsx (material name, part number, SS Rec. Code, category,
+// location/bin) is unaffected since it already operated on one row per
+// material, not raw movements.
+//
+// Known, accepted behavior difference from the old JS-aggregation version:
+// grouping/distinct is by exact (part_id, manual_material_name, unit), not
+// the case-normalized key buildBalanceKey() uses. In practice this never
+// differs — Receive/Issue always reuse an existing material's exact stored
+// casing via a <select> (see receive-material-form.tsx); free-typed manual
+// names only happen once, at first creation. If two movements for "the same"
+// material genuinely used different casing (a pre-existing data-entry
+// mistake, not something this change introduces), their balances still merge
+// correctly under the same normalized key below, but which movement's
+// category/location "wins" for display is no longer strictly guaranteed to
+// be the single most-recent one across both variants.
 export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBalance> {
-  const allMovementsRaw = await prisma.offline_inventory_movements.findMany({
-    where: { deleted_at: null },
-    select: {
-      movement_type: true,
-      movement_date: true,
-      part_id: true,
-      manual_material_name: true,
-      manual_part_number: true,
-      ss_rec_code: true,
-      category: true,
-      counterparty: true,
-      quantity: true,
-      unit: true,
-      parts: { select: { part_name: true, part_number: true } },
-    },
-    orderBy: [{ movement_date: "desc" }, { created_at: "desc" }],
-  });
+  const distinctOrderBy = [
+    { part_id: "asc" as const },
+    { manual_material_name: "asc" as const },
+    { unit: "asc" as const },
+    { movement_date: "desc" as const },
+    { created_at: "desc" as const },
+  ];
+
+  const [grouped, latestPerMaterial, latestOpeningStock] = await Promise.all([
+    // One row per (material identity, movement_type) — summed in SQL.
+    prisma.offline_inventory_movements.groupBy({
+      by: ["part_id", "manual_material_name", "unit", "movement_type"],
+      where: { deleted_at: null },
+      _sum: { quantity: true },
+    }),
+    // One row per material identity — its single most recent movement, for
+    // display_name/part_number/ss_rec_code/category/last_movement_date.
+    prisma.offline_inventory_movements.findMany({
+      where: { deleted_at: null },
+      distinct: ["part_id", "manual_material_name", "unit"],
+      orderBy: distinctOrderBy,
+      select: {
+        part_id: true,
+        manual_material_name: true,
+        manual_part_number: true,
+        ss_rec_code: true,
+        unit: true,
+        category: true,
+        movement_date: true,
+        parts: { select: { part_name: true, part_number: true } },
+      },
+    }),
+    // Location / Bin is only ever captured on Opening Stock movements —
+    // one row per material identity, its most recent Opening Stock entry.
+    prisma.offline_inventory_movements.findMany({
+      where: { deleted_at: null, movement_type: "OPENING_STOCK", counterparty: { not: null } },
+      distinct: ["part_id", "manual_material_name", "unit"],
+      orderBy: distinctOrderBy,
+      select: { part_id: true, manual_material_name: true, unit: true, counterparty: true },
+    }),
+  ]);
+
+  const metaByKey = new Map(latestPerMaterial.map((m) => [buildBalanceKey(m), m]));
+  const locationByKey = new Map(latestOpeningStock.map((m) => [buildBalanceKey(m), m.counterparty]));
 
   let totalOpeningStock = 0;
   let totalReceived     = 0;
   let totalIssued       = 0;
 
-  // Results are ordered most-recent-first, so the first movement seen per
-  // material key that carries a category/location is the most recent one.
-  const balanceAccum = new Map<
-    string,
-    { item: BalanceItem; lastDate: Date; categorySet: boolean; locationSet: boolean }
-  >();
+  const balanceAccum = new Map<string, BalanceItem>();
 
-  for (const m of allMovementsRaw) {
-    const qty = Number(m.quantity);
-    const key = buildBalanceKey(m);
+  for (const g of grouped) {
+    const key = buildBalanceKey(g);
+    const qty = Number(g._sum.quantity ?? 0);
 
     if (!balanceAccum.has(key)) {
+      const meta = metaByKey.get(key);
+      if (!meta) continue; // every grouped key has at least one movement, so a meta row must exist
       balanceAccum.set(key, {
-        item: {
-          key,
-          part_id:              m.part_id,
-          display_name:         m.parts?.part_name ?? m.manual_material_name ?? "Unknown",
-          part_number:          m.parts?.part_number ?? m.manual_part_number ?? null,
-          ss_rec_code:          m.ss_rec_code,
-          category:             OTHER_CATEGORY,
-          location:             null,
-          manual_material_name: m.manual_material_name,
-          unit:                 m.unit,
-          total_opening_stock:  0,
-          total_received:       0,
-          total_issued:         0,
-          balance:              0,
-          last_movement_date:   m.movement_date.toISOString(),
-        },
-        lastDate: m.movement_date,
-        categorySet: false,
-        locationSet: false,
+        key,
+        part_id:              meta.part_id,
+        display_name:         meta.parts?.part_name ?? meta.manual_material_name ?? "Unknown",
+        part_number:          meta.parts?.part_number ?? meta.manual_part_number ?? null,
+        ss_rec_code:          meta.ss_rec_code,
+        category:             meta.category ? normalizeCategory(meta.category) : OTHER_CATEGORY,
+        location:             locationByKey.get(key) ?? null,
+        manual_material_name: meta.manual_material_name,
+        unit:                 meta.unit,
+        total_opening_stock:  0,
+        total_received:       0,
+        total_issued:         0,
+        balance:              0,
+        last_movement_date:   meta.movement_date.toISOString(),
       });
     }
 
-    const entry = balanceAccum.get(key)!;
-
-    if (m.movement_type === "OPENING_STOCK") {
-      totalOpeningStock              += qty;
-      entry.item.total_opening_stock += qty;
-      entry.item.balance             += qty;
-    } else if (m.movement_type === "RECEIVED") {
-      totalReceived              += qty;
-      entry.item.total_received  += qty;
-      entry.item.balance         += qty;
-    } else if (m.movement_type === "ISSUED") {
-      totalIssued                += qty;
-      entry.item.total_issued    += qty;
-      entry.item.balance         -= qty;
-    }
-
-    if (!entry.categorySet && m.category) {
-      entry.item.category = normalizeCategory(m.category);
-      entry.categorySet = true;
-    }
-    // Location / Bin is only captured on Opening Stock movements.
-    if (!entry.locationSet && m.movement_type === "OPENING_STOCK" && m.counterparty) {
-      entry.item.location = m.counterparty;
-      entry.locationSet = true;
-    }
-
-    if (m.movement_date > entry.lastDate) {
-      entry.lastDate                 = m.movement_date;
-      entry.item.last_movement_date  = m.movement_date.toISOString();
+    const item = balanceAccum.get(key)!;
+    if (g.movement_type === "OPENING_STOCK") {
+      totalOpeningStock  += qty;
+      item.total_opening_stock += qty;
+      item.balance        += qty;
+    } else if (g.movement_type === "RECEIVED") {
+      totalReceived       += qty;
+      item.total_received += qty;
+      item.balance        += qty;
+    } else if (g.movement_type === "ISSUED") {
+      totalIssued          += qty;
+      item.total_issued    += qty;
+      item.balance         -= qty;
     }
   }
 
   const balance      = totalOpeningStock + totalReceived - totalIssued;
   const balanceItems = Array.from(balanceAccum.values())
-    .map((e) => e.item)
     .sort((a, b) => a.display_name.localeCompare(b.display_name));
 
   return { balanceItems, totalOpeningStock, totalReceived, totalIssued, balance };
