@@ -188,6 +188,26 @@ prefix). Recommended watch lists by page type:
 - Job Cards list/detail: `job_card.`, `work_order.`, `materials_request.`
 - Materials Requests list/detail: `materials_request.`, `job_card.`, `work_order.`, `offline_inventory.`, `material_ledger.`
 - Offline Inventory Control / Movement History: `offline_inventory.`, `material_ledger.`, `materials_request.`, `job_card.`
+- Technician Jobs (`/technician/jobs`): `job_card.`, `work_order.`, `technician_job.`, `materials_request.` —
+  Backend Reliability Fix Unit 2, Task 1: previously watched only the exact
+  event `job_card.assigned`, which missed `job_card.approved`/`.closed`/
+  `.updated`/`.in_progress`/`.correction_*` on jobs already in the
+  technician's list.
+- Store Send/Issue Materials (`/store/issue-materials`): `materials_request.`,
+  `store_materials.`, `offline_inventory.`, `material_ledger.`, `job_card.`,
+  `work_order.` — Backend Reliability Fix Unit 2, Task 2: previously watched
+  only `materials_request.approved`/`.updated`, which missed `.sent` (a line
+  leaving this page's list), `store_materials.sent`, and the
+  `offline_inventory.`/`material_ledger.` events that change the
+  available-balance figures this page shows.
+
+`REALTIME_EVENTS.NOTIFICATION_CREATED`/`NOTIFICATION_UPDATED` are defined but
+still have no active emitter (see "Event types" above) — the Notification
+Center page (`/notifications`) intentionally has no `RealtimeRefresh` for
+this reason; adding one would watch a dead prefix and never fire. New
+notifications already reach the user in real time via the separate
+`notification` SSE push (`app/api/notifications/stream/route.ts`), consumed
+directly by the notification bell/toast, not through this table.
 
 Should a heavier real-time layer (WebSockets/Socket.IO) ever become
 necessary, the `scope`, `target_profile_id`, and `department_id` columns

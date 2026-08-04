@@ -241,7 +241,24 @@ export default async function IssueMaterialsPage({ searchParams }: IssueMaterial
     <>
       {/* Store Issue Materials + Offline Inventory Separation Unit Task 11 */}
       <AutoRefresh intervalMs={15000} />
-      <RealtimeRefresh watch={["materials_request.approved", "materials_request.updated"]} />
+      {/* Backend Reliability Fix Unit 2, Task 2: previously watched only the
+          two exact events "materials_request.approved"/"materials_request.updated"
+          — missed materials_request.sent (fired exactly when a line here
+          becomes fully issued and should drop off this list), store_materials.sent,
+          and offline_inventory.received/material_ledger.updated (which change
+          the available-balance figures the Send Materials popup shows via
+          getMaterialBalancesForItems). Broadened to full event-prefix
+          coverage for every signal that can change what this page shows. */}
+      <RealtimeRefresh
+        watch={[
+          "materials_request.",
+          "store_materials.",
+          "offline_inventory.",
+          "material_ledger.",
+          "job_card.",
+          "work_order.",
+        ]}
+      />
       <PageHeader
         title="Send Materials"
         description="Approved Materials Requests ready to send, plus Store follow-up items. Sending records the material against the Job Card automatically."

@@ -64,7 +64,15 @@ export default async function TechnicianJobsPage() {
   return (
     <>
       <AutoRefresh intervalMs={20000} />
-      <RealtimeRefresh watch={["job_card.assigned", "technician_job.", "materials_request."]} />
+      {/* Backend Reliability Fix Unit 2, Task 1: previously watched only the
+          exact event "job_card.assigned" — missed job_card.approved/.closed/
+          .updated/.in_progress/.correction_* on jobs already in this list, so
+          those changes waited on the 20s AutoRefresh fallback instead of
+          updating immediately. Broadened to the full "job_card."/"work_order."
+          prefixes (work_order. covers the legacy create/save events some
+          older code paths still emit) alongside the existing
+          technician_job./materials_request. prefixes. */}
+      <RealtimeRefresh watch={["job_card.", "work_order.", "technician_job.", "materials_request."]} />
       <PageHeader title="My Jobs" description="Your assigned Job Cards — start work, update progress, and close when done." />
       <div className="grid gap-4 p-4 sm:grid-cols-2 xl:grid-cols-3">
         {jobs.length ? jobs.map(({ job, assignedAt }) => {
