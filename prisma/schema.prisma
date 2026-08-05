@@ -568,6 +568,9 @@ model profiles {
   offline_inventory_movements                                       offline_inventory_movements[]
   service_contracts_created                                         service_contracts[]         @relation("sc_created_by")
   service_contracts_updated                                         service_contracts[]         @relation("sc_updated_by")
+  worker_profiles_created                                           WorkerProfile[]              @relation("worker_profiles_created_by")
+  worker_profiles_updated                                           WorkerProfile[]              @relation("worker_profiles_updated_by")
+  work_order_worker_assignments                                     WorkOrderWorkerAssignment[]
 
   @@index([department_id], map: "idx_profiles_department_id")
   @@index([is_active], map: "idx_profiles_is_active")
@@ -687,6 +690,13 @@ model work_order_assignments {
   external_phone               String?
   external_trade               String?
   external_expected_visit_date DateTime? @db.Date
+  // Work Assignment and Worker Profiles Foundation Unit 7: "Agreed amount or
+  // hourly rate optional" for Freelancer/External Company — the one field
+  // missing from this table for that use case. Internal Team's hourly-rate
+  // tracking uses the separate WorkOrderWorkerAssignment roster below
+  // instead, since Internal Team assignees here are always real system-user
+  // profiles (technician_id), not the new no-login worker_profiles.
+  agreed_amount                Decimal?  @db.Decimal(12, 3)
   profiles                     profiles?   @relation(fields: [technician_id], references: [id], onUpdate: NoAction)
   work_orders                  work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
@@ -839,6 +849,7 @@ model work_orders {
   work_order_technician_notes     work_order_technician_notes[]
   work_order_required_parts       WorkOrderRequiredPart[]
   offline_inventory_movements     offline_inventory_movements[]
+  work_order_worker_assignments   WorkOrderWorkerAssignment[]
   assets                          assets?                       @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
   profiles                        profiles?                     @relation(fields: [assigned_supervisor_id], references: [id], onUpdate: NoAction)
   departments                     departments?                  @relation(fields: [requested_by_department_id], references: [id], onUpdate: NoAction)
@@ -1165,4 +1176,69 @@ model WorkflowMapVersion {
   @@map("workflow_map_versions")
   @@index([status, created_at(sort: Desc)], map: "idx_workflow_map_versions_status_created")
   @@index([version_number(sort: Desc)], map: "idx_workflow_map_versions_version")
+}
+
+// ─── Work Assignment and Worker Profiles Foundation Unit 7 ───────────────────
+//
+// worker_profiles is a labor roster for maintenance workers who don't
+// necessarily have a system login (Supervisor / Technician / Helper /
+// Labor), distinct from `profiles` (real login accounts, still used by the
+// existing Internal Technician self-service assignment above). Reusing
+// `profiles` for this was rejected: every `profiles` row implies an
+// auth_users login and a system role, which most day-labor/helper workers
+// will never need.
+//
+// work_order_worker_assignments is the per-Job-Card internal labor roster —
+// additive and separate from work_order_assignments (which keeps working
+// exactly as before for technician self-service + Freelancer/External
+// Company). hourly_rate_snapshot is copied from worker_profiles.hourly_rate
+// at assignment time and never re-read from the worker profile afterward, so
+// a later pay-rate change never changes an already-assigned Job Card's cost.
+// Editing the roster soft-removes old rows (status="removed") instead of
+// deleting them, preserving history for the future work-session/timer unit
+// (Task 8), which will add a table FK'd to this one's id.
+
+model WorkerProfile {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String
+  worker_type    String
+  hourly_rate    Decimal   @default(0) @db.Decimal(12, 3)
+  phone          String?
+  skill_category String?
+  is_active      Boolean   @default(true)
+  notes          String?
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime  @default(now()) @db.Timestamptz(6)
+  created_by     String?   @db.Uuid
+  updated_by     String?   @db.Uuid
+
+  profiles_created_by profiles? @relation("worker_profiles_created_by", fields: [created_by], references: [id], onUpdate: NoAction)
+  profiles_updated_by profiles? @relation("worker_profiles_updated_by", fields: [updated_by], references: [id], onUpdate: NoAction)
+  assignments          WorkOrderWorkerAssignment[]
+
+  @@map("worker_profiles")
+  @@index([is_active], map: "idx_worker_profiles_is_active")
+  @@index([worker_type], map: "idx_worker_profiles_worker_type")
+}
+
+model WorkOrderWorkerAssignment {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id        String    @db.Uuid
+  worker_id            String    @db.Uuid
+  worker_role          String
+  hourly_rate_snapshot Decimal   @db.Decimal(12, 3)
+  status               String    @default("active")
+  assigned_by          String?   @db.Uuid
+  assigned_at          DateTime  @default(now()) @db.Timestamptz(6)
+  notes                String?
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime  @default(now()) @db.Timestamptz(6)
+
+  work_orders          work_orders    @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  worker_profiles      WorkerProfile  @relation(fields: [worker_id], references: [id], onUpdate: NoAction)
+  profiles             profiles?      @relation(fields: [assigned_by], references: [id], onUpdate: NoAction)
+
+  @@map("work_order_worker_assignments")
+  @@index([work_order_id, status], map: "idx_wowa_work_order_status")
+  @@index([worker_id], map: "idx_wowa_worker_id")
 }

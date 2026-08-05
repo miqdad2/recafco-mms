@@ -1,9 +1,11 @@
 import "server-only";
 
 import { redirect } from "next/navigation";
+import type { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { requireUser, type CurrentUserContext } from "@/lib/auth/context";
+import { normalizeMaterialKey } from "@/lib/materials/normalize-material";
 import {
   normalizeCategory,
   OTHER_CATEGORY,
@@ -255,6 +257,144 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
   return { balanceItems, totalOpeningStock, totalReceived, totalIssued, balance };
 }
 
+export type OfflineInventorySearchMatch = {
+  key: string;
+  part_id: string | null;
+  manual_material_name: string | null;
+  display_name: string;
+  part_number: string | null;
+  ss_rec_code: string | null;
+  unit: string;
+  category: string;
+  location: string | null;
+  balance: number;
+  last_movement_date: string;
+};
+
+// Required Materials Inventory Matching Unit 5, Task 2: Required Materials
+// autocomplete search. Same balance-aggregation shape as
+// getOfflineInventoryBalance() above (groupBy in Postgres, one metadata row
+// per distinct material identity via `distinct`) but scoped to a small
+// top-N candidate set instead of every material, so this stays cheap enough
+// to call on every keystroke (debounced client-side). Never loads raw
+// movement rows — only grouped sums and one metadata row per candidate.
+export async function searchOfflineInventoryMaterials(opts: {
+  query: string;
+  unit?: string | null;
+  partNumber?: string | null;
+  limit?: number;
+}): Promise<OfflineInventorySearchMatch[]> {
+  const trimmed = opts.query.trim();
+  if (trimmed.length < 2) return [];
+  const limit = Math.min(opts.limit ?? 10, 25);
+
+  const filters: Prisma.offline_inventory_movementsWhereInput[] = [
+    { deleted_at: null },
+    {
+      OR: [
+        { manual_material_name: { contains: trimmed, mode: "insensitive" } },
+        { manual_part_number: { contains: trimmed, mode: "insensitive" } },
+        { ss_rec_code: { contains: trimmed, mode: "insensitive" } },
+        { parts: { part_name: { contains: trimmed, mode: "insensitive" } } },
+        { parts: { part_number: { contains: trimmed, mode: "insensitive" } } },
+      ],
+    },
+  ];
+  if (opts.unit?.trim()) {
+    filters.push({ unit: { equals: opts.unit.trim(), mode: "insensitive" } });
+  }
+  if (opts.partNumber?.trim()) {
+    const pn = opts.partNumber.trim();
+    filters.push({
+      OR: [
+        { manual_part_number: { contains: pn, mode: "insensitive" } },
+        { parts: { part_number: { contains: pn, mode: "insensitive" } } },
+      ],
+    });
+  }
+
+  const distinctOrderBy = [
+    { part_id: "asc" as const },
+    { manual_material_name: "asc" as const },
+    { unit: "asc" as const },
+    { movement_date: "desc" as const },
+    { created_at: "desc" as const },
+  ];
+
+  const candidates = await prisma.offline_inventory_movements.findMany({
+    where: { AND: filters },
+    distinct: ["part_id", "manual_material_name", "unit"],
+    orderBy: distinctOrderBy,
+    select: {
+      part_id: true,
+      manual_material_name: true,
+      manual_part_number: true,
+      ss_rec_code: true,
+      unit: true,
+      category: true,
+      movement_date: true,
+      parts: { select: { part_name: true, part_number: true } },
+    },
+    take: limit,
+  });
+
+  if (candidates.length === 0) return [];
+
+  const identityOr = candidates.map((c) =>
+    c.part_id
+      ? { part_id: c.part_id, deleted_at: null }
+      : {
+          part_id: null,
+          manual_material_name: { equals: c.manual_material_name ?? "", mode: "insensitive" as const },
+          unit: { equals: c.unit, mode: "insensitive" as const },
+          deleted_at: null,
+        }
+  );
+
+  const [grouped, locationRows] = await Promise.all([
+    prisma.offline_inventory_movements.groupBy({
+      by: ["part_id", "manual_material_name", "unit", "movement_type"],
+      where: { OR: identityOr },
+      _sum: { quantity: true },
+    }),
+    prisma.offline_inventory_movements.findMany({
+      where: { OR: identityOr, movement_type: "OPENING_STOCK", counterparty: { not: null }, deleted_at: null },
+      distinct: ["part_id", "manual_material_name", "unit"],
+      orderBy: distinctOrderBy,
+      select: { part_id: true, manual_material_name: true, unit: true, counterparty: true },
+    }),
+  ]);
+
+  const balanceByKey = new Map<string, number>();
+  for (const g of grouped) {
+    const key = buildBalanceKey(g);
+    const qty = Number(g._sum.quantity ?? 0);
+    const delta =
+      g.movement_type === "ISSUED" ? -qty : g.movement_type === "RECEIVED" || g.movement_type === "OPENING_STOCK" ? qty : 0;
+    balanceByKey.set(key, (balanceByKey.get(key) ?? 0) + delta);
+  }
+  const locationByKey = new Map(locationRows.map((r) => [buildBalanceKey(r), r.counterparty]));
+
+  return candidates
+    .map((c) => {
+      const key = buildBalanceKey(c);
+      return {
+        key,
+        part_id: c.part_id,
+        manual_material_name: c.manual_material_name,
+        display_name: c.parts?.part_name ?? c.manual_material_name ?? "Unknown",
+        part_number: c.parts?.part_number ?? c.manual_part_number ?? null,
+        ss_rec_code: c.ss_rec_code,
+        unit: c.unit,
+        category: c.category ? normalizeCategory(c.category) : OTHER_CATEGORY,
+        location: locationByKey.get(key) ?? null,
+        balance: balanceByKey.get(key) ?? 0,
+        last_movement_date: c.movement_date.toISOString(),
+      };
+    })
+    .sort((a, b) => a.display_name.localeCompare(b.display_name));
+}
+
 // Latest N movements across every material, for the Recent Movements section
 // on the Offline Inventory Control main page. Same shape/ordering as the full
 // Movement History page's query, just capped short — every write path
@@ -287,6 +427,111 @@ export async function getRecentOfflineInventoryMovements(limit = 15): Promise<Re
     created_by_name: m.profiles.full_name,
     remarks: m.remarks,
   }));
+}
+
+export type MaterialMatchResolution = {
+  matched: boolean;
+  key: string | null;
+  part_id: string | null;
+  balance: number;
+};
+
+// Required Materials Inventory Matching Unit 5, Task 6: re-verify a
+// Required Materials row's earlier-selected Offline Inventory match at
+// save time — the balance may have moved since the row was picked in the
+// wizard, or (rarely) every movement for that identity may have since been
+// soft-deleted. Deliberately does NOT search by name: if `key` is blank
+// (row was typed manually and never matched a suggestion) or the identity
+// no longer resolves to any movement, this returns matched:false and the
+// caller falls back to plain manual-text behavior — it can never silently
+// swap in a different material than the one the user actually selected.
+export async function resolveMaterialMatchByKey(key: string | null | undefined): Promise<MaterialMatchResolution> {
+  const trimmedKey = (key ?? "").trim();
+  if (!trimmedKey) return { matched: false, key: null, part_id: null, balance: 0 };
+
+  const isPart = trimmedKey.startsWith("part:");
+  const partId = isPart ? trimmedKey.slice("part:".length) : null;
+  let manualName = "";
+  let unit = "";
+  if (!isPart) {
+    const rest = trimmedKey.startsWith("manual:") ? trimmedKey.slice("manual:".length) : trimmedKey;
+    const sepIndex = rest.lastIndexOf("|");
+    manualName = sepIndex === -1 ? rest : rest.slice(0, sepIndex);
+    unit = sepIndex === -1 ? "" : rest.slice(sepIndex + 1);
+  }
+
+  const where = isPart
+    ? { part_id: partId, deleted_at: null }
+    : {
+        part_id: null,
+        manual_material_name: { equals: manualName, mode: "insensitive" as const },
+        unit: { equals: unit, mode: "insensitive" as const },
+        deleted_at: null,
+      };
+
+  const movements = await prisma.offline_inventory_movements.findMany({
+    where,
+    select: { movement_type: true, quantity: true },
+  });
+
+  if (movements.length === 0) {
+    return { matched: false, key: null, part_id: null, balance: 0 };
+  }
+
+  let balance = 0;
+  for (const m of movements) {
+    const qty = Number(m.quantity);
+    if (m.movement_type === "RECEIVED" || m.movement_type === "OPENING_STOCK") balance += qty;
+    else if (m.movement_type === "ISSUED") balance -= qty;
+  }
+
+  return { matched: true, key: trimmedKey, part_id: partId, balance };
+}
+
+export type ExistingMaterialMatch = {
+  key: string;
+  display_name: string;
+  unit: string;
+  part_number: string | null;
+};
+
+// Required Materials Inventory Matching Unit 5, Task 8. The existing
+// duplicate guard in app/actions/offline-inventory.ts's
+// findDuplicateOpeningStock() already catches case-only differences
+// ("OIL FILTER" vs "Oil Filter") via Postgres `mode: "insensitive"` — but
+// that equality check does not collapse internal whitespace runs, so
+// " oil   filter " would still slip through as "new". This is a second,
+// looser pass: it loads only one row per distinct manual-material identity
+// (bounded by the number of materials in Offline Inventory, never by
+// movement history — same pattern as getOfflineInventoryBalance() above)
+// and compares using normalizeMaterialKey() on name + unit. Only used as a
+// fallback when the exact-match check finds nothing, so it never changes
+// behavior for the common case.
+export async function findExistingMaterialByNormalizedName(opts: {
+  manualName: string;
+  unit: string;
+}): Promise<ExistingMaterialMatch | null> {
+  const targetName = normalizeMaterialKey(opts.manualName);
+  const targetUnit = normalizeMaterialKey(opts.unit);
+  if (!targetName) return null;
+
+  const distinct = await prisma.offline_inventory_movements.findMany({
+    where: { deleted_at: null, part_id: null, manual_material_name: { not: null } },
+    distinct: ["manual_material_name", "unit"],
+    select: { manual_material_name: true, manual_part_number: true, unit: true },
+  });
+
+  const match = distinct.find(
+    (d) => normalizeMaterialKey(d.manual_material_name) === targetName && normalizeMaterialKey(d.unit) === targetUnit
+  );
+  if (!match || !match.manual_material_name) return null;
+
+  return {
+    key: buildBalanceKey({ part_id: null, manual_material_name: match.manual_material_name, unit: match.unit }),
+    display_name: match.manual_material_name,
+    unit: match.unit,
+    part_number: match.manual_part_number,
+  };
 }
 
 // Add New Material Category Flexibility Cleanup Task 2/3: resolves a

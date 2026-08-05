@@ -37,6 +37,9 @@ import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/sec
 import { canViewEntityFile } from "@/lib/security/file-access";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
+import { getMaterialFulfillmentForWorkOrder } from "@/lib/work-orders/material-fulfillment";
+import { buildBalanceKey, canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
+import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import {
   displaySimplifiedStatus,
   simplifiedStatusTone,
@@ -59,28 +62,31 @@ const ACTIVE_MATERIALS_REQUEST_STATUSES = ["Requested", "Approved", "Waiting Sto
 
 // ── Simplified 5-stage display tracker ────────────────────────────────────────
 
-// Job Card Status Simplification Task: the stepper mirrors the five plain
-// user-facing statuses everywhere else (Draft/Submitted/Approved/Active/
-// Closed) — "Open" is now split into "Approved" and "Active", and a pending
-// correction is no longer a stage swap ("Correction Requested" retired as a
-// primary value); it's shown as a small "Needs Update" chip next to whatever
-// the current stage already is, since a correction is a loop back onto that
-// same stage, not further progress.
-const DISPLAY_STAGES = ["Draft", "Submitted", "Approved", "Active", "Closed"] as const;
+// Approval Workflow Unit 4 — Closure Approval Only: the stepper mirrors the
+// current plain user-facing statuses (Draft/Active/Closure Requested/
+// Closed). No Manager approval before starting a Job Card any more, so
+// "Submitted"/"Approved" are no longer their own stages — "Submitted" only
+// still appears via displaySimplifiedStatus() for a legacy pre-existing
+// "Under Review" row, in which case it's shown collapsed onto the "Active"
+// step here (that legacy status sits between Draft and Active either way). A
+// pending correction is not a stage swap ("Correction Requested" retired as
+// a primary value); it's shown as a small "Needs Update" chip next to
+// whatever the current stage already is, since a correction is a loop back
+// onto that same stage, not further progress.
+const DISPLAY_STAGES = ["Draft", "Active", "Closure Requested", "Closed"] as const;
 
 function statusToStageIndex(status: string): number {
   const simplified = displaySimplifiedStatus(status);
   switch (simplified) {
     case "Draft":
       return 0;
-    case "Submitted":
-      return 1;
-    case "Approved":
-      return 2;
+    case "Submitted": // legacy only
     case "Active":
-      return 3;
+      return 1;
+    case "Closure Requested":
+      return 2;
     case "Closed":
-      return 4;
+      return 3;
   }
 }
 
@@ -137,6 +143,16 @@ const workOrderControlInclude = {
     orderBy: { created_at: "desc" }
   },
   work_order_assignments: { include: { profiles: true }, orderBy: { assigned_at: "asc" } },
+  // Work Assignment and Worker Profiles Foundation Unit 7: the new Internal
+  // Team labor roster — separate from work_order_assignments above (see
+  // lib/backend/work-orders/worker-roster.ts). Only "active" rows; "removed"
+  // history rows stay in the DB (for a future work-session unit) but are not
+  // displayed here.
+  work_order_worker_assignments: {
+    where: { status: "active" },
+    include: { worker_profiles: true, profiles: true },
+    orderBy: [{ worker_role: "asc" }, { assigned_at: "asc" }]
+  },
   work_order_attachments: { orderBy: { created_at: "desc" }, take: RECENT_HISTORY_TAKE },
   work_order_labor: { include: { profiles: true }, orderBy: { created_at: "desc" }, take: RECENT_HISTORY_TAKE },
   work_order_materials: { include: { parts: true }, orderBy: { created_at: "desc" }, take: RECENT_HISTORY_TAKE },
@@ -255,7 +271,7 @@ export default async function WorkOrderDetailPage({
     ? `/store/parts-requests/${activeMaterialsRequest.id}`
     : `/store/parts-requests/new?repair_order_id=${wo.id}`;
 
-  const [auditLogs, partsRequestAuditLogs, offlineMovements, pendingClarification, technicians] = await Promise.all([
+  const [auditLogs, partsRequestAuditLogs, offlineMovements, pendingClarification, technicians, materialFulfillment, activeWorkers] = await Promise.all([
     prisma.audit_logs.findMany({
       where: { entity_type: "work_order", entity_id: wo.id },
       orderBy: { created_at: "desc" },
@@ -284,6 +300,8 @@ export default async function WorkOrderDetailPage({
     }),
     getPendingClarificationForWorkOrder(wo.id),
     getTechnicianPickerOptions(),
+    getMaterialFulfillmentForWorkOrder(prisma, wo.id),
+    getActiveWorkerProfilesForAssignment(),
   ]);
 
   const actorIds = [
@@ -323,6 +341,12 @@ export default async function WorkOrderDetailPage({
     hasPendingCorrection &&
     (isCreator || canManage || context.role?.slug === "super_admin");
   const canCreatePartsRequest = hasPermission(context, "parts_requests.create");
+  // Required Materials Issue and Shortage Tracking Unit 6: "Issue" link on a
+  // shortfall row jumps straight to Offline Inventory Control's own Issue
+  // Material action (the only place stock is actually deducted) with both
+  // the material and this Job Card pre-selected.
+  const canIssueFromJobCard = canManageOfflineInventory(context) && !["Closed", "Cancelled", "Rejected"].includes(wo.status);
+  const fulfillmentByRowId = new Map(materialFulfillment.map((f) => [f.id, f]));
   const canUploadFiles = hasPermission(context, "files.upload");
   const canDeleteFiles =
     context.role?.slug === "super_admin" ||
@@ -788,8 +812,11 @@ export default async function WorkOrderDetailPage({
                             return (
                               <div key={a.id} className="rounded-md border border-[#E5E7EB] p-3 text-sm">
                                 <p className="font-semibold text-[#111827]">Freelancer: {a.external_name}</p>
-                                {a.external_trade ? <p className="text-[#4B5563]">Trade: {a.external_trade}</p> : null}
+                                {a.external_trade ? <p className="text-[#4B5563]">Work type: {a.external_trade}</p> : null}
                                 {a.external_phone ? <p className="text-[#4B5563]">Phone: {a.external_phone}</p> : null}
+                                {canViewCosts && a.agreed_amount != null ? (
+                                  <p className="text-[#4B5563]">Agreed amount: {money(a.agreed_amount)} KWD</p>
+                                ) : null}
                                 {a.external_expected_visit_date ? (
                                   <p className="text-[#4B5563]">
                                     Expected visit: {new Date(a.external_expected_visit_date).toLocaleDateString("en-GB")}
@@ -805,8 +832,11 @@ export default async function WorkOrderDetailPage({
                             <div key={a.id} className="rounded-md border border-[#E5E7EB] p-3 text-sm">
                               <p className="font-semibold text-[#111827]">External Company: {a.external_company}</p>
                               {a.external_contact_person ? <p className="text-[#4B5563]">Contact: {a.external_contact_person}</p> : null}
-                              {a.external_trade ? <p className="text-[#4B5563]">Service type: {a.external_trade}</p> : null}
+                              {a.external_trade ? <p className="text-[#4B5563]">Work type: {a.external_trade}</p> : null}
                               {a.external_phone ? <p className="text-[#4B5563]">Phone: {a.external_phone}</p> : null}
+                              {canViewCosts && a.agreed_amount != null ? (
+                                <p className="text-[#4B5563]">Agreed amount: {money(a.agreed_amount)} KWD</p>
+                              ) : null}
                               {a.external_expected_visit_date ? (
                                 <p className="text-[#4B5563]">
                                   Expected visit: {new Date(a.external_expected_visit_date).toLocaleDateString("en-GB")}
@@ -817,6 +847,44 @@ export default async function WorkOrderDetailPage({
                             </div>
                           );
                         })}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* Work Assignment and Worker Profiles Foundation Unit 7,
+                      Task 7 — Internal Team labor roster, separate from the
+                      Assignment block above (technician self-service /
+                      Freelancer / External Company). */}
+                  {wo.work_order_worker_assignments.length ? (
+                    <div id="internal-team">
+                      <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Internal Team</p>
+                      <div className="mt-2 space-y-3">
+                        {(["Supervisor", "Technician", "Helper/Labor"] as const).map((role) => {
+                          const rows = wo.work_order_worker_assignments.filter((r) => r.worker_role === role);
+                          if (rows.length === 0) return null;
+                          return (
+                            <div key={role}>
+                              <p className="text-xs font-bold text-[#6B7280]">
+                                {role === "Helper/Labor" ? "Helpers / Labor" : `${role}${rows.length > 1 ? "s" : ""}`}
+                              </p>
+                              <div className="mt-1 space-y-1.5">
+                                {rows.map((r) => (
+                                  <div key={r.id} className="flex items-center justify-between rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
+                                    <span className="font-semibold text-[#111827]">{r.worker_profiles.name}</span>
+                                    {canViewCosts ? (
+                                      <span className="text-[#4B5563]">{money(r.hourly_rate_snapshot)} KWD/hr</span>
+                                    ) : null}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <p className="text-xs text-[#9CA3AF]">
+                          Assigned {formatDateTimeValue(wo.work_order_worker_assignments[0].assigned_at)} by{" "}
+                          {wo.work_order_worker_assignments[0].profiles?.full_name ?? "System"}
+                          {wo.work_order_worker_assignments[0].notes ? ` — ${wo.work_order_worker_assignments[0].notes}` : ""}
+                        </p>
                       </div>
                     </div>
                   ) : null}
@@ -887,32 +955,61 @@ export default async function WorkOrderDetailPage({
               {wo.work_order_required_parts.length > 0 ? (
                 <div className="mt-5">
                   <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-                    Required materials — listed at creation
+                    Required materials — Required / Issued / Shortage
                   </p>
                   <Table
-                    columns={["Material Name / Description", "Part No. / Code", "Qty", "Unit", "Materials status"]}
-                    rows={wo.work_order_required_parts.map((row) => [
-                      row.description,
-                      row.part_number ?? "-",
-                      row.quantity_required.toString(),
-                      row.unit_of_measure,
-                      <StatusBadge
-                        key="status"
-                        label={
-                          row.availability_status === "unchecked" ? "Unchecked"
-                          : row.availability_status === "available" ? "Available"
-                          : row.availability_status === "partial" ? "Partial"
-                          : row.availability_status === "unavailable" ? "Unavailable"
-                          : row.availability_status
-                        }
-                        tone={
-                          row.availability_status === "available" ? "green"
-                          : row.availability_status === "unavailable" ? "red"
-                          : row.availability_status === "partial" ? "amber"
-                          : "gray"
-                        }
-                      />,
-                    ])}
+                    columns={["Material", "Required", "Issued", "Remaining", "Available now", "Status"]}
+                    rows={wo.work_order_required_parts.map((row) => {
+                      const f = fulfillmentByRowId.get(row.id) ?? null;
+                      const unit = row.unit_of_measure;
+                      const requiredQty = f?.required_qty ?? Number(row.quantity_required);
+                      const issuedQty = f?.issued_qty ?? 0;
+                      const remainingQty = f?.remaining_qty ?? requiredQty;
+                      const availableNow = f?.available_now ?? 0;
+                      const shortageQty = f?.shortage_qty ?? 0;
+                      const status = f?.status ?? "shortage";
+                      const canIssueRow = canIssueFromJobCard && remainingQty > 0 && availableNow > 0;
+                      const issueHref = `/store/offline-inventory?issueMaterial=${encodeURIComponent(
+                        buildBalanceKey({ part_id: row.part_id, manual_material_name: row.part_id ? null : row.description, unit })
+                      )}&workOrder=${wo.id}`;
+
+                      return [
+                        <div key="mat">
+                          <p className="font-semibold text-[#111827]">{row.description}</p>
+                          <p className="text-xs text-[#9CA3AF]">{row.part_number ?? "-"}</p>
+                        </div>,
+                        `${requiredQty} ${unit}`,
+                        `${issuedQty} ${unit}`,
+                        `${remainingQty} ${unit}`,
+                        `${availableNow} ${unit}`,
+                        <div key="status" className="space-y-1">
+                          <StatusBadge
+                            label={
+                              status === "fulfilled" ? "Fully Issued"
+                              : status === "partial_issued" ? "Partially Issued"
+                              : status === "shortage" ? "Shortage"
+                              : "Ready to Issue"
+                            }
+                            tone={
+                              status === "fulfilled" ? "green"
+                              : status === "partial_issued" ? "amber"
+                              : status === "shortage" ? "red"
+                              : "blue"
+                            }
+                          />
+                          {shortageQty > 0 && (
+                            <p className="text-[11px] font-semibold text-[#B45309]">
+                              Shortage: {shortageQty} {unit}
+                            </p>
+                          )}
+                          {canIssueRow && (
+                            <Link href={issueHref} className="block text-[11px] font-bold text-[#ED1C24] hover:underline">
+                              Issue →
+                            </Link>
+                          )}
+                        </div>,
+                      ];
+                    })}
                     empty=""
                   />
                 </div>
@@ -1183,6 +1280,8 @@ export default async function WorkOrderDetailPage({
                   ? { id: activeMaterialsRequest.id, number: activeMaterialsRequest.parts_request_number, status: activeMaterialsRequest.status }
                   : null
               }
+              activeWorkers={activeWorkers}
+              internalTeamRoster={wo.work_order_worker_assignments.map((r) => ({ worker_id: r.worker_id, worker_role: r.worker_role }))}
               hasPendingCorrection={hasPendingCorrection}
             />
 
@@ -1566,6 +1665,28 @@ function jobCardAuditEntry(log: AuditLogRow, actorName: (id?: string | null) => 
       return {
         id: `audit-${log.id}`, at: log.created_at, title: "Job Card closed",
         detail: metaGet(log.metadata, "comments") ?? metaGet(log.metadata, "notes") ?? "Job Card closed.",
+        actor, tone: "green", label: "Closure",
+      };
+    // Approval Workflow Unit 4: Data Entry starting a Job Card directly (no
+    // Manager approval before starting any more) and the new closure-request
+    // flow — distinct action strings from work_order.start (technician's own
+    // start) and work_order.close (Manager's direct close) so each keeps its
+    // own accurate wording.
+    case "work_order.activated":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Job Card started",
+        detail: "Job Card started — now Active.", actor, tone: "blue", label: "Job Card",
+      };
+    case "work_order.closure_requested":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Closure requested",
+        detail: metaGet(log.metadata, "note") ?? "Closure requested.",
+        actor, tone: "amber", label: "Closure",
+      };
+    case "work_order.closure_approved":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Closure approved",
+        detail: metaGet(log.metadata, "comments") ?? "Manager approved closing this Job Card.",
         actor, tone: "green", label: "Closure",
       };
     default:

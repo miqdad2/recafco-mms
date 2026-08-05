@@ -15,6 +15,8 @@ import { emitRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/
 import { prisma } from "@/lib/db/prisma";
 import { parsePendingAttachments, saveAttachmentBatch } from "@/lib/files/attachment-form";
 import { MAX_ATTACHMENT_ROWS } from "@/lib/files/attachment-constants";
+import { ACTIVE_JOB_CARD_STATUSES } from "@/lib/work-orders/simplified-status-display";
+import { resolveMaterialMatchByKey } from "@/lib/store/offline-inventory-data";
 
 const optionalString = z.preprocess((value) => {
   if (typeof value !== "string") return value;
@@ -176,22 +178,49 @@ function parseMaterialRows(formData: FormData) {
     .filter(Boolean);
 }
 
-function parseRequiredPartRows(formData: FormData) {
-  return [0, 1, 2, 3, 4, 5, 6, 7]
-    .map((index) => {
+// Required Materials Inventory Matching Unit 5, Task 6: re-verifies each
+// row's client-side Offline Inventory match at save time instead of trusting
+// it blindly — the balance may have moved since the wizard fetched it, or
+// (rarely) the match may no longer exist. Only rows the user actually
+// selected from the autocomplete dropdown carry a `req_part_material_key_i`
+// value; a row with no key (hand-typed, never matched, or edited after
+// matching — the wizard clears the key on every name edit) is saved as plain
+// manual text with availability_status "unchecked" ("New Material") and is
+// never independently re-searched by name here, so this can never silently
+// re-link a row to a different material than the one the user picked.
+async function parseRequiredPartRows(formData: FormData) {
+  const rows = await Promise.all(
+    [0, 1, 2, 3, 4, 5, 6, 7].map(async (index) => {
       const description = rowValue(formData, "req_part_description", index);
       if (!description) return null;
       const qty = numberValue(rowValue(formData, "req_part_quantity", index));
+      const unit = rowValue(formData, "req_part_uom", index) || "PCS";
+      const matchedKey = rowValue(formData, "req_part_material_key", index) || null;
+
+      let availability_status = "unchecked";
+      let part_id: string | null = null;
+      if (matchedKey) {
+        const resolution = await resolveMaterialMatchByKey(matchedKey);
+        if (resolution.matched) {
+          part_id = resolution.part_id;
+          if (resolution.balance <= 0) availability_status = "unavailable";
+          else if (qty <= resolution.balance) availability_status = "available";
+          else availability_status = "partial";
+        }
+      }
+
       return {
         description,
         part_number: rowValue(formData, "req_part_part_number", index) || null,
         quantity_required: qty,
-        unit_of_measure: rowValue(formData, "req_part_uom", index) || "PCS",
+        unit_of_measure: unit,
         notes: rowValue(formData, "req_part_notes", index) || null,
-        availability_status: "unchecked"
+        availability_status,
+        part_id
       };
     })
-    .filter(Boolean);
+  );
+  return rows.filter(Boolean);
 }
 
 function parseAttachmentRows(formData: FormData) {
@@ -371,11 +400,16 @@ export async function upsertWorkOrderAction(formData: FormData) {
   // Maintenance Workflow Redesign Unit 3: "Draft"/"Pending Approval" renamed to
   // "Created"/"Under Review" (no Draft status in the new simplified model —
   // "Created" is the equivalent safe/editable holding status).
+  // Approval Workflow Unit 4 — Closure Approval Only: "submit_for_approval"
+  // (the wizard's "Start Job Card" button, form field name kept as-is — see
+  // components/work-orders/work-order-wizard.tsx) now creates the Job Card
+  // directly at "Approved" (displayed as "Active") instead of "Under Review"
+  // — there is no Manager approval before starting a Job Card any more.
   const rawIntent = String(formData.get("intent") ?? "").trim();
   if (!isEdit && rawIntent !== "save_draft" && rawIntent !== "submit_for_approval") {
     redirect(`${formBackHref}?error=invalid-status`);
   }
-  const createStatus = rawIntent === "submit_for_approval" ? "Under Review" : "Created";
+  const createStatus = rawIntent === "submit_for_approval" ? "Approved" : "Created";
 
   const parsed = workOrderSchema.safeParse(Object.fromEntries(formData));
 
@@ -386,15 +420,20 @@ export async function upsertWorkOrderAction(formData: FormData) {
   }
 
   // Status transitions must happen through dedicated workflow actions only.
-  // This action only handles creation and metadata edits on Created/Under Review WOs
-  // (Maintenance Workflow Redesign Unit 3 — no Draft/Rejected statuses anymore;
-  // corrections keep a Job Card at Under Review instead of a distinct status).
-  const EDITABLE_STATUSES = ["Created", "Under Review"];
+  // Approval Workflow Unit 4, business rules 4/10: Data Entry can update Job
+  // Card details after starting it (no more "locked once approved" — there
+  // is no approval before start any more), and Manager can edit too if
+  // needed — so every "Active"-bucket status is now editable here, not just
+  // Created/Under Review (legacy). "Closure Requested" and "Closed" stay
+  // non-editable through this form — once closure is requested, the only
+  // remaining step is Manager's closing decision (Task 7: no reject/return
+  // path in this unit to send a Closure Requested Job Card back for edits).
+  const EDITABLE_STATUSES = ["Created", "Under Review", ...ACTIVE_JOB_CARD_STATUSES];
   const { id, ...values } = parsed.data;
 
   if (!id) {
     // Operator complaint is required when submitting — description_of_work is optional.
-    if (createStatus === "Under Review") {
+    if (createStatus === "Approved") {
       if (!parsed.data.operator_complaint) redirect(`${formBackHref}?error=missing-complaint`);
     }
   }
@@ -419,7 +458,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
   const laborRows = parseLaborRows(formData);
   const materialRows = parseMaterialRows(formData);
   const attachmentRows = parseAttachmentRows(formData);
-  const requiredPartRows = parseRequiredPartRows(formData);
+  const requiredPartRows = await parseRequiredPartRows(formData);
   if (requiredPartRows.some((row) => row && (!Number.isInteger(row.quantity_required) || row.quantity_required <= 0))) {
     redirect(`${formBackHref}?error=${encodeURIComponent("Quantity must be a whole number greater than 0.")}`);
   }
@@ -453,7 +492,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
 
   let data: { id: string; work_order_number: string | null } | null = null;
   try {
-    if (!id && createStatus === "Under Review") {
+    if (!id && createStatus === "Approved") {
       // New WO submitted for approval: create WO + workflow tracking rows atomically.
       // If workflow rows cannot be created, the entire transaction rolls back so submitted
       // work orders are never left without a tracking record.
@@ -536,7 +575,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
     // Auto-recovery: if a new WO submit failed, try saving the data as Created so the
     // user does not lose their work. Redirect to the recovered Job Card with a warning banner.
     let recoveredWoId: string | null = null;
-    if (!id && createStatus === "Under Review") {
+    if (!id && createStatus === "Approved") {
       try {
         const recovered = await prisma.work_orders.create({
           data: { ...insertPayload, status: "Created" },
@@ -697,17 +736,16 @@ export async function upsertWorkOrderAction(formData: FormData) {
     metadata: { status: auditStatus, worker_type: parsed.data.worker_type }
   });
 
-  if (!id && createStatus === "Under Review") {
+  if (!id && createStatus === "Approved") {
     let asset_name = "unassigned asset";
     if (parsed.data.asset_id) {
       const asset = await prisma.assets.findUnique({ where: { id: parsed.data.asset_id }, select: { asset_name: true } }).catch(() => null);
       asset_name = asset?.asset_name ?? "unknown asset";
     }
 
-    // Simplified Job Card Approval Workflow Unit Task 4/11: notify
-    // Supervisor/Manager directly on submit — there is no Engineer review
-    // stage in the active flow, so Manager is the one and only approver who
-    // needs to know a Job Card is Submitted.
+    // Approval Workflow Unit 4: Manager is notified for awareness — no
+    // approval action is required from them to start a Job Card any more
+    // (business rule 9: Manager can view all Job Cards and their status).
     await notifyWorkflowEvent({
       eventKey: "job_card.created",
       entityType: "work_order",

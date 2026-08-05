@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import {
   addTechnicianUpdate,
   approveJobCardAndMaterials,
+  approveJobCardClosure,
   approveWorkOrder,
   assignTechnicians,
   cancelWorkOrder,
@@ -13,6 +14,7 @@ import {
   completeTechnicianJob,
   markExternalWorkCompleted,
   rejectWorkOrder,
+  requestJobCardClosure,
   requestJobCardCorrection,
   respondToJobCardCorrection,
   returnWorkOrderToDraft,
@@ -320,6 +322,7 @@ export async function assignTechniciansModalAction(
       externalPhone: formData.get("external_phone") || undefined,
       externalTrade: formData.get("external_trade") || undefined,
       externalExpectedVisitDate: formData.get("external_expected_visit_date") || undefined,
+      agreedAmount: formData.get("agreed_amount") || undefined,
       notes: formData.get("assign_notes") || undefined,
     });
     const result = await assignTechnicians(context, input);
@@ -351,6 +354,7 @@ export async function assignTechniciansAction(formData: FormData) {
       externalPhone: formData.get("external_phone") || undefined,
       externalTrade: formData.get("external_trade") || undefined,
       externalExpectedVisitDate: formData.get("external_expected_visit_date") || undefined,
+      agreedAmount: formData.get("agreed_amount") || undefined,
       notes: formData.get("assign_notes") || undefined,
     });
     const result = await assignTechnicians(context, input);
@@ -506,6 +510,52 @@ export async function closeWorkOrderAction(formData: FormData) {
 
   try {
     const result = await closeWorkOrder(context, id, comments);
+    revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
+    targetPath = `/maintenance/work-orders/${result.workOrderId}?success=job-card-closed`;
+  } catch (error) {
+    redirect(await workflowErrorPath(id, error));
+  }
+  redirect(targetPath);
+}
+
+// Approval Workflow Unit 4, Task 4: Data Entry (or Supervisor/Manager/
+// super_admin, per requestJobCardClosure's own role check) requests Manager
+// approval to close. Requires a completion note — same >= 10 character
+// convention as the existing request-correction/close actions.
+export async function requestJobCardClosureAction(formData: FormData) {
+  const context = await requireUser();
+  const id = idFrom(formData);
+  const note = String(formData.get("note") ?? "").trim();
+  let targetPath = `/maintenance/work-orders/${id}`;
+
+  if (note.length < 10) {
+    redirect(`${targetPath}?error=closing-note-required`);
+  }
+
+  try {
+    const result = await requestJobCardClosure(context, id, note);
+    revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
+    targetPath = `/maintenance/work-orders/${result.workOrderId}?success=closure-requested`;
+  } catch (error) {
+    redirect(await workflowErrorPath(id, error));
+  }
+  redirect(targetPath);
+}
+
+// Approval Workflow Unit 4, Task 5: Manager (or super_admin) approves a
+// pending closure request. Closure Requested -> Closed.
+export async function approveJobCardClosureAction(formData: FormData) {
+  const context = await requireUser();
+  const id = idFrom(formData);
+  const comments = parseWorkflowComment(formData.get("comments"));
+  let targetPath = `/maintenance/work-orders/${id}`;
+
+  try {
+    const result = await approveJobCardClosure(context, id, comments);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/work-orders");
     revalidatePath("/dashboard");

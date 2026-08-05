@@ -1225,7 +1225,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                         type="submit"
                         className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
                       >
-                        Submit for Review <ArrowRight className="h-4 w-4" />
+                        Start Job Card <ArrowRight className="h-4 w-4" />
                       </button>
                     </form>
                   )}

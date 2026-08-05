@@ -1,7 +1,6 @@
 import Link from "next/link";
 import {
   AlertTriangle,
-  BadgeCheck,
   CheckCircle2,
   ClipboardList,
   Clock3,
@@ -75,25 +74,24 @@ const OVERDUE_DAYS = 7;
 
 type Tab = { label: string; status: string };
 
-// Job Card Status Simplification Task 3/4: five plain, user-facing statuses
-// (Draft/Submitted/Approved/Active/Closed) replace the old six-tab set —
-// "Correction Requested" is no longer a tab (a pending correction still
-// exists and is still visible under "All" plus a small secondary "Needs
-// Update" badge on the affected row, see NEEDS_UPDATE_LABEL), and "Open" is
-// split into "Approved" (backend status "Approved" — nothing has moved yet)
-// and "Active" (materials moving, technician assigned, or work started).
-// "New" is reused as the "Draft" tab's status key — it already maps to
-// Created via getStatusMap(), no change needed there.
-// getStatusMap()'s other keys (Review/Materials/Assigned/ReadyToAssign/
-// "In Progress"/Open/Correction) are kept, unrendered, so any old bookmarked
-// ?status=... link still resolves rows instead of erroring.
+// Approval Workflow Unit 4 — Closure Approval Only: four plain, user-facing
+// tabs (Draft/Active/Closure Requested/Closed) replace the prior five-tab
+// set — there is no Manager approval before starting a Job Card any more,
+// so "Submitted" and "Approved" are no longer their own tabs (folded into
+// "Active" — see ACTIVE_JOB_CARD_STATUSES). "Correction Requested" is still
+// not a tab (a pending correction is visible under "All" plus a small
+// secondary "Needs Update" badge, see NEEDS_UPDATE_LABEL). "New" is reused
+// as the "Draft" tab's status key — it already maps to Created via
+// getStatusMap(), no change needed there.
+// getStatusMap()'s other keys (Review/Submitted/Approved/Materials/Assigned/
+// ReadyToAssign/"In Progress"/Open/Correction) are kept, unrendered, so any
+// old bookmarked ?status=... link still resolves rows instead of erroring.
 const SIMPLIFIED_JOB_CARD_TABS: Tab[] = [
-  { label: "All",       status: "" },
-  { label: "Draft",     status: "New" },
-  { label: "Submitted", status: "Submitted" },
-  { label: "Approved",  status: "Approved" },
-  { label: "Active",    status: "Active" },
-  { label: "Closed",    status: "Closed" },
+  { label: "All",               status: "" },
+  { label: "Draft",             status: "New" },
+  { label: "Active",            status: "Active" },
+  { label: "Closure Requested", status: "ClosureRequested" },
+  { label: "Closed",            status: "Closed" },
 ];
 
 // Single, role-independent mapping from tab/bucket keys → the DB status
@@ -114,13 +112,18 @@ const SIMPLIFIED_JOB_CARD_TABS: Tab[] = [
 function getStatusMap(): Record<string, string[]> {
   return {
     New:          ["Created"],
+    // Legacy/back-compat only — no new Job Card can reach "Under Review"
+    // (Approval Workflow Unit 4: no Manager approval before starting).
     Review:       ["Under Review"],
     Submitted:    ["Under Review"],
+    // Legacy/back-compat only — "Approved" is no longer its own bucket, it's
+    // folded into ACTIVE_JOB_CARD_STATUSES below (Approval Workflow Unit 4).
     Approved:     ["Approved"],
-    // Job Card Status Simplification Task 3/4: everything past plain
-    // "Approved" (materials moving, technician assigned, work started)
-    // collapses into the "Active" tab/KPI.
+    // Approval Workflow Unit 4: everything from "Approved" (the landing
+    // status when Data Entry starts a Job Card) through materials moving/
+    // assigned/in-progress collapses into the "Active" tab/KPI.
     Active:       ACTIVE_JOB_CARD_STATUSES,
+    ClosureRequested: ["Closure Requested"],
     Materials:    ["Waiting Materials", "Partially Issued", "Materials Issued"],
     // Job Cards Ready-to-Assign Label and KPI Cleanup Task 1: a virtual
     // bucket, not a tab — only reachable via the "Ready to Assign" KPI card's
@@ -147,7 +150,11 @@ function getStatusMap(): Record<string, string[]> {
 const TAB_EMPTY_STATE: Record<string, { title: string; message: string }> = {
   New: {
     title: "No draft Job Cards.",
-    message: "Job Cards not yet submitted for review will appear here.",
+    message: "Job Cards not yet started will appear here.",
+  },
+  ClosureRequested: {
+    title: "No closure requests.",
+    message: "Job Cards waiting for Manager approval to close will appear here.",
   },
   Submitted: {
     title: "No Job Cards submitted for review.",
@@ -250,11 +257,11 @@ function getNeedsActionFilter(context: CurrentUserContext) {
   const isAdmin = context.role?.slug === "super_admin";
 
   if (isAdmin || p.includes("work_orders.approve")) {
-    // Under Review needs a review/approve decision; In Progress needs a
-    // closure decision — the two manager-facing decision points left in the
-    // simplified 9-status model (there is no separate post-completion
-    // verification stage any more).
-    return { status: { in: ["Under Review", "In Progress"] } };
+    // Approval Workflow Unit 4: the one Manager-facing decision point left is
+    // approving a pending closure request. "Under Review" kept for backward
+    // compatibility with any pre-existing row still sitting there (no new
+    // Job Card can reach it — there is no approval before starting any more).
+    return { status: { in: ["Closure Requested", "Under Review"] } };
   }
   if (p.includes("work_orders.assign")) {
     return { status: { in: ["Approved", "Materials Issued"] } };
@@ -1027,8 +1034,11 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           isAdmin || context.permissions.includes("work_orders.review"),
         canRequestCorrection:
           isAdmin || context.permissions.includes("work_orders.request_correction"),
+        // Approval Workflow Unit 4: direct "Close Job Card" is now
+        // Manager-only (matches closeWorkOrder()'s own role check) — Data
+        // Entry uses Request Closure instead (full detail page).
         canClose:
-          isAdmin || context.permissions.includes("work_orders.close"),
+          isAdmin || context.role?.slug === "maintenance_manager",
         canUpdateProgress:
           isAdmin || context.permissions.includes("work_orders.update"),
         canReceiveMaterials: canReceiveIssueMaterials(context),
@@ -1082,16 +1092,15 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   const showSubmittedModal = sp.success === "job-card-submitted" && Boolean(drawerData);
   const submittedDismissHref = buildHref({ ...sp, preview: undefined, success: undefined });
 
-  // Job Card Status Simplification Task 3/4: the five simplified counts —
-  // mirror SIMPLIFIED_JOB_CARD_TABS exactly. A pending correction no longer
-  // carves records out of Submitted/Approved/Active — it's a secondary
-  // per-row badge now (see correctionIdSet usage in the row render below),
-  // so these are now plain status-array counts, same pattern as draft/closed.
+  // Approval Workflow Unit 4: the four simplified counts — mirror
+  // SIMPLIFIED_JOB_CARD_TABS exactly. A pending correction no longer carves
+  // records out of Active — it's a secondary per-row badge now (see
+  // correctionIdSet usage in the row render below), so these are plain
+  // status-array counts, same pattern as draft/closed.
   const totalWOs        = statusSummaries.reduce((n, s) => n + s._count._all, 0);
   const draftCount      = countFor(statusSummaries, ["Created"]);
-  const submittedCount  = countFor(statusSummaries, ["Under Review"]);
-  const approvedCount   = countFor(statusSummaries, ["Approved"]);
   const activeCount     = countFor(statusSummaries, ACTIVE_JOB_CARD_STATUSES);
+  const closureRequestedCount = countFor(statusSummaries, ["Closure Requested"]);
   const closed          = countFor(statusSummaries, ["Closed"]);
 
   const hasFilters = search || status || deptId || workerType || dateFrom || dateTo || needsAction;
@@ -1301,24 +1310,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             href={buildHref({ status: "New" })}
             tone="gray"
             icon={FileText}
-            detail="Not yet submitted for review"
-          />
-          <KpiCard
-            title="Submitted"
-            value={submittedCount}
-            href={buildHref({ status: "Submitted" })}
-            tone={submittedCount > 0 ? "amber" : "gray"}
-            icon={Clock3}
-            detail="Waiting on Supervisor / Manager decision."
-            urgent={submittedCount > 0}
-          />
-          <KpiCard
-            title="Approved"
-            value={approvedCount}
-            href={buildHref({ status: "Approved" })}
-            tone="blue"
-            icon={BadgeCheck}
-            detail="Approved by Manager"
+            detail="Not yet started"
           />
           <KpiCard
             title="Active"
@@ -1326,7 +1318,16 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             href={buildHref({ status: "Active" })}
             tone="blue"
             icon={Wrench}
-            detail="Work in progress / active job cards"
+            detail="Started — work in progress"
+          />
+          <KpiCard
+            title="Closure Requested"
+            value={closureRequestedCount}
+            href={buildHref({ status: "ClosureRequested" })}
+            tone={closureRequestedCount > 0 ? "amber" : "gray"}
+            icon={Clock3}
+            detail="Waiting on Manager to approve closing"
+            urgent={closureRequestedCount > 0}
           />
           <KpiCard
             title="Closed"
@@ -1349,9 +1350,8 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               const itemCount =
                 tab.status === "" ? totalWOs :
                 tab.status === "New" ? draftCount :
-                tab.status === "Submitted" ? submittedCount :
-                tab.status === "Approved" ? approvedCount :
                 tab.status === "Active" ? activeCount :
+                tab.status === "ClosureRequested" ? closureRequestedCount :
                 tab.status === "Closed" ? closed : 0;
               return (
                 <Link

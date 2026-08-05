@@ -2,6 +2,7 @@ import { requirePermission } from "@/lib/auth/context";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { StoreBalanceView } from "@/components/store/store-balance-view";
+import { prisma } from "@/lib/db/prisma";
 import {
   canManageOfflineInventory,
   getOfflineInventoryBalance,
@@ -34,12 +35,24 @@ export default async function StoreBalancePage({
   // material name containing a literal "%").
   const receiveMaterialKey = sp.receiveMaterial || null;
   const issueMaterialKey = sp.issueMaterial || null;
+  // Required Materials Issue and Shortage Tracking Unit 6: arrives from a
+  // Job Card's Materials section "Issue" link — may be an older Job Card
+  // not among getWorkOrderOptions()'s most-recent 100, so it's looked up
+  // directly and prepended below rather than silently dropped from the list.
+  const issueWorkOrderId = sp.workOrder || null;
 
-  const [{ balanceItems, totalOpeningStock, totalReceived, totalIssued, balance }, workOrders] =
+  const [{ balanceItems, totalOpeningStock, totalReceived, totalIssued, balance }, workOrdersRaw, presetWorkOrder] =
     await Promise.all([
       getOfflineInventoryBalance(),
       showReceiveMaterial || showIssueMaterial ? getWorkOrderOptions() : Promise.resolve([]),
+      issueWorkOrderId
+        ? prisma.work_orders.findUnique({ where: { id: issueWorkOrderId }, select: { id: true, work_order_number: true } })
+        : Promise.resolve(null),
     ]);
+  const workOrders =
+    presetWorkOrder && !workOrdersRaw.some((wo) => wo.id === presetWorkOrder.id)
+      ? [presetWorkOrder, ...workOrdersRaw]
+      : workOrdersRaw;
 
   return (
     <>
@@ -73,6 +86,7 @@ export default async function StoreBalancePage({
         showIssueMaterial={showIssueMaterial}
         receiveMaterialKey={receiveMaterialKey}
         issueMaterialKey={issueMaterialKey}
+        issueWorkOrderId={issueWorkOrderId}
       />
     </>
   );

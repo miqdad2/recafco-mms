@@ -20,6 +20,8 @@ import { AppError } from "@/lib/errors/app-error";
 import { canTransition, transitionError } from "@/lib/workflows/status-rules";
 import { emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { approvePartsRequest } from "@/lib/backend/parts-requests/service";
+import { CLOSURE_REQUESTED_STATUS } from "@/lib/work-orders/simplified-status-display";
+import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete } from "@/lib/work-orders/material-fulfillment";
 
 type WorkflowResult = {
   workOrderId: string;
@@ -114,24 +116,30 @@ async function jobCardClosedRecipients(
   return dedupeRecipients([creatorId, ...roleIds, ...technicianIds], actorId);
 }
 
-// Maintenance Workflow Redesign Unit 4: Created -> Under Review (was -> Pending
-// Approval). Covers submitting a Job Card that was previously saved as Created —
-// distinct from submitting directly at creation time, which app/actions/maintenance.ts
-// handles by inserting straight into "Under Review".
+// Approval Workflow Unit 4 — Closure Approval Only: Created -> Approved
+// directly (was -> Under Review, waiting for a first Manager approval before
+// work could start). There is no Manager approval before starting a Job Card
+// any more — Data Entry creates and starts it directly; "Approved" is simply
+// the landing status, displayed as "Active" (see
+// lib/work-orders/simplified-status-display.ts). Manager approval is now
+// only required to close (see requestJobCardClosure/approveJobCardClosure
+// below). Covers starting a Job Card that was previously saved as Created —
+// distinct from starting directly at creation time, which
+// app/actions/maintenance.ts handles by inserting straight into "Approved".
 export async function submitWorkOrder(context: CurrentUserContext, workOrderId: string) {
   assertBackendPermission(context, "work_orders.manage");
-  const result = await transitionWorkOrder(context, workOrderId, "Under Review");
+  const result = await transitionWorkOrder(context, workOrderId, "Approved");
 
-  // Simplified Job Card Approval Workflow Unit Task 4/11: notify
-  // Supervisor/Manager directly — there is no Engineer review stage in the
-  // active flow.
+  // Manager is notified (awareness only, not an approval request) so they
+  // can see every Job Card and its status per the new business rules — no
+  // action is required from them at this step.
   const managerIds = await withBackendTransaction(context.userId, async (tx) =>
     dedupeRecipients(await getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager"]), context.userId)
   );
 
   await Promise.all([
     notifyWorkflowEvent({
-      eventKey: "job_card.submitted_for_review",
+      eventKey: "job_card.started",
       entityType: "work_order",
       entityId: result.workOrderId,
       actorId: context.userId,
@@ -139,8 +147,11 @@ export async function submitWorkOrder(context: CurrentUserContext, workOrderId: 
       metadata: { job_card_number: result.workOrderNumber ?? "Job Card", asset_name: result.assetName ?? "" },
       actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
-    auditWorkflow(context, "work_order.submit", result, `Submitted ${result.workOrderNumber ?? "work order"} for review`),
-    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_SUBMITTED, result.workOrderId, context.userId)
+    // Distinct action string from startTechnicianJob's "work_order.start"
+    // (Assigned -> In Progress, a different transition) to keep audit-log
+    // filtering unambiguous.
+    auditWorkflow(context, "work_order.activated", result, `Started ${result.workOrderNumber ?? "work order"} — now Active`),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_STARTED, result.workOrderId, context.userId)
   ]);
 
   return result;
@@ -549,6 +560,7 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
           external_phone: input.externalPhone?.trim() || null,
           external_trade: input.externalTrade?.trim() || null,
           external_expected_visit_date: input.externalExpectedVisitDate ? new Date(input.externalExpectedVisitDate) : null,
+          agreed_amount: input.agreedAmount ?? null,
           notes: input.notes?.trim() || null,
         }
       });
@@ -567,6 +579,7 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
           external_phone: input.externalPhone?.trim() || null,
           external_trade: input.externalTrade?.trim() || null,
           external_expected_visit_date: input.externalExpectedVisitDate ? new Date(input.externalExpectedVisitDate) : null,
+          agreed_amount: input.agreedAmount ?? null,
           notes: input.notes?.trim() || null,
         }
       });
@@ -937,13 +950,211 @@ export async function verifyWorkOrder(_context: CurrentUserContext, _workOrderId
   throw new AppError("This action is no longer used in the simplified workflow.", { code: "WORKFLOW_ERROR" });
 }
 
-// Unit 4: permission changed from work_orders.approve to work_orders.close so
-// Maintenance Manager, Maintenance Engineer, Data Entry, and Technician can all
-// close a Job Card directly from "In Progress" (or any other in-flight status a
-// caller reaches it from), per the Unit 3 grants — no separate verify/confirm step.
+// ── Approval Workflow Unit 4 — Closure Approval Only ────────────────────────
+//
+// Business decision: no Manager approval before starting a Job Card any
+// more (see submitWorkOrder above). Approval is required only before final
+// closing — Data Entry (or Supervisor/Manager/super_admin) requests closure
+// with a completion note, and Manager approves it or closes directly. No
+// reject/return-closure-request step in this unit (Task 7) — Data Entry can
+// fix anything before requesting closure.
+
+function assertCanRequestJobCardClosure(context: CurrentUserContext) {
+  assertActiveUser(context);
+  if (context.role?.slug === "super_admin") return;
+  if (["maintenance_data_entry", "maintenance_manager", "maintenance_supervisor"].includes(context.role?.slug ?? "")) return;
+  throw new AppError("You do not have permission to request closure for this Job Card.", { code: "FORBIDDEN" });
+}
+
+function assertIsManager(context: CurrentUserContext) {
+  assertActiveUser(context);
+  if (context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager") return;
+  throw new AppError("You do not have permission to close this Job Card.", { code: "FORBIDDEN" });
+}
+
+// Task 12: "Pending" == any linked Materials Request not yet Issued
+// ("Completed"/"Received" in Materials Requests wording, unchanged). No
+// linked requests at all is allowed through (nothing to wait for).
+async function assertNoPendingMaterialsRequests(tx: BackendTransaction, workOrderId: string, errorMessage: string) {
+  const pendingCount = await tx.parts_requests.count({
+    where: { work_order_id: workOrderId, status: { not: "Issued" } }
+  });
+  if (pendingCount > 0) {
+    throw new AppError(errorMessage, { code: "WORKFLOW_ERROR" });
+  }
+}
+
+// Required Materials Issue and Shortage Tracking Unit 6, Task 8 / business
+// rule 5. Distinct from assertNoPendingMaterialsRequests above:  that check
+// looks at whether the auto-created Materials Request has finished being
+// RECEIVED into store; this one checks whether the Required Materials rows
+// have actually been ISSUED to this Job Card via Offline Inventory
+// Control's own Issue Material action (movement_type "ISSUED",
+// related_work_order_id = this Job Card). A request can be fully "Received"
+// while nothing has been handed out yet, so both gates are needed.
+async function assertRequiredMaterialsFulfilled(tx: BackendTransaction, workOrderId: string, errorMessage: string) {
+  const fulfillment = await getMaterialFulfillmentForWorkOrder(tx, workOrderId);
+  if (anyMaterialsIncomplete(fulfillment)) {
+    throw new AppError(errorMessage, { code: "WORKFLOW_ERROR" });
+  }
+}
+
+/**
+ * Data Entry (or Supervisor/Manager/super_admin) marks work as complete and
+ * asks Manager to approve closing the Job Card. Valid from any "Active"-
+ * bucket status (Approved/Waiting Materials/Partially Issued/Materials
+ * Issued/Assigned/In Progress) — not from Draft, not from an already-closed
+ * or already-closure-requested Job Card.
+ */
+export async function requestJobCardClosure(context: CurrentUserContext, workOrderId: string, note: string) {
+  assertCanRequestJobCardClosure(context);
+
+  if (!note || note.trim().length < 10) {
+    throw new AppError("A completion note is required to request closure (min 10 characters).", { code: "VALIDATION_ERROR" });
+  }
+
+  const result = await withBackendTransaction(context.userId, async (tx) => {
+    const existing = await findWorkflowWorkOrder(tx, workOrderId);
+    if (!existing) throw new AppError("Job Card was not found.", { code: "NOT_FOUND" });
+    if (existing.status === "Created" || existing.status === "Under Review") {
+      throw new AppError("This Job Card must be started before requesting closure.", { code: "WORKFLOW_ERROR" });
+    }
+    if (existing.status === "Closed") {
+      throw new AppError("This Job Card is already closed.", { code: "WORKFLOW_ERROR" });
+    }
+    if (!canTransition("work_order", existing.status, CLOSURE_REQUESTED_STATUS)) {
+      throw new AppError(transitionError("work_order", existing.status, CLOSURE_REQUESTED_STATUS), { code: "WORKFLOW_ERROR" });
+    }
+
+    await assertRequiredMaterialsFulfilled(
+      tx,
+      workOrderId,
+      "This Job Card still has pending required materials. Complete materials before requesting closure."
+    );
+
+    await assertNoPendingMaterialsRequests(
+      tx,
+      workOrderId,
+      "This Job Card has pending Materials Requests. Complete materials before requesting closure."
+    );
+
+    const row = await updateWorkOrderStatus(tx, workOrderId, CLOSURE_REQUESTED_STATUS, context.userId);
+    await tx.approvals.create({
+      data: { work_order_id: workOrderId, status: CLOSURE_REQUESTED_STATUS, decided_by: context.userId, comments: note.trim() }
+    });
+
+    return {
+      workOrderId: row.id,
+      workOrderNumber: row.work_order_number,
+      status: row.status,
+      createdBy: existing.created_by
+    };
+  });
+
+  const recipients = await withBackendTransaction(context.userId, (tx) =>
+    jobCardRecipients(tx, ["maintenance_manager"], result.createdBy, context.userId)
+  );
+
+  await Promise.all([
+    notifyWorkflowEvent({
+      eventKey: "job_card.closure_requested",
+      entityType: "work_order",
+      entityId: result.workOrderId,
+      actorId: context.userId,
+      recipientUserIds: recipients,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card", note: note.trim() },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`
+    }),
+    auditWorkflow(context, "work_order.closure_requested", result, `Closure requested for ${result.workOrderNumber ?? "work order"}`, { note: note.trim() }),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_CLOSURE_REQUESTED, result.workOrderId, context.userId)
+  ]);
+
+  return result;
+}
+
+/**
+ * Manager (or super_admin) approves a pending closure request.
+ * Closure Requested -> Closed. No reject/return path in this unit (Task 7).
+ */
+export async function approveJobCardClosure(context: CurrentUserContext, workOrderId: string, comments?: string) {
+  assertIsManager(context);
+
+  const result = await withBackendTransaction(context.userId, async (tx) => {
+    const existing = await findWorkflowWorkOrder(tx, workOrderId);
+    if (!existing) throw new AppError("Job Card was not found.", { code: "NOT_FOUND" });
+    if (existing.status !== CLOSURE_REQUESTED_STATUS) {
+      throw new AppError(
+        `Closure can only be approved while a closure request is pending. Current status: "${existing.status}".`,
+        { code: "WORKFLOW_ERROR" }
+      );
+    }
+
+    const row = await updateWorkOrderStatus(tx, workOrderId, "Closed", context.userId);
+    await tx.approvals.create({
+      data: { work_order_id: workOrderId, status: "Closed", decided_by: context.userId, comments: comments || null }
+    });
+
+    return {
+      workOrderId: row.id,
+      workOrderNumber: row.work_order_number,
+      status: row.status,
+      createdBy: existing.created_by
+    };
+  });
+
+  const recipients = await withBackendTransaction(context.userId, (tx) =>
+    jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
+  );
+
+  await Promise.all([
+    notifyWorkflowEvent({
+      eventKey: "job_card.closed",
+      entityType: "work_order",
+      entityId: result.workOrderId,
+      actorId: context.userId,
+      recipientUserIds: recipients,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card" },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`
+    }),
+    auditWorkflow(context, "work_order.closure_approved", result, `Closure approved for ${result.workOrderNumber ?? "work order"}`, { comments }),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_CLOSED, result.workOrderId, context.userId)
+  ]);
+
+  return result;
+}
+
+// Approval Workflow Unit 4: direct close is now Manager-only (super_admin
+// included) — Data Entry can no longer final-close a Job Card directly
+// (business rule 8), only request closure (requestJobCardClosure above).
+// This restricts this specific "Close Job Card" action/button only;
+// completeTechnicianJob/markExternalWorkCompleted (Technician's own close,
+// external-assignment completion) are separate functions with their own
+// permission checks, untouched by this unit. Same pending-materials gate as
+// requestJobCardClosure (Task 6/12).
 export async function closeWorkOrder(context: CurrentUserContext, workOrderId: string, comments?: string) {
-  assertBackendPermission(context, "work_orders.close");
-  const result = await transitionWorkOrder(context, workOrderId, "Closed");
+  assertIsManager(context);
+
+  const result = await withBackendTransaction(context.userId, async (tx) => {
+    const existing = await findWorkflowWorkOrder(tx, workOrderId);
+    if (!existing) throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
+    if (existing.status === CLOSURE_REQUESTED_STATUS) {
+      throw new AppError("A closure request is already pending for this Job Card — use Approve Closure instead.", { code: "WORKFLOW_ERROR" });
+    }
+
+    await assertRequiredMaterialsFulfilled(
+      tx,
+      workOrderId,
+      "This Job Card still has pending required materials. Complete materials before closing."
+    );
+
+    await assertNoPendingMaterialsRequests(
+      tx,
+      workOrderId,
+      "This Job Card has pending Materials Requests. Complete materials before closing."
+    );
+
+    return transitionWorkOrderInTransaction(tx, context, workOrderId, "Closed");
+  });
 
   if (!result.wasAlreadyInStatus) {
     await withBackendTransaction(context.userId, async (tx) => {

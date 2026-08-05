@@ -55,7 +55,20 @@ export const REALTIME_EVENTS = {
   JOB_CARD_APPROVED:           "job_card.approved",
   JOB_CARD_ASSIGNED:           "job_card.assigned",
   JOB_CARD_IN_PROGRESS:        "job_card.in_progress",
+  // Approval Workflow Unit 4 — Closure Approval Only: Data Entry starting a
+  // Job Card directly (Created -> Approved/"Active", no Manager approval
+  // step) and requesting closure (-> "Closure Requested") are each their own
+  // event now — both still match every existing page's "job_card." prefix
+  // watch, so no RealtimeRefresh watch list needed to change (Unit 2).
+  JOB_CARD_STARTED:            "job_card.started",
+  JOB_CARD_CLOSURE_REQUESTED:  "job_card.closure_requested",
   JOB_CARD_CLOSED:             "job_card.closed",
+  // Work Assignment and Worker Profiles Foundation Unit 7: the new Internal
+  // Team labor roster (Supervisor/Technician/Helper via worker_profiles) is
+  // a separate save path from the existing JOB_CARD_ASSIGNED (technician/
+  // freelancer/company) — still matches every page's "job_card." prefix
+  // watch, so no RealtimeRefresh watch list needed to change (Unit 2).
+  JOB_CARD_ASSIGNMENT_UPDATED: "job_card.assignment_updated",
   MATERIALS_REQUEST_CREATED:   "materials_request.created",
   MATERIALS_REQUEST_UPDATED:   "materials_request.updated",
   MATERIALS_REQUEST_APPROVED:  "materials_request.approved",
@@ -80,6 +93,8 @@ export const REALTIME_EVENTS = {
   TECHNICIAN_JOB_UPDATED:      "technician_job.updated",
   NOTIFICATION_CREATED:        "notification.created",
   ASSET_UPDATED:               "asset.updated",
+  // Work Assignment and Worker Profiles Foundation Unit 7.
+  WORKER_PROFILE_UPDATED:      "worker_profile.updated",
 } as const;
 
 export type RealtimeEventType = (typeof REALTIME_EVENTS)[keyof typeof REALTIME_EVENTS];
@@ -221,4 +236,12 @@ export function emitOfflineInventoryRealtimeEvent(
   actorId: string
 ): Promise<void> {
   return emitRealtimeEvent({ eventType, entityType: "offline_inventory_movement", entityId: movementId, actorProfileId: actorId });
+}
+
+// Work Assignment and Worker Profiles Foundation Unit 7.
+export function emitWorkerProfileRealtimeEvent(
+  workerId: string,
+  actorId: string
+): Promise<void> {
+  return emitRealtimeEvent({ eventType: REALTIME_EVENTS.WORKER_PROFILE_UPDATED, entityType: "worker_profile", entityId: workerId, actorProfileId: actorId });
 }

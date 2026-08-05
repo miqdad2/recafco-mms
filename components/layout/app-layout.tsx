@@ -80,6 +80,7 @@ const navigationGroups: NavGroup[] = [
     items: [
       { href: "/assets",                        label: "Assets & Equipment", iconKey: "Gauge",      permission: "assets.view" },
       { href: "/maintenance/assignments",        label: "Technician",          iconKey: "Wrench",     permission: "work_orders.assign" },
+      { href: "/admin/worker-profiles",         label: "Worker Profiles",     iconKey: "Users",      permission: "work_orders.assign" },
       { href: "/reports",                       label: "Reports",             iconKey: "BarChart3",  permission: "reports.view" },
       { href: "/notifications",                 label: "Notifications",       iconKey: "Bell",       permission: "notifications.view" },
       { href: "/admin/users",                   label: "Users",               iconKey: "Users",      permission: "admin.users.manage" },
@@ -118,6 +119,7 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
     items: [
       { href: "/assets",                  label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
       { href: "/maintenance/assignments", label: "Technician",          iconKey: "Wrench",    permission: "work_orders.assign" },
+      { href: "/admin/worker-profiles",   label: "Worker Profiles",     iconKey: "Users",     permission: "work_orders.assign" },
       { href: "/reports",                 label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
       { href: "/notifications",           label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
     ]
@@ -272,6 +274,7 @@ const normalUserNavigationGroups: NavGroup[] = [
     items: [
       { href: "/assets",                  label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
       { href: "/maintenance/assignments", label: "Technician",          iconKey: "Wrench",    permission: "work_orders.assign" },
+      { href: "/admin/worker-profiles",   label: "Worker Profiles",     iconKey: "Users",     permission: "work_orders.assign" },
       { href: "/reports",                 label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
       { href: "/notifications",           label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
     ]

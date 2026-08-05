@@ -136,7 +136,16 @@ export function AssignmentFormModal({
             />
             <input
               name="external_trade"
-              placeholder="Trade / specialization"
+              placeholder="Work type / trade"
+              className={inp}
+              disabled={isPending}
+            />
+            <input
+              name="agreed_amount"
+              type="number"
+              min="0"
+              step="0.001"
+              placeholder="Agreed amount / rate (optional)"
               className={inp}
               disabled={isPending}
             />
@@ -178,7 +187,16 @@ export function AssignmentFormModal({
             />
             <input
               name="external_trade"
-              placeholder="Service type / trade"
+              placeholder="Work type / service"
+              className={inp}
+              disabled={isPending}
+            />
+            <input
+              name="agreed_amount"
+              type="number"
+              min="0"
+              step="0.001"
+              placeholder="Agreed amount (optional)"
               className={inp}
               disabled={isPending}
             />

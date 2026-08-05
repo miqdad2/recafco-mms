@@ -70,7 +70,8 @@ export function AssignmentForm({ workOrderId, technicians }: AssignmentFormProps
         <div className="space-y-2">
           <input name="external_name" placeholder="Freelancer name *" className={inp} required />
           <input name="external_phone" placeholder="Phone" className={inp} />
-          <input name="external_trade" placeholder="Trade / specialization" className={inp} />
+          <input name="external_trade" placeholder="Work type / trade" className={inp} />
+          <input name="agreed_amount" type="number" min="0" step="0.001" placeholder="Agreed amount / rate (optional)" className={inp} />
           <div>
             <label className="block text-xs text-[#9CA3AF] mb-1">Expected visit date</label>
             <input name="external_expected_visit_date" type="date" className={inp} />
@@ -84,7 +85,8 @@ export function AssignmentForm({ workOrderId, technicians }: AssignmentFormProps
           <input name="external_company" placeholder="Company name *" className={inp} required />
           <input name="external_contact_person" placeholder="Contact person" className={inp} />
           <input name="external_phone" placeholder="Phone" className={inp} />
-          <input name="external_trade" placeholder="Service type / trade" className={inp} />
+          <input name="external_trade" placeholder="Work type / service" className={inp} />
+          <input name="agreed_amount" type="number" min="0" step="0.001" placeholder="Agreed amount (optional)" className={inp} />
           <div>
             <label className="block text-xs text-[#9CA3AF] mb-1">Expected visit date</label>
             <input name="external_expected_visit_date" type="date" className={inp} />

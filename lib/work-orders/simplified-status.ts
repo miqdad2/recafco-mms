@@ -6,6 +6,7 @@ export type { SimplifiedStatus } from "@/lib/work-orders/simplified-status-displ
 export {
   OPEN_JOB_CARD_STATUSES,
   ACTIVE_JOB_CARD_STATUSES,
+  CLOSURE_REQUESTED_STATUS,
   displaySimplifiedStatus,
   simplifiedStatusTone,
   NEEDS_UPDATE_LABEL,

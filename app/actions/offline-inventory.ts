@@ -9,7 +9,14 @@ import { pickUploadedFile, validatePrivateFileWithOptions } from "@/lib/files/va
 import { getFileSecuritySettings } from "@/lib/files/settings";
 import { savePrivateFile } from "@/lib/files/local-storage";
 import { writeAuditLog } from "@/lib/audit/log";
-import { requireOfflineInventoryManage, findExistingCategoryMatch, buildBalanceKey } from "@/lib/store/offline-inventory-data";
+import {
+  requireOfflineInventoryManage,
+  findExistingCategoryMatch,
+  findExistingMaterialByNormalizedName,
+  buildBalanceKey,
+  searchOfflineInventoryMaterials,
+  type OfflineInventorySearchMatch,
+} from "@/lib/store/offline-inventory-data";
 import { emitOfflineInventoryRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 
@@ -21,7 +28,11 @@ export type OfflineMovementState =
   // message — every other action leaves it undefined, which is a no-op here
   // since the field is optional.
   | { ok: true; category?: string }
-  | { ok: false; error: string }
+  // Required Materials Inventory Matching Unit 5, Task 8: `existingMaterialKey`
+  // is set only for the duplicate-material error on Add New Material / Add
+  // Opening Stock, so the form can offer "View Existing" / "Receive More"
+  // instead of a dead-end error message.
+  | { ok: false; error: string; existingMaterialKey?: string }
   | null;
 
 function parseQty(raw: string): number {
@@ -182,6 +193,16 @@ export async function addOpeningStockAction(
             "This material already has an initial stock entry. Use Receive Material to increase balance, or edit the existing record if allowed.",
         };
       }
+      // Task 8 — space/case-collapsing fallback: catches " oil   filter "
+      // when "Oil Filter" already exists, which the exact check above misses.
+      const normalizedDupe = await findExistingMaterialByNormalizedName({ manualName, unit });
+      if (normalizedDupe) {
+        return {
+          ok: false,
+          error: "This material already exists in Offline Inventory.",
+          existingMaterialKey: normalizedDupe.key,
+        };
+      }
     }
 
     const created = await prisma.offline_inventory_movements.create({
@@ -281,8 +302,19 @@ export async function addNewMaterialAction(
       if (dupe) {
         return {
           ok: false,
-          error:
-            "This material is already registered in Offline Inventory Control. Use Receive Material to add quantity, or Issue Material to issue it.",
+          error: "This material already exists in Offline Inventory.",
+          existingMaterialKey: buildBalanceKey({ part_id: null, manual_material_name: manualName, unit }),
+        };
+      }
+      // Task 8 — space/case-collapsing fallback: catches "OIL FILTER" / " oil
+      // filter " typed against an existing "Oil Filter" that the exact check
+      // above (different spacing) would miss.
+      const normalizedDupe = await findExistingMaterialByNormalizedName({ manualName, unit });
+      if (normalizedDupe) {
+        return {
+          ok: false,
+          error: "This material already exists in Offline Inventory.",
+          existingMaterialKey: normalizedDupe.key,
         };
       }
     }
@@ -612,4 +644,30 @@ export async function getMaterialRecentMovementsAction(key: string): Promise<Mat
     work_order_number: r.work_orders?.work_order_number ?? null,
     created_by_name: r.profiles.full_name,
   }));
+}
+
+// ── Required Materials autocomplete search ─────────────────────────────────
+// Required Materials Inventory Matching Unit 5, Task 2. Called directly
+// (not as a <form action>) from the New Job Card wizard's Required Materials
+// step while Data Entry types, so it can be debounced client-side and show
+// per-row suggestions without a full page navigation. Gated on the same
+// permission as the wizard page itself (work_orders.manage) rather than
+// offline_inventory.issue — Data Entry does not necessarily have Store
+// permissions, but does always have work_orders.manage to have reached this
+// step at all.
+export async function searchOfflineInventoryMaterialsAction(
+  query: string,
+  opts?: { unit?: string; partNumber?: string }
+): Promise<OfflineInventorySearchMatch[]> {
+  await requirePermission("work_orders.manage");
+  try {
+    return await searchOfflineInventoryMaterials({
+      query,
+      unit: opts?.unit ?? null,
+      partNumber: opts?.partNumber ?? null,
+      limit: 10,
+    });
+  } catch {
+    return [];
+  }
 }

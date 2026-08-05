@@ -2,17 +2,114 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Loader2, Plus, X } from "lucide-react";
 
 import { upsertWorkOrderAction } from "@/app/actions/maintenance";
+import { searchOfflineInventoryMaterialsAction } from "@/app/actions/offline-inventory";
+import type { OfflineInventorySearchMatch } from "@/lib/store/offline-inventory-data";
 import { AttachmentUploadFields } from "@/components/files/attachment-upload-fields";
 import { AssetSearchPicker, type AssetPickerOption } from "@/components/assets/asset-search-picker";
+import { StatusBadge } from "@/components/ui/status-badge";
 import {
   ATTACHMENT_FILE_ACCEPT,
   JOB_CARD_ATTACHMENT_CATEGORIES,
   MAX_ATTACHMENT_ROWS,
 } from "@/lib/files/attachment-constants";
 import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/maintenance-types";
+
+// Required Materials Inventory Matching Unit 5 — Required Materials row
+// state. Description/Part No./Qty/Unit were previously plain uncontrolled
+// inputs (name attribute only); they're controlled now so a selected
+// Offline Inventory suggestion can fill them in and so quantity changes can
+// recompute availability without another server round trip.
+type RequiredMaterialRowState = {
+  description: string;
+  partNumber: string;
+  qty: string;
+  unit: string;
+  notes: string;
+  // Identity key of the Offline Inventory match the user selected from the
+  // dropdown (same "part:<id>" / "manual:<name>|<unit>" key used across
+  // Offline Inventory Control) — null once the description is hand-typed or
+  // edited away from a selected suggestion (Task 5).
+  materialKey: string | null;
+  balance: number | null;
+  suggestions: OfflineInventorySearchMatch[];
+  showSuggestions: boolean;
+  loading: boolean;
+  searched: boolean;
+};
+
+function emptyMaterialRow(): RequiredMaterialRowState {
+  return {
+    description: "",
+    partNumber: "",
+    qty: "1",
+    unit: "PCS",
+    notes: "",
+    materialKey: null,
+    balance: null,
+    suggestions: [],
+    showSuggestions: false,
+    loading: false,
+    searched: false,
+  };
+}
+
+type RowAvailability =
+  | { kind: "available" }
+  | { kind: "partial"; shortage: number }
+  | { kind: "unavailable" }
+  | { kind: "new" };
+
+function computeRowAvailability(row: RequiredMaterialRowState): RowAvailability | null {
+  if (!row.description.trim()) return null;
+  if (row.materialKey === null || row.balance === null) return { kind: "new" };
+  const qty = Number(row.qty) || 0;
+  if (row.balance <= 0) return { kind: "unavailable" };
+  if (qty <= row.balance) return { kind: "available" };
+  return { kind: "partial", shortage: qty - row.balance };
+}
+
+function AvailabilityBadge({ row }: { row: RequiredMaterialRowState }) {
+  const availability = computeRowAvailability(row);
+  if (!availability) return null;
+
+  if (availability.kind === "available") {
+    return (
+      <div className="mt-1 flex items-center gap-2">
+        <StatusBadge label="Available" tone="green" />
+        {row.balance !== null && (
+          <span className="text-[11px] text-[#6B7280]">
+            Available: {row.balance} {row.unit}
+          </span>
+        )}
+      </div>
+    );
+  }
+  if (availability.kind === "partial") {
+    return (
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <StatusBadge label="Partially Available" tone="amber" />
+        <span className="text-[11px] font-semibold text-[#B45309]">
+          Shortage: {availability.shortage} {row.unit}
+        </span>
+      </div>
+    );
+  }
+  if (availability.kind === "unavailable") {
+    return (
+      <div className="mt-1">
+        <StatusBadge label="Not Available" tone="red" />
+      </div>
+    );
+  }
+  return (
+    <div className="mt-1">
+      <StatusBadge label="New Material" tone="gray" />
+    </div>
+  );
+}
 
 // Worker Team / Division Option Cleanup: narrowed to the 4 options
 // management wants offered for new Job Cards. The database still allows the
@@ -106,6 +203,68 @@ export function WorkOrderWizard({
   // dialog once the user has actually entered something — a fresh, untouched
   // wizard can be dismissed immediately with nothing to lose.
   const [dirty, setDirty] = useState(false);
+
+  // Required Materials Inventory Matching Unit 5, Tasks 3–5.
+  const [partRows, setPartRows] = useState<RequiredMaterialRowState[]>(
+    () => Array.from({ length: MAX_PART_ROWS }, () => emptyMaterialRow())
+  );
+  const searchTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+  const searchSeq = useRef<Record<number, number>>({});
+
+  useEffect(() => {
+    const timers = searchTimers.current;
+    return () => {
+      Object.values(timers).forEach((t) => clearTimeout(t));
+    };
+  }, []);
+
+  function updateRow(index: number, patch: Partial<RequiredMaterialRowState>) {
+    setPartRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+  }
+
+  function handleMaterialNameChange(index: number, value: string) {
+    // Task 5: editing the name after a suggestion was selected clears the
+    // link — the row goes back to "New Material" until re-matched.
+    updateRow(index, { description: value, materialKey: null, balance: null, showSuggestions: true });
+    setDirty(true);
+
+    if (searchTimers.current[index]) clearTimeout(searchTimers.current[index]);
+
+    const trimmed = value.trim();
+    if (trimmed.length < 2) {
+      updateRow(index, { suggestions: [], loading: false, searched: false });
+      return;
+    }
+
+    updateRow(index, { loading: true });
+    const seq = (searchSeq.current[index] ?? 0) + 1;
+    searchSeq.current[index] = seq;
+
+    searchTimers.current[index] = setTimeout(async () => {
+      try {
+        const results = await searchOfflineInventoryMaterialsAction(trimmed);
+        // Ignore stale responses from an earlier keystroke that resolved late.
+        if (searchSeq.current[index] !== seq) return;
+        updateRow(index, { suggestions: results, loading: false, searched: true });
+      } catch {
+        if (searchSeq.current[index] !== seq) return;
+        updateRow(index, { suggestions: [], loading: false, searched: true });
+      }
+    }, 300);
+  }
+
+  function handleSelectSuggestion(index: number, match: OfflineInventorySearchMatch) {
+    updateRow(index, {
+      description: match.display_name,
+      partNumber: match.part_number ?? "",
+      unit: match.unit,
+      materialKey: match.key,
+      balance: match.balance,
+      suggestions: [],
+      showSuggestions: false,
+      searched: false,
+    });
+  }
 
   function requestClose() {
     if (dirty) {
@@ -440,7 +599,10 @@ export function WorkOrderWizard({
             title="Required Materials"
             description="List materials required for this Job Card. This is not a purchase order."
           >
-            <div className="overflow-x-auto">
+            <p className="mb-3 text-xs text-[#6B7280]">
+              Type a material name to check Offline Inventory availability.
+            </p>
+            <div>
               <table className="w-full min-w-[560px] border-collapse text-sm">
                 <thead>
                   <tr className="bg-[#F3F4F6] text-left text-[10px] font-black uppercase tracking-wide text-[#4B5563]">
@@ -453,45 +615,96 @@ export function WorkOrderWizard({
                   </tr>
                 </thead>
                 <tbody>
-                  {Array.from({ length: MAX_PART_ROWS }, (_, i) => (
+                  {partRows.map((row, i) => (
                     <tr key={i} className={i >= numPartRows ? "hidden" : ""}>
                       <td className="border border-[#E5E7EB] px-2 py-1.5 text-center text-xs font-semibold text-[#9CA3AF]">
                         {i + 1}
                       </td>
-                      <td className="border border-[#E5E7EB] p-0.5">
+                      <td className="relative border border-[#E5E7EB] p-0.5 align-top">
                         <input
                           name={`req_part_description_${i}`}
+                          value={row.description}
+                          onChange={(e) => handleMaterialNameChange(i, e.target.value)}
+                          onFocus={() => updateRow(i, { showSuggestions: true })}
+                          onBlur={() => updateRow(i, { showSuggestions: false })}
+                          autoComplete="off"
                           className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
                           placeholder={i === 0 ? "e.g. oil filter…" : ""}
                         />
+                        <input type="hidden" name={`req_part_material_key_${i}`} value={row.materialKey ?? ""} />
+                        <AvailabilityBadge row={row} />
+
+                        {row.showSuggestions && (row.loading || row.suggestions.length > 0 || row.searched) && (
+                          <div className="absolute left-0 top-full z-20 mt-1 w-72 max-w-[80vw] rounded-md border border-[#E5E7EB] bg-white shadow-lg">
+                            {row.loading ? (
+                              <div className="flex items-center gap-2 px-3 py-2.5 text-xs text-[#6B7280]">
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                                Searching Offline Inventory…
+                              </div>
+                            ) : row.suggestions.length === 0 ? (
+                              <p className="px-3 py-2.5 text-xs text-[#9CA3AF]">
+                                No match in Offline Inventory. You can still type this material manually.
+                              </p>
+                            ) : (
+                              <ul className="max-h-64 divide-y divide-[#F3F4F6] overflow-y-auto">
+                                {row.suggestions.map((s) => (
+                                  <li key={s.key}>
+                                    <button
+                                      type="button"
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        handleSelectSuggestion(i, s);
+                                      }}
+                                      className="block w-full px-3 py-2 text-left hover:bg-gray-50"
+                                    >
+                                      <p className="text-sm font-bold text-[#111827]">{s.display_name}</p>
+                                      <p className="mt-0.5 text-[11px] text-[#6B7280]">
+                                        Available: {s.balance} {s.unit}
+                                        {s.part_number ? ` • Part No: ${s.part_number}` : ""}
+                                        {s.ss_rec_code ? ` • SS Rec. Code: ${s.ss_rec_code}` : ""}
+                                        {s.location ? ` • Location: ${s.location}` : ""}
+                                      </p>
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
                       </td>
-                      <td className="border border-[#E5E7EB] p-0.5">
+                      <td className="border border-[#E5E7EB] p-0.5 align-top">
                         <input
                           name={`req_part_part_number_${i}`}
+                          value={row.partNumber}
+                          onChange={(e) => updateRow(i, { partNumber: e.target.value })}
                           className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
                         />
                       </td>
-                      <td className="border border-[#E5E7EB] p-0.5">
+                      <td className="border border-[#E5E7EB] p-0.5 align-top">
                         <input
                           name={`req_part_quantity_${i}`}
                           type="number"
                           min="1"
                           step="1"
                           inputMode="numeric"
-                          defaultValue="1"
+                          value={row.qty}
+                          onChange={(e) => updateRow(i, { qty: e.target.value })}
                           className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
                         />
                       </td>
-                      <td className="border border-[#E5E7EB] p-0.5">
+                      <td className="border border-[#E5E7EB] p-0.5 align-top">
                         <input
                           name={`req_part_uom_${i}`}
-                          defaultValue="PCS"
+                          value={row.unit}
+                          onChange={(e) => updateRow(i, { unit: e.target.value })}
                           className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
                         />
                       </td>
-                      <td className="border border-[#E5E7EB] p-0.5">
+                      <td className="border border-[#E5E7EB] p-0.5 align-top">
                         <input
                           name={`req_part_notes_${i}`}
+                          value={row.notes}
+                          onChange={(e) => updateRow(i, { notes: e.target.value })}
                           className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
                         />
                       </td>
@@ -711,7 +924,7 @@ export function WorkOrderWizard({
                     value="submit_for_approval"
                     className="focus-ring inline-flex items-center justify-center rounded-md bg-[#ED1C24] px-5 py-2 text-sm font-bold text-white transition hover:bg-red-700"
                   >
-                    Submit for Review
+                    Start Job Card
                   </button>
                 </>
               )}

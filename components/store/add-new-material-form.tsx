@@ -50,7 +50,25 @@ export function AddNewMaterialForm({ modalMode = false }: { modalMode?: boolean 
         {state?.ok === false && (
           <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-            <span>{state.error}</span>
+            <div>
+              <span>{state.error}</span>
+              {state.existingMaterialKey && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Link
+                    href="/store/offline-inventory"
+                    className="rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-100"
+                  >
+                    View Existing
+                  </Link>
+                  <Link
+                    href={`/store/offline-inventory?receiveMaterial=${encodeURIComponent(state.existingMaterialKey)}`}
+                    className="rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-100"
+                  >
+                    Receive More
+                  </Link>
+                </div>
+              )}
+            </div>
           </div>
         )}
 

@@ -3,7 +3,6 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
-  BadgeCheck,
   BarChart3,
   Bell,
   CheckCircle2,
@@ -143,6 +142,13 @@ function mgActionMeta(status: string): { label: string; style: string } {
     return {
       label: "Close",
       style: "border-[#16A34A] bg-[#16A34A] text-white hover:bg-green-700",
+    };
+  }
+  // Approval Workflow Unit 4: the primary Manager decision point now.
+  if (status === "Closure Requested") {
+    return {
+      label: "Approve Closure",
+      style: "border-[#ED1C24] bg-[#ED1C24] text-white hover:bg-red-700",
     };
   }
   // Legacy pre-Unit3 statuses — defensive fallback only.
@@ -342,10 +348,11 @@ function ManagerActionRow({
   action?: { label: string; style: string };
 }) {
   const action = actionOverride ?? mgActionMeta(row.status);
-  // Close requires full work-order page; Approve/Assign/Review/View open the
-  // quick-view modal via ?preview param, where the real gated action lives.
+  // Close/Approve Closure require the full Job Card page (the closure note
+  // form lives there, not in the quick-view — see workflow-actions.tsx);
+  // Approve/Assign/Review/View open the quick-view modal via ?preview.
   const actionHref =
-    action.label === "Close"
+    action.label === "Close" || action.label === "Approve Closure"
       ? `/maintenance/work-orders/${row.id}`
       : `?preview=${row.id}`;
   const showMaterialsBadge =
@@ -479,28 +486,31 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         select: { id: true },
       }),
     ]).then(async ([underReviewRows, openRows]) => {
-      // Job Card Status Simplification Task: correctionCount is still
-      // computed (drives the "needs your correction" alert below and the
-      // per-row secondary "Needs Update" badge) but no longer subtracted
-      // from Submitted/Approved/Active — those are now plain status counts,
-      // same as draft/closed. Both id sets are checked together since a
-      // pending correction can outlive "Under Review" once materials
-      // already progressed (Task 1/10, prior phase).
+      // Approval Workflow Unit 4: correctionCount is still computed (drives
+      // the "needs your correction" alert below and the per-row secondary
+      // "Needs Update" badge). closureRequestedCount replaces the old
+      // separate approvedCount — "Approved" is folded into Active now (no
+      // Manager approval before starting a Job Card any more), and "Closure
+      // Requested" is the new bucket that actually needs Data Entry's
+      // attention (Manager is deciding on their closure request). Both id
+      // sets are checked together since a pending correction can outlive
+      // "Under Review" once materials already progressed (Task 1/10, prior
+      // phase).
       const pendingCorrectionIds = await getPendingCorrectionWorkOrderIds([
         ...underReviewRows.map((r) => r.id),
         ...openRows.map((r) => r.id),
       ]);
-      const [draftCount, approvedCount, activeCount, closedRecentCount] = await Promise.all([
+      const [draftCount, activeCount, closureRequestedCount, closedRecentCount] = await Promise.all([
         safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Created" }] } })),
-        safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Approved" }] } })),
         safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: { in: ACTIVE_JOB_CARD_STATUSES } }] } })),
+        safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Closure Requested" }] } })),
         safeNum(prisma.work_orders.count({ where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Closed", updated_at: { gte: recentlyClosedSince } }] } })),
       ]);
       return {
         draftCount,
         submittedCount: underReviewRows.length,
-        approvedCount,
         activeCount,
+        closureRequestedCount,
         correctionCount: pendingCorrectionIds.size,
         closedRecentCount,
       };
@@ -563,7 +573,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   // sequential awaits after this block, even though neither depends on
   // mgData or on each other — folded into the same Promise.all so all 7
   // queries run concurrently instead of 5 concurrent + 2 sequential.
-  const [mgData, mgInProgressAll, offlineMovementsToday] = await Promise.all([
+  const [mgData, mgInProgressAll, mgClosureRequestedAll, offlineMovementsToday] = await Promise.all([
     isManager
       ? Promise.all([
           prisma.work_orders.findMany({
@@ -585,10 +595,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             select: { id: true },
           }),
           safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Closed", updated_at: { gte: recentlyClosedSince } }] } })),
-          // Job Card Status Simplification Task 6: "Open" split into
-          // "Approved" (nothing has moved yet) and "Active" (materials
-          // moving, assigned, or work started).
-          safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Approved" }] } })),
+          // Approval Workflow Unit 4: "Approved" is folded into "Active" now
+          // (no Manager approval before starting a Job Card any more) —
+          // Closure Requested is the new Manager-facing decision count.
+          safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Closure Requested" }] } })),
           safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: { in: ACTIVE_JOB_CARD_STATUSES } }] } })),
         ])
       : Promise.resolve(null),
@@ -597,6 +607,34 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     isManager
       ? prisma.work_orders.findMany({
           where: { AND: [mgBase, { status: "In Progress" }] },
+          select: {
+            id: true,
+            work_order_number: true,
+            status: true,
+            updated_at: true,
+            created_at: true,
+            description_of_work: true,
+            assets: { select: { asset_name: true } },
+            parts_requests: { select: { status: true }, orderBy: { created_at: "desc" }, take: 1 },
+          },
+          orderBy: { updated_at: "asc" },
+        })
+      : Promise.resolve([] as Array<{
+          id: string;
+          work_order_number: string | null;
+          status: string;
+          updated_at: Date;
+          created_at: Date;
+          description_of_work: string | null;
+          assets: { asset_name: string } | null;
+          parts_requests: { status: string }[];
+        }>),
+    // Approval Workflow Unit 4, Task 9: Job Cards waiting for Manager to
+    // approve a pending closure request — the primary "Needs Your Action"
+    // item now that there's no first-approval step any more.
+    isManager
+      ? prisma.work_orders.findMany({
+          where: { AND: [mgBase, { status: "Closure Requested" }] },
           select: {
             id: true,
             work_order_number: true,
@@ -649,7 +687,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     }));
   const mgCorrectionCount = mgPendingCorrectionIds.size;
   const mgClosedRecentCount = mgData?.[2] ?? 0;
-  const mgApprovedCount = mgData?.[3] ?? 0;
+  const mgClosureRequestedCount = mgData?.[3] ?? 0;
   const mgActiveCount = mgData?.[4] ?? 0;
 
   // Manager Dashboard Clarity Task 8: a pending correction on an In Progress
@@ -669,7 +707,20 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       asset_name:                r.assets?.asset_name ?? null,
       materials_request_status:  r.parts_requests[0]?.status ?? null,
     }));
-  const mgActionRows: MgActionRow[] = [...mgSubmittedRows, ...mgCloseRows];
+  // Approval Workflow Unit 4, Task 9: Closure Requested Job Cards are the
+  // primary Manager decision now — listed first (before the legacy Submitted
+  // rows and the still-available direct-close-from-In-Progress rows).
+  const mgClosureRequestRows: MgActionRow[] = mgClosureRequestedAll.map((r) => ({
+    id:                        r.id,
+    work_order_number:         r.work_order_number,
+    status:                    r.status,
+    updated_at:                r.updated_at.toISOString(),
+    created_at:                r.created_at.toISOString(),
+    description_of_work:       r.description_of_work ?? null,
+    asset_name:                r.assets?.asset_name ?? null,
+    materials_request_status:  r.parts_requests[0]?.status ?? null,
+  }));
+  const mgActionRows: MgActionRow[] = [...mgClosureRequestRows, ...mgSubmittedRows, ...mgCloseRows];
 
   // ── Maintenance Engineer data ─────────────────────────────────────
   // Simplified Job Card Approval Workflow Unit Task 8: Engineer is not one
@@ -1099,7 +1150,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         canManage: isAdmin || context.permissions.includes("work_orders.manage"),
         canReview: isAdmin || context.permissions.includes("work_orders.review"),
         canRequestCorrection: isAdmin || context.permissions.includes("work_orders.request_correction"),
-        canClose: isAdmin || context.permissions.includes("work_orders.close"),
+        // Approval Workflow Unit 4: direct "Close Job Card" is now
+        // Manager-only (matches closeWorkOrder()'s own role check) — Data
+        // Entry uses Request Closure instead (full detail page).
+        canClose: isAdmin || context.role?.slug === "maintenance_manager",
         canUpdateProgress: isAdmin || context.permissions.includes("work_orders.update"),
         canReceiveMaterials: canReceiveIssueMaterials(context),
         canCreateParts:
@@ -1177,11 +1231,14 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 Manager's Job Cards row and Super Admin's System Overview. */}
             <section className="space-y-2">
               <SectionLabel>My Work Today</SectionLabel>
-              <KpiRow cols="sm:grid-cols-3 xl:grid-cols-5" cards={[
-                { label: "Drafts",                value: nuQueue.draftCount,      icon: FileText,      tone: "gray",                                          href: "/maintenance/work-orders?status=Draft" },
-                { label: "Submitted",             value: nuQueue.submittedCount,  icon: Clock,         tone: nuQueue.submittedCount > 0 ? "amber" : "green",  href: "/maintenance/work-orders?status=Submitted", detail: "Waiting on Supervisor / Manager decision." },
-                { label: "Approved",              value: nuQueue.approvedCount,   icon: BadgeCheck,    tone: "blue",                                          href: "/maintenance/work-orders?status=Approved", detail: "Approved by Manager" },
+              {/* Approval Workflow Unit 4, Task 10: Drafts / Active / Closure
+                  Requested / Closed Recently — no Manager approval before
+                  starting a Job Card any more, so "Submitted"/"Approved" are
+                  no longer their own cards (folded into "Active"). */}
+              <KpiRow cols="sm:grid-cols-2 xl:grid-cols-4" cards={[
+                { label: "Drafts",                value: nuQueue.draftCount,      icon: FileText,      tone: "gray",                                          href: "/maintenance/work-orders?status=New", detail: "Not yet started" },
                 { label: "Active",                value: nuQueue.activeCount,     icon: Wrench,        tone: "blue",                                          href: "/maintenance/work-orders?status=Active", detail: "Work in progress" },
+                { label: "Closure Requested",      value: nuQueue.closureRequestedCount, icon: Clock,   tone: nuQueue.closureRequestedCount > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=ClosureRequested", detail: "Waiting on Manager to approve closing" },
                 { label: "Closed recently",       value: nuQueue.closedRecentCount, icon: CheckCircle2, tone: "green",                                        href: "/maintenance/work-orders?status=Closed" },
               ]} />
             </section>
@@ -1223,22 +1280,21 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               <QuickAction label="Reports"             href="/reports"                                   icon={BarChart3}     iconBg="bg-gray-100"  iconColor="text-[#4B5563]" />
             </div>
 
-            {/* Dashboard Materials to Receive Card Removal Task 2/3: the
-                "Materials to Receive" KPI was removed per the business
-                decision that materials receiving belongs on the Materials
-                Requests page, not the main dashboard — the Materials
-                Requests quick action above and the Materials Requests page's
-                own "Pending" tab remain the place to track this. Five
-                cards now (was six) — cols matches the same "5 simplified
-                cards" grid already used by System Overview below. */}
+            {/* Approval Workflow Unit 4, Task 10: Active Job Cards / Closure
+                Requests / Materials Pending (Offline Inventory Control
+                movements, already available) / Closed Recently — no Manager
+                approval before starting a Job Card any more, so "Submitted"/
+                "Approved" are no longer their own cards (folded into
+                "Active"). "Submitted for Review" kept, last, for backward
+                compatibility only — visible only if a legacy row exists. */}
             <section className="space-y-2">
               <SectionLabel>Job Cards</SectionLabel>
               <KpiRow cols="sm:grid-cols-3 xl:grid-cols-5" cards={[
-                { label: "Submitted for Review",     value: mgSubmittedRows.length,   icon: ClipboardList, tone: mgSubmittedRows.length > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Submitted" },
-                { label: "Approved",                  value: mgApprovedCount,          icon: BadgeCheck,    tone: "blue",                                          href: "/maintenance/work-orders?status=Approved" },
                 { label: "Active",                    value: mgActiveCount,            icon: Wrench,        tone: "blue",                                          href: "/maintenance/work-orders?status=Active", detail: "Work in progress" },
+                { label: "Closure Requests",          value: mgClosureRequestedCount,  icon: ClipboardList, tone: mgClosureRequestedCount > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=ClosureRequested", detail: "Waiting on your approval to close" },
                 { label: "Offline Inventory Control", value: offlineMovementsToday,    icon: Package,       tone: "gray",                                          href: "/store/offline-inventory", detail: "Movements today" },
                 { label: "Closed recently",           value: mgClosedRecentCount,      icon: CheckCircle2,  tone: "green",                                         href: "/maintenance/work-orders?status=Closed" },
+                { label: "Submitted for Review",      value: mgSubmittedRows.length,   icon: Clock,         tone: mgSubmittedRows.length > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Submitted", detail: "Legacy — pre-existing rows only" },
               ]} />
             </section>
 

@@ -22,6 +22,13 @@ export interface IssueMaterialFormProps {
   // Large Popup Conversion — see the matching prop in ReceiveMaterialForm.
   modalMode?: boolean;
   presetMaterialKey?: string | null;
+  // Required Materials Issue and Shortage Tracking Unit 6: pre-selects the
+  // "Related Job Card" dropdown when arriving from a Job Card's Materials
+  // section "Issue" link (`?workOrder=<id>` outside a modal,
+  // `presetWorkOrderId` prop inside one) — so an issue made from that link
+  // is correctly attributed to the Job Card's fulfillment calculation
+  // without the Store Keeper having to find it again in the list.
+  presetWorkOrderId?: string | null;
 }
 
 export function IssueMaterialForm({
@@ -29,17 +36,20 @@ export function IssueMaterialForm({
   workOrders,
   modalMode = false,
   presetMaterialKey = null,
+  presetWorkOrderId = null,
 }: IssueMaterialFormProps) {
   const router = useRouter();
   const modal = useLargeFormModal();
   const searchParams = useSearchParams();
   const preselectedKey = modalMode ? presetMaterialKey : searchParams.get("material");
+  const preselectedWorkOrderId = modalMode ? presetWorkOrderId : searchParams.get("workOrder");
 
   const [state, formAction, isPending] = useActionState<OfflineMovementState, FormData>(
     issueOfflineMaterialAction,
     null
   );
   const [selectedKey, setSelectedKey] = useState(preselectedKey ?? "");
+  const [relatedWoId, setRelatedWoId] = useState(preselectedWorkOrderId ?? "");
 
   useEffect(() => {
     if (state?.ok) {
@@ -231,7 +241,14 @@ export function IssueMaterialForm({
         {/* Related job card */}
         <div>
           <label htmlFor="i-wo" className={lbl}>Related Job Card</label>
-          <select id="i-wo" name="related_work_order_id" className={inp} disabled={isPending}>
+          <select
+            id="i-wo"
+            name="related_work_order_id"
+            value={relatedWoId}
+            onChange={(e) => setRelatedWoId(e.target.value)}
+            className={inp}
+            disabled={isPending}
+          >
             <option value="">No job card</option>
             {workOrders.map((wo) => (
               <option key={wo.id} value={wo.id}>
@@ -239,6 +256,11 @@ export function IssueMaterialForm({
               </option>
             ))}
           </select>
+          {relatedWoId && !workOrders.some((wo) => wo.id === relatedWoId) && (
+            <p className="mt-1 text-xs text-[#9CA3AF]">
+              Job Card not in the recent list — issuing will still link to it correctly.
+            </p>
+          )}
         </div>
 
         {/* Receiver name */}

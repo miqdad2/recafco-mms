@@ -100,11 +100,11 @@ export function JobCardSubmittedModal({ data, dismissHref, hideViewJobCard = fal
                 <CheckCircle2 className="h-9 w-9 text-[#16A34A]" aria-hidden />
               </div>
               <h2 id="jc-submitted-heading" className="mt-4 text-xl font-black text-[#111827]">
-                Job Card Submitted
+                Job Card Started
               </h2>
               <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">
-                Job Card <span className="font-bold text-[#111827]">{data.work_order_number ?? "—"}</span> has been
-                submitted for Supervisor / Manager review.
+                Job Card <span className="font-bold text-[#111827]">{data.work_order_number ?? "—"}</span> is now
+                Active. Work can begin.
               </p>
               {hasMaterials && (
                 <p className="mt-1 text-sm leading-relaxed text-[#4B5563]">
@@ -150,12 +150,12 @@ export function JobCardSubmittedModal({ data, dismissHref, hideViewJobCard = fal
 
               <div className="mt-3 flex items-center justify-between gap-2">
                 <span className="text-xs font-bold uppercase tracking-wide text-[#4B5563]">Current status</span>
-                <StatusBadge label="Submitted" tone="amber" />
+                <StatusBadge label="Active" tone="blue" />
               </div>
 
               <p className="mt-3 text-sm leading-relaxed text-[#111827]">
                 <span className="font-bold">Next: </span>
-                Supervisor / Manager will review this Job Card.
+                Assign work, update details, or request closure once work is done.
               </p>
             </div>
           </div>

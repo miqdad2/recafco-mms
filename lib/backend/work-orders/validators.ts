@@ -22,6 +22,9 @@ export const technicianAssignmentSchema = z.object({
   externalPhone: z.string().trim().max(50).optional(),
   externalTrade: z.string().trim().max(100).optional(),
   externalExpectedVisitDate: z.string().trim().max(20).optional(),
+  // Work Assignment and Worker Profiles Foundation Unit 7, Task 5: "Agreed
+  // amount or hourly rate optional" for Freelancer/External Company.
+  agreedAmount: z.coerce.number().min(0).max(999999.999).optional(),
   notes: z.string().trim().max(500).optional(),
 });
 

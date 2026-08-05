@@ -15,7 +15,16 @@
 // correction is now shown as a small secondary badge (NEEDS_UPDATE_LABEL)
 // next to whatever the Job Card's real lifecycle status already is, never as
 // a status of its own. See displaySimplifiedStatus below.
-export type SimplifiedStatus = "Draft" | "Submitted" | "Approved" | "Active" | "Closed";
+//
+// Approval Workflow Unit 4 — Closure Approval Only: "Approved" is no longer
+// its own distinct display bucket — with the first-approval step removed,
+// the backend "Approved" status is now simply the landing status when Data
+// Entry starts a Job Card directly, so it displays as "Active" like every
+// other in-flight status (see ACTIVE_JOB_CARD_STATUSES below). "Submitted"
+// is kept for backward compatibility only — no new Job Card can reach
+// "Under Review" any more. "Closure Requested" is the new status between
+// "Active" and "Closed": Data Entry has asked Manager to close the Job Card.
+export type SimplifiedStatus = "Draft" | "Submitted" | "Active" | "Closure Requested" | "Closed";
 
 // Exported as a plain array (not just the Set below) so Prisma `status: { in: ... }`
 // filters elsewhere (dashboard, Job Cards list) can reuse the same source of truth.
@@ -32,12 +41,16 @@ export const OPEN_JOB_CARD_STATUSES = [
   "In Progress",
 ];
 
-// backend "Approved" is a real, distinct status (not a display trick) that
-// sits between "Under Review" and the materials/assignment/in-progress
-// statuses, so it gets its own UI label ("Approved"). Everything past it —
-// materials moving, technician assigned, work actually started — collapses
-// into "Active". This is OPEN_JOB_CARD_STATUSES minus "Approved".
+// Approval Workflow Unit 4: "Approved" folded in here — it's no longer a
+// distinct "approved, nothing else has happened yet" waypoint (there's no
+// approval before this any more), it's simply the landing status when Data
+// Entry starts a Job Card, same meaning as every other in-flight status.
+// This is now identical to OPEN_JOB_CARD_STATUSES; kept as a separate export
+// since callers use the two for different (if now equal) semantic purposes,
+// and OPEN_JOB_CARD_STATUSES's name/meaning ("not yet closed, not a
+// draft/closure-request") predates this unit and is left untouched.
 export const ACTIVE_JOB_CARD_STATUSES = [
+  "Approved",
   "Waiting Materials",
   "Partially Issued",
   "Materials Issued",
@@ -45,13 +58,18 @@ export const ACTIVE_JOB_CARD_STATUSES = [
   "In Progress",
 ];
 
+// Approval Workflow Unit 4: Data Entry has requested Manager approval to
+// close this Job Card. A distinct bucket from "Active" — materials/
+// assignment/progress work is done, only the closing decision is pending.
+export const CLOSURE_REQUESTED_STATUS = "Closure Requested";
+
 const ACTIVE_BACKEND_STATUSES = new Set(ACTIVE_JOB_CARD_STATUSES);
 
 export function displaySimplifiedStatus(status: string): SimplifiedStatus {
   if (status === "Closed") return "Closed";
   if (status === "Created") return "Draft";
-  if (status === "Under Review") return "Submitted";
-  if (status === "Approved") return "Approved";
+  if (status === "Under Review") return "Submitted"; // legacy only
+  if (status === CLOSURE_REQUESTED_STATUS) return "Closure Requested";
   if (ACTIVE_BACKEND_STATUSES.has(status)) return "Active";
   // Legacy pre-Unit3 statuses — defensive fallback only, no live record can
   // hold these (see chk_work_orders_status), but old reports/exports might.
@@ -62,8 +80,8 @@ export function simplifiedStatusTone(status: SimplifiedStatus): "green" | "amber
   switch (status) {
     case "Draft": return "gray";
     case "Submitted": return "amber";
-    case "Approved": return "blue";
     case "Active": return "blue";
+    case "Closure Requested": return "amber";
     case "Closed": return "green";
   }
 }

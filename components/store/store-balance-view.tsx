@@ -50,6 +50,10 @@ export interface StoreBalanceViewProps {
   showIssueMaterial: boolean;
   receiveMaterialKey: string | null;
   issueMaterialKey: string | null;
+  // Required Materials Issue and Shortage Tracking Unit 6: set when the
+  // modal was opened from a Job Card's Materials section "Issue" link
+  // (`?workOrder=<id>`), so the issue is attributed to that Job Card.
+  issueWorkOrderId: string | null;
 }
 
 type Tone5 = "green" | "red" | "blue" | "amber" | "gray";
@@ -143,6 +147,7 @@ export function StoreBalanceView({
   showIssueMaterial,
   receiveMaterialKey,
   issueMaterialKey,
+  issueWorkOrderId,
 }: StoreBalanceViewProps) {
   const router = useRouter();
   const [search, setSearch]             = useState("");
@@ -598,6 +603,7 @@ export function StoreBalanceView({
           <IssueMaterialForm
             modalMode
             presetMaterialKey={issueMaterialKey}
+            presetWorkOrderId={issueWorkOrderId}
             availableItems={balanceItems.filter((b) => b.balance > 0)}
             workOrders={workOrders}
           />

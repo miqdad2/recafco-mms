@@ -1,17 +1,22 @@
 import Link from "next/link";
 import {
   approveJobCardAndMaterialsAction,
+  approveJobCardClosureAction,
   closeWorkOrderAction,
   markExternalWorkCompletedAction,
+  requestJobCardClosureAction,
   startJobCardProgressAction,
   submitWorkOrderAction
 } from "@/app/actions/workflow";
 import { AssignmentForm } from "@/components/work-orders/assignment-form";
+import { InternalTeamRosterForm } from "@/components/work-orders/internal-team-roster-form";
 import { Button } from "@/components/ui/button";
 import type { CurrentUserContext } from "@/lib/auth/context";
 import type { PermissionKey } from "@/types/database";
+import type { WorkerProfileRow } from "@/lib/backend/workers/service";
 
 type Technician = { id: string; full_name: string };
+type CurrentRosterRow = { worker_id: string; worker_role: string };
 
 type CurrentAssignment = {
   type: string;
@@ -32,6 +37,11 @@ type WorkflowActionsProps = {
   technicians: Technician[];
   currentAssignment?: CurrentAssignment;
   activeMaterialsRequest?: ActiveMaterialsRequest;
+  // Work Assignment and Worker Profiles Foundation Unit 7: worker profiles
+  // available for the Internal Team roster, and the Job Card's current
+  // active roster rows (for pre-selecting the picker).
+  activeWorkers?: WorkerProfileRow[];
+  internalTeamRoster?: CurrentRosterRow[];
   // Simplified Workflow UI Consistency Cleanup Task 3: whether this Job Card
   // has an unresolved correction request right now — suppresses every normal
   // status action below so the page's correction banner (with its own
@@ -43,6 +53,22 @@ type WorkflowActionsProps = {
 function can(context: CurrentUserContext, permission: PermissionKey) {
   return context.role?.slug === "super_admin" || context.permissions.includes(permission);
 }
+
+// Approval Workflow Unit 4: matches requestJobCardClosure/approveJobCardClosure/
+// closeWorkOrder's own role checks in lib/backend/work-orders/service.ts —
+// kept in sync manually since these are explicit role checks, not permission
+// keys (no DB permission grant models "who can request/approve closure").
+function isManagerRole(context: CurrentUserContext) {
+  return context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
+}
+function canRequestClosureRole(context: CurrentUserContext) {
+  return (
+    context.role?.slug === "super_admin" ||
+    ["maintenance_data_entry", "maintenance_manager", "maintenance_supervisor"].includes(context.role?.slug ?? "")
+  );
+}
+
+const ACTIVE_BUCKET_STATUSES = ["Approved", "Waiting Materials", "Partially Issued", "Materials Issued", "Assigned", "In Progress"];
 
 // "Closed" is the only terminal status in the simplified model (Unit 4).
 const TERMINAL = ["Closed"];
@@ -68,6 +94,8 @@ function getStepContext(status: string): { title: string; description: string } 
       return { title: "Technician Assigned", description: "Work will begin once the technician starts the job." };
     case "In Progress":
       return { title: "Work In Progress", description: "The technician is actively working on this job card." };
+    case "Closure Requested":
+      return { title: "Closure Requested", description: "Waiting for Manager approval to close this Job Card." };
     case "Closed":
       return { title: "Closed", description: "This job card has been completed and closed." };
     // Legacy — defensive fallback only.
@@ -96,7 +124,7 @@ function getStepContext(status: string): { title: string; description: string } 
   }
 }
 
-export function WorkflowActions({ workOrderId, status, context, technicians, currentAssignment, activeMaterialsRequest, hasPendingCorrection = false }: WorkflowActionsProps) {
+export function WorkflowActions({ workOrderId, status, context, technicians, currentAssignment, activeMaterialsRequest, activeWorkers = [], internalTeamRoster = [], hasPendingCorrection = false }: WorkflowActionsProps) {
   const canSubmit  = can(context, "work_orders.manage") && status === "Created";
   const canApprove = can(context, "work_orders.approve") && status === "Under Review" && !hasPendingCorrection;
   // Correction requests are only meaningful while a Job Card is Under Review
@@ -131,16 +159,38 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
     (can(context, "work_orders.approve") || can(context, "work_orders.assign")) &&
     ["Approved", "Partially Issued", "Materials Issued", "Assigned", "In Progress"].includes(status) &&
     (status === "Assigned" || status === "In Progress" || !activeMaterialsRequest);
-  // Simplified Job Card Approval Workflow Unit Task 4: Close is now available
-  // directly from any "Open"-bucket status (Approved/Waiting Materials/
-  // Partially Issued/Materials Issued/Assigned/In Progress), matching the
-  // widened transitions.work_order map in lib/workflows/status-rules.ts — the
-  // simplified flow has no required Store-issue/assignment step before work
-  // can be closed.
+  // Work Assignment and Worker Profiles Foundation Unit 7, Task 6: the
+  // Internal Team labor roster can be created/edited any time the Job Card
+  // is not Closed (wider than canAssign's status gate above, which is tied
+  // to the materials-resolved workflow step) — Data Entry can update it
+  // while the Job Card is open; blocked for everyone once Closed, since
+  // Unit 4 removed every post-closure correction path.
+  const canManageRoster =
+    !hasPendingCorrection &&
+    (can(context, "work_orders.assign") || isManagerRole(context)) &&
+    status !== "Closed";
+  // Approval Workflow Unit 4: direct Close is now Manager-only (business
+  // rule 8 — Data Entry cannot final-close a Job Card directly any more, it
+  // requests closure instead — see canRequestClosure below). Still available
+  // from any "Active"-bucket status; not shown for "Closure Requested" —
+  // Approve Closure is the one closing action there (Task 9: avoid a
+  // duplicate button).
   const canClose =
     !hasPendingCorrection &&
-    can(context, "work_orders.close") &&
-    ["Approved", "Waiting Materials", "Partially Issued", "Materials Issued", "Assigned", "In Progress"].includes(status);
+    isManagerRole(context) &&
+    ACTIVE_BUCKET_STATUSES.includes(status);
+  // Approval Workflow Unit 4, Task 4: Data Entry (or Supervisor/Manager/
+  // super_admin) marks work complete and asks Manager to approve closing.
+  const canRequestClosure =
+    !hasPendingCorrection &&
+    canRequestClosureRole(context) &&
+    ACTIVE_BUCKET_STATUSES.includes(status);
+  // Approval Workflow Unit 4, Task 5: Manager (or super_admin) approves a
+  // pending closure request.
+  const canApproveClosure =
+    !hasPendingCorrection &&
+    isManagerRole(context) &&
+    status === "Closure Requested";
   // Data Entry Job Card Action Clarity Fix Task 4: the same generic (non-
   // technician) Assigned -> In Progress step already offered in the quick-view
   // (Data Entry Job Card Progress Update and Close Action Unit) was missing
@@ -163,7 +213,7 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
 
   const hasActions =
     canSubmit || canApprove || canRequestCorrection || canEditBeforeApproval || canAssign || canClose ||
-    canMarkExternalComplete || canStartProgress;
+    canMarkExternalComplete || canStartProgress || canRequestClosure || canApproveClosure;
 
   // Data Entry Job Card Action Clarity Fix Task 3: a Job Card can only ever
   // have one active Materials Request at a time — offering "Request
@@ -241,11 +291,11 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
       <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Current Action</p>
       <div className="mt-4 grid gap-3">
 
-        {/* Created — submit for review */}
+        {/* Created — start directly, no Manager approval needed (Unit 4) */}
         {canSubmit ? (
           <form action={submitWorkOrderAction}>
             <input type="hidden" name="work_order_id" value={workOrderId} />
-            <Button type="submit" className="w-full">Submit Job Card</Button>
+            <Button type="submit" className="w-full">Start Job Card</Button>
           </form>
         ) : null}
 
@@ -292,6 +342,20 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
           <div className="space-y-3 rounded-md border border-[#E5E7EB] bg-gray-50 p-4">
             <p className="text-sm font-black text-[#111827]">{status === "Assigned" || status === "In Progress" ? "Reassign Work" : "Assign Work"}</p>
             <AssignmentForm workOrderId={workOrderId} technicians={technicians} />
+          </div>
+        ) : null}
+
+        {/* Work Assignment and Worker Profiles Foundation Unit 7 — separate
+            from Assign Work above: builds the role-differentiated Internal
+            Team labor roster (Supervisor/Technicians/Helpers, sourced from
+            Worker Profiles, hourly rate snapshotted at save time), not the
+            single technician/freelancer/company assignment. */}
+        {canManageRoster ? (
+          <div className="space-y-3 rounded-md border border-[#E5E7EB] bg-gray-50 p-4">
+            <p className="text-sm font-black text-[#111827]">
+              {internalTeamRoster.length ? "Edit Internal Team" : "Assign Internal Team"}
+            </p>
+            <InternalTeamRosterForm workOrderId={workOrderId} workers={activeWorkers} currentRoster={internalTeamRoster} />
           </div>
         ) : null}
 
@@ -346,10 +410,44 @@ export function WorkflowActions({ workOrderId, status, context, technicians, cur
           </div>
         ) : null}
 
-        {/* Manager/Data Entry — close directly (no separate verify/confirm step).
-            Simplified Job Card Approval Workflow Unit Task 4: closing note is
-            now required (min 10 characters, matching the request-correction
-            convention), not optional. */}
+        {/* Approval Workflow Unit 4, Task 4 — Data Entry (or Supervisor/
+            Manager/super_admin) marks work complete and asks Manager to
+            approve closing. Backend blocks this if any linked Materials
+            Request is still Pending. */}
+        {canRequestClosure ? (
+          <form action={requestJobCardClosureAction} className="space-y-2">
+            <input type="hidden" name="work_order_id" value={workOrderId} />
+            <textarea
+              className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
+              name="note"
+              placeholder="Describe the completed work (required, min 10 characters)"
+              required
+              minLength={10}
+            />
+            <Button type="submit" className="w-full">Request Closure</Button>
+          </form>
+        ) : null}
+
+        {/* Approval Workflow Unit 4, Task 5 — Manager (or super_admin)
+            approves a pending closure request. No reject/return path in this
+            unit (Task 7) — Data Entry fixes anything before requesting
+            closure, not after. */}
+        {canApproveClosure ? (
+          <form action={approveJobCardClosureAction} className="space-y-2">
+            <input type="hidden" name="work_order_id" value={workOrderId} />
+            <textarea
+              className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
+              name="comments"
+              placeholder="Approval notes (optional)"
+            />
+            <Button type="submit" className="w-full">Approve Closure</Button>
+          </form>
+        ) : null}
+
+        {/* Manager — close directly without a closure request (Task 6). Same
+            required closing note convention (min 10 characters) as before;
+            now Manager-only (business rule 8) and blocked if any linked
+            Materials Request is still Pending. */}
         {canClose ? (
           <form action={closeWorkOrderAction} className="space-y-2">
             <input type="hidden" name="work_order_id" value={workOrderId} />

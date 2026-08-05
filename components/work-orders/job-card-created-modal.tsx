@@ -19,11 +19,13 @@ export type JobCardCreatedModalProps = {
   dismissHref: string;
 };
 
-// Job Card Status Simplification Task: mirrors the five plain, user-facing
-// statuses (lib/work-orders/simplified-status.ts) — Draft → Submitted →
-// Approved → Active → Closed. "Correction Requested" isn't part of this bar
-// since a just-created Job Card can't have a pending correction yet.
-const WORKFLOW_STAGES = ["Draft", "Submitted", "Approved", "Active", "Closed"] as const;
+// Approval Workflow Unit 4 — Closure Approval Only: mirrors the current
+// plain, user-facing statuses (lib/work-orders/simplified-status.ts) —
+// Draft → Active → Closure Requested → Closed. No Manager approval before
+// starting a Job Card any more, so "Submitted"/"Approved" are no longer
+// separate stages here. "Correction Requested" isn't part of this bar since
+// a just-created Job Card can't have a pending correction yet.
+const WORKFLOW_STAGES = ["Draft", "Active", "Closure Requested", "Closed"] as const;
 
 export function JobCardCreatedModal({
   jobCardId,
@@ -75,16 +77,16 @@ export function JobCardCreatedModal({
   // Save Draft Success Popup Submit Option Cleanup Task 2/3/6: this same
   // modal renders for both outcomes of the create wizard — saved as Draft
   // (isDraft, driven by the just-created record's real status === "Created")
-  // or submitted directly (status === "Under Review") — never confused,
-  // since isDraft is derived from the actual DB status, not from user intent
-  // guessed some other way.
-  const modalTitle = isDraft ? "Job Card Draft Saved" : "Job Card Submitted";
+  // or started directly (status === "Approved", displayed as "Active") —
+  // never confused, since isDraft is derived from the actual DB status, not
+  // from user intent guessed some other way.
+  const modalTitle = isDraft ? "Job Card Draft Saved" : "Job Card Started";
   const modalMessage = isDraft
     ? "has been saved as draft."
-    : "has been submitted for Supervisor / Manager review.";
+    : "is now Active. Work can begin.";
   const nextStepText = isDraft
-    ? "Submit this Job Card for Supervisor / Manager review when ready."
-    : "Supervisor / Manager will review this Job Card.";
+    ? "Start this Job Card when ready."
+    : "Assign work, update details, or request closure once work is done.";
 
   return (
     <>
@@ -149,7 +151,7 @@ export function JobCardCreatedModal({
 
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-bold uppercase tracking-wide text-[#4B5563]">Current status</span>
-              <StatusBadge label={isDraft ? "Draft" : "Submitted"} tone={isDraft ? "gray" : "amber"} />
+              <StatusBadge label={isDraft ? "Draft" : "Active"} tone={isDraft ? "gray" : "blue"} />
             </div>
 
             <p className="mt-3 text-sm leading-relaxed text-[#111827]">
@@ -200,7 +202,7 @@ export function JobCardCreatedModal({
                   type="submit"
                   className="flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md bg-[#ED1C24] px-4 text-sm font-semibold text-white transition hover:bg-red-700"
                 >
-                  Submit for Review
+                  Start Job Card
                 </button>
               </form>
             )}

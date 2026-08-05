@@ -724,7 +724,10 @@ export default async function PartsRequestsPage({
         canManage: isAdmin || context.permissions.includes("work_orders.manage"),
         canReview: isAdmin || context.permissions.includes("work_orders.review"),
         canRequestCorrection: isAdmin || context.permissions.includes("work_orders.request_correction"),
-        canClose: isAdmin || context.permissions.includes("work_orders.close"),
+        // Approval Workflow Unit 4: direct "Close Job Card" is now
+        // Manager-only (matches closeWorkOrder()'s own role check) — Data
+        // Entry uses Request Closure instead (full detail page).
+        canClose: isAdmin || context.role?.slug === "maintenance_manager",
         canUpdateProgress: isAdmin || context.permissions.includes("work_orders.update"),
         canReceiveMaterials: canReceive,
         canCreateParts:
