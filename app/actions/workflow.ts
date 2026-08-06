@@ -362,7 +362,9 @@ export async function assignTechniciansAction(formData: FormData) {
     revalidatePath("/maintenance/work-orders");
     revalidatePath("/technician/jobs");
     revalidatePath("/dashboard");
-    targetPath = `/maintenance/work-orders/${result.workOrderId}`;
+    // Popup and Feedback Design Standardization Unit 8D, Task 6: a quick
+    // edit, not a workflow-changing action — the shared toast, not a modal.
+    targetPath = `/maintenance/work-orders/${result.workOrderId}?success=assignment-updated`;
   } catch (error) {
     redirect(await workflowErrorPath(workOrderId, error));
   }

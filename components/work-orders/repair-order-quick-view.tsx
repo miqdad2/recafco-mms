@@ -74,6 +74,22 @@ export type QuickViewData = {
   required_parts_count: number;
   parts_requests_count: number;
   open_parts_requests_count: number;
+  // Job Card Work Tracking Entry Points and Assignment Visibility Unit 8B,
+  // Task 1/3/4: the Unit 7 Internal Team roster and Unit 8 active work
+  // sessions — both optional so the Materials Requests list's quick-view
+  // (which doesn't compute them) can keep omitting them safely; treated as
+  // "none"/"false" wherever unset, never as a false "assigned"/"in progress".
+  internalTeamCount?: number;
+  hasActiveWorkSession?: boolean;
+  // Job Card Action Clarity Fix Task 3/4: a single Job-Card-level read of
+  // "what's the one right materials action right now", derived from
+  // work_order_required_parts vs. Offline Inventory (see
+  // summarizeMaterialAvailability() in lib/work-orders/material-fulfillment.ts).
+  // Optional/"none" for the same reason as internalTeamCount above — a Job
+  // Card with no Required Materials rows (created before that feature, or
+  // legacy) has nothing to summarize, so callers fall back to the existing
+  // Materials-Request-status wording instead of guessing.
+  materialsAvailability?: "none" | "fulfilled" | "issuable" | "partial" | "shortage";
   last_parts_request_status: string | null;
   // Every Materials Request linked to this Job Card (most recent first), each
   // with its item lines — used both for the Materials section's active-request
@@ -529,8 +545,44 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
     ? materialsReceiptStatus(activePartsRequest.status, data.status, data.hasPendingCorrection)
     : null;
   const jobCardIsOpen = OPEN_JOB_CARD_STATUSES.includes(data.status) && !data.hasPendingCorrection;
+  // Job Card Action Clarity Fix Task 3: once this Job Card has Required
+  // Materials rows to reason about (materialsAvailability !== "none"), the
+  // new availability-aware Issue/Receive buttons below take over from the
+  // old blanket "Receive Materials" shortcut — a Job Card whose required
+  // materials are already sitting in Offline Inventory should never be told
+  // to "receive" them again. Legacy Job Cards with no Required Materials
+  // rows (materialsAvailability === "none"/undefined) keep the old
+  // Materials-Request-status-based shortcut exactly as before.
+  const materialsAvailability = data.materialsAvailability ?? "none";
+  const hasRequiredMaterialsTracking = materialsAvailability !== "none";
   const showReceiveMaterialsShortcut =
+    !hasRequiredMaterialsTracking &&
     data.canReceiveMaterials && jobCardIsOpen && activePartsRequest !== null && activeReceiptStatus !== "Completed";
+  // Rules: available now -> "Issue Material"; shortage/nothing available ->
+  // "Receive Materials"; partially available -> both, relabeled "Issue
+  // Available" / "Receive Shortage"; fully issued -> "Materials Completed"
+  // (label only, no button — showMaterialsCompletedLabel below).
+  const showIssueMaterialAction =
+    hasRequiredMaterialsTracking &&
+    data.canReceiveMaterials &&
+    jobCardIsOpen &&
+    (materialsAvailability === "issuable" || materialsAvailability === "partial");
+  const showReceiveShortageAction =
+    hasRequiredMaterialsTracking &&
+    data.canReceiveMaterials &&
+    jobCardIsOpen &&
+    (materialsAvailability === "shortage" || materialsAvailability === "partial");
+  const showMaterialsCompletedLabel = hasRequiredMaterialsTracking && materialsAvailability === "fulfilled";
+  const issueMaterialLabel = materialsAvailability === "partial" ? "Issue Available" : "Issue Material";
+  const receiveMaterialLabel = materialsAvailability === "partial" ? "Receive Shortage" : "Receive Materials";
+  // Issue links to the Job Card detail page's Materials section, where the
+  // real per-material Issue links (Unit 6/8C) live — this popup doesn't have
+  // the per-material balance-key granularity to issue directly. Receive
+  // links to the active Materials Request's own Receive panel when one
+  // exists (same target the old shortcut used), else to the same Materials
+  // section (which offers Request Materials when nothing's been requested yet).
+  const issueMaterialHref = `/maintenance/work-orders/${data.id}#parts`;
+  const receiveMaterialHref = activePartsRequest ? `/store/parts-requests/${activePartsRequest.id}` : `/maintenance/work-orders/${data.id}#parts`;
   // Unified Manager Job Card + Materials Approval Flow Fix Task 3: Requested
   // Materials Request(s) linked to this Job Card — drives whether the
   // approve button reads "Approve Job Card & Materials" (Case A) vs. just
@@ -554,11 +606,28 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
   // is the one clear action offered instead, so a Manager/Data Entry never
   // sees "Assign Work"/"Close Job Card" next to a card that's actually
   // waiting on Data Entry to fix something first.
+  // Job Card Work Tracking Entry Points and Assignment Visibility Unit 8B,
+  // Task 4 (moved up from below by the Job Card Action Clarity Fix so
+  // showAssign, further down, can also read it): true once ANY assignment
+  // mechanism has something recorded — Unit 7's Internal Team roster count,
+  // or the legacy work_order_assignments-derived technician_names/
+  // primary_assignment (technician self-service/Freelancer/Company).
+  const hasAnyAssignment =
+    (data.internalTeamCount ?? 0) > 0 || data.technician_names.length > 0 || data.primary_assignment !== null;
+
+  // Job Card Action Clarity Fix Task 2: this inline "Assign Work" panel used
+  // to render unconditionally whenever the status/permission/materials gates
+  // matched, even when the Job Card already had an Internal Team roster or a
+  // legacy technician/Freelancer/Company assignment — offering to assign
+  // again next to work that's already assigned. Now gated by the same
+  // `hasAnyAssignment` check `showAssignWorkers`/`showTrackWork` below
+  // already use, so only one of "Assign Work" / "Track Work" ever shows.
   const showAssign =
     !data.hasPendingCorrection &&
     (data.canApprove || data.canAssign) &&
     ["Approved", "Partially Issued", "Materials Issued"].includes(data.status) &&
-    !hasActiveMaterialsRequest;
+    !hasActiveMaterialsRequest &&
+    !hasAnyAssignment;
   const showApproveBtn = data.canApprove && data.status === "Under Review" && !data.hasPendingCorrection;
   // Manager Quick-View Action Simplification Task 2/5: "Request Correction"/
   // "Ask to Add/Update Materials" no longer render as buttons here — kept as
@@ -619,6 +688,43 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
   const showViewAssignment =
     !data.hasPendingCorrection && (data.canApprove || data.canAssign) && data.status === "Assigned";
 
+  // Job Card Work Tracking Entry Points and Assignment Visibility Unit 8B,
+  // Task 4: link-only — Unit 7's Internal Team roster picker and Unit 8's
+  // Start/Pause/Resume/Stop controls both live on the full detail page, not
+  // inline in this already-large popup (same scope boundary Units 5-7
+  // already established for this file). "Track Work" covers both "has an
+  // assignment" and "has an active session" per the task (an active session
+  // can't exist without an assignment anyway).
+  const showAssignWorkers =
+    !data.hasPendingCorrection && !isTerminal && data.canAssign && !hasAnyAssignment;
+  const showTrackWork =
+    !data.hasPendingCorrection && !isTerminal && data.canAssign && hasAnyAssignment;
+
+  // Task 3 — Next Action. Priority: terminal states first (a Closed Job
+  // Card should never say "materials pending" just because an old request
+  // happens to still be open), then materials, then assignment, then
+  // whether work is actively running right now.
+  // Job Card Action Clarity Fix Task 4: materials-availability-aware cases
+  // (shortage/partial/issuable) are read from data.materialsAvailability
+  // when this Job Card has Required Materials rows to reason about; Job
+  // Cards without that tracking (materialsAvailability "none"/undefined)
+  // fall back to the previous open-Materials-Request-count check, exactly
+  // as before.
+  const nextActionText = (() => {
+    if (data.status === "Closed") return "This Job Card is closed.";
+    if (data.status === "Closure Requested") return "Waiting for Manager closure approval.";
+    if (materialsAvailability === "shortage") return "Materials are pending. Receive materials when they arrive.";
+    if (materialsAvailability === "partial") return "Some materials are available. Issue available stock and receive shortage later.";
+    if (hasAnyAssignment && materialsAvailability === "issuable") return "Materials are available. Issue materials to this Job Card.";
+    if (!hasRequiredMaterialsTracking && data.open_parts_requests_count > 0) return "Materials are pending. Receive materials before continuing.";
+    if (!hasAnyAssignment) return "Assign workers to start tracking work.";
+    if (data.hasActiveWorkSession) return "Work is in progress. Open Work Tracking to pause or stop.";
+    if (hasAnyAssignment && (materialsAvailability === "fulfilled" || !hasRequiredMaterialsTracking)) {
+      return "Workers are assigned. Start work tracking.";
+    }
+    return "Open Work Tracking to start work.";
+  })();
+
   // Request Materials: hidden once Closed, hidden while an active Materials
   // Request already exists (the Job Card can only ever have one active
   // request at a time — "Request Materials" would just fail with a
@@ -663,6 +769,8 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
     showStartWork ||
     showMarkComplete ||
     showViewAssignment ||
+    showAssignWorkers ||
+    showTrackWork ||
     legacyShowAssign ||
     legacyShowClose ||
     legacyShowSubmit ||
@@ -784,6 +892,18 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                 </p>
               )}
             </section>
+
+            {/* Job Card Work Tracking Entry Points and Assignment
+                Visibility Unit 8B, Task 3 — skipped while a correction is
+                pending, since the Supervisor / Manager request block right
+                below already gives clearer, more specific guidance than a
+                generic Next Action line would. */}
+            {!data.hasPendingCorrection && (
+              <section className="border-b border-[#E5E7EB] bg-red-50/40 px-5 py-3">
+                <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Next Action</p>
+                <p className="mt-0.5 text-sm font-semibold text-[#111827]">{nextActionText}</p>
+              </section>
+            )}
 
             {/* Data Entry Correction Note Visibility Cleanup Task 2: the
                 Supervisor / Manager's correction note, shown immediately
@@ -932,13 +1052,29 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
               {/* Right column: Materials */}
               <div className="rounded-md border border-[#E5E7EB] p-2.5">
                 <p className="mb-1.5 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-                  {activeReceiptStatus === "Pending"
-                    ? "Materials Pending"
-                    : activeReceiptStatus === "Completed"
+                  {/* Job Card Action Clarity Fix Task 5: once Required
+                      Materials tracking applies, the heading reflects actual
+                      Offline Inventory availability (Issue Material/Receive
+                      Materials/Materials Available/Materials Completed)
+                      instead of the Materials Request's own receipt status —
+                      the two can disagree (a request can be "Received" into
+                      the store while nothing's been issued to this Job Card
+                      yet, or vice versa for legacy manually-recorded stock). */}
+                  {hasRequiredMaterialsTracking
+                    ? materialsAvailability === "fulfilled"
                       ? "Materials Completed"
-                      : activeReceiptStatus === "Requested"
-                        ? "Materials Requested"
-                        : "Materials"}
+                      : materialsAvailability === "issuable"
+                        ? "Materials Available"
+                        : materialsAvailability === "partial"
+                          ? "Materials Partially Available"
+                          : "Materials Pending"
+                    : activeReceiptStatus === "Pending"
+                      ? "Materials Pending"
+                      : activeReceiptStatus === "Completed"
+                        ? "Materials Completed"
+                        : activeReceiptStatus === "Requested"
+                          ? "Materials Requested"
+                          : "Materials"}
                 </p>
                 {data.parts_requests_count > 0 ? (
                   <div className="space-y-1.5">
@@ -1012,13 +1148,39 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                 ) : (
                   <p className="text-sm text-[#9CA3AF]">No Materials Request yet</p>
                 )}
-                {(showViewMaterialsPreview || showRequestParts || showReceiveMaterialsShortcut) && (
+                {showMaterialsCompletedLabel && (
+                  <p className="mt-2 inline-flex items-center gap-1.5 text-sm font-bold text-green-700">
+                    <CheckCircle2 className="h-4 w-4" /> Materials Completed
+                  </p>
+                )}
+                {(showViewMaterialsPreview || showRequestParts || showReceiveMaterialsShortcut || showIssueMaterialAction || showReceiveShortageAction) && (
                   <div className="mt-2 flex flex-wrap gap-2">
+                    {/* Job Card Action Clarity Fix Task 3: the primary
+                        action once required materials are confirmed
+                        available in Offline Inventory — issuing (not
+                        receiving) is what's actually needed. */}
+                    {showIssueMaterialAction && (
+                      <Link
+                        href={issueMaterialHref}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-1.5 text-sm font-bold text-white hover:bg-[#c8181e]"
+                      >
+                        {issueMaterialLabel} <ArrowRight className="h-3.5 w-3.5" />
+                      </Link>
+                    )}
+                    {showReceiveShortageAction && (
+                      <Link
+                        href={receiveMaterialHref}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#111827] px-3 py-1.5 text-sm font-bold text-white hover:bg-[#2b2b2b]"
+                      >
+                        {receiveMaterialLabel} <ArrowRight className="h-3.5 w-3.5" />
+                      </Link>
+                    )}
                     {/* Manager Approval Success Popup and Materials Awaiting
-                        Receipt Flow Task 7: the primary action once the Job
-                        Card is Open and materials are still Awaiting Receipt
-                        — links to the Materials Request detail page, where
-                        the real Receive Materials panel lives. */}
+                        Receipt Flow Task 7: the legacy shortcut for Job Cards
+                        with no Required Materials rows to reason about (see
+                        hasRequiredMaterialsTracking above) — links to the
+                        Materials Request detail page, where the real Receive
+                        Materials panel lives. */}
                     {showReceiveMaterialsShortcut && activePartsRequest && (
                       <Link
                         href={`/store/parts-requests/${activePartsRequest.id}`}
@@ -1209,6 +1371,28 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                       className="inline-flex items-center justify-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
                     >
                       View Assignment <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  )}
+                  {/* Job Card Work Tracking Entry Points and Assignment
+                      Visibility Unit 8B, Task 4: both link straight to the
+                      full detail page's Work Time Tracking section (its
+                      empty state has its own "Assign Workers" call to action
+                      when nobody's assigned yet — Task 7) — no inline
+                      Start/Pause/Resume/Stop controls in this popup. */}
+                  {showAssignWorkers && (
+                    <Link
+                      href={`/maintenance/work-orders/${data.id}#work-time-tracking`}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
+                    >
+                      Assign Workers <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  )}
+                  {showTrackWork && (
+                    <Link
+                      href={`/maintenance/work-orders/${data.id}#work-time-tracking`}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
+                    >
+                      Track Work <ArrowRight className="h-4 w-4" />
                     </Link>
                   )}
                   {/* Draft Submit UX Cleanup Task 2/4: submits directly from

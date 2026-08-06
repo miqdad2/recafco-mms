@@ -22,6 +22,7 @@ import { emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events
 import { approvePartsRequest } from "@/lib/backend/parts-requests/service";
 import { CLOSURE_REQUESTED_STATUS } from "@/lib/work-orders/simplified-status-display";
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete } from "@/lib/work-orders/material-fulfillment";
+import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 
 type WorkflowResult = {
   workOrderId: string;
@@ -999,6 +1000,17 @@ async function assertRequiredMaterialsFulfilled(tx: BackendTransaction, workOrde
   }
 }
 
+// Work Session Time Tracking and Labor Cost Calculation Unit 8, Task 10:
+// completed/paused historical sessions never block closure — only a
+// currently-running ("Active") session does, since it represents work
+// physically in progress right now.
+async function assertNoActiveWorkSessions(tx: BackendTransaction, workOrderId: string, errorMessage: string) {
+  const summary = await getWorkOrderLaborSummary(tx, workOrderId);
+  if (summary.has_active_session) {
+    throw new AppError(errorMessage, { code: "WORKFLOW_ERROR" });
+  }
+}
+
 /**
  * Data Entry (or Supervisor/Manager/super_admin) marks work as complete and
  * asks Manager to approve closing the Job Card. Valid from any "Active"-
@@ -1036,6 +1048,12 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
       tx,
       workOrderId,
       "This Job Card has pending Materials Requests. Complete materials before requesting closure."
+    );
+
+    await assertNoActiveWorkSessions(
+      tx,
+      workOrderId,
+      "This Job Card has active work sessions. Stop all work sessions before requesting closure."
     );
 
     const row = await updateWorkOrderStatus(tx, workOrderId, CLOSURE_REQUESTED_STATUS, context.userId);
@@ -1151,6 +1169,12 @@ export async function closeWorkOrder(context: CurrentUserContext, workOrderId: s
       tx,
       workOrderId,
       "This Job Card has pending Materials Requests. Complete materials before closing."
+    );
+
+    await assertNoActiveWorkSessions(
+      tx,
+      workOrderId,
+      "This Job Card has active work sessions. Stop all work sessions before closing."
     );
 
     return transitionWorkOrderInTransaction(tx, context, workOrderId, "Closed");

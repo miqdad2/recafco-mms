@@ -8,6 +8,7 @@ import { writeAuditLog } from "@/lib/audit/log";
 import { requirePermission, requireUser } from "@/lib/auth/context";
 import { archiveNotification, getUnreadNotificationCount, getUserNotifications, markAllNotificationsRead, markNotificationRead } from "@/lib/notifications/service";
 import { updateNotificationPreferences } from "@/lib/notifications/preferences";
+import { getCriticalWorkflowPopup, type CriticalPopupPayload } from "@/lib/notifications/critical-popup";
 import { prisma } from "@/lib/db/prisma";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 
@@ -29,6 +30,17 @@ export async function getClientNotificationsAction(limit = 20) {
   ]);
 
   return { notifications, unreadCount };
+}
+
+// Role-to-Role Critical Workflow Popup Unit 9G, Task 8 — thin server-action
+// wrapper so the client popup component can call this the same way
+// `getClientNotificationsAction` is already called from
+// notification-toast-center.tsx. Pass a notification id when reacting to a
+// live SSE "notification" event; omit it for the one-time initial-mount
+// check (see getCriticalWorkflowPopup's own doc comment for the two modes).
+export async function getCriticalWorkflowPopupAction(notificationId?: string): Promise<CriticalPopupPayload | null> {
+  const context = await requireUser();
+  return getCriticalWorkflowPopup(context, notificationId);
 }
 
 export async function markNotificationReadAction(formData: FormData): Promise<NotificationActionResult> {

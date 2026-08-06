@@ -1,6 +1,7 @@
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { requirePermission } from "@/lib/auth/context";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
+import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 
 // New Job Card Modal Wizard Refactor: this standalone route is kept only as
 // a direct-link/bookmark fallback (deep link, page refresh) — every in-app
@@ -14,17 +15,25 @@ export default async function NewWorkOrderPage({
 }: {
   searchParams?: Promise<{ error?: string; asset_id?: string }>;
 }) {
-  await requirePermission("work_orders.manage");
+  const context = await requirePermission("work_orders.manage");
   const sp = (await searchParams) ?? {};
   const preselectedAssetId = sp.asset_id ?? null;
+  // Optional Work Assignment During Job Card Creation Unit 7C, Task 10.
+  const canAssignAtCreation =
+    context.role?.slug === "super_admin" || context.permissions.includes("work_orders.assign");
 
-  const assets = await getAssetPickerOptions();
+  const [assets, activeWorkers] = await Promise.all([
+    getAssetPickerOptions(),
+    canAssignAtCreation ? getActiveWorkerProfilesForAssignment() : Promise.resolve([]),
+  ]);
 
   return (
     <WorkOrderWizard
       assets={assets}
       preselectedAssetId={preselectedAssetId}
       dismissHref="/maintenance/work-orders"
+      activeWorkers={activeWorkers}
+      canAssignAtCreation={canAssignAtCreation}
     />
   );
 }

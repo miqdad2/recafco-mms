@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, ChevronLeft, ChevronRight, Loader2, Plus, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Loader2, Plus, Search, X } from "lucide-react";
 
 import { upsertWorkOrderAction } from "@/app/actions/maintenance";
 import { searchOfflineInventoryMaterialsAction } from "@/app/actions/offline-inventory";
@@ -16,6 +16,7 @@ import {
   MAX_ATTACHMENT_ROWS,
 } from "@/lib/files/attachment-constants";
 import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/maintenance-types";
+import type { WorkerProfileRow } from "@/lib/backend/workers/service";
 
 // Required Materials Inventory Matching Unit 5 — Required Materials row
 // state. Description/Part No./Qty/Unit were previously plain uncontrolled
@@ -117,8 +118,61 @@ function AvailabilityBadge({ row }: { row: RequiredMaterialRowState }) {
 // work_orders_worker_type_check — this list only controls what a NEW Job
 // Card can select, it does not migrate or block existing records.
 const WORKER_TYPES = ["Auto", "Mechanical", "Electrical", "Other"];
-const STEP_LABELS = ["Select Asset", "Request Details", "Work Team", "Required Materials", "Attachments", "Review & Save"];
+const STEP_LABELS = ["Select Asset", "Request Details", "Work Team & Assignment", "Required Materials", "Attachments", "Review & Save"];
 const MAX_PART_ROWS = 8;
+
+// Optional Work Assignment During Job Card Creation Unit 7C.
+//
+// "INTERNAL_TEAM" here means the Unit 7 worker_profiles-backed roster
+// (Supervisor/Technicians/Helpers, saved via assignInternalTeamRoster) —
+// distinct from the legacy single-technician "INTERNAL_TECHNICIAN" type the
+// Job Card detail page's separate "Assign Work" panel still uses for
+// technician self-service login linkage. Freelancer/External Company here
+// reuse that same legacy work_order_assignments mechanism (assignTechnicians)
+// since Unit 7 already added everything they need (agreed_amount).
+type WizardAssignmentType = "INTERNAL_TEAM" | "FREELANCER" | "EXTERNAL_COMPANY";
+
+const ASSIGNMENT_TYPE_OPTIONS: { value: WizardAssignmentType; label: string }[] = [
+  { value: "INTERNAL_TEAM", label: "Internal Team" },
+  { value: "FREELANCER", label: "Freelancer" },
+  { value: "EXTERNAL_COMPANY", label: "External Company" },
+];
+
+type WizardAssignmentState = {
+  assignNow: boolean;
+  type: WizardAssignmentType;
+  supervisorId: string;
+  technicianIds: string[];
+  helperIds: string[];
+  notes: string;
+  freelancerName: string;
+  freelancerPhone: string;
+  freelancerTrade: string;
+  freelancerAmount: string;
+  companyName: string;
+  companyContact: string;
+  companyPhone: string;
+  companyTrade: string;
+  companyAmount: string;
+};
+
+const EMPTY_ASSIGNMENT: WizardAssignmentState = {
+  assignNow: false,
+  type: "INTERNAL_TEAM",
+  supervisorId: "",
+  technicianIds: [],
+  helperIds: [],
+  notes: "",
+  freelancerName: "",
+  freelancerPhone: "",
+  freelancerTrade: "",
+  freelancerAmount: "",
+  companyName: "",
+  companyContact: "",
+  companyPhone: "",
+  companyTrade: "",
+  companyAmount: "",
+};
 
 type AssetOption = AssetPickerOption;
 
@@ -181,6 +235,8 @@ export function WorkOrderWizard({
   assets,
   preselectedAssetId,
   dismissHref,
+  activeWorkers = [],
+  canAssignAtCreation = false,
 }: {
   assets: AssetOption[];
   preselectedAssetId?: string | null;
@@ -190,6 +246,11 @@ export function WorkOrderWizard({
   // query param stripped when opened as an overlay from Dashboard/Asset
   // Details/Vehicles.
   dismissHref: string;
+  // Optional Work Assignment During Job Card Creation Unit 7C, Task 10:
+  // omitted/false for any caller that can't hold work_orders.assign — the
+  // "Assign work now" section simply never renders for them.
+  activeWorkers?: WorkerProfileRow[];
+  canAssignAtCreation?: boolean;
 }) {
   const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
@@ -208,6 +269,17 @@ export function WorkOrderWizard({
   const [partRows, setPartRows] = useState<RequiredMaterialRowState[]>(
     () => Array.from({ length: MAX_PART_ROWS }, () => emptyMaterialRow())
   );
+
+  // Optional Work Assignment During Job Card Creation Unit 7C.
+  const [assignment, setAssignment] = useState<WizardAssignmentState>(EMPTY_ASSIGNMENT);
+  function updateAssignment(patch: Partial<WizardAssignmentState>) {
+    setAssignment((prev) => ({ ...prev, ...patch }));
+  }
+  // Simplify Assignment Picker Unit 7D, Task 5: lifted from an uncontrolled
+  // radio to state so the worker picker can sort matching skill_category
+  // workers first — the field itself still submits identically via the same
+  // `name="worker_type"` radios.
+  const [workerTeam, setWorkerTeam] = useState("Mechanical");
   const searchTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
   const searchSeq = useRef<Record<number, number>>({});
 
@@ -310,6 +382,26 @@ export function WorkOrderWizard({
       const fd = new FormData(form);
       if (!fd.get("worker_type")?.toString().trim())
         errs.worker_type = "Please select a worker team.";
+
+      // Optional Work Assignment During Job Card Creation Unit 7C, Task 3/4/5:
+      // fields are only required once "Assign work now" is on, and only for
+      // whichever assignment type is currently selected.
+      if (assignment.assignNow && canAssignAtCreation) {
+        if (
+          assignment.type === "INTERNAL_TEAM" &&
+          !assignment.supervisorId &&
+          assignment.technicianIds.length === 0 &&
+          assignment.helperIds.length === 0
+        ) {
+          errs.assignment = "Select at least one worker or turn off Assign work now.";
+        }
+        if (assignment.type === "FREELANCER" && !assignment.freelancerName.trim()) {
+          errs.assignment = "Freelancer name is required.";
+        }
+        if (assignment.type === "EXTERNAL_COMPANY" && !assignment.companyName.trim()) {
+          errs.assignment = "Company name is required.";
+        }
+      }
     }
 
     if (step === 4 && form) {
@@ -551,16 +643,16 @@ export function WorkOrderWizard({
           </WizardCard>
         </div>
 
-        {/* ── Step 3: Work Team / Division ─────────────────────────────────
+        {/* ── Step 3: Work Team & Assignment ────────────────────────────────
             Worker team / division is a maintenance category/team type, not
-            the actual work assignment — Manager assigns Internal/Freelancer/
-            Company later, from the Assign Work flow. Kept as its own step
-            (not merged into Request Details) and titled distinctly from
-            "Assignment" so the two are never confused. */}
+            the actual work assignment — kept exactly as before. Optional Work
+            Assignment During Job Card Creation Unit 7C adds an optional
+            "Assign work now" section below it; if left off, assignment stays
+            available later from the Job Card detail page exactly as before. */}
         <div className={step !== 3 ? "hidden" : ""}>
           <WizardCard
-            title="Work Team / Division"
-            description="Select the maintenance team/category for this Job Card. Actual work assignment is handled later by Manager."
+            title="Work Team & Assignment"
+            description="Select the maintenance team/category for this Job Card. Assigning workers now is optional."
           >
             <div>
               <FieldLabel label="Worker team / division" required />
@@ -574,7 +666,8 @@ export function WorkOrderWizard({
                       type="radio"
                       name="worker_type"
                       value={t}
-                      defaultChecked={t === "Mechanical"}
+                      checked={workerTeam === t}
+                      onChange={() => setWorkerTeam(t)}
                       className="accent-[#ED1C24]"
                     />
                     {t}
@@ -586,10 +679,161 @@ export function WorkOrderWizard({
               )}
             </div>
             {/* New Job Card Wizard Cleanup Unit Task 4: no Assigned Technician
-                field here — technician assignment happens only after the Job
-                Card is approved and required materials are resolved, from the
-                Manager/Engineer/Data Entry assignment workflow. */}
+                field here — the legacy single-technician self-service
+                assignment still happens later from the Job Card detail page. */}
             <input type="hidden" name="assigned_supervisor_id" value="" />
+
+            {canAssignAtCreation && (
+              <div className="mt-6 border-t border-[#F3F4F6] pt-5">
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    name="assign_now"
+                    checked={assignment.assignNow}
+                    onChange={(e) => updateAssignment({ assignNow: e.target.checked })}
+                    className="h-4 w-4 accent-[#ED1C24]"
+                  />
+                  <span className="text-sm font-bold text-[#111827]">Assign work now</span>
+                </label>
+                <p className="mt-1 text-xs text-[#9CA3AF]">
+                  You can assign workers now or assign later from the Job Card.
+                </p>
+
+                {assignment.assignNow && (
+                  <div className="mt-4 space-y-4 rounded-md border border-[#E5E7EB] bg-gray-50 p-4">
+                    <input type="hidden" name="assignment_type" value={assignment.type} />
+
+                    <div>
+                      <FieldLabel label="Assignment Type" />
+                      <div className="mt-2 grid grid-cols-3 gap-1.5">
+                        {ASSIGNMENT_TYPE_OPTIONS.map(({ value, label }) => (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => updateAssignment({ type: value })}
+                            className={`rounded-md border py-1.5 text-xs font-bold transition ${
+                              assignment.type === value
+                                ? "border-[#ED1C24] bg-[#ED1C24] text-white"
+                                : "border-[#E5E7EB] bg-white text-[#4B5563] hover:border-[#ED1C24] hover:text-[#ED1C24]"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {assignment.type === "INTERNAL_TEAM" && (
+                      <InternalTeamWizardFields
+                        assignment={assignment}
+                        updateAssignment={updateAssignment}
+                        activeWorkers={activeWorkers}
+                        workerTeam={workerTeam}
+                      />
+                    )}
+
+                    {assignment.type === "FREELANCER" && (
+                      <div className="space-y-2">
+                        <input
+                          name="assign_freelancer_name"
+                          value={assignment.freelancerName}
+                          onChange={(e) => updateAssignment({ freelancerName: e.target.value })}
+                          placeholder="Freelancer name *"
+                          className={inp}
+                        />
+                        <input
+                          name="assign_freelancer_phone"
+                          value={assignment.freelancerPhone}
+                          onChange={(e) => updateAssignment({ freelancerPhone: e.target.value })}
+                          placeholder="Phone / contact"
+                          className={inp}
+                        />
+                        <input
+                          name="assign_freelancer_trade"
+                          value={assignment.freelancerTrade}
+                          onChange={(e) => updateAssignment({ freelancerTrade: e.target.value })}
+                          placeholder="Work type"
+                          className={inp}
+                        />
+                        <input
+                          name="assign_freelancer_amount"
+                          type="number"
+                          min="0"
+                          step="0.001"
+                          value={assignment.freelancerAmount}
+                          onChange={(e) => updateAssignment({ freelancerAmount: e.target.value })}
+                          placeholder="Agreed amount / rate (optional)"
+                          className={inp}
+                        />
+                        <textarea
+                          name="assign_notes"
+                          value={assignment.notes}
+                          onChange={(e) => updateAssignment({ notes: e.target.value })}
+                          placeholder="Notes (optional)"
+                          rows={2}
+                          className={`${inp} resize-none`}
+                        />
+                      </div>
+                    )}
+
+                    {assignment.type === "EXTERNAL_COMPANY" && (
+                      <div className="space-y-2">
+                        <input
+                          name="assign_company_name"
+                          value={assignment.companyName}
+                          onChange={(e) => updateAssignment({ companyName: e.target.value })}
+                          placeholder="Company name *"
+                          className={inp}
+                        />
+                        <input
+                          name="assign_company_contact"
+                          value={assignment.companyContact}
+                          onChange={(e) => updateAssignment({ companyContact: e.target.value })}
+                          placeholder="Contact person"
+                          className={inp}
+                        />
+                        <input
+                          name="assign_company_phone"
+                          value={assignment.companyPhone}
+                          onChange={(e) => updateAssignment({ companyPhone: e.target.value })}
+                          placeholder="Phone / contact"
+                          className={inp}
+                        />
+                        <input
+                          name="assign_company_trade"
+                          value={assignment.companyTrade}
+                          onChange={(e) => updateAssignment({ companyTrade: e.target.value })}
+                          placeholder="Work type"
+                          className={inp}
+                        />
+                        <input
+                          name="assign_company_amount"
+                          type="number"
+                          min="0"
+                          step="0.001"
+                          value={assignment.companyAmount}
+                          onChange={(e) => updateAssignment({ companyAmount: e.target.value })}
+                          placeholder="Agreed amount (optional)"
+                          className={inp}
+                        />
+                        <textarea
+                          name="assign_notes"
+                          value={assignment.notes}
+                          onChange={(e) => updateAssignment({ notes: e.target.value })}
+                          placeholder="Notes (optional)"
+                          rows={2}
+                          className={`${inp} resize-none`}
+                        />
+                      </div>
+                    )}
+
+                    {errors.assignment && (
+                      <p className="text-xs text-[#DC2626]">{errors.assignment}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </WizardCard>
         </div>
 
@@ -835,9 +1079,45 @@ export function WorkOrderWizard({
                 <dl className="grid gap-3 sm:grid-cols-2">
                   <ReviewRow label="Worker team / division" value={reviewData.worker_type} />
                 </dl>
-                <p className="mt-3 text-xs text-[#9CA3AF]">
-                  This is not the final work assignment. Manager assigns Internal, Freelancer, or Company later.
-                </p>
+              </ReviewSection>
+
+              <ReviewSection title="Assignment">
+                {!assignment.assignNow ? (
+                  <p className="text-sm italic text-[#9CA3AF]">Assignment: Not assigned yet</p>
+                ) : assignment.type === "INTERNAL_TEAM" ? (
+                  <dl className="grid gap-3 sm:grid-cols-2">
+                    <ReviewRow label="Assignment" value="Internal Team" />
+                    <ReviewRow
+                      label="Supervisor"
+                      value={activeWorkers.find((w) => w.id === assignment.supervisorId)?.name ?? "Not selected"}
+                    />
+                    <ReviewRow
+                      label="Technicians"
+                      value={activeWorkers.filter((w) => assignment.technicianIds.includes(w.id)).map((w) => w.name).join(", ")}
+                    />
+                    <ReviewRow
+                      label="Helpers / Labor"
+                      value={activeWorkers.filter((w) => assignment.helperIds.includes(w.id)).map((w) => w.name).join(", ")}
+                    />
+                  </dl>
+                ) : assignment.type === "FREELANCER" ? (
+                  <dl className="grid gap-3 sm:grid-cols-2">
+                    <ReviewRow label="Assignment" value="Freelancer" />
+                    <ReviewRow label="Name" value={assignment.freelancerName} />
+                    <ReviewRow label="Agreed amount" value={assignment.freelancerAmount ? `${assignment.freelancerAmount} KWD` : undefined} />
+                  </dl>
+                ) : (
+                  <dl className="grid gap-3 sm:grid-cols-2">
+                    <ReviewRow label="Assignment" value="External Company" />
+                    <ReviewRow label="Company" value={assignment.companyName} />
+                    <ReviewRow label="Agreed amount" value={assignment.companyAmount ? `${assignment.companyAmount} KWD` : undefined} />
+                  </dl>
+                )}
+                {assignment.assignNow && (
+                  <p className="mt-3 text-xs text-[#9CA3AF]">
+                    If you Save Draft, assignment will be saved when the Job Card is started — Draft does not save assignment yet.
+                  </p>
+                )}
               </ReviewSection>
 
               <ReviewSection title="Required Materials">
@@ -980,6 +1260,254 @@ export function WorkOrderWizard({
 }
 
 // ── Local sub-components ──────────────────────────────────────────────────────
+
+// Optional Work Assignment During Job Card Creation Unit 7C, Task 3.
+// Simplify Assignment Picker Unit 7D, Task 1: Supervisor now uses the same
+// searchable picker as Technicians/Helpers (capped to one selection) instead
+// of a plain <select> — "searchable single picker preferred" per the task.
+function InternalTeamWizardFields({
+  assignment,
+  updateAssignment,
+  activeWorkers,
+  workerTeam,
+}: {
+  assignment: WizardAssignmentState;
+  updateAssignment: (patch: Partial<WizardAssignmentState>) => void;
+  activeWorkers: WorkerProfileRow[];
+  workerTeam: string;
+}) {
+  const supervisors = activeWorkers.filter((w) => w.worker_type === "Supervisor");
+  const technicians = activeWorkers.filter((w) => w.worker_type === "Technician");
+  const helpers = activeWorkers.filter((w) => w.worker_type === "Helper/Labor");
+
+  if (activeWorkers.length === 0) {
+    return (
+      <p className="text-sm text-[#6B7280]">
+        No active worker profiles yet — add Supervisors, Technicians, and Helpers/Labor under Worker
+        Profiles first, or turn off &quot;Assign work now&quot; and assign later.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <WorkerPickerField
+        label="Supervisor"
+        hint="Optional"
+        fieldName="assign_supervisor_id"
+        workers={supervisors}
+        selectedIds={assignment.supervisorId ? [assignment.supervisorId] : []}
+        onChange={(ids) => updateAssignment({ supervisorId: ids[0] ?? "" })}
+        multiple={false}
+        emptyMessage="No active supervisor found."
+        preferredSkillCategory={workerTeam}
+      />
+
+      <WorkerPickerField
+        label="Technicians"
+        hint="Optional"
+        fieldName="assign_technician_ids"
+        workers={technicians}
+        selectedIds={assignment.technicianIds}
+        onChange={(ids) => updateAssignment({ technicianIds: ids })}
+        multiple
+        emptyMessage="No active technicians found. Add worker profiles first."
+        preferredSkillCategory={workerTeam}
+      />
+
+      <WorkerPickerField
+        label="Helpers / Labor"
+        hint="Optional"
+        fieldName="assign_helper_ids"
+        workers={helpers}
+        selectedIds={assignment.helperIds}
+        onChange={(ids) => updateAssignment({ helperIds: ids })}
+        multiple
+        emptyMessage="No active helpers/labor found. Add worker profiles first."
+        preferredSkillCategory={workerTeam}
+      />
+
+      <div>
+        <FieldLabel label="Assignment notes" hint="Optional" />
+        <textarea
+          name="assign_notes"
+          value={assignment.notes}
+          onChange={(e) => updateAssignment({ notes: e.target.value })}
+          rows={2}
+          className={`${inp} resize-none`}
+        />
+      </div>
+    </div>
+  );
+}
+
+function normalizeSearchText(s: string): string {
+  return s.trim().toLowerCase();
+}
+
+function matchesWorkerQuery(w: WorkerProfileRow, q: string): boolean {
+  if (!q) return true;
+  return [w.name, w.phone, w.skill_category, w.worker_type]
+    .filter((v): v is string => Boolean(v))
+    .some((v) => v.toLowerCase().includes(q));
+}
+
+// Simplify Assignment Picker Unit 7D, Tasks 1–5: a search-to-add / chip-to-
+// remove picker replacing the old Ctrl/Cmd browser multi-select. Reused for
+// Supervisor (multiple=false, capped at one chip), Technicians, and Helpers/
+// Labor. Search runs entirely client-side over the already-fetched active
+// worker list — no extra backend calls (Task 2).
+function WorkerPickerField({
+  label,
+  hint,
+  fieldName,
+  workers,
+  selectedIds,
+  onChange,
+  multiple,
+  emptyMessage,
+  preferredSkillCategory,
+}: {
+  label: string;
+  hint?: string;
+  fieldName: string;
+  workers: WorkerProfileRow[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+  multiple: boolean;
+  emptyMessage: string;
+  preferredSkillCategory?: string;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+
+  // Task 4: no active workers of this type at all — nothing to search.
+  if (workers.length === 0) {
+    return (
+      <div>
+        <FieldLabel label={label} hint={hint} />
+        <p className="mt-1.5 text-xs text-[#9CA3AF]">{emptyMessage}</p>
+      </div>
+    );
+  }
+
+  const selectedWorkers = selectedIds
+    .map((id) => workers.find((w) => w.id === id))
+    .filter((w): w is WorkerProfileRow => Boolean(w));
+
+  const q = normalizeSearchText(query);
+  const available = workers.filter((w) => !selectedIds.includes(w.id) && matchesWorkerQuery(w, q));
+  // Task 5: workers whose skill category matches the selected Work Team /
+  // Division float to the top — cheap, no new query, no new table.
+  const sorted = [...available].sort((a, b) => {
+    if (preferredSkillCategory) {
+      const aMatch = (a.skill_category ?? "").toLowerCase() === preferredSkillCategory.toLowerCase();
+      const bMatch = (b.skill_category ?? "").toLowerCase() === preferredSkillCategory.toLowerCase();
+      if (aMatch !== bMatch) return aMatch ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+  const results = sorted.slice(0, 8);
+
+  function addWorker(id: string) {
+    onChange(multiple ? [...selectedIds, id] : [id]);
+    setQuery("");
+    setOpen(false);
+  }
+  function removeWorker(id: string) {
+    onChange(selectedIds.filter((x) => x !== id));
+  }
+
+  // Supervisor (multiple=false): once one is picked, hide the search box —
+  // "Remove" first, then search again, keeps the UI from implying you can
+  // pick a second one.
+  const showSearch = multiple || selectedWorkers.length === 0;
+
+  return (
+    <div>
+      <FieldLabel label={label} hint={hint} />
+
+      {selectedWorkers.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {selectedWorkers.map((w) => (
+            <span
+              key={w.id}
+              className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#E5E7EB] bg-white py-1 pl-3 pr-1.5 text-xs font-semibold text-[#111827]"
+            >
+              <span className="truncate">{w.name}</span>
+              <span className="shrink-0 text-[#9CA3AF]">— {w.hourly_rate.toFixed(3)} KWD/hr</span>
+              <button
+                type="button"
+                onClick={() => removeWorker(w.id)}
+                className="shrink-0 rounded-full p-0.5 text-[#9CA3AF] hover:bg-gray-100 hover:text-[#DC2626]"
+                aria-label={`Remove ${w.name}`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {showSearch && (
+        <div className="relative mt-1.5">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#9CA3AF]" aria-hidden="true" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            onBlur={() => setOpen(false)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.preventDefault();
+            }}
+            placeholder={`Search ${label.toLowerCase()} by name, phone, or skill…`}
+            className={`${inp} pl-8`}
+          />
+
+          {open && (
+            <div className="absolute left-0 top-full z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-md border border-[#E5E7EB] bg-white shadow-lg">
+              {results.length === 0 ? (
+                <p className="px-3 py-2.5 text-xs text-[#9CA3AF]">
+                  {q ? "No matching workers." : "All active workers are already selected."}
+                </p>
+              ) : (
+                <ul className="divide-y divide-[#F3F4F6]">
+                  {results.map((w) => (
+                    <li key={w.id}>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          addWorker(w.id);
+                        }}
+                        className="block w-full px-3 py-2 text-left hover:bg-gray-50"
+                      >
+                        <p className="text-sm font-bold text-[#111827]">{w.name}</p>
+                        <p className="mt-0.5 truncate text-[11px] text-[#6B7280]">
+                          {w.worker_type} — {w.hourly_rate.toFixed(3)} KWD/hr
+                          {w.skill_category ? ` • ${w.skill_category}` : ""}
+                          {w.phone ? ` • ${w.phone}` : ""}
+                        </p>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {selectedIds.map((id) => (
+        <input key={id} type="hidden" name={fieldName} value={id} />
+      ))}
+    </div>
+  );
+}
 
 function WizardCard({
   title,

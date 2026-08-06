@@ -52,8 +52,10 @@ import { JobCardCreatedModal } from "@/components/work-orders/job-card-created-m
 import { JobCardOpenedModal } from "@/components/work-orders/job-card-opened-modal";
 import { JobCardSubmittedModal } from "@/components/work-orders/job-card-submitted-modal";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
+import { getMaterialFulfillmentForWorkOrder, summarizeMaterialAvailability } from "@/lib/work-orders/material-fulfillment";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
+import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -219,6 +221,7 @@ type SP = {
   success?: string;
   warning?: string;
   mr_warning?: string;
+  assign_warning?: string;
   jc?: string;
   scope?: string;
   created?: string;
@@ -284,7 +287,12 @@ function getNeedsActionFilter(context: CurrentUserContext) {
 
 // ── Per-row specific action button label ─────────────────────────────────────
 
-function getRowActLabel(status: string, context: CurrentUserContext): string | null {
+// Job Card Action Clarity Fix Task 1: `hasAssignment` covers both
+// `work_order_assignments` (legacy technician/Freelancer/Company) and active
+// `work_order_worker_assignments` roster rows (Unit 7 Internal Team) — the
+// caller already computes this per-row from the same `_count`/relation data
+// used for the Assignment column, so this stays a pure label function.
+function getRowActLabel(status: string, context: CurrentUserContext, hasAssignment: boolean): string | null {
   const p = context.permissions;
   const isAdmin = context.role?.slug === "super_admin";
   const canApprove = isAdmin || p.includes("work_orders.approve");
@@ -305,7 +313,15 @@ function getRowActLabel(status: string, context: CurrentUserContext): string | n
   // (Engineer) no longer grants the Review action button — Supervisor/
   // Manager (work_orders.approve) is the only reviewer in the active flow.
   if (canApprove && status === "Under Review") return "Review";
-  if (canAssign && ["Approved", "Partially Issued", "Materials Issued"].includes(status)) return "Assign";
+  // Job Card Action Clarity Fix Task 1: once a Job Card already has workers
+  // assigned (internal roster or legacy technician/Freelancer/Company), the
+  // row action is "Track Work" (direct link to Work Time Tracking on the
+  // detail page — see the href override at the render site below), not a
+  // second "Assign" — offering Assign again when someone's already assigned
+  // just invites a confusing duplicate-assignment click.
+  if (canAssign && ["Approved", "Partially Issued", "Materials Issued"].includes(status)) {
+    return hasAssignment ? "Track Work" : "Assign Workers";
+  }
   if (canUpdateProgress && status === "Assigned") return "Mark Work Started";
   if (p.includes("store.issue") && ["Waiting Materials", "Partially Issued"].includes(status)) return "Materials";
   // Simplified Job Card Approval Workflow Unit Task 4/9: Close is now valid
@@ -326,7 +342,12 @@ function getRowActLabel(status: string, context: CurrentUserContext): string | n
 function getNextAction(
   status: string,
   context: CurrentUserContext,
-  hasPendingCorrection?: boolean
+  hasPendingCorrection?: boolean,
+  // Job Card Work Tracking Entry Points and Assignment Visibility Unit 8B,
+  // Task 2: optional — every existing call site keeps working unchanged if
+  // omitted, but the two "Ready to assign" cases below use it to apply the
+  // task's exact priority ladder instead of a single static label.
+  flags?: { hasInternalTeam: boolean; hasPendingMaterials: boolean; hasActiveSession: boolean }
 ): { label: string; mine: boolean } {
   const p = context.permissions;
   const isAdmin = context.role?.slug === "super_admin";
@@ -342,6 +363,18 @@ function getNextAction(
   // resubmit, and that must never look like a normal "ready to work" row.
   if (hasPendingCorrection) {
     return { label: "Correction requested — waiting on Data Entry", mine: p.includes("work_orders.manage") };
+  }
+
+  // Task 2's exact priority ladder — Active work session beats Materials
+  // pending beats Workers assigned beats the plain "Ready to assign"
+  // fallback. Only applied where the old text was literally "Ready to
+  // assign" (Approved / Materials Issued below) — every other status
+  // keeps its own, already-specific wording untouched.
+  function readyToAssignOrBetter(): { label: string; mine: boolean } {
+    if (flags?.hasActiveSession) return { label: "Work in progress", mine: false };
+    if (flags?.hasPendingMaterials) return { label: "Materials pending", mine: false };
+    if (flags?.hasInternalTeam) return { label: "Workers assigned", mine: false };
+    return { label: "Ready to assign", mine: canAssign };
   }
 
   switch (status) {
@@ -365,10 +398,10 @@ function getNextAction(
     // row, even for roles that can't act on it — "Ready to assign" is a
     // status statement instead, matching the new "Ready to Assign" KPI's
     // wording. The Action-column button (a separate label) still says "Assign".
-    case "Approved":          return { label: "Ready to assign",          mine: canAssign };
+    case "Approved":          return readyToAssignOrBetter();
     case "Waiting Materials":  return { label: "Waiting for materials",    mine: false };
     case "Partially Issued":  return { label: "Materials partially received", mine: canAssign };
-    case "Materials Issued":  return { label: "Ready to assign",          mine: canAssign };
+    case "Materials Issued":  return readyToAssignOrBetter();
     case "Assigned":          return { label: canUpdateProgress ? "Ready to start" : "Technician to start", mine: canUpdateProgress };
     case "In Progress":       return { label: canClose ? "Ready to close" : "Work in progress", mine: canClose };
     case "Closed":             return { label: "Job card closed",          mine: false };
@@ -809,6 +842,19 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               profiles: { select: { full_name: true } },
             },
           },
+          // Job Card Work Tracking Entry Points and Assignment Visibility
+          // Unit 8B, Task 1/2/8: two more fields on this same already-paginated
+          // page-level query (not a new round trip, not a per-row query) — the
+          // Unit 7 Internal Team roster (work_order_worker_assignments) and
+          // Unit 8 active work sessions are otherwise invisible here, which is
+          // exactly why "Not assigned"/no work-in-progress signal could show
+          // even when a Job Card actually has both.
+          _count: {
+            select: {
+              work_order_worker_assignments: { where: { status: "active" } },
+              work_order_work_sessions: { where: { status: "Active" } },
+            },
+          },
         },
       }),
       prisma.work_orders.count({ where }),
@@ -857,7 +903,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
     context.permissions.includes("work_orders.assign") ||
     context.permissions.includes("work_orders.approve");
 
-  const [previewWO, prData, techsForModal] = previewId
+  const [previewWO, prData, techsForModal, previewMaterialFulfillment] = previewId
     ? await Promise.all([
         prisma.work_orders.findFirst({
           where: {
@@ -903,7 +949,21 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                 profiles: { select: { full_name: true } },
               },
             },
-            _count: { select: { work_order_required_parts: true, work_order_attachments: true } },
+            // Simplify Assignment Picker and Started Modal Unit 7D, Task 9:
+            // one more field on this same existing query — no new round trip
+            // — so the success modal can tell "Internal Team assigned" apart
+            // from "nothing assigned yet" (the legacy work_order_assignments
+            // relation above only covers technician/Freelancer/Company).
+            // Job Card Work Tracking Entry Points and Assignment Visibility
+            // Unit 8B, Task 3: active-session count, same additive pattern.
+            _count: {
+              select: {
+                work_order_required_parts: true,
+                work_order_attachments: true,
+                work_order_worker_assignments: { where: { status: "active" } },
+                work_order_work_sessions: { where: { status: "Active" } },
+              },
+            },
           },
         }),
         prisma.parts_requests.findMany({
@@ -920,11 +980,18 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         canAssignModal
           ? getTechnicianPickerOptions()
           : Promise.resolve([] as Array<{ id: string; full_name: string }>),
+        // Job Card Action Clarity Fix Task 3: Required Materials vs. Offline
+        // Inventory fulfillment for the ONE previewed Job Card only — this
+        // is the same per-Job-Card query the full detail page already runs
+        // (lib/work-orders/material-fulfillment.ts), safe here because it's
+        // gated behind previewId (a single row), never run per list row.
+        getMaterialFulfillmentForWorkOrder(prisma, previewId),
       ])
     : [
         null,
         [] as Array<{ id: string; parts_request_number: string | null; status: string; parts_request_items: { id: string; description: string; quantity_requested: unknown; issued_quantity: unknown }[] }>,
         [] as Array<{ id: string; full_name: string }>,
+        [] as Awaited<ReturnType<typeof getMaterialFulfillmentForWorkOrder>>,
       ];
 
   const isAdmin = context.role?.slug === "super_admin";
@@ -935,6 +1002,10 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   const canCreateJobCard = isAdmin || context.permissions.includes("work_orders.manage");
   const showNewJobCardModal = sp.new_job_card === "1" && canCreateJobCard;
   const newJobCardAssets = showNewJobCardModal ? await getAssetPickerOptions() : [];
+  // Optional Work Assignment During Job Card Creation Unit 7C, Task 10.
+  const canAssignAtCreation = isAdmin || context.permissions.includes("work_orders.assign");
+  const newJobCardActiveWorkers =
+    showNewJobCardModal && canAssignAtCreation ? await getActiveWorkerProfilesForAssignment() : [];
 
   // The previewed Job Card may not be one of the rows currently on this page
   // (e.g. opened via a direct/bookmarked ?preview= link), so its reviewed
@@ -1004,6 +1075,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             }
           : null,
         required_parts_count: previewWO._count.work_order_required_parts,
+        // Job Card Work Tracking Entry Points and Assignment Visibility
+        // Unit 8B, Task 3/4.
+        internalTeamCount: previewWO._count.work_order_worker_assignments,
+        hasActiveWorkSession: previewWO._count.work_order_work_sessions > 0,
+        // Job Card Action Clarity Fix Task 3.
+        materialsAvailability: summarizeMaterialAvailability(previewMaterialFulfillment),
         parts_requests_count: prData.length,
         open_parts_requests_count: prData.filter((pr) =>
           OPEN_PR_STATUSES.includes(pr.status)
@@ -1060,6 +1137,15 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         previewParamName: "preview",
       }
     : null;
+
+  // Simplify Assignment Picker and Started Modal Unit 7D, Task 9: covers all
+  // three assignment types — the legacy work_order_assignments relation
+  // (technician self-service/Freelancer/External Company) plus the Unit 7
+  // Internal Team roster count added to the previewWO query above.
+  const previewHasAssignment = previewWO
+    ? previewWO.work_order_assignments.length > 0 || previewWO._count.work_order_worker_assignments > 0
+    : false;
+  const previewHasRequiredMaterials = (previewWO?._count.work_order_required_parts ?? 0) > 0;
 
   // ── Job Card creation success modal ───────────────────────────────────────
   // A newly created Job Card redirects here with ?success=job-card-created — the
@@ -1176,6 +1262,8 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             assets={newJobCardAssets}
             preselectedAssetId={sp.asset_id ?? null}
             dismissHref={buildHref({ ...sp, new_job_card: undefined, asset_id: undefined })}
+            activeWorkers={newJobCardActiveWorkers}
+            canAssignAtCreation={canAssignAtCreation}
           />
         )}
         {showCreatedModal && (
@@ -1187,6 +1275,9 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             issue={drawerData?.operator_complaint ?? null}
             attachmentWarning={sp.warning === "attachments-failed"}
             materialsRequestWarning={sp.mr_warning === "1"}
+            assignmentWarning={sp.assign_warning === "1"}
+            hasAssignment={previewHasAssignment}
+            hasRequiredMaterials={previewHasRequiredMaterials}
             dismissHref={createdDismissHref}
           />
         )}
@@ -1254,6 +1345,8 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           assets={newJobCardAssets}
           preselectedAssetId={sp.asset_id ?? null}
           dismissHref={buildHref({ ...sp, new_job_card: undefined, asset_id: undefined })}
+          activeWorkers={newJobCardActiveWorkers}
+          canAssignAtCreation={canAssignAtCreation}
         />
       ) : showCreatedModal ? (
         <JobCardCreatedModal
@@ -1264,6 +1357,9 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           issue={drawerData?.operator_complaint ?? null}
           attachmentWarning={sp.warning === "attachments-failed"}
           materialsRequestWarning={sp.mr_warning === "1"}
+          assignmentWarning={sp.assign_warning === "1"}
+          hasAssignment={previewHasAssignment}
+          hasRequiredMaterials={previewHasRequiredMaterials}
           dismissHref={createdDismissHref}
         />
       ) : showOpenedModal && drawerData ? (
@@ -1410,12 +1506,35 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               <tbody className="divide-y divide-[#E5E7EB]">
                 {workOrders.length > 0 ? (
                   workOrders.map((wo) => {
-                    const actLabel   = getRowActLabel(wo.status, context);
-                    const nextAct    = getNextAction(wo.status, context, correctionIdSet.has(wo.id));
+                    // Job Card Work Tracking Entry Points and Assignment
+                    // Visibility Unit 8B, Task 1/2: the Internal Team roster
+                    // (Unit 7) is checked first — it's a completely separate
+                    // table from work_order_assignments below, so a Job Card
+                    // assigned only through Unit 7C's wizard/the detail page's
+                    // "Assign Internal Team" panel was previously invisible
+                    // here and fell through to "Not assigned".
+                    const internalTeamCount = wo._count.work_order_worker_assignments;
+                    const hasActiveSession = wo._count.work_order_work_sessions > 0;
+                    // Job Card Action Clarity Fix Task 1: same assignment
+                    // detection the Assignment column already uses below
+                    // (internalTeamCount from the roster + legacy
+                    // work_order_assignments), reused here so the Action
+                    // button and the Assignment column never disagree.
+                    const rowHasAssignment = internalTeamCount > 0 || wo.work_order_assignments.length > 0;
+                    const actLabel   = getRowActLabel(wo.status, context, rowHasAssignment);
+                    const nextAct    = getNextAction(
+                      wo.status,
+                      context,
+                      correctionIdSet.has(wo.id),
+                      { hasInternalTeam: internalTeamCount > 0, hasPendingMaterials: (materialsSummaryByWoId.get(wo.id)?.openCount ?? 0) > 0, hasActiveSession }
+                    );
                     const isTerminal = TERMINAL_STATUSES.includes(wo.status);
                     const age        = ageInDays(wo.created_at);
                     const isOverdue  = age > OVERDUE_DAYS && !isTerminal;
                     const assignedDisplay = (() => {
+                      if (internalTeamCount > 0) {
+                        return `${internalTeamCount} worker${internalTeamCount === 1 ? "" : "s"} assigned`;
+                      }
                       if (!wo.work_order_assignments.length) return null;
                       const a = wo.work_order_assignments[0];
                       if (a.assignment_type === "FREELANCER") return `Freelancer: ${a.external_name ?? ""}`;
@@ -1534,7 +1653,20 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                             >
                               Full Details
                             </Link>
-                            {actLabel && (
+                            {/* Job Card Action Clarity Fix Task 1: "Track
+                                Work" jumps straight to the Job Card detail
+                                page's Work Time Tracking section — a real
+                                navigation, not the same-page quick-view
+                                popup every other row action opens, so it
+                                gets its own Link (no scroll={false}). */}
+                            {actLabel === "Track Work" ? (
+                              <Link
+                                href={`/maintenance/work-orders/${wo.id}#work-time-tracking`}
+                                className="inline-block rounded-md bg-[#ED1C24] px-3 py-2 text-center text-xs font-bold text-white transition hover:bg-[#c8181e]"
+                              >
+                                {actLabel}
+                              </Link>
+                            ) : actLabel ? (
                               <Link
                                 href={previewHref}
                                 scroll={false}
@@ -1542,7 +1674,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                               >
                                 {actLabel}
                               </Link>
-                            )}
+                            ) : null}
                             {!isNormalUser && context.permissions.includes("work_orders.print") && (
                               <Link
                                 href={`/maintenance/work-orders/${wo.id}/print`}

@@ -32,6 +32,7 @@ import { BackLink } from "@/components/ui/back-link";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
+import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -167,6 +168,11 @@ export default async function AssetDetailPage({
   // overlay on top of this asset's own detail page, preselecting this asset.
   const showNewJobCardModal = sp.new_job_card === "1" && canManage;
   const newJobCardAssets = showNewJobCardModal ? await getAssetPickerOptions() : [];
+  // Optional Work Assignment During Job Card Creation Unit 7C, Task 10.
+  const canAssignAtCreation =
+    context.role?.slug === "super_admin" || context.permissions.includes("work_orders.assign");
+  const newJobCardActiveWorkers =
+    showNewJobCardModal && canAssignAtCreation ? await getActiveWorkerProfilesForAssignment() : [];
   const newJobCardDismissHref = activeTab && activeTab !== "overview" ? `/assets/${id}?tab=${activeTab}` : `/assets/${id}`;
 
   // Maintenance summary
@@ -278,6 +284,8 @@ export default async function AssetDetailPage({
           assets={newJobCardAssets}
           preselectedAssetId={asset.id}
           dismissHref={newJobCardDismissHref}
+          activeWorkers={newJobCardActiveWorkers}
+          canAssignAtCreation={canAssignAtCreation}
         />
       )}
       {/* ── Asset Identity Header ──────────────────────────────────────────── */}

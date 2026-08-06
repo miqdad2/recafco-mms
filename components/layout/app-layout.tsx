@@ -12,6 +12,7 @@ import { type NavIconKey } from "@/components/layout/nav-link";
 import { CollapsibleNav, type CollapsibleNavGroup } from "@/components/layout/collapsible-nav";
 import { NotificationBell } from "@/components/notifications/notification-bell";
 import { NotificationToastCenter } from "@/components/notifications/notification-toast-center";
+import { CriticalWorkflowPopup } from "@/components/notifications/critical-workflow-popup";
 import { RealtimeConnectionProvider } from "@/components/realtime/realtime-connection-provider";
 import { ActionToast } from "@/components/ui/action-toast";
 import { Button } from "@/components/ui/button";
@@ -69,6 +70,7 @@ const navigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
+      { href: "/maintenance/daily-activity", label: "Daily Activity",          iconKey: "Activity",      permission: "work_orders.view" },
       { href: "/maintenance/work-orders",  label: "Job Cards",                 iconKey: "ClipboardList", permission: "work_orders.view" },
       { href: "/store/parts-requests",     label: "Materials Requests",        iconKey: "ShoppingCart",  permission: "parts_requests.view" },
       { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
@@ -79,7 +81,7 @@ const navigationGroups: NavGroup[] = [
     label: "Operations",
     items: [
       { href: "/assets",                        label: "Assets & Equipment", iconKey: "Gauge",      permission: "assets.view" },
-      { href: "/maintenance/assignments",        label: "Technician",          iconKey: "Wrench",     permission: "work_orders.assign" },
+      { href: "/maintenance/assignments",        label: "Worker Activity",     iconKey: "Wrench",     permission: "work_orders.assign" },
       { href: "/admin/worker-profiles",         label: "Worker Profiles",     iconKey: "Users",      permission: "work_orders.assign" },
       { href: "/reports",                       label: "Reports",             iconKey: "BarChart3",  permission: "reports.view" },
       { href: "/notifications",                 label: "Notifications",       iconKey: "Bell",       permission: "notifications.view" },
@@ -108,6 +110,7 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
       // restored to Supervisor/Manager's nav — requested materials must stay
       // visible/trackable on their own page (Receive Materials happens
       // there), not only inside the Job Card.
+      { href: "/maintenance/daily-activity", label: "Daily Activity",          iconKey: "Activity",      permission: "work_orders.view" },
       { href: "/maintenance/work-orders",  label: "Job Cards",                 iconKey: "ClipboardList", permission: "work_orders.view" },
       { href: "/store/parts-requests",     label: "Materials Requests",        iconKey: "ShoppingCart",  permission: "parts_requests.view" },
       { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
@@ -118,7 +121,7 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
     label: "Operations",
     items: [
       { href: "/assets",                  label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
-      { href: "/maintenance/assignments", label: "Technician",          iconKey: "Wrench",    permission: "work_orders.assign" },
+      { href: "/maintenance/assignments", label: "Worker Activity",     iconKey: "Wrench",    permission: "work_orders.assign" },
       { href: "/admin/worker-profiles",   label: "Worker Profiles",     iconKey: "Users",     permission: "work_orders.assign" },
       { href: "/reports",                 label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
       { href: "/notifications",           label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
@@ -206,6 +209,7 @@ const maintenanceEngineerNavigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
+      { href: "/maintenance/daily-activity", label: "Daily Activity", iconKey: "Activity", permission: "work_orders.view" },
       { href: "/maintenance/work-orders", label: "Job Cards", iconKey: "ClipboardList", permission: "work_orders.view" }
     ]
   },
@@ -235,6 +239,7 @@ const viewerAuditorNavigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
+      { href: "/maintenance/daily-activity", label: "Daily Activity",  iconKey: "Activity",      permission: "work_orders.view" },
       { href: "/maintenance/work-orders", label: "Job Cards",          iconKey: "ClipboardList", permission: "work_orders.view" },
       { href: "/store/parts-requests",    label: "Materials Requests", iconKey: "ShoppingCart",  permission: "parts_requests.view" }
     ]
@@ -263,6 +268,7 @@ const normalUserNavigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
+      { href: "/maintenance/daily-activity", label: "Daily Activity",          iconKey: "Activity",      permission: "work_orders.view" },
       { href: "/maintenance/work-orders",  label: "Job Cards",                 iconKey: "ClipboardList", permission: "work_orders.view" },
       { href: "/store/parts-requests",     label: "Materials Requests",        iconKey: "ShoppingCart",  permission: "parts_requests.view" },
       { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
@@ -273,7 +279,7 @@ const normalUserNavigationGroups: NavGroup[] = [
     label: "Operations",
     items: [
       { href: "/assets",                  label: "Assets & Equipment", iconKey: "Gauge",     permission: "assets.view" },
-      { href: "/maintenance/assignments", label: "Technician",          iconKey: "Wrench",    permission: "work_orders.assign" },
+      { href: "/maintenance/assignments", label: "Worker Activity",     iconKey: "Wrench",    permission: "work_orders.assign" },
       { href: "/admin/worker-profiles",   label: "Worker Profiles",     iconKey: "Users",     permission: "work_orders.assign" },
       { href: "/reports",                 label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
       { href: "/notifications",           label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
@@ -372,6 +378,11 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
           <ActionToast />
         </Suspense>
         <NotificationToastCenter userId={context.userId} />
+        {/* Role-to-Role Critical Workflow Popup Unit 9G: mounted
+            unconditionally, same as NotificationToastCenter above — for any
+            role other than Data Entry/Manager this always resolves to no
+            popup (checked server-side), so it's a no-op for everyone else. */}
+        <CriticalWorkflowPopup />
         <MobileNavigation items={allVisibleItems.map(({ href, label, iconKey }) => ({ href, label, iconKey }))} />
       </div>
     </RealtimeConnectionProvider>

@@ -35,6 +35,7 @@ import {
 } from "@/lib/display/parts-request-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { getReviewedWorkOrderIds } from "@/lib/work-orders/review-status";
+import { getMaterialFulfillmentForWorkOrder, summarizeMaterialAvailability } from "@/lib/work-orders/material-fulfillment";
 import { getPendingClarificationForWorkOrder } from "@/lib/backend/workflows/queries";
 import {
   getPendingCorrectionWorkOrderIds,
@@ -556,7 +557,7 @@ export default async function PartsRequestsPage({
     context.permissions.includes("work_orders.assign") ||
     context.permissions.includes("work_orders.approve");
 
-  const [previewWO, prDataForWO, techsForModal] = shouldFetchJobPreview
+  const [previewWO, prDataForWO, techsForModal, previewMaterialFulfillment] = shouldFetchJobPreview
     ? await Promise.all([
         prisma.work_orders.findFirst({
           where: {
@@ -619,11 +620,16 @@ export default async function PartsRequestsPage({
         canAssignModal
           ? getTechnicianPickerOptions()
           : Promise.resolve([] as Array<{ id: string; full_name: string }>),
+        // Job Card Action Clarity Fix Task 3/5: same single-Job-Card
+        // fulfillment read as the Job Cards list/dashboard preview queries —
+        // gated behind shouldFetchJobPreview (a single row), never per row.
+        getMaterialFulfillmentForWorkOrder(prisma, validJobPreviewId!),
       ])
     : [
         null,
         [] as Array<{ id: string; parts_request_number: string | null; status: string; parts_request_items: { id: string; description: string; quantity_requested: unknown; issued_quantity: unknown }[] }>,
         [] as Array<{ id: string; full_name: string }>,
+        [] as Awaited<ReturnType<typeof getMaterialFulfillmentForWorkOrder>>,
       ];
 
   const isAdmin = context.role?.slug === "super_admin";
@@ -699,6 +705,8 @@ export default async function PartsRequestsPage({
             }
           : null,
         required_parts_count: previewWO._count.work_order_required_parts,
+        // Job Card Action Clarity Fix Task 3.
+        materialsAvailability: summarizeMaterialAvailability(previewMaterialFulfillment),
         parts_requests_count: prDataForWO.length,
         open_parts_requests_count: prDataForWO.filter((pr) =>
           OPEN_PR_STATUSES.includes(pr.status)

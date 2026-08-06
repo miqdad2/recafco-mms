@@ -1,11 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { AlertTriangle, ArrowRight, CheckCircle2, X } from "lucide-react";
 
 import { StatusBadge } from "@/components/ui/status-badge";
+import { WorkflowSuccessModal, type WorkflowSuccessSummaryItem, type WorkflowSuccessAction } from "@/components/ui/workflow-success-modal";
 import { submitWorkOrderAction } from "@/app/actions/workflow";
 
 export type JobCardCreatedModalProps = {
@@ -16,6 +14,15 @@ export type JobCardCreatedModalProps = {
   issue: string | null;
   attachmentWarning: boolean;
   materialsRequestWarning?: boolean;
+  // Optional Work Assignment During Job Card Creation Unit 7C.
+  assignmentWarning?: boolean;
+  // Simplify Assignment Picker and Started Modal Unit 7D, Task 9/11 — cheap
+  // booleans read off the same query the quick-view preview already runs
+  // (no new query), used only to pick the Next Recommended Step text and the
+  // status checklist. Undefined (e.g. a Draft, which has neither yet) is
+  // treated the same as false.
+  hasAssignment?: boolean;
+  hasRequiredMaterials?: boolean;
   dismissHref: string;
 };
 
@@ -27,6 +34,9 @@ export type JobCardCreatedModalProps = {
 // a just-created Job Card can't have a pending correction yet.
 const WORKFLOW_STAGES = ["Draft", "Active", "Closure Requested", "Closed"] as const;
 
+// Popup and Feedback Design Standardization Unit 8D, Task 3: now a thin
+// wrapper around the shared WorkflowSuccessModal shell — same external
+// props/call sites as before.
 export function JobCardCreatedModal({
   jobCardId,
   jobCardNumber,
@@ -35,43 +45,13 @@ export function JobCardCreatedModal({
   issue,
   attachmentWarning,
   materialsRequestWarning = false,
+  assignmentWarning = false,
+  hasAssignment = false,
+  hasRequiredMaterials = false,
   dismissHref,
 }: JobCardCreatedModalProps) {
   const router = useRouter();
-  // Two element types share the "primary action" focus target — a real
-  // <button> (Submit for Review) when isDraft, otherwise the "Go to Job
-  // Cards" <Link> — so each gets its own typed ref rather than forcing one
-  // ref onto two different element types.
-  const primaryButtonRef = useRef<HTMLButtonElement>(null);
-  const primaryLinkRef = useRef<HTMLAnchorElement>(null);
-
-  function dismiss() {
-    router.replace(dismissHref, { scroll: false });
-  }
-
-  useEffect(() => {
-    if (isDraft) primaryButtonRef.current?.focus();
-    else primaryLinkRef.current?.focus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") dismiss();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dismissHref]);
-
-  useEffect(() => {
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, []);
-
-  const currentStageIndex = isDraft ? 0 : 1;
+  const dismiss = () => router.replace(dismissHref, { scroll: false });
   const canViewFull = !!jobCardId;
 
   // Save Draft Success Popup Submit Option Cleanup Task 2/3/6: this same
@@ -80,170 +60,98 @@ export function JobCardCreatedModal({
   // or started directly (status === "Approved", displayed as "Active") —
   // never confused, since isDraft is derived from the actual DB status, not
   // from user intent guessed some other way.
-  const modalTitle = isDraft ? "Job Card Draft Saved" : "Job Card Started";
-  const modalMessage = isDraft
-    ? "has been saved as draft."
-    : "is now Active. Work can begin.";
+  const modalTitle = isDraft ? "Job Card Draft Saved" : "Job Card Started Successfully";
+  const modalMessage = isDraft ? "has been saved as draft." : "is now Active.";
+
+  // Simplify Assignment Picker and Started Modal Unit 7D, Task 9/12: direct,
+  // case-based guidance instead of the old one-size-fits-all "Assign work,
+  // update details, or request closure once work is done." Uses only data
+  // already available from the creation result (no heavy new queries) —
+  // real material-shortage detection would need a fresh per-item query this
+  // unit deliberately doesn't add, so that case falls back to the materials
+  // case below it, which is still accurate and still actionable.
   const nextStepText = isDraft
-    ? "Start this Job Card when ready."
-    : "Assign work, update details, or request closure once work is done.";
+    ? "Start this Job Card when you're ready to begin work."
+    : !canViewFull
+      ? "Open the Job Card to continue."
+      : !hasAssignment
+        ? "Assign workers to this Job Card."
+        : hasRequiredMaterials
+          ? "Review materials and issue available stock when ready."
+          : "Open the Job Card to track work time and updates.";
+
+  const warnings: string[] = [];
+  if (attachmentWarning) warnings.push("Job Card created, but some attachments failed to upload.");
+  if (materialsRequestWarning) {
+    warnings.push('Job Card created, but the Materials Request could not be created automatically. Use "Request Materials" from the Job Card to add it.');
+  }
+  if (assignmentWarning) {
+    warnings.push("Job Card created, but the assignment could not be saved automatically. Assign work from the Job Card instead.");
+  }
+
+  const summaryItems: WorkflowSuccessSummaryItem[] = [];
+  if (assetName) summaryItems.push({ label: "Asset", value: assetName });
+  if (issue) summaryItems.push({ label: "Issue", value: issue });
+  summaryItems.push({ label: "Status", value: <StatusBadge label={isDraft ? "Draft" : "Active"} tone={isDraft ? "gray" : "blue"} /> });
+  summaryItems.push({
+    label: "Assignment",
+    value: <span className={hasAssignment ? "font-semibold text-[#16A34A]" : "font-semibold text-[#9CA3AF]"}>{hasAssignment ? "Assigned" : "Not assigned"}</span>,
+  });
+  summaryItems.push({
+    label: "Required Materials",
+    value: <span className={hasRequiredMaterials ? "font-semibold text-[#16A34A]" : "font-semibold text-[#9CA3AF]"}>{hasRequiredMaterials ? "Added" : "None"}</span>,
+  });
+  summaryItems.push({
+    label: "Work Time Tracking",
+    value: (
+      <span className={hasAssignment ? "font-semibold text-[#16A34A]" : "font-semibold text-[#9CA3AF]"}>
+        {hasAssignment ? "Available now" : "Available after assignment"}
+      </span>
+    ),
+  });
+
+  const nextStepDescription = !isDraft ? (
+    <>
+      {nextStepText}
+      <span className="mt-1 block text-xs font-normal text-[#6B7280]">
+        {hasAssignment ? "Workers are assigned. You can track work time from the Job Card." : "Assignment can be added now from the Job Card."}
+      </span>
+    </>
+  ) : (
+    nextStepText
+  );
+
+  const primaryAction: WorkflowSuccessAction | undefined =
+    isDraft && canViewFull
+      ? {
+          kind: "form",
+          label: "Start Job Card",
+          action: submitWorkOrderAction,
+          hiddenFields: { work_order_id: jobCardId!, return_to: dismissHref, return_to_param: "preview" },
+        }
+      : canViewFull
+        ? { kind: "link", label: "Continue This Job Card", href: `/maintenance/work-orders/${jobCardId}`, onClick: dismiss }
+        : undefined;
 
   return (
-    <>
-      <div className="fixed inset-0 z-40 bg-black/50" aria-hidden="true" onClick={dismiss} />
-
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="presentation">
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="jc-created-heading"
-          className="relative flex w-full max-w-[560px] flex-col rounded-xl bg-white shadow-2xl"
-        >
-          <button
-            onClick={dismiss}
-            className="absolute right-4 top-4 rounded-md p-1.5 text-[#9CA3AF] hover:bg-gray-100 hover:text-[#4B5563] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#ED1C24]"
-            aria-label="Close"
-          >
-            <X className="h-5 w-5" />
-          </button>
-
-          <div className="flex flex-col items-center px-6 pb-2 pt-8 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-50">
-              <CheckCircle2 className="h-9 w-9 text-[#16A34A]" aria-hidden />
-            </div>
-            <h2 id="jc-created-heading" className="mt-4 text-xl font-black text-[#111827]">
-              {modalTitle}
-            </h2>
-            <p className="mt-2 text-sm leading-relaxed text-[#4B5563]">
-              Job Card <span className="font-bold text-[#111827]">{jobCardNumber ?? "—"}</span> {modalMessage}
-            </p>
-
-            {attachmentWarning && (
-              <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-left text-xs font-semibold text-amber-800">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <span>Job Card created, but some attachments failed to upload.</span>
-              </div>
-            )}
-
-            {materialsRequestWarning && (
-              <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-left text-xs font-semibold text-amber-800">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <span>Job Card created, but the Materials Request could not be created automatically. Use &quot;Request Materials&quot; from the Job Card to add it.</span>
-              </div>
-            )}
-          </div>
-
-          <div className="px-6 py-4">
-            {(assetName || issue) && (
-              <div className="mb-4 space-y-1 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3 text-sm">
-                {assetName && (
-                  <p className="text-[#4B5563]">
-                    <span className="font-semibold text-[#111827]">Asset:</span> {assetName}
-                  </p>
-                )}
-                {issue && (
-                  <p className="text-[#4B5563]">
-                    <span className="font-semibold text-[#111827]">Issue:</span> {issue}
-                  </p>
-                )}
-              </div>
-            )}
-
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-bold uppercase tracking-wide text-[#4B5563]">Current status</span>
-              <StatusBadge label={isDraft ? "Draft" : "Active"} tone={isDraft ? "gray" : "blue"} />
-            </div>
-
-            <p className="mt-3 text-sm leading-relaxed text-[#111827]">
-              <span className="font-bold">Next: </span>
-              {nextStepText}
-            </p>
-
-            {/* Simple workflow line */}
-            <div className="mt-4 flex flex-wrap items-center gap-x-1 gap-y-2 rounded-md bg-[#F5F6F8] px-3 py-2.5">
-              {WORKFLOW_STAGES.map((stage, idx) => (
-                <div key={stage} className="flex shrink-0 items-center">
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
-                      idx === currentStageIndex
-                        ? "bg-[#ED1C24] text-white"
-                        : idx < currentStageIndex
-                        ? "bg-green-100 text-[#16A34A]"
-                        : "bg-white text-[#9CA3AF]"
-                    }`}
-                  >
-                    {stage}
-                  </span>
-                  {idx < WORKFLOW_STAGES.length - 1 && (
-                    <ArrowRight className="mx-1 h-3 w-3 shrink-0 text-[#9CA3AF]" aria-hidden />
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-5 flex flex-col gap-3 border-t border-[#F3F4F6] px-6 pb-6 pt-4 sm:flex-row sm:flex-wrap">
-            {/* Save Draft Success Popup Submit Option Cleanup Task 4/5:
-                primary action on the Draft-saved state — submits directly
-                from this popup instead of forcing the user to open the Job
-                Card first. Carries return_to/return_to_param (reusing
-                dismissHref, the same clean base URL Close/X already use)
-                so submitWorkOrderAction redirects back to this same page
-                with ?success=job-card-submitted, which the host page already
-                renders as JobCardSubmittedModal — no new "submitted" UI
-                needed here. */}
-            {isDraft && canViewFull && (
-              <form action={submitWorkOrderAction} className="contents">
-                <input type="hidden" name="work_order_id" value={jobCardId!} />
-                <input type="hidden" name="return_to" value={dismissHref} />
-                <input type="hidden" name="return_to_param" value="preview" />
-                <button
-                  ref={primaryButtonRef}
-                  type="submit"
-                  className="flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md bg-[#ED1C24] px-4 text-sm font-semibold text-white transition hover:bg-red-700"
-                >
-                  Start Job Card
-                </button>
-              </form>
-            )}
-            <Link
-              ref={isDraft ? undefined : primaryLinkRef}
-              href="/maintenance/work-orders"
-              onClick={dismiss}
-              className={
-                isDraft
-                  ? "flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md border border-[#E5E7EB] bg-white px-4 text-sm font-semibold text-[#4B5563] transition hover:bg-gray-50"
-                  : "flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md bg-[#ED1C24] px-4 text-sm font-semibold text-white transition hover:bg-red-700"
-              }
-            >
-              Go to Job Cards
-            </Link>
-            <Link
-              href="/maintenance/work-orders/new"
-              onClick={dismiss}
-              className="flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md border border-[#E5E7EB] bg-white px-4 text-sm font-semibold text-[#4B5563] transition hover:bg-gray-50"
-            >
-              Create Another
-            </Link>
-            {canViewFull && (
-              <Link
-                href={`/maintenance/work-orders/${jobCardId}`}
-                onClick={dismiss}
-                className="flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md border border-[#E5E7EB] bg-white px-4 text-sm font-semibold text-[#4B5563] transition hover:bg-gray-50"
-              >
-                View Job Card
-              </Link>
-            )}
-            <button
-              type="button"
-              onClick={dismiss}
-              className="flex min-h-[48px] flex-1 items-center justify-center whitespace-nowrap rounded-md border border-[#E5E7EB] bg-white px-4 text-sm font-semibold text-[#4B5563] transition hover:bg-gray-50"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      </div>
-    </>
+    <WorkflowSuccessModal
+      headingId="jc-created-heading"
+      title={modalTitle}
+      description={
+        <>
+          Job Card <span className="font-bold text-[#111827]">{jobCardNumber ?? "—"}</span> {modalMessage}
+        </>
+      }
+      warnings={warnings}
+      summaryItems={summaryItems}
+      nextStepDescription={nextStepDescription}
+      progressSteps={{ steps: WORKFLOW_STAGES, currentIndex: isDraft ? 0 : 1 }}
+      primaryAction={primaryAction}
+      secondaryActions={[
+        { kind: "link", label: "Create Another Job Card", href: "/maintenance/work-orders/new", onClick: dismiss },
+        { kind: "link", label: "Go to Job Cards", href: "/maintenance/work-orders", onClick: dismiss },
+      ]}
+      closeAction={dismiss}
+    />
   );
 }

@@ -17,6 +17,8 @@ import { parsePendingAttachments, saveAttachmentBatch } from "@/lib/files/attach
 import { MAX_ATTACHMENT_ROWS } from "@/lib/files/attachment-constants";
 import { ACTIVE_JOB_CARD_STATUSES } from "@/lib/work-orders/simplified-status-display";
 import { resolveMaterialMatchByKey } from "@/lib/store/offline-inventory-data";
+import { assignTechnicians } from "@/lib/backend/work-orders/service";
+import { assignInternalTeamRoster } from "@/lib/backend/work-orders/worker-roster";
 
 const optionalString = z.preprocess((value) => {
   if (typeof value !== "string") return value;
@@ -221,6 +223,57 @@ async function parseRequiredPartRows(formData: FormData) {
     })
   );
   return rows.filter(Boolean);
+}
+
+// Optional Work Assignment During Job Card Creation Unit 7C, Task 2/6.
+// Returns null when "Assign work now" was off, or when the selected type's
+// required field was left blank (nothing to save) — the caller treats null
+// as "no assignment to create", the same as if the checkbox were never shown.
+type WizardAssignment =
+  | { kind: "INTERNAL_TEAM"; supervisorId?: string; technicianIds: string[]; helperIds: string[]; notes?: string }
+  | { kind: "FREELANCER"; name: string; phone?: string; trade?: string; amount?: number; notes?: string }
+  | { kind: "EXTERNAL_COMPANY"; company: string; contact?: string; phone?: string; trade?: string; amount?: number; notes?: string };
+
+function parseWizardAssignment(formData: FormData): WizardAssignment | null {
+  if (String(formData.get("assign_now") ?? "") !== "on") return null;
+  const notes = String(formData.get("assign_notes") ?? "").trim() || undefined;
+  const type = String(formData.get("assignment_type") ?? "INTERNAL_TEAM");
+
+  if (type === "INTERNAL_TEAM") {
+    const supervisorId = String(formData.get("assign_supervisor_id") ?? "").trim() || undefined;
+    const technicianIds = formData.getAll("assign_technician_ids").map(String).filter(Boolean);
+    const helperIds = formData.getAll("assign_helper_ids").map(String).filter(Boolean);
+    if (!supervisorId && technicianIds.length === 0 && helperIds.length === 0) return null;
+    return { kind: "INTERNAL_TEAM", supervisorId, technicianIds, helperIds, notes };
+  }
+
+  if (type === "FREELANCER") {
+    const name = String(formData.get("assign_freelancer_name") ?? "").trim();
+    if (!name) return null;
+    const amountRaw = String(formData.get("assign_freelancer_amount") ?? "").trim();
+    return {
+      kind: "FREELANCER",
+      name,
+      phone: String(formData.get("assign_freelancer_phone") ?? "").trim() || undefined,
+      trade: String(formData.get("assign_freelancer_trade") ?? "").trim() || undefined,
+      amount: amountRaw ? Number(amountRaw) : undefined,
+      notes,
+    };
+  }
+
+  // EXTERNAL_COMPANY
+  const company = String(formData.get("assign_company_name") ?? "").trim();
+  if (!company) return null;
+  const amountRaw = String(formData.get("assign_company_amount") ?? "").trim();
+  return {
+    kind: "EXTERNAL_COMPANY",
+    company,
+    contact: String(formData.get("assign_company_contact") ?? "").trim() || undefined,
+    phone: String(formData.get("assign_company_phone") ?? "").trim() || undefined,
+    trade: String(formData.get("assign_company_trade") ?? "").trim() || undefined,
+    amount: amountRaw ? Number(amountRaw) : undefined,
+    notes,
+  };
 }
 
 function parseAttachmentRows(formData: FormData) {
@@ -462,6 +515,11 @@ export async function upsertWorkOrderAction(formData: FormData) {
   if (requiredPartRows.some((row) => row && (!Number.isInteger(row.quantity_required) || row.quantity_required <= 0))) {
     redirect(`${formBackHref}?error=${encodeURIComponent("Quantity must be a whole number greater than 0.")}`);
   }
+  // Optional Work Assignment During Job Card Creation Unit 7C. Only ever
+  // applied below on a brand-new Job Card that's being started (createStatus
+  // === "Approved"), never on Draft or on edits — see Task 7's Draft
+  // decision.
+  const wizardAssignment = parseWizardAssignment(formData);
   // Attachments step — optional, files ride along in this same multipart submission.
   const pendingAttachments = parsePendingAttachments(formData, "doc_attachment", MAX_ATTACHMENT_ROWS);
   const totalLabor = laborRows.reduce((sum, row) => sum + (row?.hours ?? 0) * (row?.rate ?? 0), 0);
@@ -692,6 +750,76 @@ export async function upsertWorkOrderAction(formData: FormData) {
     }
   }
 
+  // Optional Work Assignment During Job Card Creation Unit 7C, Task 6.
+  // New Job Card only, and only when it's being started (createStatus ===
+  // "Approved") — never on Draft (Task 7's chosen safe behavior: a Draft's
+  // status is "Created", which cannot transition to "Assigned", so
+  // assignTechnicians() would fail outright for Freelancer/Company anyway;
+  // Internal Team roster assignment has no such transition requirement, but
+  // deferring both uniformly to Start keeps the rule simple and consistent
+  // for Data Entry, and avoids ever silently skipping just one of the two
+  // paths). Reuses the exact same backend functions the Job Card detail
+  // page's own "Assign Work"/"Assign Internal Team" panels call — same
+  // validation, audit log, notification, and realtime event, so an
+  // assignment made here is indistinguishable from one made after the fact.
+  // Runs as a second step after the Job Card commits (same non-nested-
+  // transaction pattern as the Materials Request auto-create above) — a
+  // failure here never rolls back or corrupts the already-valid Job Card,
+  // just logs and surfaces a warning banner.
+  let assignmentAutoCreateFailed = false;
+  if (!id && createStatus === "Approved" && wizardAssignment) {
+    try {
+      if (wizardAssignment.kind === "INTERNAL_TEAM") {
+        await assignInternalTeamRoster(context, {
+          workOrderId: work_order_id,
+          supervisorId: wizardAssignment.supervisorId,
+          technicianIds: wizardAssignment.technicianIds,
+          helperIds: wizardAssignment.helperIds,
+          notes: wizardAssignment.notes,
+        });
+      } else if (wizardAssignment.kind === "FREELANCER") {
+        await assignTechnicians(context, {
+          workOrderId: work_order_id,
+          assignmentType: "FREELANCER",
+          technicianIds: [],
+          externalName: wizardAssignment.name,
+          externalPhone: wizardAssignment.phone,
+          externalTrade: wizardAssignment.trade,
+          agreedAmount: wizardAssignment.amount,
+          notes: wizardAssignment.notes,
+        });
+      } else {
+        await assignTechnicians(context, {
+          workOrderId: work_order_id,
+          assignmentType: "EXTERNAL_COMPANY",
+          technicianIds: [],
+          externalCompany: wizardAssignment.company,
+          externalContactPerson: wizardAssignment.contact,
+          externalPhone: wizardAssignment.phone,
+          externalTrade: wizardAssignment.trade,
+          agreedAmount: wizardAssignment.amount,
+          notes: wizardAssignment.notes,
+        });
+      }
+    } catch (assignmentError) {
+      assignmentAutoCreateFailed = true;
+      const message = assignmentError instanceof Error ? assignmentError.message : String(assignmentError);
+      console.error("[maintenance.upsertWorkOrderAction] Auto assignment creation failed:", {
+        workOrderId: work_order_id,
+        message,
+      });
+      await logSystemError({
+        severity: "error",
+        source: "maintenance.upsertWorkOrderAction.autoAssignment",
+        message: message.slice(0, 1000),
+        stack: assignmentError instanceof Error ? (assignmentError.stack ?? null) : null,
+        userId: context.userId,
+        entityType: "work_order",
+        entityId: work_order_id,
+      });
+    }
+  }
+
   // Attachments from the wizard — uploaded only now that the work order exists.
   // A partial or total upload failure never rolls back the work order itself.
   let attachmentUploadFailed = false;
@@ -797,7 +925,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
   // guarantees created_by visibility unconditionally (Task 3), so this URL can
   // never resolve to an empty-because-of-scope list or a 404 detail page.
   const createRedirectUrl =
-    `/maintenance/work-orders?scope=created&success=job-card-created&created=${data.id}&preview=${data.id}&jc=${encodeURIComponent(data.work_order_number ?? "")}${attachmentUploadFailed ? "&warning=attachments-failed" : ""}${materialsRequestAutoCreateFailed ? "&mr_warning=1" : ""}`;
+    `/maintenance/work-orders?scope=created&success=job-card-created&created=${data.id}&preview=${data.id}&jc=${encodeURIComponent(data.work_order_number ?? "")}${attachmentUploadFailed ? "&warning=attachments-failed" : ""}${materialsRequestAutoCreateFailed ? "&mr_warning=1" : ""}${assignmentAutoCreateFailed ? "&assign_warning=1" : ""}`;
 
   console.log("[maintenance.upsertWorkOrderAction] Job Card created:", {
     id: data.id,

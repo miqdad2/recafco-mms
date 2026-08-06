@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { getUserNotificationSummary, getUserNotifications } from "@/lib/notifications/service";
+import { isCriticalEventKeyForRole } from "@/lib/notifications/critical-popup";
 import { formatDateTime } from "@/lib/utils";
 import { prisma } from "@/lib/db/prisma";
 
@@ -123,6 +124,15 @@ export default async function NotificationsPage({ searchParams }: NotificationsP
                       <StatusBadge label={notification.category} tone="blue" />
                       <StatusBadge label={notification.priority} tone={notification.priority === "urgent" || notification.priority === "high" ? "red" : notification.priority === "normal" ? "gray" : "green"} />
                       {!notification.read_at ? <StatusBadge label="Unread" tone="red" /> : <StatusBadge label="Read" tone="gray" />}
+                      {/* Role-to-Role Critical Workflow Popup Unit 9G, Task 11:
+                          a small, cheap "Action Required" badge for the same
+                          event keys that can trigger the centered popup —
+                          event-key match only (no per-row actor-role lookup),
+                          a lighter-weight hint appropriate for a page that can
+                          list up to 50 rows. */}
+                      {isCriticalEventKeyForRole(notification.event_key, context.role?.slug) ? (
+                        <StatusBadge label="Action Required" tone="red" />
+                      ) : null}
                     </div>
                     <p className="mt-2 text-sm leading-6 text-[#4B5563]">{notification.message}</p>
                     <p className="mt-2 text-xs font-semibold text-[#64748B]">

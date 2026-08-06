@@ -4,7 +4,25 @@ import { startTransition, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
 
-import { resolveToastMessage, type ToastMessage, type ToastTone } from "@/lib/action-messages";
+import { ACTION_TOAST_EVENT, resolveToastMessage, type ToastMessage, type ToastTone } from "@/lib/action-messages";
+
+// Popup and Feedback Design Standardization Unit 8D, Task 5.
+//
+// This used to be a full-screen, backdrop-blurred, centered card — visually
+// indistinguishable from a modal, which is exactly the inconsistency this
+// unit fixes (see components/notifications/notification-toast-center.tsx's
+// own long-standing comment calling this out: "that one is a full-screen
+// centered modal-style overlay... which [it] explicitly says a real-time
+// popup must not be"). Now a compact, corner-anchored, non-blocking card —
+// same rounded-corner/icon-circle/close-X visual language as
+// WorkflowSuccessModal and NotificationToastCenter, just smaller and with no
+// backdrop. See context/feedback-standard.md for the full usage rules (when
+// to use this vs. WorkflowSuccessModal).
+//
+// Anchored bottom-right (NotificationToastCenter, a different kind of
+// feedback — pushed from elsewhere, not this tab's own action — keeps
+// top-right) so the two never physically overlap, and lifted above the
+// fixed mobile bottom nav bar on small screens.
 
 // ── Tone config ────────────────────────────────────────────────────────────────
 
@@ -15,48 +33,23 @@ const TONE: Record<
     iconBg:    string;
     iconColor: string;
     border:    string;
-    shadow:    string;
+    live:      "polite" | "assertive";
+    role:      "status" | "alert";
   }
 > = {
-  success: {
-    bar:       "bg-green-500",
-    iconBg:    "bg-green-50",
-    iconColor: "text-green-600",
-    border:    "border-[#E5E7EB]",
-    shadow:    "0 24px 64px rgba(0,0,0,0.13), 0 0 0 1px rgba(22,163,74,0.08)",
-  },
-  error: {
-    bar:       "bg-[#ED1C24]",
-    iconBg:    "bg-red-50",
-    iconColor: "text-red-600",
-    border:    "border-red-100",
-    shadow:    "0 24px 64px rgba(0,0,0,0.16), 0 0 0 1px rgba(220,38,38,0.12)",
-  },
-  warning: {
-    bar:       "bg-amber-400",
-    iconBg:    "bg-amber-50",
-    iconColor: "text-amber-600",
-    border:    "border-amber-100",
-    shadow:    "0 24px 64px rgba(0,0,0,0.14), 0 0 0 1px rgba(217,119,6,0.10)",
-  },
-  info: {
-    bar:       "bg-blue-500",
-    iconBg:    "bg-blue-50",
-    iconColor: "text-blue-600",
-    border:    "border-[#E5E7EB]",
-    shadow:    "0 24px 64px rgba(0,0,0,0.13), 0 0 0 1px rgba(37,99,235,0.08)",
-  },
+  success: { bar: "bg-green-500",  iconBg: "bg-green-50",  iconColor: "text-green-600",  border: "border-[#E5E7EB]",  live: "polite",    role: "status" },
+  error:   { bar: "bg-[#ED1C24]",  iconBg: "bg-red-50",    iconColor: "text-red-600",    border: "border-red-100",   live: "assertive", role: "alert"  },
+  warning: { bar: "bg-amber-400",  iconBg: "bg-amber-50",  iconColor: "text-amber-600",  border: "border-amber-100", live: "assertive", role: "alert"  },
+  info:    { bar: "bg-blue-500",   iconBg: "bg-blue-50",   iconColor: "text-blue-600",   border: "border-[#E5E7EB]", live: "polite",    role: "status" },
 };
 
-// ── Icon inside a soft circle ──────────────────────────────────────────────────
+// ── Icon inside a soft circle (same shapes as WorkflowSuccessModal, smaller) ───
 
 function ToastIcon({ tone }: { tone: ToastTone }) {
   const t = TONE[tone];
-  const iconCls = `h-6 w-6 ${t.iconColor}`;
+  const iconCls = `h-4 w-4 ${t.iconColor}`;
   return (
-    <div
-      className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full ${t.iconBg}`}
-    >
+    <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${t.iconBg}`}>
       {tone === "success" && <CheckCircle2  className={iconCls} aria-hidden="true" />}
       {tone === "error"   && <XCircle       className={iconCls} aria-hidden="true" />}
       {tone === "warning" && <AlertTriangle className={iconCls} aria-hidden="true" />}
@@ -77,45 +70,34 @@ function ToastCard({ item, onClose }: { item: ToastItem; onClose: () => void }) 
 
   return (
     <div
-      role="alert"
-      aria-live="assertive"
+      role={t.role}
+      aria-live={t.live}
       aria-atomic="true"
       style={{
         opacity:   item.visible ? 1 : 0,
-        transform: item.visible
-          ? "translateY(0) scale(1)"
-          : "translateY(20px) scale(0.94)",
+        transform: item.visible ? "translateY(0)" : "translateY(12px)",
         transition: item.visible
-          ? "opacity 0.30s cubic-bezier(0.16,1,0.3,1), transform 0.30s cubic-bezier(0.16,1,0.3,1)"
-          : "opacity 0.20s ease-in, transform 0.20s ease-in",
-        boxShadow: t.shadow,
+          ? "opacity 0.25s cubic-bezier(0.16,1,0.3,1), transform 0.25s cubic-bezier(0.16,1,0.3,1)"
+          : "opacity 0.18s ease-in, transform 0.18s ease-in",
       }}
-      className={`relative w-full overflow-hidden rounded-2xl border bg-white ${t.border}`}
+      className={`pointer-events-auto relative w-full overflow-hidden rounded-xl border bg-white shadow-lg ${t.border}`}
     >
-      {/* 4px top accent bar */}
-      <div className={`absolute inset-x-0 top-0 h-1 ${t.bar}`} />
+      {/* Top accent line — same tone system as the icon */}
+      <div className={`absolute inset-x-0 top-0 h-[3px] ${t.bar}`} aria-hidden="true" />
 
-      {/* Card body */}
-      <div className="flex items-start gap-5 px-7 pb-7 pt-8">
-        {/* Icon circle */}
+      <div className="flex items-start gap-3 p-4">
         <ToastIcon tone={item.tone} />
 
-        {/* Text block */}
         <div className="min-w-0 flex-1 pt-0.5">
-          <p className="text-[17px] font-semibold leading-snug text-[#111827]">
-            {item.title}
-          </p>
+          <p className="text-sm font-bold leading-snug text-[#111827]">{item.title}</p>
           {item.description && (
-            <p className="mt-2 text-[13.5px] leading-relaxed text-[#6B7280]">
-              {item.description}
-            </p>
+            <p className="mt-0.5 text-xs leading-relaxed text-[#4B5563]">{item.description}</p>
           )}
         </div>
 
-        {/* Close button */}
         <button
           onClick={onClose}
-          className="-mr-1 -mt-0.5 shrink-0 rounded-lg p-1.5 text-[#9CA3AF] transition-colors hover:bg-[#F3F5F8] hover:text-[#4B5563] focus:outline-none focus:ring-2 focus:ring-[#ED1C24]"
+          className="-mr-1 -mt-1 shrink-0 rounded-lg p-1 text-[#9CA3AF] transition-colors hover:bg-[#F3F5F8] hover:text-[#4B5563] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#ED1C24]"
           aria-label="Dismiss"
         >
           <X className="h-4 w-4" />
@@ -138,7 +120,7 @@ function DismissBar({ toneBar }: { toneBar: string }) {
 
   return (
     <div
-      className={`${toneBar} h-[3px] opacity-20`}
+      className={`${toneBar} h-[2px] opacity-25`}
       style={{ width: `${width}%`, transition: `width ${AUTO_DISMISS_MS}ms linear` }}
     />
   );
@@ -150,6 +132,29 @@ export function ActionToast() {
   const searchParams = useSearchParams();
   const [toasts, setToasts]   = useState<ToastItem[]>([]);
   const shownRef              = useRef<Set<string>>(new Set());
+
+  function pushToast(msg: ToastMessage) {
+    const id = nextId++;
+    startTransition(() => {
+      setToasts((prev) => [...prev, { ...msg, id, visible: false }]);
+    });
+    setTimeout(() => {
+      setToasts((prev) => prev.map((t) => (t.id === id ? { ...t, visible: true } : t)));
+    }, 16);
+    setTimeout(() => dismiss(id), AUTO_DISMISS_MS);
+  }
+
+  // Task 6: imperative trigger for client components that don't navigate on
+  // success (work sessions, manual time entries, worker profile saves, etc).
+  useEffect(() => {
+    function onActionToast(e: Event) {
+      const detail = (e as CustomEvent<ToastMessage>).detail;
+      if (detail) pushToast(detail);
+    }
+    window.addEventListener(ACTION_TOAST_EVENT, onActionToast);
+    return () => window.removeEventListener(ACTION_TOAST_EVENT, onActionToast);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const success  = searchParams.get("success");
@@ -165,11 +170,7 @@ export function ActionToast() {
     if (!msg) return;
 
     shownRef.current.add(key);
-    const id = nextId++;
-
-    startTransition(() => {
-      setToasts((prev) => [...prev, { ...msg, id, visible: false }]);
-    });
+    pushToast(msg);
 
     // Strip URL params without triggering a navigation.
     const url = new URL(window.location.href);
@@ -178,14 +179,7 @@ export function ActionToast() {
     url.searchParams.delete("saved");
     url.searchParams.delete("category");
     window.history.replaceState(null, "", url.pathname + (url.search || ""));
-
-    // Kick the enter animation one frame after mount.
-    setTimeout(() => {
-      setToasts((prev) => prev.map((t) => (t.id === id ? { ...t, visible: true } : t)));
-    }, 16);
-
-    const timer = setTimeout(() => dismiss(id), AUTO_DISMISS_MS);
-    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   function dismiss(id: number) {
@@ -196,29 +190,19 @@ export function ActionToast() {
   if (toasts.length === 0) return null;
 
   return (
-    <>
-      {/* Full-screen backdrop — focused feel for every tone */}
-      <div
-        className="pointer-events-none fixed inset-0 z-40 bg-black/20 backdrop-blur-[2px]"
-        aria-hidden="true"
-      />
-
-      {/*
-        Centered container.
-        `pb-[8vh]` shifts the effective center 4 vh above pure middle,
-        which reads as more balanced against a top nav/sidebar.
-        Responsive: full-width with px-4 on small screens, 480 px cap on larger.
-      */}
-      <div
-        className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center px-4 pb-[8vh]"
-        aria-label="Action notifications"
-      >
-        <div className="pointer-events-auto flex w-full max-w-[480px] flex-col gap-3">
-          {toasts.map((item) => (
-            <ToastCard key={item.id} item={item} onClose={() => dismiss(item.id)} />
-          ))}
-        </div>
+    // Bottom-right, non-blocking, lifted above the fixed mobile bottom nav
+    // (same "5rem" bar height convention app-layout.tsx already uses for
+    // page padding) — no backdrop, doesn't steal focus, doesn't cover the
+    // bottom nav or a page's own form action buttons.
+    <div
+      className="pointer-events-none fixed inset-x-0 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-[55] flex flex-col-reverse items-center gap-2 px-4 sm:inset-x-auto sm:right-4 sm:bottom-4 sm:items-end"
+      aria-label="Action notifications"
+    >
+      <div className="flex w-full max-w-[380px] flex-col-reverse gap-2">
+        {toasts.map((item) => (
+          <ToastCard key={item.id} item={item} onClose={() => dismiss(item.id)} />
+        ))}
       </div>
-    </>
+    </div>
   );
 }

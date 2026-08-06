@@ -6,12 +6,11 @@ import {
   ArrowRight,
   CheckCircle2,
   ClipboardList,
-  Cpu,
   History,
   PackageSearch,
   Paperclip,
   Printer,
-  Wrench,
+  Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -21,6 +20,7 @@ import { uploadWorkOrderFileAction, deleteWorkOrderAttachmentAction } from "@/ap
 import { BackLink } from "@/components/ui/back-link";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
 import { QrLinkCard } from "@/components/ui/qr-link-card";
@@ -37,9 +37,12 @@ import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/sec
 import { canViewEntityFile } from "@/lib/security/file-access";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
-import { getMaterialFulfillmentForWorkOrder } from "@/lib/work-orders/material-fulfillment";
+import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete, summarizeMaterialAvailability } from "@/lib/work-orders/material-fulfillment";
 import { buildBalanceKey, canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
 import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
+import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
+import { WorkTimeTracking } from "@/components/work-orders/work-time-tracking";
+import { ScrollToSection } from "@/components/work-orders/scroll-to-section";
 import {
   displaySimplifiedStatus,
   simplifiedStatusTone,
@@ -74,6 +77,12 @@ const ACTIVE_MATERIALS_REQUEST_STATUSES = ["Requested", "Approved", "Waiting Sto
 // whatever the current stage already is, since a correction is a loop back
 // onto that same stage, not further progress.
 const DISPLAY_STAGES = ["Draft", "Active", "Closure Requested", "Closed"] as const;
+
+// Job Card Detail Simplification Unit 8C: matches ACTIVE_BUCKET_STATUSES in
+// components/work-orders/workflow-actions.tsx exactly — kept in sync
+// manually (same convention as that file's own duplicated constants), used
+// here only to decide when the Next Action panel's 7-case ladder applies.
+const ACTIVE_BUCKET_STATUSES = ["Approved", "Waiting Materials", "Partially Issued", "Materials Issued", "Assigned", "In Progress"];
 
 function statusToStageIndex(status: string): number {
   const simplified = displaySimplifiedStatus(status);
@@ -185,7 +194,14 @@ export default async function WorkOrderDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string; success?: string; warning?: string; kind?: string }>;
+  searchParams: Promise<{
+    error?: string;
+    success?: string;
+    warning?: string;
+    kind?: string;
+    editAssignment?: string;
+    recordMaterial?: string;
+  }>;
 }) {
   const context = await requirePermission("work_orders.view");
   const [{ id }, resolvedSearch] = await Promise.all([params, searchParams]);
@@ -193,6 +209,12 @@ export default async function WorkOrderDetailPage({
   const warningMessage = resolvedSearch.warning;
   const successMessage = resolvedSearch.success;
   const successKind = resolvedSearch.kind === "materials" ? "materials" : "correction";
+  // Job Card Detail Simplification Unit 8C: the Edit Assignment and Record
+  // Material Used forms (previously always-visible inline forms) now open as
+  // modals via these query params, following the same pattern already used
+  // by the Materials Requests page's "New Materials Request" modal.
+  const showEditAssignment = resolvedSearch.editAssignment === "1";
+  const showRecordMaterial = resolvedSearch.recordMaterial === "1";
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
 
   // Look up by id first (the normal case). If that doesn't resolve, fall
@@ -271,7 +293,7 @@ export default async function WorkOrderDetailPage({
     ? `/store/parts-requests/${activeMaterialsRequest.id}`
     : `/store/parts-requests/new?repair_order_id=${wo.id}`;
 
-  const [auditLogs, partsRequestAuditLogs, offlineMovements, pendingClarification, technicians, materialFulfillment, activeWorkers] = await Promise.all([
+  const [auditLogs, partsRequestAuditLogs, offlineMovements, pendingClarification, technicians, materialFulfillment, activeWorkers, laborSummary] = await Promise.all([
     prisma.audit_logs.findMany({
       where: { entity_type: "work_order", entity_id: wo.id },
       orderBy: { created_at: "desc" },
@@ -302,6 +324,7 @@ export default async function WorkOrderDetailPage({
     getTechnicianPickerOptions(),
     getMaterialFulfillmentForWorkOrder(prisma, wo.id),
     getActiveWorkerProfilesForAssignment(),
+    getWorkOrderLaborSummary(prisma, wo.id),
   ]);
 
   const actorIds = [
@@ -347,6 +370,28 @@ export default async function WorkOrderDetailPage({
   // the material and this Job Card pre-selected.
   const canIssueFromJobCard = canManageOfflineInventory(context) && !["Closed", "Cancelled", "Rejected"].includes(wo.status);
   const fulfillmentByRowId = new Map(materialFulfillment.map((f) => [f.id, f]));
+  // Work Session Time Tracking and Labor Cost Calculation Unit 8: same
+  // audience/gate as Unit 7's Internal Team roster (work_orders.assign,
+  // blocked once Closed) for Start/Pause/Resume/Stop/Manual Entry; Manager-
+  // only for editing/correcting/cancelling an existing session.
+  const canManageWorkSessions =
+    (hasPermission(context, "work_orders.assign") || context.role?.slug === "maintenance_manager" || context.role?.slug === "super_admin") &&
+    wo.status !== "Closed";
+  const isManagerRoleForSessions = context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
+  // Job Card Detail Simplification Unit 8C: page-level mirror of
+  // WorkflowActions' own canAssign/canManageRoster gates (kept in sync
+  // manually, same convention as isManagerRoleForSessions above) — used only
+  // to decide whether the read-only Assignment section's "Edit Assignment"
+  // button is worth showing. The actual authorization for the forms
+  // themselves still lives entirely inside WorkflowActions section="assignment".
+  const canAssignWorkNow =
+    !hasPendingCorrection &&
+    (hasPermission(context, "work_orders.approve") || hasPermission(context, "work_orders.assign")) &&
+    ["Approved", "Partially Issued", "Materials Issued", "Assigned", "In Progress"].includes(wo.status) &&
+    (wo.status === "Assigned" || wo.status === "In Progress" || !activeMaterialsRequest);
+  const canManageRosterNow =
+    !hasPendingCorrection && (hasPermission(context, "work_orders.assign") || isManagerRoleForSessions) && wo.status !== "Closed";
+  const canEditAssignmentNow = canAssignWorkNow || canManageRosterNow;
   const canUploadFiles = hasPermission(context, "files.upload");
   const canDeleteFiles =
     context.role?.slug === "super_admin" ||
@@ -379,10 +424,141 @@ export default async function WorkOrderDetailPage({
   const openPartsRequests = wo.parts_requests.filter(
     (r) => !["Closed", "Cancelled", "Issued"].includes(r.status)
   ).length;
+
+  // Job Card Work Tracking Entry Points and Assignment Visibility Unit 8B,
+  // Task 6 — assignment presence/summary, reused by the Top Operational
+  // Summary chips and the new Assignment section (Unit 8C) below.
+  const hasInternalTeam = wo.work_order_worker_assignments.length > 0;
+  const hasAssignment = wo.work_order_assignments.length > 0 || hasInternalTeam;
+  const assignmentSummaryText = (() => {
+    if (hasInternalTeam) {
+      const n = wo.work_order_worker_assignments.length;
+      return `Internal Team assigned (${n} worker${n === 1 ? "" : "s"})`;
+    }
+    const a = wo.work_order_assignments[0];
+    if (!a) return "Not assigned";
+    if (a.assignment_type === "FREELANCER") return `Freelancer: ${a.external_name ?? ""}`;
+    if (a.assignment_type === "EXTERNAL_COMPANY") return `Company: ${a.external_company ?? ""}`;
+    return wo.work_order_assignments
+      .map((x) => x.profiles?.full_name)
+      .filter((n): n is string => Boolean(n))
+      .join(", ") || "Not assigned";
+  })();
+
+  // Job Card Detail Simplification Unit 8C — readiness/chip data for the new
+  // Top Operational Summary, Next Action panel, and Closure panel. Mirrors
+  // (read-only, does not call) the same three closure guards enforced
+  // server-side in lib/backend/work-orders/service.ts
+  // (assertNoPendingMaterialsRequests / assertRequiredMaterialsFulfilled /
+  // assertNoActiveWorkSessions) purely so the UI can show "not ready yet and
+  // why" before the user attempts an action that would otherwise fail.
+  const pendingMaterialsRequestsCount = wo.parts_requests.filter((r) => r.status !== "Issued").length;
+  const materialsIncomplete = anyMaterialsIncomplete(materialFulfillment);
+  const materialsPendingForClosure = pendingMaterialsRequestsCount > 0 || materialsIncomplete;
+  // Job Card Action Clarity Fix Task 5: "none" when this Job Card has no
+  // work_order_required_parts rows — the Next Action panel's materials
+  // branch below falls back to the plain pending-request check above in
+  // that case, same as the quick-view popup.
+  const materialsAvailability = summarizeMaterialAvailability(materialFulfillment);
+  const closureBlockers: string[] = [];
+  if (hasPendingCorrection) closureBlockers.push("A correction is pending — respond to it before requesting closure.");
+  if (pendingMaterialsRequestsCount > 0) closureBlockers.push("A Materials Request is still pending — receive it first.");
+  if (materialsIncomplete) closureBlockers.push("Required materials have not been fully issued yet.");
+  if (laborSummary.has_active_session) closureBlockers.push("A work session is active — stop it before requesting closure.");
+  const closureReady = closureBlockers.length === 0;
+
+  // Status chips for the hero header (Task 2, Premium Job Card Detail Page
+  // Redesign Unit 8C.2). Assignment/Closure chips unchanged; Materials and
+  // Work Time chips gained a distinct "in-between" state each (Ready to
+  // Issue / Paused) instead of only reading "Pending"/"Not Started" while
+  // stock was already sitting in Offline Inventory or a worker was paused.
+  const assignmentChip: { label: string; tone: BadgeTone } = hasAssignment
+    ? { label: "Assigned", tone: "green" }
+    : { label: "Not assigned", tone: "gray" };
+  const materialsChip: { label: string; tone: BadgeTone } =
+    wo.parts_requests.length === 0 && materialFulfillment.length === 0
+      ? { label: "No materials", tone: "gray" }
+      : materialsAvailability === "issuable" || materialsAvailability === "partial"
+        ? { label: "Ready to Issue", tone: "blue" }
+        : openPartsRequests > 0 || materialsIncomplete
+          ? { label: "Pending", tone: "amber" }
+          : { label: "Completed", tone: "green" };
+  const anyWorkerPaused = laborSummary.workers.some((w) => w.status === "Paused");
+  const workTimeChip: { label: string; tone: BadgeTone } = !hasInternalTeam
+    ? { label: "Not Started", tone: "gray" }
+    : laborSummary.has_active_session
+      ? { label: "Working", tone: "blue" }
+      : anyWorkerPaused
+        ? { label: "Paused", tone: "amber" }
+        : laborSummary.total_minutes > 0
+          ? { label: "Sessions Recorded", tone: "green" }
+          : { label: "Not Started", tone: "gray" };
+  const closureChip: { label: string; tone: BadgeTone } =
+    wo.status === "Closed"
+      ? { label: "Closed", tone: "green" }
+      : wo.status === "Closure Requested"
+        ? { label: "Requested", tone: "amber" }
+        : closureReady
+          ? { label: "Ready", tone: "blue" }
+          : { label: "Not Ready", tone: "gray" };
+
+  // Next Action panel (section 2) 7-case ladder — only applies once a Job
+  // Card is past creation/review (Created/Under Review keep their own
+  // Submit/Approve/Edit forms, rendered via WorkflowActions section="status"
+  // in the same panel instead of this ladder).
+  const NEXT_ACTION_LADDER_STATUSES = [...ACTIVE_BUCKET_STATUSES, "Closure Requested", "Closed"];
+  const showNextActionLadder = !hasPendingCorrection && NEXT_ACTION_LADDER_STATUSES.includes(wo.status);
+  const nextActionLadder = (() => {
+    type ActionButton = { label: string; href: string };
+    if (wo.status === "Closed") {
+      return { message: "This Job Card is closed.", buttons: [] as ActionButton[] };
+    }
+    if (wo.status === "Closure Requested") {
+      const buttons: ActionButton[] = isManagerRoleForSessions ? [{ label: "Approve Closure", href: "#closure-panel" }] : [];
+      return { message: "Waiting for Manager approval to close this Job Card.", buttons };
+    }
+    // Job Card Action Clarity Fix Task 5: same Issue/Receive/partial wording
+    // and precedence as the quick-view popup (Task 4), driven by the same
+    // summarizeMaterialAvailability() read of Required Materials vs. Offline
+    // Inventory — never leads with "Receive Materials" when stock to issue
+    // is already sitting in Offline Inventory.
+    if (materialsAvailability === "partial") {
+      const buttons: ActionButton[] = [];
+      if (canIssueFromJobCard) buttons.push({ label: "Issue Available", href: "#parts" });
+      buttons.push({ label: activeMaterialsRequest ? "Receive Shortage" : materialsButtonLabel, href: materialsButtonHref });
+      return { message: "Some materials are available. Issue available stock and receive shortage later.", buttons };
+    }
+    if (materialsAvailability === "issuable") {
+      const buttons: ActionButton[] = canIssueFromJobCard
+        ? [{ label: "Issue Material", href: "#parts" }]
+        : [{ label: activeMaterialsRequest ? "Receive Materials" : materialsButtonLabel, href: materialsButtonHref }];
+      return { message: "Materials are available. Issue materials to this Job Card.", buttons };
+    }
+    if (materialsPendingForClosure) {
+      const buttons: ActionButton[] = [
+        { label: activeMaterialsRequest ? "Receive Materials" : materialsButtonLabel, href: materialsButtonHref },
+      ];
+      return { message: "Materials are pending. Receive materials when they arrive.", buttons };
+    }
+    if (!hasAssignment) {
+      return { message: "Assign workers to start work tracking.", buttons: [{ label: "Assign Workers", href: "?editAssignment=1#assignment" }] };
+    }
+    if (hasInternalTeam && laborSummary.has_active_session) {
+      return { message: "Work is in progress. Pause or stop active sessions when needed.", buttons: [{ label: "Track Work", href: "#work-time-tracking" }] };
+    }
+    if (hasInternalTeam && laborSummary.total_minutes === 0) {
+      return { message: "Workers are assigned. Start work tracking.", buttons: [{ label: "Track Work", href: "#work-time-tracking" }] };
+    }
+    return { message: "Work is ready for closure request.", buttons: [{ label: "Request Closure", href: "#closure-panel" }] };
+  })();
+
   const stageIndex = statusToStageIndex(wo.status);
   const isTerminal = ["Rejected", "Cancelled"].includes(wo.status);
-  const hasTechnicianContent =
-    wo.work_order_assignments.length > 0 ||
+  // Job Card Detail Simplification Unit 8C: the Assignment display used to
+  // live inside this section and gate it; it now has its own dedicated
+  // section above, so this residual section (notes/labor rows/start-end
+  // timestamps only) is gated without the assignments term.
+  const hasTechnicianNotesContent =
     wo.work_order_technician_notes.length > 0 ||
     wo.work_order_labor.length > 0 ||
     Boolean(wo.starting_datetime) ||
@@ -410,6 +586,7 @@ export default async function WorkOrderDetailPage({
         watch={["job_card.", "work_order.", "materials_request.", "store_materials.", "technician_job."]}
         enabled={!isTerminal}
       />
+      <ScrollToSection paramName="section" paramValue="work-time" targetId="work-time-tracking" />
       {successMessage === "clarification-sent" && (
         <CorrectionRequestSentModal
           jobCardId={wo.id}
@@ -487,7 +664,127 @@ export default async function WorkOrderDetailPage({
         }
       />
 
-      <div className="space-y-5 p-4 lg:p-6">
+      <div className="space-y-6 p-4 lg:p-6">
+
+        {/* ── 1. Hero header ──────────────────────────────────────────────
+            Premium Job Card Detail Page Redesign Unit 8C.2, Task 1: this
+            Job Card's identity — number, issue, asset on the left; status
+            and the facts that place it (created/reported by/work team) on
+            the right — replacing Unit 8C's flat 6-box info grid with a
+            layout that reads like a document header, not a database row.
+            Task 2's four operational chips live in their own band directly
+            below, visually distinct from the identity facts above them. */}
+        <section className="overflow-hidden rounded-lg border border-[#DDE2EA] bg-white shadow-sm">
+          <div className="grid gap-6 p-5 lg:grid-cols-[minmax(0,1fr)_19rem] lg:gap-8 lg:p-6">
+            <div className="min-w-0">
+              <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Job Card</p>
+              <h1 className="mt-1 break-words text-2xl font-black leading-tight text-[#111827]">
+                {wo.work_order_number ?? "Job Card"}
+              </h1>
+              <p className="mt-2 text-base leading-6 text-[#374151]">{summaryTitle}</p>
+              <p className="mt-3 text-sm text-[#4B5563]">
+                {wo.assets ? (
+                  <>
+                    <span className="font-semibold text-[#111827]">
+                      {wo.assets.asset_code} — {wo.assets.asset_name}
+                    </span>
+                    {wo.assets.location ? ` · ${wo.assets.location}` : ""}
+                  </>
+                ) : (
+                  "No asset linked"
+                )}
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-4 border-t border-[#EEF2F6] pt-5 lg:border-l lg:border-t-0 lg:pl-8 lg:pt-0">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Status</p>
+                <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                  <StatusBadge label={displaySimplifiedStatus(wo.status)} tone={simplifiedStatusTone(displaySimplifiedStatus(wo.status))} />
+                  {hasPendingCorrection && <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />}
+                </div>
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Created</p>
+                <p className="mt-1 text-sm font-bold text-[#111827]">{formatDateValue(wo.created_at)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Reported by</p>
+                <p className="mt-1 break-words text-sm font-bold text-[#111827]">{wo.ordered_by ?? "-"}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Work Team / Division</p>
+                <p className="mt-1 break-words text-sm font-bold text-[#111827]">{wo.departments?.name ?? wo.worker_type ?? "-"}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* ── 2. Operational chips ──────────────────────────────────── */}
+          <div className="flex flex-wrap items-center gap-2 border-t border-[#EEF2F6] bg-[#F9FAFB] px-5 py-3.5 lg:px-6">
+            <StatusBadge label={`Assignment: ${assignmentChip.label}`} tone={assignmentChip.tone} />
+            <StatusBadge label={`Materials: ${materialsChip.label}`} tone={materialsChip.tone} />
+            <StatusBadge label={`Work Time: ${workTimeChip.label}`} tone={workTimeChip.tone} />
+            <StatusBadge label={`Closure: ${closureChip.label}`} tone={closureChip.tone} />
+          </div>
+        </section>
+
+        {/* ── 3. Next Action panel ────────────────────────────────────────
+            Premium Job Card Detail Page Redesign Unit 8C.2, Task 3: a
+            stronger left-accent treatment (not just another white card) so
+            it reads as the one place to look for "what do I do next". For
+            Created/Under Review (and while a correction is pending) this
+            hosts the same Submit/Approve/Edit/Mark-Started/Mark-External-
+            Complete actions that used to live in the sidebar (WorkflowActions
+            section="status", untouched logic). Once the Job Card is in the
+            Active bucket (or Closure Requested/Closed) the 7-case ladder
+            below takes over with plain-language guidance and buttons that
+            jump to the section where the actual action lives — Assignment,
+            Work Time Tracking, Materials, or the Closure panel. No new forms
+            here; every button either navigates or reuses an existing action
+            already rendered elsewhere. */}
+        <section
+          id="next-action"
+          className="rounded-lg border border-[#F3D6D6] border-l-4 border-l-[#ED1C24] bg-red-50/40 p-5 shadow-sm"
+        >
+          <h2 className="text-base font-black uppercase tracking-wide text-[#ED1C24]">Next Action</h2>
+          {showNextActionLadder ? (
+            <div className="mt-2">
+              <p className="text-base font-bold leading-6 text-[#111827]">{nextActionLadder.message}</p>
+              {nextActionLadder.buttons.length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {nextActionLadder.buttons.map((btn, idx) => (
+                    <Link
+                      key={btn.label}
+                      href={btn.href}
+                      className={
+                        idx === 0
+                          ? "inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e] sm:w-auto"
+                          : "inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-bold text-[#111827] transition hover:bg-gray-50 sm:w-auto"
+                      }
+                    >
+                      {btn.label}
+                    </Link>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <div className={showNextActionLadder ? "mt-4 border-t border-[#F3D6D6] pt-4" : "mt-2"}>
+            <WorkflowActions
+              section="status"
+              workOrderId={wo.id}
+              status={wo.status}
+              context={context}
+              technicians={technicians}
+              currentAssignment={currentAssignment}
+              activeMaterialsRequest={
+                activeMaterialsRequest
+                  ? { id: activeMaterialsRequest.id, number: activeMaterialsRequest.parts_request_number, status: activeMaterialsRequest.status }
+                  : null
+              }
+              hasPendingCorrection={hasPendingCorrection}
+            />
+          </div>
+        </section>
 
         {/* ── Flash banners ───────────────────────────────────────────────── */}
         {errorMessage ? (
@@ -612,31 +909,6 @@ export default async function WorkOrderDetailPage({
           </div>
         ) : null}
 
-        {/* ── Identity summary strip ───────────────────────────────────────── */}
-        <section className="rounded-md border border-[#DDE2EA] bg-white p-4 shadow-sm">
-          <div className="flex flex-wrap items-center gap-2">
-            {(() => {
-              const simplified = displaySimplifiedStatus(wo.status);
-              return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
-            })()}
-            {hasPendingCorrection && (
-              <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
-            )}
-            <StatusBadge label={wo.worker_type} tone="gray" />
-          </div>
-          <h2 className="mt-2 text-xl font-black text-[#111827]">{summaryTitle}</h2>
-          {wo.assets ? (
-            <p className="mt-1 text-sm text-[#4B5563]">
-              {wo.assets.asset_code} — {wo.assets.asset_name}
-              {wo.assets.location ? ` · ${wo.assets.location}` : ""}
-            </p>
-          ) : null}
-          <p className="mt-1.5 text-xs text-[#4B5563]">
-            Created {formatDateValue(wo.created_at)}
-            {wo.departments ? ` · ${wo.departments.name}` : ""}
-          </p>
-        </section>
-
         {/* ── Compact 5-stage stepper ───────────────────────────────────── */}
         {!isTerminal ? (
           <section className="rounded-md border border-[#DDE2EA] bg-white px-4 py-3 shadow-sm">
@@ -693,248 +965,284 @@ export default async function WorkOrderDetailPage({
 
         {/* ── Two-column layout ────────────────────────────────────────────── */}
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_24rem]">
-          <main className="space-y-5">
+          <main className="space-y-6">
 
-            {/* 1 — Asset Details (compact) */}
-            {wo.assets ? (
-              <section id="linked-asset" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
-                <SectionHeader eyebrow="Machine / equipment" title="Asset Details" icon={Cpu} />
-                <div className="mt-4">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <p className="text-base font-black text-[#111827]">
-                        {wo.assets.asset_code} — {wo.assets.asset_name}
-                      </p>
+            {/* 1 — Overview (Premium Job Card Detail Page Redesign Unit
+                8C.2, Task 5): Asset Details and Problem Details combined
+                into one section, two clear sub-groups side by side on
+                desktop. Status is deliberately not repeated here — it
+                already lives in the hero header above. */}
+            <section id="overview" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
+              <SectionHeader eyebrow="What this job is" title="Overview" icon={ClipboardList} />
+              <div className="mt-5 grid gap-6 lg:grid-cols-2">
+                {/* Asset sub-group */}
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Asset / Equipment / Vehicle</p>
+                  {wo.assets ? (
+                    <div className="mt-2 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <p className="text-sm font-black text-[#111827]">
+                          {wo.assets.asset_code} — {wo.assets.asset_name}
+                        </p>
+                        <StatusBadge label={wo.assets.status} tone={wo.assets.status === "Breakdown" ? "red" : "green"} />
+                      </div>
                       {(wo.assets.category || wo.assets.location) ? (
-                        <p className="mt-0.5 text-sm text-[#4B5563]">
+                        <p className="mt-1 text-xs text-[#4B5563]">
                           {[wo.assets.category, wo.assets.location].filter(Boolean).join(" · ")}
                         </p>
                       ) : null}
+                      {wo.plate_number ? (
+                        <p className="mt-1 text-xs text-[#4B5563]">Plate number: <span className="font-semibold text-[#111827]">{wo.plate_number}</span></p>
+                      ) : null}
+                      {(wo.assets.brand || wo.assets.model || wo.assets.serial_number) ? (
+                        <p className="mt-1 text-xs text-[#4B5563]">
+                          {[
+                            wo.assets.brand ? `Brand: ${wo.assets.brand}` : null,
+                            wo.assets.model ? `Model: ${wo.assets.model}` : null,
+                            wo.assets.serial_number ? `S/N: ${wo.assets.serial_number}` : null,
+                          ].filter(Boolean).join(" · ")}
+                        </p>
+                      ) : null}
+                      <Link
+                        href={`/assets/${wo.asset_id}`}
+                        className="mt-2 inline-flex items-center gap-1 text-sm font-bold text-[#ED1C24] hover:underline"
+                      >
+                        View asset profile
+                        <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                      </Link>
                     </div>
-                    <StatusBadge
-                      label={wo.assets.status}
-                      tone={wo.assets.status === "Breakdown" ? "red" : "green"}
-                    />
-                  </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-[#9CA3AF]">No asset linked.</p>
+                  )}
+                </div>
 
-
-                  {(wo.assets.brand || wo.assets.model || wo.assets.serial_number) ? (
-                    <p className="mt-3 text-xs text-[#4B5563]">
-                      {[
-                        wo.assets.brand ? `Brand: ${wo.assets.brand}` : null,
-                        wo.assets.model ? `Model: ${wo.assets.model}` : null,
-                        wo.assets.serial_number ? `S/N: ${wo.assets.serial_number}` : null,
-                      ].filter(Boolean).join(" · ")}
-                    </p>
-                  ) : null}
-
-                  <div className="mt-3">
-                    <Link
-                      href={`/assets/${wo.asset_id}`}
-                      className="inline-flex items-center gap-1 text-sm font-bold text-[#ED1C24] hover:underline"
-                    >
-                      View asset profile
-                      <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-                    </Link>
+                {/* Problem sub-group */}
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Problem Reported</p>
+                  <div className="mt-2 space-y-2">
+                    {wo.operator_complaint ? (
+                      <p className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3 text-sm leading-6 text-[#111827]">
+                        {wo.operator_complaint}
+                      </p>
+                    ) : null}
+                    {wo.description_of_work ? (
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-[#9CA3AF]">Description of work required</p>
+                        <p className="mt-1 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3 text-sm leading-6 text-[#111827]">
+                          {wo.description_of_work}
+                        </p>
+                      </div>
+                    ) : null}
+                    <div className="grid grid-cols-2 gap-2">
+                      {wo.maintenance_type ? <InfoBlock label="Maintenance type" value={wo.maintenance_type} /> : null}
+                      {wo.date_of_order ? <InfoBlock label="Date of order" value={formatDateValue(wo.date_of_order)} /> : null}
+                      {wo.ordered_by ? <InfoBlock label="Reported by" value={wo.ordered_by} /> : null}
+                      {wo.job_location ? <InfoBlock label="Job location" value={wo.job_location} /> : null}
+                      {wo.profiles ? <InfoBlock label="Supervisor" value={wo.profiles.full_name} /> : null}
+                      {wo.serial_number ? <InfoBlock label="RO serial no." value={wo.serial_number} /> : null}
+                      {wo.running_hours != null ? <InfoBlock label="Running hours" value={displayValue(wo.running_hours)} /> : null}
+                      {wo.kilometers != null ? <InfoBlock label="Kilometers" value={displayValue(wo.kilometers)} /> : null}
+                    </div>
                   </div>
                 </div>
-              </section>
-            ) : null}
+              </div>
 
-            {/* 2 — Problem Details */}
-            <section id="problem" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
-              <SectionHeader eyebrow="Issue reported" title="Problem Details" icon={ClipboardList} />
+              {/* Execution notes/labor records — legacy/secondary content,
+                  collapsed by default so it doesn't compete with the two
+                  sub-groups above for a Job Card that has any. */}
+              {hasTechnicianNotesContent ? (
+                <details className="mt-5 border-t border-[#E5E7EB] pt-4">
+                  <summary className="cursor-pointer select-none text-xs font-black uppercase tracking-wide text-[#4B5563]">
+                    Execution notes &amp; labor records
+                  </summary>
+                  <div className="mt-3 space-y-4">
+                    {(wo.starting_datetime || wo.ending_datetime) ? (
+                      <div className="grid gap-3 md:grid-cols-2">
+                        {wo.starting_datetime ? <InfoBlock label="Work started" value={formatDateTimeValue(wo.starting_datetime)} /> : null}
+                        {wo.ending_datetime ? <InfoBlock label="Work completed" value={formatDateTimeValue(wo.ending_datetime)} /> : null}
+                      </div>
+                    ) : null}
+                    {wo.work_order_technician_notes.length ? (
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Technician notes</p>
+                        <div className="mt-2 space-y-2">
+                          {wo.work_order_technician_notes.map((note) => (
+                            <RecordLine
+                              key={note.id}
+                              title={note.profiles.full_name}
+                              detail={`${displayValue(note.labor_hours)} hours — ${note.note}`}
+                              meta={formatDateTimeValue(note.created_at)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {wo.work_order_labor.length ? (
+                      <div>
+                        <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Labor records</p>
+                        <Table
+                          columns={
+                            canViewCosts
+                              ? ["Labor", "Technician", "Hours", "Rate (KWD)", "Amount (KWD)"]
+                              : ["Labor", "Technician", "Hours"]
+                          }
+                          rows={wo.work_order_labor.map((row) =>
+                            canViewCosts
+                              ? [row.labor_name, row.profiles?.full_name ?? "-", displayValue(row.hours), money(row.rate), money(row.amount)]
+                              : [row.labor_name, row.profiles?.full_name ?? "-", displayValue(row.hours)]
+                          )}
+                          empty="No labor rows recorded."
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                </details>
+              ) : null}
+            </section>
+
+            {/* 2 — Assignment (Job Card Detail Simplification Unit 8C).
+                Read-only summary only — the actual Assign Work / Internal
+                Team roster forms (WorkflowActions section="assignment",
+                logic untouched) now live in the "Edit Assignment" modal
+                instead of being permanently visible here. */}
+            <section id="assignment" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <SectionHeader eyebrow="Who's doing the work" title="Assignment" icon={Users} />
+                {canEditAssignmentNow ? (
+                  <Link
+                    href={`/maintenance/work-orders/${wo.id}?editAssignment=1`}
+                    className="inline-flex min-h-10 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
+                  >
+                    Edit Assignment
+                  </Link>
+                ) : null}
+              </div>
+              <p className="mt-2 text-sm font-bold text-[#111827]">{assignmentSummaryText}</p>
+
               <div className="mt-5 space-y-4">
-                {wo.operator_complaint ? (
+                {hasInternalTeam ? (
                   <div>
-                    <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Operator complaint</p>
-                    <p className="mt-1 rounded-md border border-[#E5E7EB] bg-gray-50 p-3 text-sm leading-6 text-[#111827]">
-                      {wo.operator_complaint}
+                    <InfoBlock label="Assignment type" value="Internal Team" />
+                    <div className="mt-3 space-y-3">
+                      {(["Supervisor", "Technician", "Helper/Labor"] as const).map((role) => {
+                        const rows = wo.work_order_worker_assignments.filter((r) => r.worker_role === role);
+                        if (rows.length === 0) return null;
+                        return (
+                          <div key={role}>
+                            <p className="text-xs font-bold text-[#6B7280]">
+                              {role === "Helper/Labor" ? "Helpers / Labor" : `${role}${rows.length > 1 ? "s" : ""}`}
+                            </p>
+                            <div className="mt-1 space-y-1.5">
+                              {rows.map((r) => (
+                                <div key={r.id} className="flex items-center justify-between rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
+                                  <span className="font-semibold text-[#111827]">{r.worker_profiles.name}</span>
+                                  {canViewCosts ? (
+                                    <span className="text-[#4B5563]">{money(r.hourly_rate_snapshot)} KWD/hr</span>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-3 text-xs text-[#9CA3AF]">
+                      Assigned {formatDateTimeValue(wo.work_order_worker_assignments[0].assigned_at)} by{" "}
+                      {wo.work_order_worker_assignments[0].profiles?.full_name ?? "System"}
+                      {wo.work_order_worker_assignments[0].notes ? ` — ${wo.work_order_worker_assignments[0].notes}` : ""}
                     </p>
                   </div>
-                ) : null}
-                {wo.description_of_work ? (
-                  <div>
-                    <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Description of work required</p>
-                    <p className="mt-1 rounded-md border border-[#E5E7EB] bg-gray-50 p-3 text-sm leading-6 text-[#111827]">
-                      {wo.description_of_work}
-                    </p>
+                ) : wo.work_order_assignments.length ? (
+                  <div className="space-y-2">
+                    {wo.work_order_assignments.map((a) => {
+                      const isInternal = a.assignment_type === "INTERNAL_TECHNICIAN";
+                      const isFreelancer = a.assignment_type === "FREELANCER";
+                      const assignedAt = `Assigned ${formatDateTimeValue(a.assigned_at)} by ${actorName(a.assigned_by)}`;
+                      const typeLabel = isInternal ? "Internal Technician" : isFreelancer ? "Freelancer" : "External Company";
+                      if (isInternal) {
+                        return (
+                          <div key={a.id}>
+                            <InfoBlock label="Assignment type" value={typeLabel} />
+                            <div className="mt-2">
+                              <RecordLine title={a.profiles?.full_name ?? "Unknown technician"} detail={assignedAt} />
+                            </div>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div key={a.id}>
+                          <InfoBlock label="Assignment type" value={typeLabel} />
+                          <div className="mt-2 rounded-md border border-[#E5E7EB] p-3 text-sm">
+                            <p className="font-semibold text-[#111827]">{isFreelancer ? a.external_name : a.external_company}</p>
+                            {a.external_contact_person ? <p className="text-[#4B5563]">Contact: {a.external_contact_person}</p> : null}
+                            {a.external_trade ? <p className="text-[#4B5563]">Work type: {a.external_trade}</p> : null}
+                            {a.external_phone ? <p className="text-[#4B5563]">Phone: {a.external_phone}</p> : null}
+                            {canViewCosts && a.agreed_amount != null ? (
+                              <p className="text-[#4B5563]">Agreed amount: {money(a.agreed_amount)} KWD</p>
+                            ) : null}
+                            {a.external_expected_visit_date ? (
+                              <p className="text-[#4B5563]">
+                                Expected visit: {new Date(a.external_expected_visit_date).toLocaleDateString("en-GB")}
+                              </p>
+                            ) : null}
+                            {a.notes ? <p className="mt-1 text-xs text-[#9CA3AF]">{a.notes}</p> : null}
+                            <p className="mt-1 text-xs text-[#9CA3AF]">{assignedAt}</p>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                ) : null}
-                <div className="grid gap-3 md:grid-cols-3">
-                  {wo.maintenance_type ? <InfoBlock label="Maintenance type" value={wo.maintenance_type} /> : null}
-                  {wo.ordered_by ? <InfoBlock label="Reported by" value={wo.ordered_by} /> : null}
-                  {wo.date_of_order ? <InfoBlock label="Date of order" value={formatDateValue(wo.date_of_order)} /> : null}
-                  {wo.job_location ? <InfoBlock label="Job location" value={wo.job_location} /> : null}
-                  {wo.profiles ? <InfoBlock label="Supervisor" value={wo.profiles.full_name} /> : null}
-                  {wo.plate_number ? <InfoBlock label="Plate number" value={wo.plate_number} /> : null}
-                  {wo.serial_number ? <InfoBlock label="RO serial no." value={wo.serial_number} /> : null}
-                  {wo.running_hours != null ? <InfoBlock label="Running hours" value={displayValue(wo.running_hours)} /> : null}
-                  {wo.kilometers != null ? <InfoBlock label="Kilometers" value={displayValue(wo.kilometers)} /> : null}
-                </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-3 rounded-md border border-dashed border-[#E5E7EB] bg-[#F9FAFB] py-8 text-center">
+                    <p className="text-sm text-[#6B7280]">No workers assigned yet.</p>
+                    {canEditAssignmentNow ? (
+                      <Link
+                        href={`/maintenance/work-orders/${wo.id}?editAssignment=1`}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-red-700"
+                      >
+                        <Users className="h-4 w-4" aria-hidden /> Assign Workers
+                      </Link>
+                    ) : null}
+                  </div>
+                )}
               </div>
             </section>
 
-            {/* 3 — Technician Work (hidden when empty) */}
-            {hasTechnicianContent ? (
-              <section id="technicians" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
-                <SectionHeader eyebrow="Execution" title="Technician Work" icon={Wrench} />
-                <div className="mt-5 space-y-4">
-                  {(wo.starting_datetime || wo.ending_datetime) ? (
-                    <div className="grid gap-4 md:grid-cols-2">
-                      {wo.starting_datetime ? (
-                        <InfoBlock label="Work started" value={formatDateTimeValue(wo.starting_datetime)} />
-                      ) : null}
-                      {wo.ending_datetime ? (
-                        <InfoBlock label="Work completed" value={formatDateTimeValue(wo.ending_datetime)} />
-                      ) : null}
-                    </div>
-                  ) : null}
+            {/* 3 — Work Time Tracking (Work Session Time Tracking and Labor
+                Cost Calculation Unit 8, Task 6) — its own section, separate
+                from Assignment above (which is about who's assigned, not
+                time actually worked). Notes/labor records that used to sit
+                in a "Technician Work" section here now live collapsed
+                inside Overview above (Premium Redesign Unit 8C.2, Task 4). */}
+            <WorkTimeTracking
+              workOrderId={wo.id}
+              summary={laborSummary}
+              canManageSessions={canManageWorkSessions}
+              isManager={isManagerRoleForSessions}
+              canViewCosts={canViewCosts}
+              canAssign={hasPermission(context, "work_orders.assign") || context.role?.slug === "super_admin"}
+            />
 
-                  {wo.work_order_assignments.length ? (
-                    <div id="assignment">
-                      <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Assignment</p>
-                      <div className="mt-2 space-y-2">
-                        {wo.work_order_assignments.map((a) => {
-                          const isInternal = a.assignment_type === "INTERNAL_TECHNICIAN";
-                          const isFreelancer = a.assignment_type === "FREELANCER";
-                          const assignedAt = `Assigned ${formatDateTimeValue(a.assigned_at)} by ${actorName(a.assigned_by)}`;
-                          if (isInternal) {
-                            return (
-                              <RecordLine
-                                key={a.id}
-                                title={`Internal: ${a.profiles?.full_name ?? "Unknown technician"}`}
-                                detail={assignedAt}
-                              />
-                            );
-                          }
-                          if (isFreelancer) {
-                            return (
-                              <div key={a.id} className="rounded-md border border-[#E5E7EB] p-3 text-sm">
-                                <p className="font-semibold text-[#111827]">Freelancer: {a.external_name}</p>
-                                {a.external_trade ? <p className="text-[#4B5563]">Work type: {a.external_trade}</p> : null}
-                                {a.external_phone ? <p className="text-[#4B5563]">Phone: {a.external_phone}</p> : null}
-                                {canViewCosts && a.agreed_amount != null ? (
-                                  <p className="text-[#4B5563]">Agreed amount: {money(a.agreed_amount)} KWD</p>
-                                ) : null}
-                                {a.external_expected_visit_date ? (
-                                  <p className="text-[#4B5563]">
-                                    Expected visit: {new Date(a.external_expected_visit_date).toLocaleDateString("en-GB")}
-                                  </p>
-                                ) : null}
-                                {a.notes ? <p className="mt-1 text-xs text-[#9CA3AF]">{a.notes}</p> : null}
-                                <p className="mt-1 text-xs text-[#9CA3AF]">{assignedAt}</p>
-                              </div>
-                            );
-                          }
-                          // EXTERNAL_COMPANY
-                          return (
-                            <div key={a.id} className="rounded-md border border-[#E5E7EB] p-3 text-sm">
-                              <p className="font-semibold text-[#111827]">External Company: {a.external_company}</p>
-                              {a.external_contact_person ? <p className="text-[#4B5563]">Contact: {a.external_contact_person}</p> : null}
-                              {a.external_trade ? <p className="text-[#4B5563]">Work type: {a.external_trade}</p> : null}
-                              {a.external_phone ? <p className="text-[#4B5563]">Phone: {a.external_phone}</p> : null}
-                              {canViewCosts && a.agreed_amount != null ? (
-                                <p className="text-[#4B5563]">Agreed amount: {money(a.agreed_amount)} KWD</p>
-                              ) : null}
-                              {a.external_expected_visit_date ? (
-                                <p className="text-[#4B5563]">
-                                  Expected visit: {new Date(a.external_expected_visit_date).toLocaleDateString("en-GB")}
-                                </p>
-                              ) : null}
-                              {a.notes ? <p className="mt-1 text-xs text-[#9CA3AF]">{a.notes}</p> : null}
-                              <p className="mt-1 text-xs text-[#9CA3AF]">{assignedAt}</p>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {/* Work Assignment and Worker Profiles Foundation Unit 7,
-                      Task 7 — Internal Team labor roster, separate from the
-                      Assignment block above (technician self-service /
-                      Freelancer / External Company). */}
-                  {wo.work_order_worker_assignments.length ? (
-                    <div id="internal-team">
-                      <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Internal Team</p>
-                      <div className="mt-2 space-y-3">
-                        {(["Supervisor", "Technician", "Helper/Labor"] as const).map((role) => {
-                          const rows = wo.work_order_worker_assignments.filter((r) => r.worker_role === role);
-                          if (rows.length === 0) return null;
-                          return (
-                            <div key={role}>
-                              <p className="text-xs font-bold text-[#6B7280]">
-                                {role === "Helper/Labor" ? "Helpers / Labor" : `${role}${rows.length > 1 ? "s" : ""}`}
-                              </p>
-                              <div className="mt-1 space-y-1.5">
-                                {rows.map((r) => (
-                                  <div key={r.id} className="flex items-center justify-between rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
-                                    <span className="font-semibold text-[#111827]">{r.worker_profiles.name}</span>
-                                    {canViewCosts ? (
-                                      <span className="text-[#4B5563]">{money(r.hourly_rate_snapshot)} KWD/hr</span>
-                                    ) : null}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          );
-                        })}
-                        <p className="text-xs text-[#9CA3AF]">
-                          Assigned {formatDateTimeValue(wo.work_order_worker_assignments[0].assigned_at)} by{" "}
-                          {wo.work_order_worker_assignments[0].profiles?.full_name ?? "System"}
-                          {wo.work_order_worker_assignments[0].notes ? ` — ${wo.work_order_worker_assignments[0].notes}` : ""}
-                        </p>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {wo.work_order_technician_notes.length ? (
-                    <div>
-                      <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Technician notes</p>
-                      <div className="mt-2 space-y-2">
-                        {wo.work_order_technician_notes.map((note) => (
-                          <RecordLine
-                            key={note.id}
-                            title={note.profiles.full_name}
-                            detail={`${displayValue(note.labor_hours)} hours — ${note.note}`}
-                            meta={formatDateTimeValue(note.created_at)}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {wo.work_order_labor.length ? (
-                    <div>
-                      <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Labor records</p>
-                      <Table
-                        columns={
-                          canViewCosts
-                            ? ["Labor", "Technician", "Hours", "Rate (KWD)", "Amount (KWD)"]
-                            : ["Labor", "Technician", "Hours"]
-                        }
-                        rows={wo.work_order_labor.map((row) =>
-                          canViewCosts
-                            ? [row.labor_name, row.profiles?.full_name ?? "-", displayValue(row.hours), money(row.rate), money(row.amount)]
-                            : [row.labor_name, row.profiles?.full_name ?? "-", displayValue(row.hours)]
-                        )}
-                        empty="No labor rows recorded."
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              </section>
-            ) : null}
-
-            {/* 4 — Materials */}
+            {/* 4 — Materials (Job Card Detail Simplification Unit 8C:
+                summary cards + one clear Action per row; "Record material
+                used" moved into a modal instead of an always-visible form). */}
             <section id="parts" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <SectionHeader eyebrow="Materials" title="Materials" icon={PackageSearch} />
+                {/* Premium Job Card Detail Page Redesign Unit 8C.2, Task
+                    12: red is reserved for a true call-to-action —
+                    "View Materials" is navigation to a record that already
+                    exists, not a new action, so it gets the neutral
+                    secondary style instead of competing with Next Action's
+                    red buttons for attention. */}
                 {canCreatePartsRequest && !["Closed", "Cancelled", "Rejected"].includes(wo.status) ? (
                   <Link
                     href={materialsButtonHref}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
+                    className={
+                      materialsButtonLabel === "View Materials"
+                        ? "inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
+                        : "inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
+                    }
                   >
                     <PackageSearch className="h-4 w-4" aria-hidden="true" />
                     {materialsButtonLabel}
@@ -942,12 +1250,24 @@ export default async function WorkOrderDetailPage({
                 ) : null}
               </div>
 
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
-                <MetricCard label="Materials requests" value={wo.parts_requests.length} icon={PackageSearch} tone="blue" />
+              <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <MetricCard label="Required items" value={wo.work_order_required_parts.length} icon={PackageSearch} tone="blue" />
                 <MetricCard
-                  label="Open requests"
-                  value={openPartsRequests}
+                  label="Issued items"
+                  value={materialFulfillment.filter((f) => f.status === "fulfilled").length}
+                  icon={CheckCircle2}
+                  tone="green"
+                />
+                <MetricCard
+                  label="Remaining items"
+                  value={materialFulfillment.filter((f) => f.remaining_qty > 0).length}
                   icon={AlertTriangle}
+                  tone={materialsIncomplete ? "amber" : "green"}
+                />
+                <MetricCard
+                  label="Open material requests"
+                  value={openPartsRequests}
+                  icon={PackageSearch}
                   tone={openPartsRequests ? "amber" : "green"}
                 />
               </div>
@@ -958,7 +1278,7 @@ export default async function WorkOrderDetailPage({
                     Required materials — Required / Issued / Shortage
                   </p>
                   <Table
-                    columns={["Material", "Required", "Issued", "Remaining", "Available now", "Status"]}
+                    columns={["Material", "Required", "Issued", "Remaining", "Available now", "Status", "Action"]}
                     rows={wo.work_order_required_parts.map((row) => {
                       const f = fulfillmentByRowId.get(row.id) ?? null;
                       const unit = row.unit_of_measure;
@@ -1002,10 +1322,46 @@ export default async function WorkOrderDetailPage({
                               Shortage: {shortageQty} {unit}
                             </p>
                           )}
-                          {canIssueRow && (
-                            <Link href={issueHref} className="block text-[11px] font-bold text-[#ED1C24] hover:underline">
-                              Issue →
+                        </div>,
+                        <div key="action">
+                          {/* Premium Job Card Detail Page Redesign Unit
+                              8C.2, Task 8/12: small pill buttons instead of
+                              bare text links — Issue/Receive/Request stay
+                              the one red call-to-action per row; View
+                              Request is neutral (navigation only); Fulfilled
+                              is a plain green label, not a link. */}
+                          {canIssueRow ? (
+                            <Link
+                              href={issueHref}
+                              className="inline-flex items-center rounded-md bg-[#ED1C24] px-2.5 py-1 text-[11px] font-bold text-white transition hover:bg-[#c8181e]"
+                            >
+                              Issue Material
                             </Link>
+                          ) : remainingQty > 0 && activeMaterialsRequest ? (
+                            <Link
+                              href={materialsButtonHref}
+                              className="inline-flex items-center rounded-md bg-[#ED1C24] px-2.5 py-1 text-[11px] font-bold text-white transition hover:bg-[#c8181e]"
+                            >
+                              Receive Materials
+                            </Link>
+                          ) : remainingQty > 0 && canCreatePartsRequest ? (
+                            <Link
+                              href={`/store/parts-requests/new?repair_order_id=${wo.id}`}
+                              className="inline-flex items-center rounded-md bg-[#ED1C24] px-2.5 py-1 text-[11px] font-bold text-white transition hover:bg-[#c8181e]"
+                            >
+                              Request Materials
+                            </Link>
+                          ) : activeMaterialsRequest ? (
+                            <Link
+                              href={materialsButtonHref}
+                              className="inline-flex items-center rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1 text-[11px] font-bold text-[#4B5563] transition hover:bg-gray-50"
+                            >
+                              View Request
+                            </Link>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-md bg-green-50 px-2.5 py-1 text-[11px] font-bold text-green-700">
+                              <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> Fulfilled
+                            </span>
                           )}
                         </div>,
                       ];
@@ -1016,76 +1372,47 @@ export default async function WorkOrderDetailPage({
               ) : null}
 
               {wo.work_order_materials.length ? (
-                <div className="mt-5">
-                  <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Materials used</p>
-                  <Table
-                    columns={
-                      canViewCosts
-                        ? ["Material", "Part no.", "SS rec", "Qty", "Amount (KWD)"]
-                        : ["Material", "Part no.", "SS rec", "Qty"]
-                    }
-                    rows={wo.work_order_materials.map((row) =>
-                      canViewCosts
-                        ? [
-                            row.material_name,
-                            row.part_number ?? row.parts?.part_number ?? "-",
-                            row.ss_rec_code ?? row.parts?.ss_rec_code ?? "-",
-                            displayValue(row.quantity),
-                            money(row.amount),
-                          ]
-                        : [
-                            row.material_name,
-                            row.part_number ?? row.parts?.part_number ?? "-",
-                            row.ss_rec_code ?? row.parts?.ss_rec_code ?? "-",
-                            displayValue(row.quantity),
-                          ]
-                    )}
-                    empty="No material rows recorded."
-                  />
-                </div>
+                <details className="mt-5">
+                  <summary className="cursor-pointer select-none text-xs font-black uppercase tracking-wide text-[#4B5563]">
+                    Materials used ({wo.work_order_materials.length})
+                  </summary>
+                  <div className="mt-2">
+                    <Table
+                      columns={
+                        canViewCosts
+                          ? ["Material", "Part no.", "SS rec", "Qty", "Amount (KWD)"]
+                          : ["Material", "Part no.", "SS rec", "Qty"]
+                      }
+                      rows={wo.work_order_materials.map((row) =>
+                        canViewCosts
+                          ? [
+                              row.material_name,
+                              row.part_number ?? row.parts?.part_number ?? "-",
+                              row.ss_rec_code ?? row.parts?.ss_rec_code ?? "-",
+                              displayValue(row.quantity),
+                              money(row.amount),
+                            ]
+                          : [
+                              row.material_name,
+                              row.part_number ?? row.parts?.part_number ?? "-",
+                              row.ss_rec_code ?? row.parts?.ss_rec_code ?? "-",
+                              displayValue(row.quantity),
+                            ]
+                      )}
+                      empty="No material rows recorded."
+                    />
+                  </div>
+                </details>
               ) : null}
 
               {canManage && !["Closed", "Cancelled", "Rejected"].includes(wo.status) ? (
                 <div className="mt-5">
-                  <p className="mb-3 text-xs font-black uppercase tracking-wide text-[#4B5563]">Record material used</p>
-                  <form
-                    action={addWorkOrderMaterialAction}
-                    className="flex flex-wrap items-end gap-3 rounded-md border border-[#E5E7EB] bg-[#F8FAFC] p-4"
+                  <Link
+                    href={`/maintenance/work-orders/${wo.id}?recordMaterial=1`}
+                    className="inline-flex min-h-10 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
                   >
-                    <input type="hidden" name="work_order_id" value={wo.id} />
-                    <div className="min-w-[200px] flex-1">
-                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Material *</label>
-                      <input
-                        name="material_name"
-                        type="text"
-                        required
-                        placeholder="e.g. oil filter…"
-                        className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
-                      />
-                    </div>
-                    <div className="w-36 shrink-0">
-                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Part No.</label>
-                      <input
-                        name="part_number_free"
-                        type="text"
-                        placeholder="optional"
-                        className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
-                      />
-                    </div>
-                    <div className="w-24 shrink-0">
-                      <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Quantity *</label>
-                      <input
-                        type="number"
-                        name="quantity"
-                        min="0.01"
-                        step="0.01"
-                        required
-                        placeholder="0"
-                        className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
-                      />
-                    </div>
-                    <Button type="submit" variant="secondary" className="shrink-0">Record</Button>
-                  </form>
+                    Record Material Used
+                  </Link>
                 </div>
               ) : null}
 
@@ -1264,27 +1591,80 @@ export default async function WorkOrderDetailPage({
                 </div>
               )}
             </section>
+
+            {/* 6 — Closure panel (Job Card Detail Simplification Unit 8C).
+                Readiness summary computed read-only from the same data used
+                elsewhere on this page (materialFulfillment/parts_requests/
+                laborSummary) — never calls the backend guards directly, just
+                mirrors their conditions so Data Entry/Manager can see *why*
+                before attempting an action that would otherwise fail. The
+                actual Request Closure / Approve Closure / Close Job Card
+                forms (WorkflowActions section="closure") are unchanged. */}
+            <section id="closure-panel" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
+              <SectionHeader eyebrow="Wrap-up" title="Closure" icon={CheckCircle2} />
+              <div className="mt-4">
+                <StatusBadge label={closureChip.label} tone={closureChip.tone} />
+                {wo.status === "Closed" ? (
+                  <p className="mt-3 text-sm text-[#4B5563]">This Job Card is closed.</p>
+                ) : closureReady ? (
+                  <p className="mt-3 text-sm text-[#4B5563]">
+                    {wo.status === "Closure Requested"
+                      ? "Closure has been requested and is waiting for Manager approval."
+                      : "This Job Card is ready for closure."}
+                  </p>
+                ) : (
+                  <div className="mt-3">
+                    <p className="text-sm font-bold text-[#111827]">Not ready for closure yet:</p>
+                    <ul className="mt-1 list-inside list-disc text-sm text-[#4B5563]">
+                      {closureBlockers.map((reason) => (
+                        <li key={reason}>{reason}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+              <div className="mt-4 border-t border-[#E5E7EB] pt-4">
+                {closureReady || wo.status === "Closure Requested" ? (
+                  <WorkflowActions
+                    section="closure"
+                    workOrderId={wo.id}
+                    status={wo.status}
+                    context={context}
+                    technicians={technicians}
+                    currentAssignment={currentAssignment}
+                    activeMaterialsRequest={
+                      activeMaterialsRequest
+                        ? { id: activeMaterialsRequest.id, number: activeMaterialsRequest.parts_request_number, status: activeMaterialsRequest.status }
+                        : null
+                    }
+                    hasPendingCorrection={hasPendingCorrection}
+                  />
+                ) : (
+                  // Premium Job Card Detail Page Redesign Unit 8C.2, Task 9:
+                  // a visibly disabled button (not just absent) so it's
+                  // obvious closure is blocked, not just not-yet-offered —
+                  // the reasons are already listed above.
+                  <div>
+                    <button
+                      type="button"
+                      disabled
+                      aria-disabled="true"
+                      className="inline-flex min-h-10 w-full cursor-not-allowed items-center justify-center rounded-md border border-[#E5E7EB] bg-[#F3F4F6] px-4 py-2 text-sm font-bold text-[#9CA3AF] sm:w-auto"
+                    >
+                      Request Closure
+                    </button>
+                    <p className="mt-2 text-xs text-[#9CA3AF]">Resolve the items above to unlock closure actions.</p>
+                  </div>
+                )}
+              </div>
+            </section>
           </main>
 
-          {/* ── Sidebar ──────────────────────────────────────────────────── */}
+          {/* ── 7. Sidebar — lightweight info only (Job Card Detail
+              Simplification Unit 8C: no forms here any more; Assign/Track
+              Work/Materials/Closure actions all moved to their own sections
+              above). ─────────────────────────────────────────────────── */}
           <aside className="space-y-5">
-            {/* Current Action (shows context for all users; action buttons for managers/supervisors) */}
-            <WorkflowActions
-              workOrderId={wo.id}
-              status={wo.status}
-              context={context}
-              technicians={technicians}
-              currentAssignment={currentAssignment}
-              activeMaterialsRequest={
-                activeMaterialsRequest
-                  ? { id: activeMaterialsRequest.id, number: activeMaterialsRequest.parts_request_number, status: activeMaterialsRequest.status }
-                  : null
-              }
-              activeWorkers={activeWorkers}
-              internalTeamRoster={wo.work_order_worker_assignments.map((r) => ({ worker_id: r.worker_id, worker_role: r.worker_role }))}
-              hasPendingCorrection={hasPendingCorrection}
-            />
-
             {/* Quick Facts */}
             <section className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
               <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Quick Facts</p>
@@ -1386,6 +1766,85 @@ export default async function WorkOrderDetailPage({
           ) : null}
         </section>
       </div>
+
+      {/* Job Card Detail Simplification Unit 8C — Edit Assignment modal.
+          Opens via ?editAssignment=1 (same pattern as the Materials
+          Requests page's "New Materials Request" modal). Renders the exact
+          same forms/gates as before (WorkflowActions section="assignment"),
+          just relocated out of the always-visible sidebar. */}
+      {showEditAssignment && (
+        <LargeFormModal
+          title="Edit Assignment"
+          subtitle="Assign or update who is working on this Job Card."
+          closeHref={`/maintenance/work-orders/${wo.id}`}
+        >
+          <WorkflowActions
+            section="assignment"
+            workOrderId={wo.id}
+            status={wo.status}
+            context={context}
+            technicians={technicians}
+            currentAssignment={currentAssignment}
+            activeMaterialsRequest={
+              activeMaterialsRequest
+                ? { id: activeMaterialsRequest.id, number: activeMaterialsRequest.parts_request_number, status: activeMaterialsRequest.status }
+                : null
+            }
+            activeWorkers={activeWorkers}
+            internalTeamRoster={wo.work_order_worker_assignments.map((r) => ({ worker_id: r.worker_id, worker_role: r.worker_role }))}
+            hasPendingCorrection={hasPendingCorrection}
+          />
+        </LargeFormModal>
+      )}
+
+      {/* Job Card Detail Simplification Unit 8C — Record Material Used
+          modal. Same addWorkOrderMaterialAction form/fields as before, just
+          no longer permanently visible inline in the Materials section. */}
+      {showRecordMaterial && (
+        <LargeFormModal
+          title="Record Material Used"
+          subtitle="Log a material consumed on this Job Card."
+          closeHref={`/maintenance/work-orders/${wo.id}`}
+        >
+          <form action={addWorkOrderMaterialAction} className="space-y-4">
+            <input type="hidden" name="work_order_id" value={wo.id} />
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Material *</label>
+              <input
+                name="material_name"
+                type="text"
+                required
+                placeholder="e.g. oil filter…"
+                className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Part No.</label>
+                <input
+                  name="part_number_free"
+                  type="text"
+                  placeholder="optional"
+                  className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-[#4B5563]">Quantity *</label>
+                <input
+                  type="number"
+                  name="quantity"
+                  min="0.01"
+                  step="0.01"
+                  required
+                  placeholder="0"
+                  className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+            <Button type="submit" className="w-full sm:w-auto">Record</Button>
+          </form>
+        </LargeFormModal>
+      )}
     </>
   );
 }
@@ -1688,6 +2147,39 @@ function jobCardAuditEntry(log: AuditLogRow, actorName: (id?: string | null) => 
         id: `audit-${log.id}`, at: log.created_at, title: "Closure approved",
         detail: metaGet(log.metadata, "comments") ?? "Manager approved closing this Job Card.",
         actor, tone: "green", label: "Closure",
+      };
+    // Work Session Time Tracking and Labor Cost Calculation Unit 8.
+    case "work_order.work_session_started":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: `Work session started — ${metaGet(log.metadata, "worker_name") ?? "worker"}`,
+        detail: "Started work.", actor, tone: "blue", label: "Time Tracking",
+      };
+    case "work_order.work_session_paused":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: `Work session paused — ${metaGet(log.metadata, "worker_name") ?? "worker"}`,
+        detail: `${metaGet(log.metadata, "duration_minutes") ?? "0"} min recorded.`, actor, tone: "amber", label: "Time Tracking",
+      };
+    case "work_order.work_session_stopped":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: `Work session stopped — ${metaGet(log.metadata, "worker_name") ?? "worker"}`,
+        detail: `${metaGet(log.metadata, "duration_minutes") ?? "0"} min recorded.`, actor, tone: "green", label: "Time Tracking",
+      };
+    case "work_order.work_session_manual_entry":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: `Manual time entry — ${metaGet(log.metadata, "worker_name") ?? "worker"}`,
+        detail: `${metaGet(log.metadata, "duration_minutes") ?? "0"} min added.`, actor, tone: "gray", label: "Time Tracking",
+      };
+    case "work_order.work_session_edited":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: `Work session corrected — ${metaGet(log.metadata, "worker_name") ?? "worker"}`,
+        detail: metaGet(log.metadata, "correctionReason") ?? "Session corrected by Manager.",
+        actor, tone: "amber", label: "Time Tracking",
+      };
+    case "work_order.work_session_cancelled":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: `Work session cancelled — ${metaGet(log.metadata, "worker_name") ?? "worker"}`,
+        detail: metaGet(log.metadata, "correctionReason") ?? "Session cancelled by Manager.",
+        actor, tone: "red", label: "Time Tracking",
       };
     default:
       return null; // work_order.create/update/assign, file.upload — covered elsewhere or System Audit only

@@ -6,6 +6,23 @@ export type ToastMessage = {
   tone: ToastTone;
 };
 
+// Popup and Feedback Design Standardization Unit 8D, Task 6: an imperative
+// trigger for the same shared <ActionToast /> (mounted once in
+// components/layout/app-layout.tsx) for client components whose save action
+// doesn't redirect/navigate — Start/Pause/Stop Work Session, Manual Time
+// Entry, Worker Profile save, etc. all call `dispatchActionToast(...)`
+// directly from a useEffect once their useActionState result comes back
+// `ok: true`, instead of each screen inventing its own inline success text.
+// The URL-param path (`?success=...`) stays the mechanism for actions that
+// DO redirect (most server actions across the app) — both paths feed the
+// exact same toast UI.
+export const ACTION_TOAST_EVENT = "recafco:action-toast";
+
+export function dispatchActionToast(message: ToastMessage): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<ToastMessage>(ACTION_TOAST_EVENT, { detail: message }));
+}
+
 const SUCCESS_MAP: Record<string, ToastMessage> = {
   // User management
   "user-created": {
@@ -41,6 +58,9 @@ const SUCCESS_MAP: Record<string, ToastMessage> = {
   approved:               { tone: "success", title: "Approved" },
   rejected:               { tone: "warning", title: "Returned for fix" },
   assigned:               { tone: "success", title: "Technician assigned" },
+  "assignment-updated":   { tone: "success", title: "Assignment Updated" },
+  "file-uploaded":        { tone: "success", title: "File Uploaded" },
+  "note-saved":           { tone: "success", title: "Note Saved" },
   closed:                 { tone: "success", title: "Job Card closed" },
   submitted:              { tone: "success", title: "Submitted for review" },
   completed:              { tone: "success", title: "Marked as completed" },
@@ -81,6 +101,28 @@ const ERROR_MAP: Record<string, ToastMessage> = {
   "same-as-current":            { tone: "error",   title: "New password must be different" },
   "cannot-reset-own-password":  { tone: "error",   title: "Use Change Password for own account" },
   "no-login-account":           { tone: "error",   title: "No login account found" },
+  "cannot-force-own-password-change": { tone: "error", title: "Cannot force a password reset on your own account" },
+  "cannot-delete-self":         { tone: "error",   title: "Cannot delete your own account" },
+  "cannot-delete-last-admin":   { tone: "error",   title: "Cannot delete the last System Administrator" },
+  "has-linked-records":         { tone: "error",   title: "Cannot permanently delete",     description: "This account has linked records (Job Cards, approvals, etc.). Archive it instead." },
+  // Popup and Feedback Design Standardization Unit 8D, Task 7/8: these error
+  // codes were already produced by app/actions/files.ts but had no entry
+  // here, so they fell through to the generic "Error: <raw-code>" fallback
+  // below instead of a readable message.
+  "upload-permission":          { tone: "error",   title: "You don't have permission to upload files here" },
+  "delete-permission":          { tone: "error",   title: "You don't have permission to delete this file" },
+  "no-file":                    { tone: "error",   title: "No file selected",               description: "Choose a file before uploading." },
+  "file-upload-failed":         { tone: "error",   title: "File upload failed",              description: "Please try again or contact IT." },
+  "file-metadata-failed":       { tone: "error",   title: "File uploaded, but could not be recorded", description: "Please try again or contact IT." },
+  // Asset categories — same gap.
+  "invalid-name":               { tone: "error",   title: "Invalid name" },
+  "name-exists":                { tone: "error",   title: "That name is already in use" },
+  "invalid-parent":             { tone: "error",   title: "Invalid parent category" },
+  "invalid-id":                 { tone: "error",   title: "Invalid category" },
+  "has-active-children":        { tone: "error",   title: "Cannot delete",                  description: "This category still has active subcategories." },
+  // Materials Request receipt/issue — same gap.
+  "no-items":                   { tone: "error",   title: "Select at least one item" },
+  "invalid-issued-quantity":    { tone: "error",   title: "Invalid quantity",                description: "Issued quantity must be a positive number that does not exceed what's available." },
   // Generic
   "invalid-input":              { tone: "error",   title: "Invalid input",                  description: "Please check all required fields and try again." },
   "save-failed":                { tone: "error",   title: "Save failed",                    description: "Please try again or contact IT." },
@@ -123,7 +165,14 @@ export function resolveToastMessage(params: {
     return SUCCESS_MAP[params.success] ?? { tone: "success", title: "Done" };
   }
   if (params.error) {
-    return ERROR_MAP[params.error] ?? { tone: "error", title: "Error", description: params.error };
+    // Popup and Feedback Design Standardization Unit 8D, Task 7/8: the bare
+    // "Error" title read as a dead end. Workflow actions already redirect
+    // with a full human-readable message when no ERROR_MAP entry matches
+    // (see workflowErrorPath() in app/actions/workflow.ts) — "Action could
+    // not be completed" as the title (matching the wording already used by
+    // the Job Card detail page's own inline error banner) plus that message
+    // as the description reads the same everywhere, mapped or not.
+    return ERROR_MAP[params.error] ?? { tone: "error", title: "Action could not be completed", description: params.error };
   }
   // Legacy ?saved=1
   if (params.saved) {

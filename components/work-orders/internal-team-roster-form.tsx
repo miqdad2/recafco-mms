@@ -5,6 +5,7 @@ import { AlertCircle, Loader2 } from "lucide-react";
 
 import { saveInternalTeamRosterAction, type InternalTeamRosterState } from "@/app/actions/work-order-roster";
 import type { WorkerProfileRow } from "@/lib/backend/workers/service";
+import { dispatchActionToast } from "@/lib/action-messages";
 
 const inp =
   "w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#ED1C24] disabled:bg-gray-50 disabled:text-[#9CA3AF]";
@@ -30,7 +31,14 @@ export function InternalTeamRosterForm({
   const [notes, setNotes] = useState("");
 
   useEffect(() => {
-    if (state?.ok) onSaved?.();
+    if (state?.ok) {
+      // Popup and Feedback Design Standardization Unit 8D, Task 6: a quick
+      // edit to who's assigned — a toast, not a full workflow modal (this
+      // doesn't change the Job Card's workflow status/meaning the way
+      // starting/closing it does).
+      dispatchActionToast({ tone: "success", title: "Assignment Updated" });
+      onSaved?.();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.ok]);
 

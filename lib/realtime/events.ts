@@ -69,6 +69,12 @@ export const REALTIME_EVENTS = {
   // freelancer/company) — still matches every page's "job_card." prefix
   // watch, so no RealtimeRefresh watch list needed to change (Unit 2).
   JOB_CARD_ASSIGNMENT_UPDATED: "job_card.assignment_updated",
+  // Work Session Time Tracking and Labor Cost Calculation Unit 8. Also under
+  // "job_card." — no watch list changes needed anywhere.
+  JOB_CARD_WORK_STARTED:      "job_card.work_started",
+  JOB_CARD_WORK_PAUSED:       "job_card.work_paused",
+  JOB_CARD_WORK_STOPPED:      "job_card.work_stopped",
+  JOB_CARD_WORK_TIME_UPDATED: "job_card.work_time_updated",
   MATERIALS_REQUEST_CREATED:   "materials_request.created",
   MATERIALS_REQUEST_UPDATED:   "materials_request.updated",
   MATERIALS_REQUEST_APPROVED:  "materials_request.approved",

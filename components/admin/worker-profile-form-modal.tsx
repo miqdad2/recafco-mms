@@ -6,6 +6,7 @@ import { AlertCircle, Loader2, X } from "lucide-react";
 import { saveWorkerProfileAction, type WorkerProfileState } from "@/app/actions/workers";
 import { WORKER_TYPES, SKILL_CATEGORIES } from "@/lib/backend/workers/constants";
 import type { WorkerProfileRow } from "@/lib/backend/workers/service";
+import { dispatchActionToast } from "@/lib/action-messages";
 
 const inp =
   "w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm placeholder:text-[#9CA3AF] focus:outline-none focus:ring-1 focus:ring-[#ED1C24] disabled:bg-gray-50 disabled:text-[#9CA3AF]";
@@ -21,7 +22,10 @@ export function WorkerProfileFormModal({
   const [state, formAction, isPending] = useActionState<WorkerProfileState, FormData>(saveWorkerProfileAction, null);
 
   useEffect(() => {
-    if (state?.ok) onClose();
+    if (state?.ok) {
+      dispatchActionToast({ tone: "success", title: "Worker Profile Saved" });
+      onClose();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.ok]);
 

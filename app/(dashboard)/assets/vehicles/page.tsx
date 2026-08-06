@@ -18,6 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
+import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 
 const PAGE_SIZE = 25;
 
@@ -121,6 +122,11 @@ export default async function VehiclesPage({
   const showNewJobCardModal = single(params.new_job_card) === "1" && canManage;
   const newJobCardAssetId = single(params.asset_id) ?? null;
   const newJobCardAssets = showNewJobCardModal ? await getAssetPickerOptions() : [];
+  // Optional Work Assignment During Job Card Creation Unit 7C, Task 10.
+  const canAssignAtCreation =
+    context.role?.slug === "super_admin" || context.permissions.includes("work_orders.assign");
+  const newJobCardActiveWorkers =
+    showNewJobCardModal && canAssignAtCreation ? await getActiveWorkerProfilesForAssignment() : [];
   const newJobCardDismissHref = listHref({ q: query, category, status, insurance: insuranceFilter, registration: registrationFilter, page });
 
   // ── Fleet-wide data (unaffected by the table's own filters) — feeds the
@@ -245,6 +251,8 @@ export default async function VehiclesPage({
           assets={newJobCardAssets}
           preselectedAssetId={newJobCardAssetId}
           dismissHref={newJobCardDismissHref}
+          activeWorkers={newJobCardActiveWorkers}
+          canAssignAtCreation={canAssignAtCreation}
         />
       )}
       <PageHeader

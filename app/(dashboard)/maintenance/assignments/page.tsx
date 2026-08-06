@@ -1,318 +1,417 @@
 import Link from "next/link";
-import { AlertTriangle, CheckCircle, Info, Users } from "lucide-react";
+import { Activity, CheckCircle2, PauseCircle, PlayCircle, Search, Users } from "lucide-react";
 
-import { AssignmentForm } from "@/components/work-orders/assignment-form";
-import { PageHeader } from "@/components/ui/page-header";
+import { AutoRefresh } from "@/components/auto-refresh";
+import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
+import { EmptyState } from "@/components/ui/empty-state";
+import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
-import { displayStatus } from "@/lib/display/work-order-labels";
+import { canViewCosts as canViewCostsForContext } from "@/lib/security/permissions";
+import { listWorkerProfiles, type WorkerProfileRow } from "@/lib/backend/workers/service";
+import { WORKER_TYPES, SKILL_CATEGORIES } from "@/lib/backend/workers/constants";
+import { getWorkerActivitySummaries, type WorkerActivityStatus } from "@/lib/work-orders/work-session-totals";
+import { displaySimplifiedStatus, simplifiedStatusTone } from "@/lib/work-orders/simplified-status";
 
-const SETTINGS_ID = "00000000-0000-0000-0000-000000000001";
+// Convert Technician Page to Worker Activity Dashboard Unit 9F.
+//
+// This route used to be an assignment-first "Technician" queue: Needs
+// Assignment Job Cards with an inline AssignmentForm per card (Task 1). That
+// layout predates Daily Activity (Unit 9) and the worker_profiles-based
+// Internal Team model (Unit 7) — assigning workers now happens during Job
+// Card creation and on the Job Card detail page, and controlling active work
+// happens on Daily Activity. This page is now a read-only worker activity
+// and workload monitor: every worker_profiles row, their current status
+// (Working Now / Paused / Assigned / Available / Inactive), which Job Card
+// they're on if any, and today/month-to-date hours.
+//
+// AssignmentForm itself, assignment-form-modal.tsx, and the assign server
+// action are NOT touched — they're still used by the Job Card quick-view
+// assign modal (repair-order-quick-view.tsx / workflow-actions.tsx) and the
+// Job Card detail page. This page simply stops importing/rendering them.
 
-type AssignmentRow = {
-  assignment_type: string;
-  external_name: string | null;
-  external_company: string | null;
-  external_trade: string | null;
-  external_phone: string | null;
-  technician_id: string | null;
-  profiles: { full_name: string } | null;
+type WorkerTypeFilter = "all" | (typeof WORKER_TYPES)[number];
+type SkillFilter = "all" | (typeof SKILL_CATEGORIES)[number];
+type StatusFilter = "all" | "working" | "paused" | "assigned" | "available";
+
+const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "working", label: "Working Now" },
+  { value: "paused", label: "Paused" },
+  { value: "assigned", label: "Assigned" },
+  { value: "available", label: "Available" },
+];
+
+function statusToFilterValue(status: WorkerActivityStatus | "Inactive"): StatusFilter | "inactive" {
+  if (status === "Working Now") return "working";
+  if (status === "Paused") return "paused";
+  if (status === "Assigned") return "assigned";
+  if (status === "Inactive") return "inactive";
+  return "available";
+}
+
+// Task 3/7 — color rules: Working Now green, Paused amber, Assigned blue
+// (tied to a Job Card but not started), Available gray/neutral, Inactive a
+// muted gray with the whole card visually receded.
+function statusTone(status: WorkerActivityStatus | "Inactive"): "green" | "amber" | "blue" | "gray" {
+  if (status === "Working Now") return "green";
+  if (status === "Paused") return "amber";
+  if (status === "Assigned") return "blue";
+  return "gray"; // Available / Inactive
+}
+
+function statusAccentClass(status: WorkerActivityStatus | "Inactive"): string {
+  if (status === "Working Now") return "border-l-[#16A34A]";
+  if (status === "Paused") return "border-l-[#F59E0B]";
+  if (status === "Assigned") return "border-l-[#2563EB]";
+  return "border-l-[#D1D5DB]"; // Available / Inactive
+}
+
+type SearchParamsShape = {
+  q?: string;
+  type?: string;
+  status?: string;
+  skill?: string;
 };
 
-// One line describing who's on a Job Card — technician name(s), or the
-// freelancer/company details for an external assignment (Sidebar Access
-// Alignment Task 4: "internal/external assignment visibility").
-function assigneeLine(assignments: AssignmentRow[]): string {
-  if (assignments.length === 0) return "Not assigned";
-  const parts = assignments.map((a) => {
-    if (a.assignment_type === "FREELANCER") {
-      return `${a.external_name ?? "Freelancer"}${a.external_trade ? ` (${a.external_trade})` : ""} · Freelancer`;
-    }
-    if (a.assignment_type === "EXTERNAL_COMPANY") {
-      return `${a.external_company ?? "External company"}${a.external_trade ? ` (${a.external_trade})` : ""} · Company`;
-    }
-    return a.profiles?.full_name ?? "Technician";
+export default async function AssignmentsPage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParamsShape>;
+}) {
+  const context = await requirePermission("work_orders.assign");
+  const sp = (await searchParams) ?? {};
+  const search = (sp.q ?? "").trim().slice(0, 80);
+  const typeFilter: WorkerTypeFilter = WORKER_TYPES.includes((sp.type ?? "all") as (typeof WORKER_TYPES)[number])
+    ? (sp.type as WorkerTypeFilter)
+    : "all";
+  const skillFilter: SkillFilter = SKILL_CATEGORIES.includes((sp.skill ?? "all") as (typeof SKILL_CATEGORIES)[number])
+    ? (sp.skill as SkillFilter)
+    : "all";
+  const statusFilter: StatusFilter = STATUS_FILTERS.some((s) => s.value === sp.status)
+    ? (sp.status as StatusFilter)
+    : "all";
+
+  // Task 9/10 — only Manager/Super Admin get a link into Worker Profiles
+  // (view/edit master data) from this page. Data Entry (which also holds
+  // work_orders.assign, the permission gating this whole page) never sees
+  // it here — this restricts the LINK on this page only; the destination
+  // page's own permission model is unchanged (out of scope for this unit).
+  const canManageWorkerProfiles = context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
+  const canViewCosts = canViewCostsForContext(context);
+
+  const workers = await listWorkerProfiles();
+  const activityMap = await getWorkerActivitySummaries(prisma, workers.map((w) => w.id));
+
+  const emptySummary = {
+    status: "Available" as WorkerActivityStatus,
+    current_job_card: null,
+    active_session_started_at: null,
+    today_minutes: 0,
+    today_hours: 0,
+    today_amount: 0,
+    month_minutes: 0,
+    month_hours: 0,
+    month_amount: 0,
+    active_assignment_count: 0,
+  };
+
+  // Task 5/7 — combine profile + activity into one view model. Inactive
+  // overrides whatever activity status would otherwise apply (Task 7's own
+  // rule: "If worker profile inactive: Inactive").
+  const combined = workers.map((w) => {
+    const activity = activityMap.get(w.id) ?? emptySummary;
+    const status: WorkerActivityStatus | "Inactive" = !w.is_active ? "Inactive" : activity.status;
+    return { ...w, ...activity, status };
   });
-  return parts.join(", ");
-}
 
-function statusTone(status: string): "green" | "amber" | "red" | "blue" | "gray" {
-  if (status === "Closed") return "green";
-  if (status === "In Progress") return "blue";
-  if (status === "Assigned") return "blue";
-  return "amber";
-}
-
-export default async function AssignmentsPage() {
-  await requirePermission("work_orders.assign");
-  // Sidebar Access Alignment Task 6: only Data Entry / Engineer / Manager /
-  // Super Admin ever hold work_orders.assign, so this page is never reached
-  // by the Technician role itself — Technician has its own separate
-  // self-service page at /technician/jobs. The wording here is always the
-  // operational "tracking" framing, never "my own jobs".
-  const pageTitle = "Technician Work Tracking";
-  const pageDescription =
-    "Assign approved job cards, track work in progress, and review technician workload and recently closed jobs.";
-
-  const [settings, needsAssignment, inFlight, recentlyClosed, technicianOptions] = await Promise.all([
-    prisma.app_settings
-      .findUnique({ where: { id: SETTINGS_ID }, select: { inventory_check_enabled: true } })
-      .catch(() => null),
-    // Ready for a technician (or freelancer/company) to be assigned — matches
-    // the current 9-status model's assignable stages (Sidebar Access
-    // Alignment Task 4: the previous version of this page only checked
-    // ["Approved", "Assigned", "Completed by Technician"] — the latter a
-    // legacy status no live Job Card can hold under the locked Unit 3 model,
-    // and it never included Partially Issued/Materials Issued, which are
-    // also valid assign-from stages).
-    prisma.work_orders.findMany({
-      select: {
-        id: true,
-        work_order_number: true,
-        status: true,
-        priority: true,
-        operator_complaint: true,
-        assets: { select: { asset_code: true, asset_name: true } },
-        work_order_assignments: {
-          select: {
-            assignment_type: true, external_name: true, external_company: true,
-            external_trade: true, external_phone: true, technician_id: true,
-            profiles: { select: { full_name: true } },
-          },
-        },
-        work_order_required_parts: { select: { availability_status: true } },
-      },
-      where: { status: { in: ["Approved", "Partially Issued", "Materials Issued"] } },
-      orderBy: { created_at: "desc" },
-      take: 100,
-    }),
-    // Currently assigned and being worked on — the tracking view this page
-    // was missing entirely before (Task 4: "work in progress").
-    prisma.work_orders.findMany({
-      select: {
-        id: true,
-        work_order_number: true,
-        status: true,
-        updated_at: true,
-        operator_complaint: true,
-        assets: { select: { asset_code: true, asset_name: true } },
-        work_order_assignments: {
-          select: {
-            assignment_type: true, external_name: true, external_company: true,
-            external_trade: true, external_phone: true, technician_id: true,
-            profiles: { select: { full_name: true } },
-          },
-        },
-      },
-      where: { status: { in: ["Assigned", "In Progress"] } },
-      orderBy: { updated_at: "asc" },
-      take: 100,
-    }),
-    // Recently closed, assigned Job Cards — read-only tracking only (Task 4:
-    // "completed/closed work"), no action offered here.
-    prisma.work_orders.findMany({
-      select: {
-        id: true,
-        work_order_number: true,
-        status: true,
-        updated_at: true,
-        assets: { select: { asset_code: true, asset_name: true } },
-        work_order_assignments: {
-          select: {
-            assignment_type: true, external_name: true, external_company: true,
-            external_trade: true, external_phone: true, technician_id: true,
-            profiles: { select: { full_name: true } },
-          },
-        },
-      },
-      where: { status: "Closed", work_order_assignments: { some: {} } },
-      orderBy: { updated_at: "desc" },
-      take: 10,
-    }),
-    prisma.profiles.findMany({
-      where: { is_active: true, roles: { slug: "technician" } },
-      select: { id: true, full_name: true },
-      orderBy: { full_name: "asc" },
-    }),
-  ]);
-
-  const inventoryCheckEnabled = settings?.inventory_check_enabled ?? false;
-
-  // Technician workload — count of currently Assigned/In Progress Job Cards
-  // per internal technician (Task 4: "technician workload").
-  const workload = new Map<string, { name: string; count: number }>();
-  for (const wo of inFlight) {
-    for (const a of wo.work_order_assignments) {
-      if (a.assignment_type === "INTERNAL_TECHNICIAN" && a.technician_id) {
-        const entry = workload.get(a.technician_id) ?? { name: a.profiles?.full_name ?? "Technician", count: 0 };
-        entry.count += 1;
-        workload.set(a.technician_id, entry);
-      }
+  // Task 4 — filters applied in memory after the bulk fetch above, the same
+  // "quick filters over an already-loaded batch" convention the Daily
+  // Activity page uses for its own derived (non-DB-column) signals. Search
+  // spans both worker_profiles fields (name/phone) and the computed current
+  // Job Card (number/asset), which live in two different data sources, so
+  // it can't be a single Prisma WHERE clause.
+  const searchLower = search.toLowerCase();
+  const filtered = combined.filter((w) => {
+    if (typeFilter !== "all" && w.worker_type !== typeFilter) return false;
+    if (skillFilter !== "all" && w.skill_category !== skillFilter) return false;
+    if (statusFilter !== "all" && statusToFilterValue(w.status) !== statusFilter) return false;
+    if (searchLower) {
+      const haystack = [
+        w.name,
+        w.phone ?? "",
+        w.current_job_card?.work_order_number ?? "",
+        w.current_job_card?.asset_label ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      if (!haystack.includes(searchLower)) return false;
     }
+    return true;
+  });
+
+  // Task 3 — summary cards, computed over every active worker (Inactive
+  // workers never contribute to Working Now/Paused/Available/hours).
+  const activeWorkers = combined.filter((w) => w.is_active);
+  const totalWorkers = activeWorkers.length;
+  const workingNowCount = activeWorkers.filter((w) => w.status === "Working Now").length;
+  const pausedCount = activeWorkers.filter((w) => w.status === "Paused").length;
+  const availableCount = activeWorkers.filter((w) => w.status === "Available").length;
+  const totalHoursTodaySum = Math.round(activeWorkers.reduce((n, w) => n + w.today_minutes, 0) / 60 * 100) / 100;
+  const totalCostTodaySum = Math.round(activeWorkers.reduce((n, w) => n + w.today_amount, 0) * 1000) / 1000;
+
+  const hasAnyFilter = Boolean(search || typeFilter !== "all" || skillFilter !== "all" || statusFilter !== "all");
+
+  function buildHref(next: Partial<{ q: string; type: string; status: string; skill: string }>): string {
+    const params = new URLSearchParams();
+    const q = next.q ?? search;
+    const type = next.type ?? typeFilter;
+    const status = next.status ?? statusFilter;
+    const skill = next.skill ?? skillFilter;
+    if (q) params.set("q", q);
+    if (type !== "all") params.set("type", type);
+    if (status !== "all") params.set("status", status);
+    if (skill !== "all") params.set("skill", skill);
+    const qs = params.toString();
+    return qs ? `/maintenance/assignments?${qs}` : "/maintenance/assignments";
   }
-  const workloadRows = [...workload.values()].sort((a, b) => b.count - a.count);
 
   return (
     <>
-      <PageHeader title={pageTitle} description={pageDescription} />
-      <div className="space-y-6 p-4 lg:p-6">
+      <AutoRefresh intervalMs={20000} />
+      {/* Task 13 — worker profile edits, Job Card/assignment changes, and
+          work session start/pause/stop/manual-entry all refresh this page.
+          Materials events are irrelevant here, so not watched. */}
+      <RealtimeRefresh watch={["worker_profile.", "job_card.", "work_order."]} />
 
-        {/* Technician workload summary */}
-        {workloadRows.length > 0 && (
-          <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-            <div className="mb-3 flex items-center gap-2">
-              <Users className="h-4 w-4 text-[#4B5563]" aria-hidden />
-              <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Technician Workload</p>
+      <div className="border-b border-[#DDE2EA] bg-white px-4 py-2.5 sm:px-6">
+        <PageBreadcrumb items={[{ label: "Worker Activity" }]} />
+        <div className="mt-0.5 border-l-4 border-[#ED1C24] pl-3">
+          <h1 className="text-lg font-black leading-tight text-[#111827] sm:text-xl">Worker Activity</h1>
+          <p className="mt-0.5 text-xs leading-snug text-[#6B7280] sm:text-sm">
+            Monitor maintenance worker status, current Job Cards, and hours. Assign workers from a Job Card.
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-3 p-3 lg:p-4">
+        {/* Task 3 — summary cards; Working Now/Paused/Available double as
+            quick filter shortcuts into the same filter row below (same
+            "click a summary card to filter" convention Daily Activity and
+            the Data Entry dashboard already use). */}
+        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 xl:grid-cols-6">
+          <SummaryCardLink href={buildHref({ status: "all" })} label="Total Workers" value={totalWorkers} icon={Users} tone="gray" active={statusFilter === "all"} />
+          <SummaryCardLink href={buildHref({ status: "working" })} label="Working Now" value={workingNowCount} icon={PlayCircle} tone="green" active={statusFilter === "working"} />
+          <SummaryCardLink href={buildHref({ status: "paused" })} label="Paused" value={pausedCount} icon={PauseCircle} tone="amber" active={statusFilter === "paused"} />
+          <SummaryCardLink href={buildHref({ status: "available" })} label="Available" value={availableCount} icon={CheckCircle2} tone="blue" active={statusFilter === "available"} />
+          <SummaryCard label="Total Hours Today" value={totalHoursTodaySum} icon={Activity} tone="blue" />
+          {canViewCosts ? <SummaryCard label="Labor Cost Today" value={`${totalCostTodaySum.toFixed(3)} KWD`} icon={Activity} tone="gray" /> : null}
+        </div>
+
+        {/* Task 4 — filters */}
+        <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-[#DDE2EA] bg-white p-2 shadow-sm">
+          <form className="flex flex-1 flex-wrap items-center gap-1.5">
+            <div className="relative min-w-[200px] flex-1">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#9CA3AF]" aria-hidden="true" />
+              <input
+                type="text"
+                name="q"
+                defaultValue={search}
+                placeholder="Search worker, phone, Job Card #, asset…"
+                className="focus-ring w-full rounded-md border border-[#E5E7EB] py-1 pl-7 pr-2 text-xs"
+              />
             </div>
-            <div className="flex flex-wrap gap-2">
-              {workloadRows.map((row) => (
-                <div key={row.name} className="rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
-                  <span className="font-bold text-[#111827]">{row.name}</span>
-                  <span className="ml-1.5 text-[#4B5563]">{row.count} active job{row.count !== 1 ? "s" : ""}</span>
-                </div>
+            <select name="type" defaultValue={typeFilter} className="focus-ring rounded-md border border-[#E5E7EB] px-2 py-1 text-xs">
+              <option value="all">All Worker Types</option>
+              {WORKER_TYPES.map((t) => (
+                <option key={t} value={t}>{t}</option>
               ))}
-            </div>
-          </section>
-        )}
+            </select>
+            <select name="skill" defaultValue={skillFilter} className="focus-ring rounded-md border border-[#E5E7EB] px-2 py-1 text-xs">
+              <option value="all">All Skill Categories</option>
+              {SKILL_CATEGORIES.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+            <select name="status" defaultValue={statusFilter} className="focus-ring rounded-md border border-[#E5E7EB] px-2 py-1 text-xs">
+              {STATUS_FILTERS.map((s) => (
+                <option key={s.value} value={s.value}>{s.label}</option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              aria-label="Search"
+              className="inline-flex min-h-7 min-w-7 items-center justify-center rounded-md bg-[#ED1C24] px-2 text-white transition hover:bg-[#c8181e]"
+            >
+              <Search className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+            <Link
+              href="/maintenance/assignments"
+              className={`inline-flex min-h-7 items-center justify-center rounded-md border px-2 text-xs font-bold transition ${
+                hasAnyFilter ? "border-[#E5E7EB] text-[#4B5563] hover:bg-gray-50" : "cursor-default border-transparent text-[#D1D5DB]"
+              }`}
+              aria-disabled={!hasAnyFilter}
+            >
+              Reset
+            </Link>
+          </form>
+        </div>
 
-        {/* Needs assignment */}
-        <section>
-          <p className="mb-3 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-            Needs Assignment ({needsAssignment.length})
-          </p>
-          <div className="grid gap-4">
-            {needsAssignment.length === 0 ? (
-              <p className="rounded-md border border-dashed border-[#E5E7EB] bg-white p-5 text-sm text-[#9CA3AF]">
-                No job cards are waiting for assignment right now.
-              </p>
-            ) : (
-              needsAssignment.map((wo) => {
-                const showInventoryLabel = inventoryCheckEnabled && wo.status === "Approved";
-                const requiredParts = wo.work_order_required_parts ?? [];
-                const anyUnchecked = requiredParts.some((p) => p.availability_status === "unchecked");
-                const allConfirmed = requiredParts.length > 0 && !anyUnchecked;
-                const hasShortage = requiredParts.some(
-                  (p) => p.availability_status === "partial" || p.availability_status === "unavailable"
-                );
-                const blockAssignment = showInventoryLabel && anyUnchecked;
-
-                return (
-                  <section key={wo.id} className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                      <div>
-                        <Link href={`/maintenance/work-orders/${wo.id}`} className="text-lg font-black hover:text-[#ED1C24]">
-                          {wo.work_order_number}
-                        </Link>
-                        <p className="text-sm text-[#4B5563]">
-                          {wo.assets ? `${wo.assets.asset_code} - ${wo.assets.asset_name}` : "No asset"}
-                        </p>
-                        <p className="mt-2 text-sm">{wo.operator_complaint || "No complaint recorded."}</p>
-                      </div>
-                      <StatusBadge label={displayStatus(wo.status)} tone={statusTone(wo.status)} />
-                    </div>
-
-                    {showInventoryLabel && (
-                      <div className="mt-3 space-y-1.5">
-                        {anyUnchecked ? (
-                          <div className="flex items-start gap-2 rounded-md bg-[#FFFBEB] px-3 py-2 text-sm text-[#92400E]">
-                            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#F59E0B]" />
-                            <span>
-                              <span className="font-semibold">Inventory check pending</span> — Store Keeper must confirm all required parts before assignment.
-                            </span>
-                          </div>
-                        ) : allConfirmed ? (
-                          <>
-                            <div className="flex items-center gap-2 rounded-md bg-[#F0FDF4] px-3 py-2 text-sm text-[#166534]">
-                              <CheckCircle className="h-4 w-4 shrink-0 text-[#16A34A]" />
-                              <span className="font-semibold">Inventory check complete — ready for assignment.</span>
-                            </div>
-                            {hasShortage && (
-                              <div className="flex items-center gap-2 rounded-md bg-[#FFFBEB] px-3 py-2 text-xs text-[#92400E]">
-                                <Info className="h-3.5 w-3.5 shrink-0 text-[#F59E0B]" />
-                                Some parts are partial or unavailable. Assignment is allowed — shortage handling will be addressed separately.
-                              </div>
-                            )}
-                          </>
-                        ) : null}
-                      </div>
-                    )}
-
-                    <div className="mt-4">
-                      {blockAssignment ? (
-                        <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">
-                          Inventory check pending
-                        </p>
-                      ) : (
-                        <AssignmentForm workOrderId={wo.id} technicians={technicianOptions} />
-                      )}
-                    </div>
-                  </section>
-                );
-              })
-            )}
+        {/* Task 5/6 — worker cards */}
+        {filtered.length === 0 ? (
+          <EmptyState
+            title="No workers to show."
+            message={workers.length === 0 ? "No worker profiles exist yet." : "No workers match the current filters. Try clearing them."}
+          />
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {filtered.map((w) => (
+              <WorkerCard key={w.id} worker={w} canViewCosts={canViewCosts} canManageWorkerProfiles={canManageWorkerProfiles} />
+            ))}
           </div>
-        </section>
-
-        {/* Assigned / In Progress */}
-        <section>
-          <p className="mb-3 text-xs font-black uppercase tracking-wide text-[#4B5563]">
-            Assigned / In Progress ({inFlight.length})
-          </p>
-          <div className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
-            {inFlight.length === 0 ? (
-              <p className="p-5 text-sm text-[#9CA3AF]">No job cards are currently assigned or in progress.</p>
-            ) : (
-              <div className="divide-y divide-[#E5E7EB]">
-                {inFlight.map((wo) => (
-                  <Link
-                    key={wo.id}
-                    href={`/maintenance/work-orders/${wo.id}`}
-                    className="flex flex-col gap-2 p-4 transition hover:bg-gray-50 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="min-w-0">
-                      <p className="font-bold text-[#111827] hover:text-[#ED1C24]">
-                        {wo.work_order_number}
-                        {wo.assets && <span className="ml-2 text-xs font-normal text-[#6B7280]">· {wo.assets.asset_code} - {wo.assets.asset_name}</span>}
-                      </p>
-                      <p className="truncate text-xs text-[#4B5563]">{wo.operator_complaint || "No complaint recorded."}</p>
-                      <p className="mt-1 text-xs font-semibold text-[#111827]">{assigneeLine(wo.work_order_assignments)}</p>
-                    </div>
-                    <StatusBadge label={displayStatus(wo.status)} tone={statusTone(wo.status)} />
-                  </Link>
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* Recently closed — read-only tracking */}
-        {recentlyClosed.length > 0 && (
-          <section>
-            <p className="mb-3 text-xs font-black uppercase tracking-wide text-[#4B5563]">Recently Closed</p>
-            <div className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
-              <div className="divide-y divide-[#E5E7EB]">
-                {recentlyClosed.map((wo) => (
-                  <Link
-                    key={wo.id}
-                    href={`/maintenance/work-orders/${wo.id}`}
-                    className="flex flex-col gap-2 p-4 transition hover:bg-gray-50 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="min-w-0">
-                      <p className="font-bold text-[#111827] hover:text-[#ED1C24]">
-                        {wo.work_order_number}
-                        {wo.assets && <span className="ml-2 text-xs font-normal text-[#6B7280]">· {wo.assets.asset_code} - {wo.assets.asset_name}</span>}
-                      </p>
-                      <p className="mt-1 text-xs font-semibold text-[#111827]">{assigneeLine(wo.work_order_assignments)}</p>
-                    </div>
-                    <StatusBadge label="Closed" tone="green" />
-                  </Link>
-                ))}
-              </div>
-            </div>
-          </section>
         )}
       </div>
     </>
+  );
+}
+
+// ── Sub-components ──────────────────────────────────────────────────────
+
+function SummaryCard({ label, value, icon: Icon, tone }: {
+  label: string; value: number | string; icon: typeof Users; tone: "green" | "amber" | "blue" | "gray";
+}) {
+  const toneClass = { green: "bg-[#16A34A]", amber: "bg-[#F59E0B]", blue: "bg-[#2563EB]", gray: "bg-[#6B7280]" }[tone];
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-[#E5E7EB] bg-white px-2.5 py-2">
+      <span className={`inline-flex shrink-0 rounded-md p-1.5 text-white ${toneClass}`}>
+        <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-[9px] font-black uppercase leading-tight text-[#6B7280]">{label}</span>
+        <span className="block text-base font-black leading-tight text-[#111827]">{value}</span>
+      </span>
+    </div>
+  );
+}
+
+function SummaryCardLink({ href, label, value, icon: Icon, tone, active }: {
+  href: string; label: string; value: number | string; icon: typeof Users; tone: "green" | "amber" | "blue" | "gray"; active: boolean;
+}) {
+  const toneClass = { green: "bg-[#16A34A]", amber: "bg-[#F59E0B]", blue: "bg-[#2563EB]", gray: "bg-[#6B7280]" }[tone];
+  return (
+    <Link
+      href={href}
+      className={`flex items-center gap-2 rounded-md border bg-white px-2.5 py-2 transition hover:border-[#2563EB] hover:shadow-md ${active ? "border-[#2563EB] ring-1 ring-[#93C5FD]" : "border-[#E5E7EB]"}`}
+    >
+      <span className={`inline-flex shrink-0 rounded-md p-1.5 text-white ${toneClass}`}>
+        <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-[9px] font-black uppercase leading-tight text-[#6B7280]">{label}</span>
+        <span className="block text-base font-black leading-tight text-[#111827]">{value}</span>
+      </span>
+    </Link>
+  );
+}
+
+function MiniChip({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] font-bold text-gray-700">
+      {label}
+    </span>
+  );
+}
+
+type CombinedWorker = WorkerProfileRow & {
+  status: WorkerActivityStatus | "Inactive";
+  current_job_card: {
+    work_order_id: string;
+    work_order_number: string | null;
+    status: string;
+    issue: string;
+    asset_label: string | null;
+  } | null;
+  today_hours: number;
+  month_hours: number;
+  month_amount: number;
+};
+
+// Task 5/6 — one compact card per worker. Never taller than: identity row,
+// one current-Job-Card block (or a one-line "no active Job Card" note), and
+// one footer row of hours + actions.
+function WorkerCard({ worker, canViewCosts, canManageWorkerProfiles }: {
+  worker: CombinedWorker;
+  canViewCosts: boolean;
+  canManageWorkerProfiles: boolean;
+}) {
+  const jc = worker.current_job_card;
+  const jcDisplayStatus = jc ? displaySimplifiedStatus(jc.status) : null;
+
+  return (
+    <div className={`rounded-md border-l-4 bg-white p-3 shadow-sm ${statusAccentClass(worker.status)} ${!worker.is_active ? "opacity-60" : ""}`}>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <p className="truncate text-sm font-black text-[#111827]">{worker.name}</p>
+            <MiniChip label={worker.worker_type} />
+            {worker.skill_category ? <MiniChip label={worker.skill_category} /> : null}
+          </div>
+          {worker.phone ? <p className="mt-0.5 text-xs text-[#6B7280]">{worker.phone}</p> : null}
+        </div>
+        <StatusBadge label={worker.status} tone={statusTone(worker.status)} />
+      </div>
+
+      {/* Task 6 — current Job Card */}
+      {jc ? (
+        <div className="mt-2 rounded-md bg-[#F8FAFC] px-2.5 py-2">
+          <p className="truncate text-xs font-bold text-[#111827]">
+            {jc.work_order_number ?? "Job Card"}
+            {jc.asset_label ? <span className="ml-1.5 font-normal text-[#6B7280]">· {jc.asset_label}</span> : null}
+          </p>
+          <p className="mt-0.5 truncate text-xs text-[#4B5563]">{jc.issue}</p>
+          {jcDisplayStatus ? (
+            <div className="mt-1">
+              <StatusBadge label={jcDisplayStatus} tone={simplifiedStatusTone(jcDisplayStatus)} />
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-[#9CA3AF]">No active Job Card.</p>
+      )}
+
+      {/* Footer — hours + actions */}
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-[#EEF2F6] pt-2">
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-[#6B7280]">
+          <span>Today: <strong className="text-[#111827]">{worker.today_hours} h</strong></span>
+          <span>This month: <strong className="text-[#111827]">{worker.month_hours} h</strong></span>
+          {canViewCosts ? <span>Cost (month): <strong className="text-[#111827]">{worker.month_amount.toFixed(3)} KWD</strong></span> : null}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {jc ? (
+            <Link
+              href={`/maintenance/work-orders/${jc.work_order_id}`}
+              className="inline-flex min-h-7 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-2 py-1 text-[11px] font-bold text-[#111827] transition hover:bg-gray-50"
+            >
+              Open Job Card
+            </Link>
+          ) : null}
+          <Link
+            href="/maintenance/daily-activity"
+            className="inline-flex min-h-7 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-2 py-1 text-[11px] font-bold text-[#111827] transition hover:bg-gray-50"
+          >
+            Open Daily Activity
+          </Link>
+          {canManageWorkerProfiles ? (
+            <Link
+              href="/admin/worker-profiles"
+              className="inline-flex min-h-7 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-2 py-1 text-[11px] font-bold text-[#111827] transition hover:bg-gray-50"
+            >
+              Worker Profile
+            </Link>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 }

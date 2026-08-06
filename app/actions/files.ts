@@ -22,6 +22,17 @@ const uuid = z.string().uuid();
 const text = z.string().trim().min(2).max(80);
 const purchaseFileType = z.enum(["quotation", "invoice", "delivery_note"]);
 
+// Popup and Feedback Design Standardization Unit 8D, Task 6: appends a
+// `?success=` code to a redirect target that may already carry a `#hash`
+// (e.g. `.../work-orders/{id}#attachments`) so the shared toast (ActionToast)
+// can pick it up without disturbing the anchor scroll.
+function withSuccessParam(path: string, code: string): string {
+  const [pathAndQuery, hash] = path.split("#");
+  const separator = pathAndQuery.includes("?") ? "&" : "?";
+  const withParam = `${pathAndQuery}${separator}success=${code}`;
+  return hash ? `${withParam}#${hash}` : withParam;
+}
+
 function canByPermission(
   permissions: string[],
   roleSlug: string | undefined,
@@ -247,7 +258,7 @@ export async function uploadWorkOrderFileAction(formData: FormData) {
 
   revalidatePath(`/maintenance/work-orders/${workOrderId}`);
   revalidatePath(`/technician/jobs/${workOrderId}`);
-  redirect(String(formData.get("return_to") || `/maintenance/work-orders/${workOrderId}`));
+  redirect(withSuccessParam(String(formData.get("return_to") || `/maintenance/work-orders/${workOrderId}`), "file-uploaded"));
 }
 
 export async function uploadAssetFileAction(formData: FormData) {

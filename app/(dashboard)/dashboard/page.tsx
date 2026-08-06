@@ -11,6 +11,8 @@ import {
   FileText,
   Gauge,
   Package,
+  PauseCircle,
+  PlayCircle,
   PlusCircle,
   ShoppingCart,
   Upload,
@@ -52,10 +54,19 @@ import {
 import { JobCardOpenedModal } from "@/components/work-orders/job-card-opened-modal";
 import { JobCardSubmittedModal } from "@/components/work-orders/job-card-submitted-modal";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
+import {
+  getMaterialFulfillmentForWorkOrder,
+  getMaterialFulfillmentForWorkOrders,
+  anyMaterialsIncomplete,
+  summarizeMaterialAvailability,
+} from "@/lib/work-orders/material-fulfillment";
+import { getWorkOrderLaborSummariesBulk } from "@/lib/work-orders/work-session-totals";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
+import { hasPermission } from "@/lib/security/permissions";
 import { StoreSendMaterialsPopup } from "@/components/store/store-send-materials-popup";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
+import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -171,16 +182,50 @@ function mgActionMeta(status: string): { label: string; style: string } {
 }
 
 // ── Shared components ─────────────────────────────────────────────────
-function QuickAction({ label, subtitle, href, icon: Icon, iconBg, iconColor }: {
-  label: string; subtitle?: string; href: string; icon: LucideIcon; iconBg: string; iconColor: string;
+// One-Screen Data Entry Dashboard Unit 9E, Task 3: added an optional
+// `primary` visual variant (filled brand-red card, white text) so "Open
+// Daily Activity" can be the visually important first quick action without
+// duplicating this component — every other existing call site (Manager/
+// Engineer/etc. sections below) omits `primary` and renders exactly as
+// before.
+// Final One-Screen Dashboard UI Polish Unit 9E.3, Task 4: added an optional
+// `compact` size — smaller padding/icon/arrow, used only by the Data Entry
+// Quick Actions panel now that it sits in a narrow side column beside Needs
+// Attention. Every other existing call site (Manager/Engineer/etc.) omits
+// it and renders exactly as before.
+function QuickAction({ label, subtitle, href, icon: Icon, iconBg, iconColor, primary = false, compact = false }: {
+  label: string; subtitle?: string; href: string; icon: LucideIcon; iconBg?: string; iconColor?: string; primary?: boolean; compact?: boolean;
 }) {
+  const pad = compact ? "px-3 py-2" : "px-4 py-3";
+  const iconBox = compact ? "h-7 w-7" : "h-8 w-8";
+  const iconSize = compact ? "h-3.5 w-3.5" : "h-4 w-4";
+  const arrowSize = compact ? "h-3.5 w-3.5" : "h-4 w-4";
+  if (primary) {
+    return (
+      <Link
+        href={href}
+        className={`group flex items-center gap-2.5 rounded-md border border-[#ED1C24] bg-[#ED1C24] ${pad} shadow-sm transition hover:-translate-y-0.5 hover:bg-[#c8181e] hover:shadow-md`}
+      >
+        <span className={`flex ${iconBox} shrink-0 items-center justify-center rounded-lg bg-white/15`}>
+          <Icon className={`${iconSize} text-white`} aria-hidden="true" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-black text-white">{label}</span>
+          {subtitle && (
+            <span className="block truncate text-[11px] font-medium text-white/80">{subtitle}</span>
+          )}
+        </span>
+        <ArrowRight className={`ml-auto ${arrowSize} shrink-0 text-white/80 transition group-hover:translate-x-0.5`} aria-hidden="true" />
+      </Link>
+    );
+  }
   return (
     <Link
       href={href}
-      className="group flex items-center gap-3 rounded-md border border-[#DDE2EA] bg-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:border-[#C9D0DA] hover:shadow-md"
+      className={`group flex items-center gap-2.5 rounded-md border border-[#DDE2EA] bg-white ${pad} shadow-sm transition hover:-translate-y-0.5 hover:border-[#C9D0DA] hover:shadow-md`}
     >
-      <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${iconBg}`}>
-        <Icon className={`h-4 w-4 ${iconColor}`} aria-hidden="true" />
+      <span className={`flex ${iconBox} shrink-0 items-center justify-center rounded-lg ${iconBg}`}>
+        <Icon className={`${iconSize} ${iconColor}`} aria-hidden="true" />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block text-sm font-bold text-[#111827]">{label}</span>
@@ -188,13 +233,115 @@ function QuickAction({ label, subtitle, href, icon: Icon, iconBg, iconColor }: {
           <span className="block truncate text-[11px] font-medium text-[#9CA3AF]">{subtitle}</span>
         )}
       </span>
-      <ArrowRight className="ml-auto h-4 w-4 shrink-0 text-[#D1D5DB] transition group-hover:translate-x-0.5 group-hover:text-[#6B7280]" aria-hidden="true" />
+      <ArrowRight className={`ml-auto ${arrowSize} shrink-0 text-[#D1D5DB] transition group-hover:translate-x-0.5 group-hover:text-[#6B7280]`} aria-hidden="true" />
     </Link>
   );
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return <p className="text-[10px] font-black uppercase tracking-widest text-[#9CA3AF]">{children}</p>;
+}
+
+// Dashboard Card Sizing and Section Alignment Polish Unit 9E.5, Task 1: sized
+// up moderately from Unit 9E.4's very compact version — card height now
+// lands around 60-64px (px-3 py-2.5 + a text stack of roughly that height),
+// icon box around 32px (p-2 wrapper + h-4 w-4 glyph), value bumped to
+// text-lg for a visually stronger number — while staying a compact
+// horizontal card (icon + label + value in one row), nowhere near the
+// original tall vertical `StatCard`.
+function TodaySummaryCard({ href, label, value, icon: Icon, tone }: {
+  href: string; label: string; value: number; icon: LucideIcon; tone: "red" | "amber" | "green" | "blue" | "gray";
+}) {
+  const toneClass = {
+    red: "bg-[#ED1C24]",
+    amber: "bg-[#F59E0B]",
+    green: "bg-[#16A34A]",
+    blue: "bg-[#2563EB]",
+    gray: "bg-[#6B7280]",
+  }[tone];
+  return (
+    <Link
+      href={href}
+      className="flex items-center gap-2 rounded-md border border-[#E5E7EB] bg-white px-3 py-2.5 transition hover:border-[#2563EB] hover:shadow-sm"
+    >
+      <span className={`inline-flex shrink-0 rounded-md p-2 text-white ${toneClass}`}>
+        <Icon className="h-4 w-4" aria-hidden="true" />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-[10px] font-black uppercase leading-tight text-[#6B7280]">{label}</span>
+        <span className="block text-lg font-black leading-tight text-[#111827]">{value}</span>
+      </span>
+    </Link>
+  );
+}
+
+// Dashboard Card Sizing and Section Alignment Polish Unit 9E.5, Task 2: sized
+// up to match `TodaySummaryCard`'s new footprint exactly (same padding, same
+// icon box, same arrow size) — Quick Actions and Today Summary now share one
+// visibly consistent card system. `accent` still means a red left bar + red
+// icon tint + red hover ring, never a filled red tile — red stays a small
+// accent, not a dominant surface, even at this slightly larger size.
+function QuickActionTile({ href, title, helper, icon: Icon, iconBg, iconColor, accent = false }: {
+  href: string; title: string; helper: string; icon: LucideIcon; iconBg: string; iconColor: string; accent?: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      className={`group flex items-center gap-2 rounded-md border-l-4 bg-white px-3 py-2.5 ring-1 transition hover:shadow-sm ${
+        accent ? "border-l-[#ED1C24] ring-[#E5E7EB] hover:ring-[#ED1C24]" : "border-l-transparent ring-[#E5E7EB] hover:ring-[#2563EB]"
+      }`}
+    >
+      <span className={`inline-flex shrink-0 rounded-md p-2 ${iconBg}`}>
+        <Icon className={`h-4 w-4 ${iconColor}`} aria-hidden="true" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-black leading-tight text-[#111827]">{title}</span>
+        <span className="block truncate text-[11px] leading-tight text-[#9CA3AF]">{helper}</span>
+      </span>
+      <ArrowRight className="h-4 w-4 shrink-0 text-[#D1D5DB] transition group-hover:translate-x-0.5 group-hover:text-[#6B7280]" aria-hidden="true" />
+    </Link>
+  );
+}
+
+// One-Screen Data Entry Dashboard Unit 9E, Task 5/6/7 — a compact row for
+// the Needs Attention list: number/asset/issue on the left, one colored
+// stage badge + one recommended action on the right. The whole row is a
+// single <Link> to that one action (same "whole row is the click target,
+// action text is just a label" convention WoRow/NuJobCardRow already use
+// elsewhere on this dashboard) — never more than one clickable action.
+type NeedsAttentionBadgeTone = "red" | "amber" | "green" | "blue" | "gray";
+type NeedsAttentionItem = {
+  id: string;
+  workOrderNumber: string | null;
+  assetLabel: string | null;
+  issue: string;
+  badgeLabel: string;
+  badgeTone: NeedsAttentionBadgeTone;
+  actionLabel: string;
+  actionHref: string;
+};
+
+function NeedsAttentionRow({ item }: { item: NeedsAttentionItem }) {
+  return (
+    <Link
+      href={item.actionHref}
+      className="group flex items-center gap-2.5 px-3.5 py-2.5 transition hover:bg-[#F8FAFC]"
+    >
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold text-[#111827] group-hover:text-[#ED1C24]">
+          {item.workOrderNumber ?? <span className="text-xs italic text-[#9CA3AF]">Draft</span>}
+          {item.assetLabel && <span className="ml-2 text-xs font-normal text-[#6B7280]">· {item.assetLabel}</span>}
+        </p>
+        <p className="truncate text-xs text-[#6B7280]">{item.issue}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <StatusBadge label={item.badgeLabel} tone={item.badgeTone} />
+        <span className="shrink-0 rounded border border-[#E5E7EB] px-2 py-1 text-xs font-bold text-[#111827] transition group-hover:border-[#ED1C24] group-hover:text-[#ED1C24]">
+          {item.actionLabel}
+        </span>
+      </div>
+    </Link>
+  );
 }
 
 // Data Entry Dashboard and Job Cards UX Simplification: once status badges
@@ -296,36 +443,44 @@ function TechJobRow({ row }: { row: TechJobRow }) {
   );
 }
 
-function NuJobCardRow({ row }: { row: NuJobCardRow }) {
+// One-Screen Dashboard No-Scroll Unit 9E.2, Task 5: `compact` strips this
+// down to exactly the preview row shape the task specifies — Job Card #,
+// asset, one status badge, View — for the Recent Job Cards preview (max 3
+// rows). Non-compact (default) is unchanged, byte-identical to before, in
+// case another surface ever needs the fuller row again.
+function NuJobCardRow({ row, compact = false }: { row: NuJobCardRow; compact?: boolean }) {
   const subtitle = [row.asset_name, row.issue_summary].filter(Boolean).join(" · ");
   const showMaterialsBadge =
     row.materials_request_status && !JOB_CARD_STATUS_ALREADY_SHOWS_MATERIALS.includes(row.status);
   return (
     <Link
       href={`?preview=${row.id}`}
-      className="group flex items-center gap-3 px-4 py-3 transition hover:bg-[#F8FAFC]"
+      className={`group flex items-center gap-3 transition hover:bg-[#F8FAFC] ${compact ? "px-3.5 py-2" : "px-4 py-3"}`}
     >
       <div className="min-w-0 flex-1 space-y-0.5">
         <p className="truncate text-sm font-semibold text-[#111827] group-hover:text-[#ED1C24]">
           {row.work_order_number ?? <span className="text-xs italic text-[#9CA3AF]">Draft</span>}
         </p>
-        {subtitle && <p className="truncate text-xs text-[#6B7280]">{subtitle}</p>}
+        {!compact && subtitle && <p className="truncate text-xs text-[#6B7280]">{subtitle}</p>}
+        {compact && row.asset_name && <p className="truncate text-xs text-[#6B7280]">{row.asset_name}</p>}
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 sm:gap-3">
         {(() => {
           const simplified = displaySimplifiedStatus(row.status);
           return <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />;
         })()}
-        {row.has_pending_correction && (
+        {!compact && row.has_pending_correction && (
           <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
         )}
-        {showMaterialsBadge && (
+        {!compact && showMaterialsBadge && (
           <StatusBadge
             label={materialsRequestBadgeLabel(row.materials_request_status!)}
             tone={partsRequestStatusTone(row.materials_request_status!)}
           />
         )}
-        <span className="hidden shrink-0 text-xs text-[#9CA3AF] sm:block">{formatDateTime(row.created_at)}</span>
+        {!compact && (
+          <span className="hidden shrink-0 text-xs text-[#9CA3AF] sm:block">{formatDateTime(row.created_at)}</span>
+        )}
         <span className="shrink-0 rounded border border-[#E5E7EB] px-2 py-1 text-xs font-bold text-[#111827] transition group-hover:border-[#ED1C24] group-hover:text-[#ED1C24]">
           View
         </span>
@@ -475,7 +630,27 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   todayStart.setHours(0, 0, 0, 0);
 
   // ── Normal User data ─────────────────────────────────────────────
-  const [nuQueue, nuRecentRows] = isNormalUser ? await Promise.all([
+  // One-Screen Data Entry Dashboard Unit 9E, Task 12: the sample size used
+  // for both the Needs Attention list and the derived Materials Pending/
+  // Working Now/Paused/Ready for Closure counts below — same "compute over
+  // the most-recently-updated N active Job Cards" convention the Daily
+  // Activity page (Unit 9/9C) already established for its own summary
+  // cards, not an exhaustive company-wide scan. Kept smaller than Daily
+  // Activity's own 50-row page cap since this is a dashboard widget loaded
+  // far more often, not the dedicated control board.
+  const NU_ACTIVE_SAMPLE_SIZE = 30;
+  const NU_DRAFT_SAMPLE_SIZE = 5;
+  // One-Screen Dashboard No-Scroll Unit 9E.2, Task 3/10: 4, not 5 — the
+  // smaller cap that actually fits the "Needs Attention visible without
+  // scrolling, beside Quick Actions" layout this unit introduces.
+  const NU_NEEDS_ATTENTION_LIMIT = 4;
+  // Dashboard Quick Actions Compact Tile UI Polish Unit 9E.4, Task 5: 2, not
+  // 3 — Recent Job Cards now lives in the narrower column beside Needs
+  // Attention Today (Option A layout), so it shrinks once more to stay a
+  // small secondary preview rather than competing for height.
+  const NU_RECENT_LIMIT = 2;
+
+  const [nuQueue, nuActiveSample, nuDraftSample, nuRecentRows] = isNormalUser ? await Promise.all([
     Promise.all([
       prisma.work_orders.findMany({
         where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Under Review" }] },
@@ -515,6 +690,43 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         closedRecentCount,
       };
     }),
+    // Task 5/12 — lean sample of active Job Cards (same select shape as the
+    // Daily Activity page's own list query: no attachments, no audit logs,
+    // no full session/material-movement history) used for the Needs
+    // Attention list and the Materials Pending/Working Now/Paused/Ready for
+    // Closure summary counts below.
+    prisma.work_orders.findMany({
+      where: { AND: [{ deleted_at: null }, visibilityFilter, { status: { in: ACTIVE_JOB_CARD_STATUSES } }] },
+      orderBy: { updated_at: "desc" },
+      take: NU_ACTIVE_SAMPLE_SIZE,
+      select: {
+        id: true,
+        work_order_number: true,
+        status: true,
+        updated_at: true,
+        operator_complaint: true,
+        description_of_work: true,
+        assets: { select: { asset_name: true, plate_number: true } },
+        work_order_assignments: { select: { id: true } },
+        parts_requests: { select: { id: true, status: true } },
+      },
+    }).catch(() => []),
+    // Task 5 — small separate sample just for the "Draft Not Started"
+    // bucket (a draft is never in ACTIVE_JOB_CARD_STATUSES, so it can't come
+    // from the query above).
+    prisma.work_orders.findMany({
+      where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Created" }] },
+      orderBy: { updated_at: "desc" },
+      take: NU_DRAFT_SAMPLE_SIZE,
+      select: {
+        id: true,
+        work_order_number: true,
+        updated_at: true,
+        operator_complaint: true,
+        description_of_work: true,
+        assets: { select: { asset_name: true, plate_number: true } },
+      },
+    }).catch(() => []),
     prisma.work_orders
       .findMany({
         where: { AND: [{ deleted_at: null }, visibilityFilter] },
@@ -529,10 +741,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           parts_requests: { select: { status: true }, orderBy: { created_at: "desc" }, take: 1 },
         },
         orderBy: { updated_at: "desc" },
-        take: 5,
+        take: NU_RECENT_LIMIT,
       })
       .catch(() => []),
-  ]) : [null, []];
+  ]) : [null, [], [], []];
 
   const nuRecent: NuJobCardRow[] = nuRecentRows.length
     ? await (async () => {
@@ -553,6 +765,134 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         }));
       })()
     : [];
+
+  // Task 5/6/7/12 — Needs Attention: bulk-compute materials fulfillment and
+  // labor summaries across the active sample (2 groupBy queries + 2 session
+  // queries total, not per-card — the same bulk helpers the Daily Activity
+  // page uses), derive one priority bucket per Job Card in this unit's own
+  // order (Materials Pending > Worker Paused > Working Now > Needs
+  // Assignment > Ready for Closure > Draft), then take the top 4 (Unit 9E.2,
+  // Task 3/10 — tightened down from Unit 9E's original top 5).
+  let nuNeedsAttention: NeedsAttentionItem[] = [];
+  let nuMaterialsPendingCount = 0;
+  let nuWorkingNowCount = 0;
+  let nuPausedCount = 0;
+  let nuReadyForClosureCount = 0;
+  if (isNormalUser && nuActiveSample.length) {
+    const activeIds = nuActiveSample.map((w) => w.id);
+    const [fulfillmentMap, laborMap] = await Promise.all([
+      getMaterialFulfillmentForWorkOrders(prisma, activeIds),
+      getWorkOrderLaborSummariesBulk(prisma, activeIds),
+    ]);
+    // Data Entry already holds work_orders.assign (Unit 7) in every seeded
+    // role configuration — computed via the real permission check anyway
+    // (not hardcoded true) so this degrades safely if that ever changes.
+    const canAssignWorkers = hasPermission(context, "work_orders.assign") || context.role?.slug === "super_admin";
+
+    type Bucketed = NeedsAttentionItem & { rank: number; updatedAt: string };
+    const candidates: Bucketed[] = [];
+
+    for (const wo of nuActiveSample) {
+      const detailHref = `/maintenance/work-orders/${wo.id}`;
+      const fulfillment = fulfillmentMap.get(wo.id) ?? [];
+      const laborSummary = laborMap.get(wo.id);
+      const materialsIncomplete = anyMaterialsIncomplete(fulfillment);
+      const pendingMaterialsRequestsCount = wo.parts_requests.filter((r) => r.status !== "Issued").length;
+      const activeMaterialsRequest = wo.parts_requests.find((r) =>
+        ["Requested", "Approved", "Waiting Stock", "Partially Issued"].includes(r.status)
+      );
+      const hasAssignment = Boolean(laborSummary?.workers.length) || wo.work_order_assignments.length > 0;
+      const hasActiveSession = laborSummary?.has_active_session ?? false;
+      const anyWorkerPaused = laborSummary?.workers.some((w) => w.status === "Paused") ?? false;
+      const materialsBlocking = pendingMaterialsRequestsCount > 0 || materialsIncomplete;
+      const closureReady = pendingMaterialsRequestsCount === 0 && !materialsIncomplete && !hasActiveSession;
+
+      if (materialsBlocking) nuMaterialsPendingCount += 1;
+      if (hasActiveSession) nuWorkingNowCount += 1;
+      if (anyWorkerPaused && !hasActiveSession) nuPausedCount += 1;
+      if (closureReady) nuReadyForClosureCount += 1;
+
+      const assetLabel = wo.assets ? `${wo.assets.asset_name}${wo.assets.plate_number ? ` (${wo.assets.plate_number})` : ""}` : null;
+      const issue = wo.operator_complaint || wo.description_of_work || "No issue description";
+
+      // Task 5 — one bucket per Job Card, its own priority order (not Daily
+      // Activity's): Materials Pending is checked first here because on
+      // this dashboard a materials block is the single most urgent thing
+      // Data Entry can act on, ahead of worker/timer state.
+      if (materialsBlocking) {
+        candidates.push({
+          id: wo.id, rank: 0, updatedAt: wo.updated_at.toISOString(),
+          workOrderNumber: wo.work_order_number, assetLabel, issue,
+          badgeLabel: "Materials Pending", badgeTone: "red",
+          // Task 7 — "View Materials" is the safe default (Data Entry does
+          // not necessarily hold the store-issue permission that a
+          // "Receive Materials" action would imply); routes straight to the
+          // real Materials Request when one exists.
+          actionLabel: "View Materials",
+          actionHref: activeMaterialsRequest ? `/store/parts-requests/${activeMaterialsRequest.id}` : `${detailHref}#parts`,
+        });
+      } else if (anyWorkerPaused && !hasActiveSession) {
+        candidates.push({
+          id: wo.id, rank: 1, updatedAt: wo.updated_at.toISOString(),
+          workOrderNumber: wo.work_order_number, assetLabel, issue,
+          badgeLabel: "Worker Paused", badgeTone: "amber",
+          actionLabel: "Open Daily Activity",
+          actionHref: "/maintenance/daily-activity?status=paused",
+        });
+      } else if (hasActiveSession) {
+        candidates.push({
+          id: wo.id, rank: 2, updatedAt: wo.updated_at.toISOString(),
+          workOrderNumber: wo.work_order_number, assetLabel, issue,
+          badgeLabel: "Working Now", badgeTone: "green",
+          actionLabel: "Open Daily Activity",
+          actionHref: "/maintenance/daily-activity?status=working",
+        });
+      } else if (!hasAssignment) {
+        candidates.push({
+          id: wo.id, rank: 3, updatedAt: wo.updated_at.toISOString(),
+          workOrderNumber: wo.work_order_number, assetLabel, issue,
+          badgeLabel: "Needs Assignment", badgeTone: "blue",
+          actionLabel: canAssignWorkers ? "Assign Workers" : "Open Job Card",
+          actionHref: canAssignWorkers ? `${detailHref}?editAssignment=1#assignment` : detailHref,
+        });
+      } else if (closureReady) {
+        candidates.push({
+          id: wo.id, rank: 4, updatedAt: wo.updated_at.toISOString(),
+          workOrderNumber: wo.work_order_number, assetLabel, issue,
+          badgeLabel: "Ready for Closure", badgeTone: "blue",
+          // One-Screen Dashboard No-Scroll Unit 9E.2, Task 8: "Ready for
+          // Closure -> Open Job Card" (not a direct "Request Closure" click
+          // from this compact row) — Request Closure still happens on the
+          // full Job Card detail page, scrolled straight to the closure
+          // panel, so Data Entry sees the full context (materials/worker
+          // state) before requesting.
+          actionLabel: "Open Job Card",
+          actionHref: `${detailHref}#closure-panel`,
+        });
+      }
+      // Anything else (assigned, has recorded sessions, not closure-ready
+      // yet, nothing blocking) needs no attention right now — not added.
+    }
+
+    for (const wo of nuDraftSample) {
+      const assetLabel = wo.assets ? `${wo.assets.asset_name}${wo.assets.plate_number ? ` (${wo.assets.plate_number})` : ""}` : null;
+      const issue = wo.operator_complaint || wo.description_of_work || "No issue description";
+      candidates.push({
+        id: wo.id, rank: 5, updatedAt: wo.updated_at.toISOString(),
+        workOrderNumber: wo.work_order_number, assetLabel, issue,
+        badgeLabel: "Draft", badgeTone: "gray",
+        // Opens the existing quick-view preview modal, the same "View"
+        // pattern every other row on this dashboard already uses — no new
+        // navigation surface introduced.
+        actionLabel: "Open Job Card",
+        actionHref: `?preview=${wo.id}`,
+      });
+    }
+
+    nuNeedsAttention = candidates
+      .sort((a, b) => a.rank - b.rank || (a.updatedAt < b.updatedAt ? 1 : -1))
+      .slice(0, NU_NEEDS_ATTENTION_LIMIT);
+  }
 
   // ── Manager data ─────────────────────────────────────────────────
   // Manager Dashboard Approval Queue Fix: Job Card status stays "Under
@@ -894,6 +1234,11 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     context.role?.slug === "super_admin" || context.permissions.includes("work_orders.manage");
   const showNewJobCardModal = sp.new_job_card === "1" && canCreateJobCard;
   const newJobCardAssets = showNewJobCardModal ? await getAssetPickerOptions() : [];
+  // Optional Work Assignment During Job Card Creation Unit 7C, Task 10.
+  const canAssignAtCreation =
+    context.role?.slug === "super_admin" || context.permissions.includes("work_orders.assign");
+  const newJobCardActiveWorkers =
+    showNewJobCardModal && canAssignAtCreation ? await getActiveWorkerProfilesForAssignment() : [];
 
   // Store Guided Send Materials Popup Workflow Unit Task 2: a second,
   // independent preview param (never conflated with the Job Card ?preview)
@@ -946,7 +1291,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     context.permissions.includes("work_orders.assign") ||
     context.permissions.includes("work_orders.approve");
 
-  const [previewWO, prPreviewData, techsForModal] = previewId
+  const [previewWO, prPreviewData, techsForModal, previewMaterialFulfillment] = previewId
     ? await Promise.all([
         prisma.work_orders.findFirst({
           where: { AND: [{ id: previewId }, { deleted_at: null }, visibilityFilter] },
@@ -990,7 +1335,17 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 profiles: { select: { full_name: true } },
               },
             },
-            _count: { select: { work_order_required_parts: true, work_order_attachments: true } },
+            // Job Card Work Tracking Entry Points and Assignment Visibility
+            // Unit 8B, Task 3/4/8 — same additive fields as the Job Cards
+            // list's own preview query.
+            _count: {
+              select: {
+                work_order_required_parts: true,
+                work_order_attachments: true,
+                work_order_worker_assignments: { where: { status: "active" } },
+                work_order_work_sessions: { where: { status: "Active" } },
+              },
+            },
           },
         }),
         prisma.parts_requests.findMany({
@@ -1007,11 +1362,16 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         canAssignModal
           ? getTechnicianPickerOptions()
           : Promise.resolve([] as Array<{ id: string; full_name: string }>),
+        // Job Card Action Clarity Fix Task 3: same single-Job-Card fulfillment
+        // read as the Job Cards list's own preview query — gated behind
+        // previewId, so this is never run per dashboard row.
+        getMaterialFulfillmentForWorkOrder(prisma, previewId),
       ])
     : [
         null,
         [] as Array<{ id: string; parts_request_number: string | null; status: string; parts_request_items: { id: string; description: string; quantity_requested: unknown; issued_quantity: unknown }[] }>,
         [] as Array<{ id: string; full_name: string }>,
+        [] as Awaited<ReturnType<typeof getMaterialFulfillmentForWorkOrder>>,
       ];
 
   // Manager Dashboard Real Preview Loader Fix Task 5: dev-only diagnostic —
@@ -1125,6 +1485,12 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             }
           : null,
         required_parts_count: previewWO._count.work_order_required_parts,
+        // Job Card Work Tracking Entry Points and Assignment Visibility
+        // Unit 8B, Task 3/4/8.
+        internalTeamCount: previewWO._count.work_order_worker_assignments,
+        hasActiveWorkSession: previewWO._count.work_order_work_sessions > 0,
+        // Job Card Action Clarity Fix Task 3.
+        materialsAvailability: summarizeMaterialAvailability(previewMaterialFulfillment),
         parts_requests_count: prPreviewData.length,
         open_parts_requests_count: prPreviewData.filter((pr) =>
           OPEN_PR_STATUSES.includes(pr.status),
@@ -1194,7 +1560,18 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       />
       <div className="space-y-4 p-4 pb-8 sm:p-5">
 
-        {/* ── NORMAL USER ─────────────────────────────────────────── */}
+        {/* ── NORMAL USER (Data Entry) ────────────────────────────────
+            Dashboard Card Sizing and Section Alignment Polish Unit 9E.5: on
+            top of Unit 9E.4's layout (Header → Today Summary → Quick Actions
+            → Needs Attention Today + Recent Job Cards), every card grew
+            moderately (Task 1/2) and both side-by-side sections now use an
+            identical header structure — title + one-line subtitle + a
+            right-aligned "View all" link, same font sizes/line-heights on
+            both sides — so their card containers start at the same Y
+            (Task 4). Needs Attention Today keeps the dark/bold text; Recent
+            Job Cards uses the exact same structure in a muted gray, so
+            hierarchy comes from color, not from one side sitting lower than
+            the other. */}
         {isNormalUser && nuQueue && (
           <>
             {/* Correction Requested alert */}
@@ -1210,59 +1587,111 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               </div>
             )}
 
-            {/* Quick Actions — Simplified Workflow Correction Unit Task 7:
-                Materials Requests restored (requested materials are tracked
-                and received there). */}
-            <div className="grid grid-cols-2 gap-2 xl:grid-cols-5">
-              <QuickAction label="Create New Job Card" href="?new_job_card=1" icon={PlusCircle}   iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
-              <QuickAction label="View My Job Cards"   href="/maintenance/work-orders"     icon={ClipboardList} iconBg="bg-green-50"  iconColor="text-green-600" />
-              <QuickAction label="Materials Requests"  href="/store/parts-requests"        icon={ShoppingCart}  iconBg="bg-violet-50" iconColor="text-violet-600" />
-              <QuickAction label="Offline Inventory Control" href="/store/offline-inventory" icon={Package}    iconBg="bg-amber-50"  iconColor="text-amber-600" />
-              <QuickAction label="Assets & Equipment"  href="/assets"                      icon={Gauge}        iconBg="bg-blue-50"   iconColor="text-blue-600" />
-            </div>
-
-            {/* Dashboard Materials to Receive Card Removal Task 2/3: the
-                "Materials to Receive" KPI was removed per the business
-                decision that materials receiving belongs on the Materials
-                Requests page, not the main dashboard — the Materials
-                Requests quick action above and the Materials Requests page's
-                own "Pending" tab remain the place to track this. Five
-                cards now (was six) — same "5 simplified cards" grid used by
-                Manager's Job Cards row and Super Admin's System Overview. */}
-            <section className="space-y-2">
-              <SectionLabel>My Work Today</SectionLabel>
-              {/* Approval Workflow Unit 4, Task 10: Drafts / Active / Closure
-                  Requested / Closed Recently — no Manager approval before
-                  starting a Job Card any more, so "Submitted"/"Approved" are
-                  no longer their own cards (folded into "Active"). */}
-              <KpiRow cols="sm:grid-cols-2 xl:grid-cols-4" cards={[
-                { label: "Drafts",                value: nuQueue.draftCount,      icon: FileText,      tone: "gray",                                          href: "/maintenance/work-orders?status=New", detail: "Not yet started" },
-                { label: "Active",                value: nuQueue.activeCount,     icon: Wrench,        tone: "blue",                                          href: "/maintenance/work-orders?status=Active", detail: "Work in progress" },
-                { label: "Closure Requested",      value: nuQueue.closureRequestedCount, icon: Clock,   tone: nuQueue.closureRequestedCount > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=ClosureRequested", detail: "Waiting on Manager to approve closing" },
-                { label: "Closed recently",       value: nuQueue.closedRecentCount, icon: CheckCircle2, tone: "green",                                        href: "/maintenance/work-orders?status=Closed" },
-              ]} />
+            {/* Task 1/3 — Today Summary: 6 clickable cards, sized up
+                moderately, one row on desktop. Materials Pending/Working
+                Now/Paused/Ready for Closure are derived from the active
+                sample computed above; Closure Requested and Closed Recently
+                stay as small secondary text links rather than full cards. */}
+            <section className="space-y-1.5">
+              <SectionLabel>Today Summary</SectionLabel>
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 xl:grid-cols-6">
+                <TodaySummaryCard href="/maintenance/daily-activity" label="Active Job Cards" value={nuQueue.activeCount} icon={ClipboardList} tone="blue" />
+                <TodaySummaryCard href="/maintenance/daily-activity?status=materials-pending" label="Materials Pending" value={nuMaterialsPendingCount} icon={ShoppingCart} tone={nuMaterialsPendingCount > 0 ? "red" : "green"} />
+                <TodaySummaryCard href="/maintenance/daily-activity?status=working" label="Working Now" value={nuWorkingNowCount} icon={PlayCircle} tone="green" />
+                <TodaySummaryCard href="/maintenance/daily-activity?status=paused" label="Paused Workers" value={nuPausedCount} icon={PauseCircle} tone="amber" />
+                <TodaySummaryCard href="/maintenance/daily-activity?status=ready-closure" label="Ready for Closure" value={nuReadyForClosureCount} icon={CheckCircle2} tone="blue" />
+                <TodaySummaryCard href="/maintenance/work-orders?status=New" label="Drafts Not Started" value={nuQueue.draftCount} icon={FileText} tone="gray" />
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-0.5 px-0.5 text-[11px] font-semibold text-[#9CA3AF]">
+                <Link href="/maintenance/work-orders?status=ClosureRequested" className="hover:text-[#111827]">
+                  {nuQueue.closureRequestedCount} awaiting Manager closure approval →
+                </Link>
+                <Link href="/maintenance/work-orders?status=Closed" className="hover:text-[#111827]">
+                  {nuQueue.closedRecentCount} closed in the last 14 days →
+                </Link>
+              </div>
             </section>
 
-            {/* Latest Updates */}
-            <ActivityList
-              title="Latest Job Cards"
-              viewAllHref="/maintenance/work-orders"
-              empty={nuRecent.length === 0}
-              emptyState={
-                <div className="flex flex-col items-center gap-3 px-4 py-10 text-center">
-                  <p className="text-sm font-semibold text-[#111827]">No Job Cards yet.</p>
-                  <p className="text-xs text-[#6B7280]">Create your first Job Card to start tracking maintenance work.</p>
-                  <Link
-                    href="?new_job_card=1"
-                    className="mt-1 rounded-md bg-[#ED1C24] px-4 py-2 text-xs font-bold text-white transition hover:bg-red-700"
-                  >
-                    Create Job Card
+            {/* Task 2/3 — Quick Actions: same card system as Today Summary,
+                same grid density. Daily Activity is first and carries the
+                only accent (red left bar + red-tinted icon + red hover
+                border) — never a solid-red tile. */}
+            <section className="space-y-1.5">
+              <SectionLabel>Quick Actions</SectionLabel>
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 xl:grid-cols-5">
+                <QuickActionTile
+                  accent
+                  title="Daily Activity"
+                  helper="Monitor active work"
+                  href="/maintenance/daily-activity"
+                  icon={Activity}
+                  iconBg="bg-red-50"
+                  iconColor="text-[#ED1C24]"
+                />
+                <QuickActionTile title="New Job Card" helper="Create request" href="?new_job_card=1" icon={PlusCircle} iconBg="bg-red-50" iconColor="text-[#ED1C24]" />
+                <QuickActionTile title="Materials Requests" helper="Material requests" href="/store/parts-requests" icon={ShoppingCart} iconBg="bg-violet-50" iconColor="text-violet-600" />
+                <QuickActionTile title="Inventory Control" helper="Receive / issue" href="/store/offline-inventory" icon={Package} iconBg="bg-amber-50" iconColor="text-amber-600" />
+                <QuickActionTile title="Assets & Equipment" helper="Browse assets" href="/assets" icon={Gauge} iconBg="bg-blue-50" iconColor="text-blue-600" />
+              </div>
+            </section>
+
+            {/* Task 4 — Needs Attention Today (left, ~65%) and Recent Job
+                Cards (right, ~35%) share one header structure so both
+                columns' card containers start at the same vertical level;
+                stacked below lg:. Needs Attention stays the dashboard's one
+                clear focus (dark/bold heading); Recent Job Cards uses the
+                identical structure in muted gray, so it's still visibly
+                secondary despite lining up with Needs Attention. */}
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,65%)_minmax(0,35%)]">
+              <section className="space-y-1.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <h2 className="text-sm font-black leading-tight text-[#111827]">Needs Attention Today</h2>
+                    <p className="text-[11px] leading-tight text-[#6B7280]">Handle these first.</p>
+                  </div>
+                  <Link href="/maintenance/daily-activity" className="shrink-0 text-xs font-bold text-[#ED1C24] hover:text-[#c9151c]">
+                    View all →
                   </Link>
                 </div>
-              }
-            >
-              {nuRecent.map((row) => <NuJobCardRow key={row.id} row={row} />)}
-            </ActivityList>
+                <div className="divide-y divide-[#EEF2F6] overflow-hidden rounded-md border border-[#DDE2EA] bg-white shadow-sm">
+                  {nuNeedsAttention.length === 0 ? (
+                    <p className="px-4 py-6 text-center text-sm text-[#4B5563]">Nothing needs your attention right now.</p>
+                  ) : (
+                    nuNeedsAttention.map((item) => <NeedsAttentionRow key={item.id} item={item} />)
+                  )}
+                </div>
+              </section>
+
+              {/* Task 5 — Recent Job Cards: same header structure as Needs
+                  Attention Today (so both columns align), muted gray to
+                  stay visibly secondary; a 2-row compact preview. */}
+              <section className="space-y-1.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <h2 className="text-sm font-black leading-tight text-[#9CA3AF]">Recent Job Cards</h2>
+                    <p className="text-[11px] leading-tight text-[#B0B7C3]">Quick preview.</p>
+                  </div>
+                  <Link href="/maintenance/work-orders" className="shrink-0 text-xs font-bold text-[#ED1C24] hover:text-[#c9151c]">
+                    View all →
+                  </Link>
+                </div>
+                <div className="divide-y divide-[#EEF2F6] overflow-hidden rounded-md border border-[#E5E7EB] bg-white">
+                  {nuRecent.length === 0 ? (
+                    <div className="flex flex-col items-center gap-2 px-4 py-6 text-center">
+                      <p className="text-sm font-semibold text-[#111827]">No Job Cards yet.</p>
+                      <Link
+                        href="?new_job_card=1"
+                        className="mt-1 rounded-md bg-[#ED1C24] px-4 py-2 text-xs font-bold text-white transition hover:bg-red-700"
+                      >
+                        Create Job Card
+                      </Link>
+                    </div>
+                  ) : (
+                    nuRecent.map((row) => <NuJobCardRow key={row.id} row={row} compact />)
+                  )}
+                </div>
+              </section>
+            </div>
           </>
         )}
 
@@ -1591,6 +2020,8 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           assets={newJobCardAssets}
           preselectedAssetId={sp.asset_id ?? null}
           dismissHref="/dashboard"
+          activeWorkers={newJobCardActiveWorkers}
+          canAssignAtCreation={canAssignAtCreation}
         />
       )}
     </>
