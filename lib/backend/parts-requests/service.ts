@@ -456,7 +456,18 @@ export async function markWaitingStock(context: CurrentUserContext, input: { par
   return outcome;
 }
 
-const ISSUABLE_MATERIALS_REQUEST_STATUSES = ["Approved", "Waiting Stock", "Partially Issued"];
+// Materials Request Receive Status Fix: "Requested" is the DEFAULT status a
+// Materials Request is created with (createPartsRequest above), and the
+// simplified Job Card workflow (Approval Workflow Unit 4 — Closure Approval
+// Only) no longer routes every Job Card through "Under Review", so the
+// implicit Requested -> Approved step (approveJobCardAndMaterials) often
+// never runs. The UI's "Pending" status (materialsReceiptStatus) already
+// treats a Requested request as receivable whenever its linked Job Card is
+// open — see materialsRequestJobCardHelper() — so this list must agree with
+// that, not just the legacy post-approval statuses. "Issued" (user-facing
+// "Completed") is intentionally excluded — it's terminal, nothing left to
+// receive.
+const ISSUABLE_MATERIALS_REQUEST_STATUSES = ["Requested", "Approved", "Waiting Stock", "Partially Issued"];
 const MATERIALS_REQUEST_ITEM_UNIT = "PCS"; // parts_request_items has no unit column (Unit 5 — see report)
 
 /**
@@ -489,15 +500,20 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
     const request = await lockPartsRequestForUpdate(tx, input.partsRequestId);
     if (!request) throw new AppError("Materials request not found.", { code: "NOT_FOUND" });
     if (!ISSUABLE_MATERIALS_REQUEST_STATUSES.includes(request.status)) {
-      throw new AppError(
-        `Materials request is not in a valid status to receive materials. Current status: "${request.status}".`,
-        { code: "WORKFLOW_ERROR" }
+      // Detailed technical status stays server-side only — the user-facing
+      // message must not mention internal status strings ("Requested") the
+      // UI never shows (it only ever shows "Pending"/"Completed").
+      console.error(
+        `[receiveMaterials] blocked: parts_request ${request.id} has non-receivable status "${request.status}".`
       );
+      throw new AppError("This materials request is not ready to receive yet.", { code: "WORKFLOW_ERROR" });
     }
 
     // Materials cannot be recorded as received before the linked Job Card has
-    // been Manager-approved, even if the Materials Request itself already
-    // says Approved/Waiting Stock/Partially Issued.
+    // been Manager-approved (still Created/Under Review), nor after it has
+    // reached a terminal state (Closed, or a legacy Cancelled/Rejected row) —
+    // even if the Materials Request itself already says
+    // Requested/Approved/Waiting Stock/Partially Issued.
     if (request.work_order_id) {
       const linkedJobCard = await tx.work_orders.findUnique({
         where: { id: request.work_order_id },
@@ -508,6 +524,12 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
           "Materials cannot be received yet. This Job Card is waiting Manager approval.",
           { code: "WORKFLOW_ERROR" }
         );
+      }
+      if (linkedJobCard && ["Closed", "Cancelled", "Rejected"].includes(linkedJobCard.status)) {
+        console.error(
+          `[receiveMaterials] blocked: linked Job Card for parts_request ${request.id} has terminal status "${linkedJobCard.status}".`
+        );
+        throw new AppError("This materials request is not ready to receive yet.", { code: "WORKFLOW_ERROR" });
       }
     }
 

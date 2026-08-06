@@ -13,6 +13,7 @@ import { prisma } from "@/lib/db/prisma";
 import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/security/permissions";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
+import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { ACTIVE_JOB_CARD_STATUSES, displaySimplifiedStatus, simplifiedStatusTone } from "@/lib/work-orders/simplified-status";
 import {
   getMaterialFulfillmentForWorkOrders,
@@ -136,6 +137,12 @@ export default async function DailyActivityPage({
   // Same gate the Job Card detail page's Materials section uses for its own
   // "Issue Material" row action (lib/store/offline-inventory-data.ts).
   const canIssueMaterials = canManageOfflineInventory(context);
+  // Daily Activity Inline Materials Receive/Issue Modal Unit 10D, Task 11:
+  // same gate storeIssueModalAction/issueMaterials already enforce
+  // server-side for Receive Materials — kept separate from canIssueMaterials
+  // above even though the two currently resolve to the same role set, since
+  // they gate two different backend actions.
+  const canReceiveMaterials = canReceiveIssueMaterials(context);
   // Compact Control Board Unit 9C, Task 6: same gate the Job Card detail
   // page's own Print button uses.
   const canPrint = hasPermission(context, "work_orders.print");
@@ -298,14 +305,39 @@ export default async function DailyActivityPage({
         : activeMaterialsRequest
           ? `/store/parts-requests/${activeMaterialsRequest.id}`
           : `${detailHref}#parts`;
+    // Unit 10D, Task 1/2/3/4 — the primary materials action now opens a
+    // modal instead of navigating, for exactly the same two cases the old
+    // href-based logic already recognized ("Issue Material"/"Receive
+    // Materials"); "View Materials"/"Materials Completed" are unchanged,
+    // plain navigation (nothing to action there — Task 7's "no open
+    // Materials Request"/"already complete" guards). Partially Available's
+    // primary is "Issue Available" (Task 4) rather than a plain "Issue
+    // Material", since only part of what's required can be issued right now.
+    const materialsModalAction: "issue" | "receive" | null =
+      materialsChip.label === "Ready to Issue" && canIssueMaterials
+        ? "issue"
+        : materialsChip.label === "Partially Available" && canIssueMaterials
+          ? "issue"
+          : materialsChip.label === "Materials Pending" && activeMaterialsRequest && canReceiveMaterials
+            ? "receive"
+            : null;
     const materialsActionLabel =
-      (materialsChip.label === "Ready to Issue" || materialsChip.label === "Partially Available") && canIssueMaterials
-        ? "Issue Material"
-        : materialsChip.label === "Materials Pending" && activeMaterialsRequest
-          ? "Receive Materials"
-          : materialsChip.label === "Materials Completed"
-            ? "Materials Completed"
-            : "View Materials";
+      materialsChip.label === "Partially Available" && materialsModalAction === "issue"
+        ? "Issue Available"
+        : materialsModalAction === "issue"
+          ? "Issue Material"
+          : materialsModalAction === "receive"
+            ? "Receive Materials"
+            : materialsChip.label === "Materials Completed"
+              ? "Materials Completed"
+              : "View Materials";
+    // Task 4 — Partially Available's second action, always offered
+    // alongside "Issue Available" when there's an open Materials Request to
+    // receive the shortage against (Task 7 — never otherwise).
+    const materialsSecondaryAction: { label: string; mode: "receive" } | null =
+      materialsChip.label === "Partially Available" && activeMaterialsRequest && canReceiveMaterials
+        ? { label: "Receive Shortage", mode: "receive" }
+        : null;
 
     // Task 9 — the one-line material alert shown only when materials need
     // attention (never for "No Materials"/"Materials Completed").
@@ -391,6 +423,8 @@ export default async function DailyActivityPage({
       hasAssignment,
       materialsActionHref,
       materialsActionLabel,
+      materialsModalAction,
+      materialsSecondaryAction,
       materialAlert,
       isUnusualActiveSession,
       issue,
@@ -473,6 +507,8 @@ export default async function DailyActivityPage({
       materialAlert: c.materialAlert,
       materialsActionLabel: c.materialsActionLabel,
       materialsActionHref: c.materialsActionHref,
+      materialsModalAction: c.materialsModalAction,
+      materialsSecondaryAction: c.materialsSecondaryAction,
       materialsTotals: c.materialsTotals,
       priorityBucket: c.priorityBucket,
       priorityLabel: PRIORITY_LABEL[c.priorityBucket],

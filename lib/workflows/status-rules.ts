@@ -38,8 +38,16 @@ const transitions: Record<WorkflowEntity, Record<string, string[]>> = {
   // Simplified 5-status Materials Request model. "Issued" is terminal — no
   // Rejected/Cancelled/Closed/Returned; corrections keep the record at its
   // current status with an audit note instead of a status change.
+  // Materials Request Receive Status Fix: "Requested" now also goes straight
+  // to "Partially Issued"/"Issued" (in addition to "Approved") — the
+  // simplified Job Card workflow (Approval Workflow Unit 4) often never runs
+  // the implicit Requested -> Approved step (approveJobCardAndMaterials only
+  // fires when a Job Card passes through "Under Review", which most Job
+  // Cards no longer do), so a request can sit at "Requested" while its Job
+  // Card is already open/receivable. Additive only — every transition valid
+  // before is still valid.
   parts_request: {
-    Requested: ["Approved", "Requested"],
+    Requested: ["Approved", "Requested", "Partially Issued", "Issued"],
     Approved: ["Waiting Stock", "Partially Issued", "Issued"],
     "Waiting Stock": ["Partially Issued", "Issued"],
     "Partially Issued": ["Partially Issued", "Issued"],

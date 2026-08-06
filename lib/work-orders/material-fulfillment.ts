@@ -29,6 +29,13 @@ export type MaterialFulfillment = {
   id: string;
   description: string;
   part_number: string | null;
+  // Daily Activity Inline Materials Receive/Issue Modal Unit 10D: the
+  // catalog part identity (when this required-material row is a catalog
+  // part, not a manual entry) — needed by callers that issue AGAINST this
+  // row's Offline Inventory balance (identityFilterFor above already uses
+  // this internally; it just wasn't surfaced on the return type before,
+  // since no caller needed to build its own movement yet).
+  part_id: string | null;
   unit: string;
   required_qty: number;
   issued_qty: number;
@@ -111,6 +118,7 @@ export async function getMaterialFulfillmentForWorkOrder(
       id: r.id,
       description: r.description,
       part_number: r.part_number,
+      part_id: r.part_id,
       unit: r.unit_of_measure,
       required_qty,
       issued_qty,
@@ -197,6 +205,7 @@ export async function getMaterialFulfillmentForWorkOrders(
       id: r.id,
       description: r.description,
       part_number: r.part_number,
+      part_id: r.part_id,
       unit: r.unit_of_measure,
       required_qty,
       issued_qty,

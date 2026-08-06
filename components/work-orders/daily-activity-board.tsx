@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import { DailyActivityListRow, DailyActivitySelectedPanel, type DailyActivityCardData } from "@/components/work-orders/daily-activity-card";
+import { IssueMaterialModal, ReceiveMaterialsModal } from "@/components/work-orders/daily-activity-materials-modal";
 
 // Daily Activity Compact Control Board Unit 9C, Task 4/9.
 //
@@ -24,6 +25,12 @@ const STACKED_LAYOUT_MAX_WIDTH = 1024;
 export function DailyActivityBoard({ cards, canPrint }: { cards: DailyActivityCardData[]; canPrint: boolean }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = (selectedId ? cards.find((c) => c.id === selectedId) : undefined) ?? cards[0] ?? null;
+  // Daily Activity Inline Materials Receive/Issue Modal Unit 10D, Task 2/3:
+  // which Job Card's materials modal is open, and in which mode — client
+  // state, same pattern as `selectedId` above. Always keyed off `selected`
+  // at open time so it can't drift if the user re-selects a different row
+  // while a modal is open (the modal itself is closed first either way).
+  const [materialsModal, setMaterialsModal] = useState<{ workOrderId: string; mode: "issue" | "receive" } | null>(null);
 
   function handleSelect(id: string) {
     setSelectedId(id);
@@ -57,8 +64,21 @@ export function DailyActivityBoard({ cards, canPrint }: { cards: DailyActivityCa
           the viewport so the page itself never has to scroll past it; on
           mobile/tablet (below lg:) it's just the next block in normal flow. */}
       <div id={PANEL_ID} className="scroll-mt-3 lg:sticky lg:top-3 lg:max-h-[calc(100vh-200px)] lg:overflow-y-auto">
-        {selected ? <DailyActivitySelectedPanel card={selected} canPrint={canPrint} /> : null}
+        {selected ? (
+          <DailyActivitySelectedPanel
+            card={selected}
+            canPrint={canPrint}
+            onIssueMaterial={() => setMaterialsModal({ workOrderId: selected.id, mode: "issue" })}
+            onReceiveMaterial={() => setMaterialsModal({ workOrderId: selected.id, mode: "receive" })}
+          />
+        ) : null}
       </div>
+
+      {materialsModal?.mode === "issue" ? (
+        <IssueMaterialModal workOrderId={materialsModal.workOrderId} onClose={() => setMaterialsModal(null)} />
+      ) : materialsModal?.mode === "receive" ? (
+        <ReceiveMaterialsModal workOrderId={materialsModal.workOrderId} onClose={() => setMaterialsModal(null)} />
+      ) : null}
     </div>
   );
 }

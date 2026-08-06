@@ -1,11 +1,12 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { X, CheckCircle2, ArrowRight } from "lucide-react";
 
 import { storeIssueModalAction, type StoreIssueModalState } from "@/app/actions/phase4";
+import { dispatchActionToast } from "@/lib/action-messages";
 
 // Simplified Workflow Correction Unit: Data Entry or Supervisor/Manager
 // records materials received against a Materials Request from one guided
@@ -13,6 +14,15 @@ import { storeIssueModalAction, type StoreIssueModalState } from "@/app/actions/
 // Reuses storeIssueModalAction/issueMaterials exactly as-is (only the
 // movement_type it records and this component's wording changed) — this
 // component only adds the guided UI around it.
+//
+// Daily Activity Inline Materials Receive/Issue Modal Unit 10D: the optional
+// `onClose` prop below lets an already-client parent (Daily Activity's
+// board) embed this exact component instead of the URL-param-driven
+// `closeHref` flow every other caller (dashboard, parts-requests pages,
+// issue-materials page) still uses unchanged. When `onClose` is provided,
+// this also skips the inline SuccessPanel in favor of an immediate
+// close + standardized toast, matching Daily Activity's own "close modal,
+// show toast, refresh" convention instead of navigation.
 
 export type StoreSendMaterialsData = {
   id: string;
@@ -113,24 +123,41 @@ function SuccessPanel({ state, onClose }: { state: StoreIssueModalState; onClose
 
 export function StoreSendMaterialsPopup({
   data,
-  closeHref = "/dashboard"
+  closeHref = "/dashboard",
+  onClose,
 }: {
   data: StoreSendMaterialsData;
   closeHref?: string;
+  // See the file-header comment above — provide exactly one of
+  // onClose/closeHref, same convention as LargeFormModal.
+  onClose?: () => void;
 }) {
   const router = useRouter();
   const [state, formAction, isPending] = useActionState<StoreIssueModalState, FormData>(storeIssueModalAction, null);
 
   function close() {
-    router.push(closeHref);
+    if (onClose) onClose();
+    else router.push(closeHref);
   }
 
   function closeAndRefresh() {
-    router.push(closeHref);
+    if (onClose) onClose();
+    else router.push(closeHref);
     router.refresh();
   }
 
   const succeeded = state?.ok === true;
+
+  // Embedded (Daily Activity) mode: no inline SuccessPanel — close
+  // immediately and show the standardized toast instead, per Unit 10D
+  // Task 6 ("close modal, show standardized success popup/toast").
+  useEffect(() => {
+    if (succeeded && onClose) {
+      dispatchActionToast({ tone: "success", title: "Material Received", description: "Received quantity has been recorded in Offline Inventory Control." });
+      closeAndRefresh();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [succeeded]);
 
   return (
     <>
@@ -160,9 +187,9 @@ export function StoreSendMaterialsPopup({
           </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
-            {succeeded ? (
+            {succeeded && !onClose ? (
               <SuccessPanel state={state} onClose={closeAndRefresh} />
-            ) : (
+            ) : succeeded ? null : (
               <form action={formAction} className="space-y-5">
                 <input type="hidden" name="parts_request_id" value={data.id} />
 
