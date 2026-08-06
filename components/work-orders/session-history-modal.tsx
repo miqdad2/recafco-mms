@@ -25,7 +25,21 @@ function toLocalInputValue(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function EditSessionForm({ session, onDone }: { session: SessionRow; onDone: () => void }) {
+function EditSessionForm({
+  session,
+  workerName,
+  jobCardNumber,
+  assetLabel,
+  canViewCosts,
+  onDone,
+}: {
+  session: SessionRow;
+  workerName: string;
+  jobCardNumber?: string | null;
+  assetLabel?: string | null;
+  canViewCosts: boolean;
+  onDone: () => void;
+}) {
   const [state, formAction, isPending] = useActionState<WorkSessionState, FormData>(editWorkSessionAction, null);
 
   useEffect(() => {
@@ -36,9 +50,51 @@ function EditSessionForm({ session, onDone }: { session: SessionRow; onDone: () 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.ok]);
 
+  // Manager Worker Time Correction Enhancement Unit 10C.1, Task 3 — the
+  // "Original session" reference block. Start/end editing above remains the
+  // primary correction mechanism (Task 3 allows a direct duration edit "only
+  // if safer" — reusing the existing start/end fields is safer since it's
+  // already validated, audited, and recalculates duration/amount correctly);
+  // this block exists purely so the original values stay visible while the
+  // Manager edits, per the task's explicit requirement.
   return (
     <form action={formAction} className="mt-2 space-y-2 rounded-md border border-[#E5E7EB] bg-gray-50 p-2">
       <input type="hidden" name="session_id" value={session.id} />
+      <div className="rounded-md border border-[#E5E7EB] bg-white p-2 text-xs text-[#4B5563]">
+        <p className="mb-1 font-bold text-[#111827]">Original session</p>
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+          <dt className="text-[#9CA3AF]">Worker</dt>
+          <dd className="text-[#111827]">{workerName}</dd>
+          {jobCardNumber && (
+            <>
+              <dt className="text-[#9CA3AF]">Job Card</dt>
+              <dd className="text-[#111827]">{jobCardNumber}</dd>
+            </>
+          )}
+          {assetLabel && (
+            <>
+              <dt className="text-[#9CA3AF]">Asset</dt>
+              <dd className="text-[#111827]">{assetLabel}</dd>
+            </>
+          )}
+          <dt className="text-[#9CA3AF]">Original start</dt>
+          <dd className="text-[#111827]">{new Date(session.started_at).toLocaleString("en-GB")}</dd>
+          <dt className="text-[#9CA3AF]">Original end</dt>
+          <dd className="text-[#111827]">
+            {session.stopped_at || session.paused_at ? new Date(session.stopped_at ?? session.paused_at!).toLocaleString("en-GB") : "(in progress)"}
+          </dd>
+          <dt className="text-[#9CA3AF]">Original duration</dt>
+          <dd className="text-[#111827]">{session.duration_minutes} min</dd>
+          {canViewCosts && (
+            <>
+              <dt className="text-[#9CA3AF]">Original amount</dt>
+              <dd className="text-[#111827]">{session.calculated_amount.toFixed(3)} KWD</dd>
+            </>
+          )}
+          <dt className="text-[#9CA3AF]">Current status</dt>
+          <dd className="text-[#111827]">{session.status}</dd>
+        </dl>
+      </div>
       {state?.ok === false && (
         <div className="flex items-start gap-1.5 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
@@ -115,15 +171,27 @@ export function SessionHistoryModal({
   isManager,
   canViewCosts,
   onClose,
+  initialEditSessionId,
+  jobCardNumber,
+  assetLabel,
 }: {
   workerAssignmentId: string;
   workerName: string;
   isManager: boolean;
   canViewCosts: boolean;
   onClose: () => void;
+  // Manager Worker Time Correction Enhancement Unit 10C.1, Task 2 — when set,
+  // the correction form for this exact session opens immediately instead of
+  // requiring the Manager to find and click "Edit / Correct" in the list.
+  initialEditSessionId?: string;
+  // Task 3 — carried through into the "Original session" reference block;
+  // the session row itself doesn't know its own Job Card number/asset, only
+  // the caller (WorkerActivityDetailModal) does.
+  jobCardNumber?: string | null;
+  assetLabel?: string | null;
 }) {
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(initialEditSessionId ?? null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -188,6 +256,12 @@ export function SessionHistoryModal({
                       </p>
                     )}
 
+                    {isManager && s.status === "Active" && (
+                      // Task 4 — an explicit message instead of silently
+                      // hiding the buttons, so the Manager understands why
+                      // this session can't be corrected yet.
+                      <p className="mt-2 text-xs font-semibold text-amber-700">Stop or pause this session before correction.</p>
+                    )}
                     {isManager && s.status !== "Active" && s.status !== "Cancelled" && editingId !== s.id && cancellingId !== s.id && (
                       <div className="mt-2 flex gap-2">
                         <button type="button" onClick={() => setEditingId(s.id)} className="rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1 text-xs font-bold text-[#4B5563] hover:bg-gray-50">
@@ -198,7 +272,16 @@ export function SessionHistoryModal({
                         </button>
                       </div>
                     )}
-                    {isManager && editingId === s.id && <EditSessionForm session={s} onDone={afterChange} />}
+                    {isManager && editingId === s.id && (
+                      <EditSessionForm
+                        session={s}
+                        workerName={workerName}
+                        jobCardNumber={jobCardNumber}
+                        assetLabel={assetLabel}
+                        canViewCosts={canViewCosts}
+                        onDone={afterChange}
+                      />
+                    )}
                     {isManager && cancellingId === s.id && <CancelSessionForm session={s} onDone={afterChange} />}
                   </div>
                 ))}

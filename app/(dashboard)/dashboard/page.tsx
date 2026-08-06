@@ -5,15 +5,16 @@ import {
   ArrowRight,
   BarChart3,
   Bell,
+  Car,
   CheckCircle2,
   ClipboardList,
-  Clock,
   FileText,
   Gauge,
   Package,
   PauseCircle,
   PlayCircle,
   PlusCircle,
+  ShieldAlert,
   ShoppingCart,
   Upload,
   Users,
@@ -62,8 +63,11 @@ import {
 } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummariesBulk } from "@/lib/work-orders/work-session-totals";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
-import { hasPermission } from "@/lib/security/permissions";
+import { hasPermission, canViewCosts as canViewCostsForContext } from "@/lib/security/permissions";
+import { VEHICLE_CATEGORIES } from "@/lib/assets/categories";
+import { getExpiryStatus } from "@/lib/assets/vehicle-status";
 import { StoreSendMaterialsPopup } from "@/components/store/store-send-materials-popup";
+import { VehicleExpiryModal, type VehicleExpiryAlertRow } from "@/components/dashboard/vehicle-expiry-modal";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
 import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
@@ -250,7 +254,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 // horizontal card (icon + label + value in one row), nowhere near the
 // original tall vertical `StatCard`.
 function TodaySummaryCard({ href, label, value, icon: Icon, tone }: {
-  href: string; label: string; value: number; icon: LucideIcon; tone: "red" | "amber" | "green" | "blue" | "gray";
+  href: string; label: string; value: number | string; icon: LucideIcon; tone: "red" | "amber" | "green" | "blue" | "gray";
 }) {
   const toneClass = {
     red: "bg-[#ED1C24]",
@@ -603,6 +607,7 @@ type PageProps = {
     success?: string;
     new_job_card?: string;
     asset_id?: string;
+    vehicleExpiry?: string;
   }>;
 };
 
@@ -904,16 +909,29 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   // dashboard and Job Cards list already use.
   const mgBase = { AND: [{ deleted_at: null }, visibilityFilter] };
 
+  // One-Screen Manager Dashboard Unit 10, Task 12: sample size for the
+  // active Job Cards used for the KPI row / attention board / labor
+  // snapshots below — same "compute over the most-recently-updated N active
+  // Job Cards" convention Daily Activity and the Data Entry dashboard
+  // already established, not an exhaustive company-wide scan.
+  const MG_ACTIVE_SAMPLE_SIZE = 30;
+  // Task 4 — a Job Card's total hours today at/above this counts as "High
+  // Labor Hours" for the attention board (one full single-shift day).
+  const MG_HIGH_LABOR_HOURS_THRESHOLD = 8;
+  // Task 8 — vehicle documents expiring within this many days (or already
+  // expired) surface in the Vehicle Expiry snapshot/KPI.
+  const MG_VEHICLE_EXPIRY_WINDOW_DAYS = 15;
+
   // Simplified Job Card Approval Workflow Unit Task 4/8: no more Engineer-
   // review split, no more separate Materials Request approval queue (it's
   // auto-approved alongside the Job Card by approveJobCardAndMaterials) —
-  // one queue (Under Review, full detail) plus three plain counts.
-  // Performance Optimization Unit 3, Task 7: mgInProgressAll's query and
-  // offlineMovementsToday's count (further below) previously ran as separate
-  // sequential awaits after this block, even though neither depends on
-  // mgData or on each other — folded into the same Promise.all so all 7
-  // queries run concurrently instead of 5 concurrent + 2 sequential.
-  const [mgData, mgInProgressAll, mgClosureRequestedAll, offlineMovementsToday] = await Promise.all([
+  // one queue (Under Review, full detail, kept only for the small Legacy
+  // section — Task 10/11) plus plain counts. One-Screen Manager Dashboard
+  // Unit 10: the old "In Progress ready to directly close" query/section is
+  // removed — closure approval is now the one Manager approval path this
+  // dashboard features (Task 1/10); the direct-close action itself is
+  // untouched and still reachable from the Job Card detail page.
+  const [mgData, mgClosureRequestedAll, offlineMovementsToday, mgActiveSample, mgVehicleSource] = await Promise.all([
     isManager
       ? Promise.all([
           prisma.work_orders.findMany({
@@ -942,36 +960,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: { in: ACTIVE_JOB_CARD_STATUSES } }] } })),
         ])
       : Promise.resolve(null),
-    // Manager Dashboard Clarity Task 8: "Needs Your Action" also covers Open
-    // Job Cards actually ready for the Manager to close (In Progress).
-    isManager
-      ? prisma.work_orders.findMany({
-          where: { AND: [mgBase, { status: "In Progress" }] },
-          select: {
-            id: true,
-            work_order_number: true,
-            status: true,
-            updated_at: true,
-            created_at: true,
-            description_of_work: true,
-            assets: { select: { asset_name: true } },
-            parts_requests: { select: { status: true }, orderBy: { created_at: "desc" }, take: 1 },
-          },
-          orderBy: { updated_at: "asc" },
-        })
-      : Promise.resolve([] as Array<{
-          id: string;
-          work_order_number: string | null;
-          status: string;
-          updated_at: Date;
-          created_at: Date;
-          description_of_work: string | null;
-          assets: { asset_name: string } | null;
-          parts_requests: { status: string }[];
-        }>),
     // Approval Workflow Unit 4, Task 9: Job Cards waiting for Manager to
-    // approve a pending closure request — the primary "Needs Your Action"
-    // item now that there's no first-approval step any more.
+    // approve a pending closure request — the primary Manager decision now.
+    // Task 9 (Unit 10): "requested by" needs the requester's name, resolved
+    // in bulk below via created_by.
     isManager
       ? prisma.work_orders.findMany({
           where: { AND: [mgBase, { status: "Closure Requested" }] },
@@ -982,6 +974,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             updated_at: true,
             created_at: true,
             description_of_work: true,
+            created_by: true,
             assets: { select: { asset_name: true } },
             parts_requests: { select: { status: true }, orderBy: { created_at: "desc" }, take: 1 },
           },
@@ -994,6 +987,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           updated_at: Date;
           created_at: Date;
           description_of_work: string | null;
+          created_by: string | null;
           assets: { asset_name: string } | null;
           parts_requests: { status: string }[];
         }>),
@@ -1003,6 +997,41 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           where: { deleted_at: null, movement_date: { gte: todayStart } },
         }))
       : Promise.resolve(0),
+    // Task 3/4/5/6/12 — lean sample of active Job Cards (same select shape
+    // as the Daily Activity page's own list query) feeding the KPI row,
+    // attention board, and labor/Job-Card-cost snapshots below.
+    isManager
+      ? prisma.work_orders.findMany({
+          where: { AND: [mgBase, { status: { in: ACTIVE_JOB_CARD_STATUSES } }] },
+          orderBy: { updated_at: "desc" },
+          take: MG_ACTIVE_SAMPLE_SIZE,
+          select: {
+            id: true,
+            work_order_number: true,
+            status: true,
+            updated_at: true,
+            operator_complaint: true,
+            description_of_work: true,
+            assets: { select: { asset_name: true, plate_number: true } },
+            work_order_assignments: { select: { id: true } },
+            parts_requests: { select: { id: true, status: true } },
+          },
+        })
+      : Promise.resolve([]),
+    // Task 8/12 — lean vehicle-category asset read (5 columns only, no
+    // attachments/audit/service-contract joins) for the Vehicle Expiry
+    // snapshot; same "read every vehicle, filter expiry in memory"
+    // convention the /assets/vehicles page's own Renewals & Expiry Tracking
+    // section already uses, scoped to isManager only.
+    isManager
+      ? prisma.assets.findMany({
+          where: { deleted_at: null, category: { in: [...VEHICLE_CATEGORIES] } },
+          select: {
+            id: true, asset_code: true, asset_name: true, plate_number: true,
+            insurance_expiry_date: true, registration_expiry_date: true,
+          },
+        })
+      : Promise.resolve([]),
   ]);
 
   const mgUnderReviewAll = mgData?.[0] ?? [];
@@ -1013,6 +1042,8 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const mgPendingCorrectionIds = isManager
     ? await getPendingCorrectionWorkOrderIds([...mgUnderReviewAll.map((r) => r.id), ...mgOpenAll.map((r) => r.id)])
     : new Set<string>();
+  // Task 10/11 — kept only for the small, clearly-labeled "Legacy submitted
+  // rows only" section; no longer blended into the main attention board.
   const mgSubmittedRows: MgActionRow[] = mgUnderReviewAll
     .filter((r) => !mgPendingCorrectionIds.has(r.id))
     .map((r) => ({
@@ -1029,38 +1060,189 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const mgClosedRecentCount = mgData?.[2] ?? 0;
   const mgClosureRequestedCount = mgData?.[3] ?? 0;
   const mgActiveCount = mgData?.[4] ?? 0;
+  const mgCanViewCosts = canViewCostsForContext(context);
 
-  // Manager Dashboard Clarity Task 8: a pending correction on an In Progress
-  // Job Card means it's actually waiting on Data Entry, not Manager, so it's
-  // excluded here the same way Submitted rows are. (mgInProgressAll and
-  // offlineMovementsToday are now fetched above, alongside mgData.)
-  const mgInProgressCorrectionIds = isManager ? await getPendingCorrectionWorkOrderIds(mgInProgressAll.map((r) => r.id)) : new Set<string>();
-  const mgCloseRows: MgActionRow[] = mgInProgressAll
-    .filter((r) => !mgInProgressCorrectionIds.has(r.id))
-    .map((r) => ({
-      id:                        r.id,
-      work_order_number:         r.work_order_number,
-      status:                    r.status,
-      updated_at:                r.updated_at.toISOString(),
-      created_at:                r.created_at.toISOString(),
-      description_of_work:       r.description_of_work ?? null,
-      asset_name:                r.assets?.asset_name ?? null,
-      materials_request_status:  r.parts_requests[0]?.status ?? null,
-    }));
-  // Approval Workflow Unit 4, Task 9: Closure Requested Job Cards are the
-  // primary Manager decision now — listed first (before the legacy Submitted
-  // rows and the still-available direct-close-from-In-Progress rows).
-  const mgClosureRequestRows: MgActionRow[] = mgClosureRequestedAll.map((r) => ({
-    id:                        r.id,
-    work_order_number:         r.work_order_number,
-    status:                    r.status,
-    updated_at:                r.updated_at.toISOString(),
-    created_at:                r.created_at.toISOString(),
-    description_of_work:       r.description_of_work ?? null,
-    asset_name:                r.assets?.asset_name ?? null,
-    materials_request_status:  r.parts_requests[0]?.status ?? null,
-  }));
-  const mgActionRows: MgActionRow[] = [...mgClosureRequestRows, ...mgSubmittedRows, ...mgCloseRows];
+  // Task 9 — resolve closure-requester names in one bulk read.
+  const mgClosureRequesterIds = [...new Set(mgClosureRequestedAll.map((r) => r.created_by).filter((id): id is string => Boolean(id)))];
+  const mgClosureRequesters = mgClosureRequesterIds.length
+    ? await prisma.profiles.findMany({ where: { id: { in: mgClosureRequesterIds } }, select: { id: true, full_name: true } })
+    : [];
+  const mgClosureRequesterNameById = new Map(mgClosureRequesters.map((p) => [p.id, p.full_name]));
+
+  // ── Task 3/4/5/6/12 — bulk materials + labor read across the active
+  // sample (2 groupBy queries + 2 session queries total, not per-card). ────
+  const mgActiveIds = mgActiveSample.map((w) => w.id);
+  const [mgFulfillmentMap, mgLaborMap] = isManager
+    ? await Promise.all([
+        getMaterialFulfillmentForWorkOrders(prisma, mgActiveIds),
+        getWorkOrderLaborSummariesBulk(prisma, mgActiveIds),
+      ])
+    : ([new Map(), new Map()] as [
+        Awaited<ReturnType<typeof getMaterialFulfillmentForWorkOrders>>,
+        Awaited<ReturnType<typeof getWorkOrderLaborSummariesBulk>>,
+      ]);
+
+  let mgMaterialsPendingCount = 0;
+  let mgWorkingNowCount = 0;
+  let mgPausedCount = 0;
+  let mgHoursTodaySum = 0;
+  let mgAmountTodaySum = 0;
+
+  type MgAttentionCandidate = NeedsAttentionItem & { rank: number; sortKey: string };
+  const mgAttentionCandidates: MgAttentionCandidate[] = [];
+
+  // Task 9 — Closure Requests, rank 0 (highest priority).
+  for (const r of mgClosureRequestedAll) {
+    const requesterName = r.created_by ? mgClosureRequesterNameById.get(r.created_by) ?? null : null;
+    mgAttentionCandidates.push({
+      id: r.id, rank: 0, sortKey: r.updated_at.toISOString(),
+      workOrderNumber: r.work_order_number, assetLabel: r.assets?.asset_name ?? null,
+      issue: requesterName ? `Requested by ${requesterName} · ${ageLabel(r.created_at.toISOString())}` : `Requested ${ageLabel(r.created_at.toISOString())}`,
+      badgeLabel: "Closure Request", badgeTone: "amber",
+      actionLabel: "Review", actionHref: `?preview=${r.id}`,
+    });
+  }
+
+  // Task 6/12 — top 3 active Job Cards by labor hours (Job Card Labor Cost
+  // snapshot), derived from the same bulk labor read, no extra query.
+  type MgJobCardLabor = { id: string; workOrderNumber: string | null; assetLabel: string | null; status: string; totalHours: number; totalAmount: number };
+  const mgJobCardLaborRows: MgJobCardLabor[] = [];
+  // Task 5 — per-worker "today" totals across every active Job Card, summed
+  // by worker (a worker can appear on more than one active assignment).
+  const mgWorkerTodayTotals = new Map<string, { name: string; role: string; minutes: number; amount: number }>();
+
+  for (const wo of mgActiveSample) {
+    const detailHref = `/maintenance/work-orders/${wo.id}`;
+    const fulfillment = mgFulfillmentMap.get(wo.id) ?? [];
+    const laborSummary = mgLaborMap.get(wo.id);
+    const materialsIncomplete = anyMaterialsIncomplete(fulfillment);
+    const pendingMaterialsRequestsCount = wo.parts_requests.filter((r) => r.status !== "Issued").length;
+    const activeMaterialsRequest = wo.parts_requests.find((r) => ["Requested", "Approved", "Waiting Stock", "Partially Issued"].includes(r.status));
+    const hasAssignment = Boolean(laborSummary?.workers.length) || wo.work_order_assignments.length > 0;
+    const hasActiveSession = laborSummary?.has_active_session ?? false;
+    const anyWorkerPaused = laborSummary?.workers.some((w) => w.status === "Paused") ?? false;
+    const materialsBlocking = pendingMaterialsRequestsCount > 0 || materialsIncomplete;
+
+    if (materialsBlocking) mgMaterialsPendingCount += 1;
+    if (hasActiveSession) mgWorkingNowCount += 1;
+    if (anyWorkerPaused && !hasActiveSession) mgPausedCount += 1;
+
+    if (laborSummary) {
+      mgHoursTodaySum += laborSummary.today_minutes / 60;
+      mgAmountTodaySum += laborSummary.today_amount;
+      if (laborSummary.total_hours > 0) {
+        mgJobCardLaborRows.push({
+          id: wo.id, workOrderNumber: wo.work_order_number,
+          assetLabel: wo.assets ? `${wo.assets.asset_name}${wo.assets.plate_number ? ` (${wo.assets.plate_number})` : ""}` : null,
+          status: wo.status, totalHours: laborSummary.total_hours, totalAmount: laborSummary.total_amount,
+        });
+      }
+      for (const w of laborSummary.workers) {
+        const entry = mgWorkerTodayTotals.get(w.worker_id) ?? { name: w.worker_name, role: w.worker_role, minutes: 0, amount: 0 };
+        entry.minutes += w.today_minutes ?? 0;
+        entry.amount += w.today_amount ?? 0;
+        mgWorkerTodayTotals.set(w.worker_id, entry);
+      }
+    }
+
+    const assetLabel = wo.assets ? `${wo.assets.asset_name}${wo.assets.plate_number ? ` (${wo.assets.plate_number})` : ""}` : null;
+
+    // Task 4 — one bucket per active Job Card, in the task's own priority
+    // order (materials(2) > paused(3) > high labor(4) > no workers(5)).
+    if (materialsBlocking) {
+      mgAttentionCandidates.push({
+        id: wo.id, rank: 2, sortKey: wo.updated_at.toISOString(),
+        workOrderNumber: wo.work_order_number, assetLabel, issue: "Materials are pending.",
+        badgeLabel: "Materials Pending", badgeTone: "red",
+        actionLabel: "View Materials",
+        actionHref: activeMaterialsRequest ? `/store/parts-requests/${activeMaterialsRequest.id}` : `${detailHref}#parts`,
+      });
+    } else if (anyWorkerPaused && !hasActiveSession) {
+      mgAttentionCandidates.push({
+        id: wo.id, rank: 3, sortKey: wo.updated_at.toISOString(),
+        workOrderNumber: wo.work_order_number, assetLabel, issue: "A worker is paused on this Job Card.",
+        badgeLabel: "Worker Paused", badgeTone: "amber",
+        actionLabel: "Open Daily Activity", actionHref: "/maintenance/daily-activity?status=paused",
+      });
+    } else if (laborSummary && laborSummary.total_hours >= MG_HIGH_LABOR_HOURS_THRESHOLD) {
+      mgAttentionCandidates.push({
+        id: wo.id, rank: 4, sortKey: wo.updated_at.toISOString(),
+        workOrderNumber: wo.work_order_number, assetLabel, issue: `${laborSummary.total_hours}h labor logged.`,
+        badgeLabel: "High Labor Hours", badgeTone: "blue",
+        actionLabel: "Open Job Card", actionHref: detailHref,
+      });
+    } else if (!hasAssignment) {
+      mgAttentionCandidates.push({
+        id: wo.id, rank: 5, sortKey: wo.updated_at.toISOString(),
+        workOrderNumber: wo.work_order_number, assetLabel, issue: "No workers assigned yet.",
+        badgeLabel: "No Workers Assigned", badgeTone: "blue",
+        actionLabel: "Assign Workers", actionHref: `${detailHref}?editAssignment=1#assignment`,
+      });
+    }
+  }
+
+  const mgTopWorkersToday = [...mgWorkerTodayTotals.entries()]
+    .map(([workerId, v]) => ({
+      workerId, name: v.name, role: v.role,
+      hours: Math.round((v.minutes / 60) * 100) / 100,
+      amount: Math.round(v.amount * 1000) / 1000,
+    }))
+    .sort((a, b) => b.hours - a.hours);
+  const mgTopWorkers = mgTopWorkersToday.slice(0, 3);
+  // Task 7 — least active ASSIGNED worker today (must have logged at least
+  // some time — a worker with zero minutes just hasn't started, which is
+  // "Not Started", not "least active").
+  const mgLeastActiveWorker = [...mgTopWorkersToday].reverse().find((w) => w.hours > 0) ?? null;
+
+  const mgTopJobCardsByLabor = [...mgJobCardLaborRows].sort((a, b) => b.totalHours - a.totalHours).slice(0, 3);
+
+  // ── Task 8 — vehicle expiry alerts within MG_VEHICLE_EXPIRY_WINDOW_DAYS
+  // (expired included), reusing the same getExpiryStatus() helper the
+  // /assets/vehicles page's own Renewals & Expiry Tracking section uses, so
+  // the two surfaces never disagree on what counts as expiring. ───────────
+  type MgVehicleAlert = {
+    assetId: string; assetCode: string; assetName: string; plateNumber: string | null;
+    document: "Insurance" | "Registration"; expiryDate: Date; daysRemaining: number; expired: boolean;
+  };
+  const mgVehicleAlerts: MgVehicleAlert[] = [];
+  for (const v of mgVehicleSource) {
+    const ins = getExpiryStatus(v.insurance_expiry_date);
+    if (ins.daysRemaining !== null && ins.daysRemaining <= MG_VEHICLE_EXPIRY_WINDOW_DAYS) {
+      mgVehicleAlerts.push({
+        assetId: v.id, assetCode: v.asset_code, assetName: v.asset_name, plateNumber: v.plate_number,
+        document: "Insurance", expiryDate: v.insurance_expiry_date!, daysRemaining: ins.daysRemaining, expired: ins.status === "Expired",
+      });
+    }
+    const reg = getExpiryStatus(v.registration_expiry_date);
+    if (reg.daysRemaining !== null && reg.daysRemaining <= MG_VEHICLE_EXPIRY_WINDOW_DAYS) {
+      mgVehicleAlerts.push({
+        assetId: v.id, assetCode: v.asset_code, assetName: v.asset_name, plateNumber: v.plate_number,
+        document: "Registration", expiryDate: v.registration_expiry_date!, daysRemaining: reg.daysRemaining, expired: reg.status === "Expired",
+      });
+    }
+  }
+  mgVehicleAlerts.sort((a, b) => a.daysRemaining - b.daysRemaining);
+  const mgVehicleAlertCount = mgVehicleAlerts.length;
+  const mgTopVehicleAlerts = mgVehicleAlerts.slice(0, 3);
+
+  // Task 4 — vehicle alerts feed the attention board at rank 1, using the
+  // task's own 0-7-days-red / 8-15-days-amber split.
+  for (const v of mgTopVehicleAlerts) {
+    mgAttentionCandidates.push({
+      id: `${v.assetId}-${v.document}`, rank: 1, sortKey: v.expiryDate.toISOString(),
+      workOrderNumber: v.assetCode, assetLabel: `${v.assetName}${v.plateNumber ? ` (${v.plateNumber})` : ""}`,
+      issue: v.expired
+        ? `${v.document} expired ${Math.abs(v.daysRemaining)}d ago.`
+        : `${v.document} expires in ${v.daysRemaining}d.`,
+      badgeLabel: "Expiring Soon", badgeTone: v.expired || v.daysRemaining <= 7 ? "red" : "amber",
+      actionLabel: "View Vehicle", actionHref: `/assets/${v.assetId}`,
+    });
+  }
+
+  // Task 4/12 — top 5 overall, sorted by rank then most-recent/soonest first.
+  const mgAttentionBoard = mgAttentionCandidates
+    .sort((a, b) => a.rank - b.rank || (a.sortKey < b.sortKey ? 1 : -1))
+    .slice(0, 5);
 
   // ── Maintenance Engineer data ─────────────────────────────────────
   // Simplified Job Card Approval Workflow Unit Task 8: Engineer is not one
@@ -1224,6 +1406,26 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const rawPreview = sp.preview ?? null;
   const previewId =
     rawPreview && /^[0-9a-f-]{36}$/i.test(rawPreview) ? rawPreview : null;
+
+  // Vehicle Expiry Alerts Modal Unit 10B.1: opened via ?vehicleExpiry=1, same
+  // ?new_job_card=1-style overlay convention as every other dashboard modal.
+  // No new query — mgVehicleAlerts (Unit 10) already holds the complete,
+  // unsliced list; this just serializes it (Date -> a pre-formatted label)
+  // for the client modal component. Gated to Manager since that's the only
+  // role this data is ever computed for.
+  const showVehicleExpiryModal = isManager && sp.vehicleExpiry === "1";
+  const mgVehicleAlertsForModal: VehicleExpiryAlertRow[] = showVehicleExpiryModal
+    ? mgVehicleAlerts.map((v) => ({
+        assetId: v.assetId,
+        assetCode: v.assetCode,
+        assetName: v.assetName,
+        plateNumber: v.plateNumber,
+        document: v.document,
+        expiryDateLabel: v.expiryDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+        daysRemaining: v.daysRemaining,
+        expired: v.expired,
+      }))
+    : [];
 
   // New Job Card Modal Wizard Refactor: opened via ?new_job_card=1 as an
   // overlay on top of the dashboard, same convention as ?sendPreview below —
@@ -1553,7 +1755,16 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           "offline_inventory."/"material_ledger." so Manager's Offline
           Inventory Control KPI ("Movements today") and Store Keeper's
           summary counts also refresh instantly, not just on the 15s poll. */}
-      <RealtimeRefresh watch={["job_card.", "work_order.", "materials_request.", "store_materials.", "offline_inventory.", "material_ledger.", "notification."]} />
+      {/* One-Screen Manager Dashboard Unit 10, Task 13: added "asset." so
+          vehicle expiry-date edits refresh the Manager dashboard's Vehicle
+          Expiry snapshot without waiting for the 15s poll. Manager Dashboard
+          UI Polish and Realtime Verification Unit 10B, Task 8: added
+          "worker_profile." too, so a worker profile change (which also
+          covers Internal Team roster edits alongside the existing
+          "job_card." prefix) refreshes the Labor Snapshot without a manual
+          reload — every other prefix already existed and is shared by every
+          role's section on this page. */}
+      <RealtimeRefresh watch={["job_card.", "work_order.", "materials_request.", "store_materials.", "offline_inventory.", "material_ledger.", "notification.", "asset.", "worker_profile."]} />
       <PageHeader
         title={`Hello, ${firstName}`}
         description="Here's what needs your attention today."
@@ -1696,69 +1907,238 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         )}
 
         {/* ── SUPERVISOR / MANAGER ─────────────────────────────────── */}
+        {/* One-Screen Manager Dashboard Unit 10, polished in Manager
+            Dashboard UI Polish and Realtime Verification Unit 10B: a
+            command center in the task's own priority order — 1) KPI row,
+            2) Needs Manager Attention (the main section, left column),
+            3) Labor Snapshot Today, 4) Vehicle Expiry Alerts (both stacked
+            in the right column, secondary to Attention), 5) Legacy
+            Submitted Rows — now collapsed behind a native <details> panel
+            (Task 4) so the pre-workflow "Under Review" records it holds
+            never visually compete with the sections above. Quick Action
+            tiles sit between the KPI row and the two-column layout, styled
+            no more prominently than Today Summary (Task 7's "should not
+            overpower the attention board"). */}
         {isManager && mgData && (
           <>
-            {/* Simplified Workflow Correction Unit Task 7: Materials Requests
-                restored to Manager's quick actions too. */}
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
-              <QuickAction label="Review Submitted Job Cards" href="/maintenance/work-orders?status=Submitted" icon={ClipboardList} iconBg="bg-red-50"    iconColor="text-[#ED1C24]" />
-              <QuickAction label="Materials Requests"  href="/store/parts-requests"                      icon={ShoppingCart}  iconBg="bg-violet-50" iconColor="text-violet-600" />
-              <QuickAction label="Assign Work"         href="/maintenance/work-orders?status=ReadyToAssign" icon={Users}      iconBg="bg-blue-50"   iconColor="text-blue-600" />
-              <QuickAction label="Offline Inventory Control" href="/store/offline-inventory"             icon={Package}       iconBg="bg-amber-50"  iconColor="text-amber-600" />
-              <QuickAction label="Service Contracts"   href="/assets/service-contracts"                  icon={FileText}      iconBg="bg-green-50"  iconColor="text-green-600" />
-              <QuickAction label="Reports"             href="/reports"                                   icon={BarChart3}     iconBg="bg-gray-100"  iconColor="text-[#4B5563]" />
-            </div>
-
-            {/* Approval Workflow Unit 4, Task 10: Active Job Cards / Closure
-                Requests / Materials Pending (Offline Inventory Control
-                movements, already available) / Closed Recently — no Manager
-                approval before starting a Job Card any more, so "Submitted"/
-                "Approved" are no longer their own cards (folded into
-                "Active"). "Submitted for Review" kept, last, for backward
-                compatibility only — visible only if a legacy row exists. */}
-            <section className="space-y-2">
-              <SectionLabel>Job Cards</SectionLabel>
-              <KpiRow cols="sm:grid-cols-3 xl:grid-cols-5" cards={[
-                { label: "Active",                    value: mgActiveCount,            icon: Wrench,        tone: "blue",                                          href: "/maintenance/work-orders?status=Active", detail: "Work in progress" },
-                { label: "Closure Requests",          value: mgClosureRequestedCount,  icon: ClipboardList, tone: mgClosureRequestedCount > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=ClosureRequested", detail: "Waiting on your approval to close" },
-                { label: "Offline Inventory Control", value: offlineMovementsToday,    icon: Package,       tone: "gray",                                          href: "/store/offline-inventory", detail: "Movements today" },
-                { label: "Closed recently",           value: mgClosedRecentCount,      icon: CheckCircle2,  tone: "green",                                         href: "/maintenance/work-orders?status=Closed" },
-                { label: "Submitted for Review",      value: mgSubmittedRows.length,   icon: Clock,         tone: mgSubmittedRows.length > 0 ? "amber" : "green", href: "/maintenance/work-orders?status=Submitted", detail: "Legacy — pre-existing rows only" },
-              ]} />
+            {/* Task 3 — KPI row, one row on desktop. */}
+            <section className="space-y-1.5">
+              <SectionLabel>Today Summary</SectionLabel>
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 xl:grid-cols-8">
+                <TodaySummaryCard href="/maintenance/daily-activity" label="Active Job Cards" value={mgActiveCount} icon={Wrench} tone="blue" />
+                <TodaySummaryCard href="/maintenance/work-orders?status=ClosureRequested" label="Closure Requests" value={mgClosureRequestedCount} icon={ClipboardList} tone={mgClosureRequestedCount > 0 ? "amber" : "green"} />
+                <TodaySummaryCard href="/maintenance/daily-activity?status=working" label="Working Now" value={mgWorkingNowCount} icon={PlayCircle} tone="green" />
+                <TodaySummaryCard href="/maintenance/daily-activity?status=paused" label="Paused Workers" value={mgPausedCount} icon={PauseCircle} tone="amber" />
+                <TodaySummaryCard href="/maintenance/daily-activity?status=materials-pending" label="Materials Pending" value={mgMaterialsPendingCount} icon={ShoppingCart} tone={mgMaterialsPendingCount > 0 ? "red" : "green"} />
+                <TodaySummaryCard
+                  href="/assets/vehicles?insurance=expiring_15&registration=expiring_15"
+                  label="Vehicle Expiry Alerts"
+                  value={mgVehicleAlertCount}
+                  icon={ShieldAlert}
+                  tone={mgVehicleAlertCount === 0 ? "green" : mgTopVehicleAlerts.some((v) => v.expired || v.daysRemaining <= 7) ? "red" : "amber"}
+                />
+                <TodaySummaryCard href="/maintenance/daily-activity" label="Labor Hours Today" value={Math.round(mgHoursTodaySum * 100) / 100} icon={Activity} tone="blue" />
+                {mgCanViewCosts ? (
+                  <TodaySummaryCard href="/maintenance/daily-activity" label="Labor Cost Today" value={`${mgAmountTodaySum.toFixed(3)} KWD`} icon={Activity} tone="gray" />
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-0.5 px-0.5 text-[11px] font-semibold text-[#9CA3AF]">
+                <Link href="/store/offline-inventory" className="hover:text-[#111827]">{offlineMovementsToday} inventory movements today →</Link>
+                <Link href="/maintenance/work-orders?status=Closed" className="hover:text-[#111827]">{mgClosedRecentCount} closed in the last 14 days →</Link>
+              </div>
             </section>
 
-            {/* Needs Your Action — real Manager actions only: Submitted Job
-                Cards awaiting a decision (Approve / Request Correction / Ask
-                to Add-Update Materials — all available from the Job Card
-                popup) and Open Job Cards ready to close.
-                Correction Requested is intentionally excluded — those are
-                waiting on Data Entry, not Manager (Task 8). Manager Needs
-                Your Action Waiting-on-Data-Entry UI Cleanup Task 2: the
-                empty state is now a plain, always-the-same message — it no
-                longer doubles as the correction-count announcement, which
-                previously made this section look weak/empty instead of
-                genuinely "nothing to do". */}
-            <ActivityList
-              title="Needs Your Action"
-              viewAllHref="/maintenance/work-orders"
-              empty={mgActionRows.length === 0}
-              emptyState={
-                <p className="px-4 py-8 text-center text-sm text-[#4B5563]">
-                  Nothing requiring your action right now.
-                </p>
-              }
-            >
-              {mgActionRows.map((row) => <ManagerActionRow key={row.id} row={row} />)}
-            </ActivityList>
+            {/* Task 1/11 — Quick Actions: compact tiles, same card system as
+                Today Summary (reuses the same QuickActionTile the Data Entry
+                dashboard uses). No "Create Job Card" — this dashboard is
+                monitoring/control, not creation. */}
+            <section className="space-y-1.5">
+              <SectionLabel>Quick Actions</SectionLabel>
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 xl:grid-cols-6">
+                <QuickActionTile accent title="Daily Activity" helper="Monitor active work" href="/maintenance/daily-activity" icon={Activity} iconBg="bg-red-50" iconColor="text-[#ED1C24]" />
+                <QuickActionTile title="Closure Requests" helper="Review & approve" href="/maintenance/work-orders?status=ClosureRequested" icon={ClipboardList} iconBg="bg-amber-50" iconColor="text-amber-600" />
+                <QuickActionTile title="Worker Activity" helper="Hours & status" href="/maintenance/assignments" icon={Users} iconBg="bg-blue-50" iconColor="text-blue-600" />
+                <QuickActionTile title="Materials Pending" helper="View requests" href="/store/parts-requests" icon={ShoppingCart} iconBg="bg-violet-50" iconColor="text-violet-600" />
+                <QuickActionTile title="Vehicle Expiry" helper="Renewals due" href="/assets/vehicles?insurance=expiring_15&registration=expiring_15" icon={Car} iconBg="bg-amber-50" iconColor="text-amber-600" />
+                <QuickActionTile title="Reports" helper="Full reports" href="/reports" icon={BarChart3} iconBg="bg-gray-100" iconColor="text-[#4B5563]" />
+              </div>
+            </section>
+
+            {/* Task 4/15 — Needs Manager Attention (left, ~65%) is the main
+                section, beside a stacked Labor/Vehicle snapshot column
+                (right, ~35%); stacked below lg:. */}
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,65%)_minmax(0,35%)]">
+              <section className="space-y-1.5">
+                <div>
+                  <h2 className="text-sm font-black leading-tight text-[#111827]">Needs Manager Attention</h2>
+                  <p className="text-[11px] leading-tight text-[#6B7280]">Closure requests and blocking items first.</p>
+                </div>
+                <div className="divide-y divide-[#EEF2F6] overflow-hidden rounded-md border border-[#DDE2EA] bg-white shadow-sm">
+                  {mgAttentionBoard.length === 0 ? (
+                    <p className="px-4 py-6 text-center text-sm text-[#4B5563]">Nothing needs your attention right now.</p>
+                  ) : (
+                    mgAttentionBoard.map((item) => <NeedsAttentionRow key={item.id} item={item} />)
+                  )}
+                </div>
+                <Link href="/maintenance/daily-activity" className="block text-xs font-bold text-[#ED1C24] hover:text-[#c9151c]">
+                  Open Daily Activity for the full list →
+                </Link>
+              </section>
+
+              <section className="space-y-3">
+                {/* Task 5/6/7 — Labor Snapshot (worker + Job Card labor cost). */}
+                <div className="space-y-2 rounded-md border border-[#DDE2EA] bg-white p-3 shadow-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-black leading-tight text-[#111827]">Labor Snapshot Today</h3>
+                    <Link href="/maintenance/assignments" className="shrink-0 text-xs font-bold text-[#ED1C24] hover:text-[#c9151c]">
+                      View Worker Activity
+                    </Link>
+                  </div>
+                  {/* Task 5 — compact stat row: Hours/Pay stay as plain
+                      labeled numbers, Working/Paused use small pill badges
+                      so the two "who's active right now" counts are the
+                      first thing a glance lands on. */}
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[#4B5563]">
+                    <span>Hours: <strong className="text-[#111827]">{Math.round(mgHoursTodaySum * 100) / 100}h</strong></span>
+                    {mgCanViewCosts ? <span>Pay: <strong className="text-[#111827]">{mgAmountTodaySum.toFixed(3)} KWD</strong></span> : null}
+                    <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-bold text-[#16A34A]">
+                      Working {mgWorkingNowCount}
+                    </span>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-[#B45309]">
+                      Paused {mgPausedCount}
+                    </span>
+                  </div>
+
+                  {mgTopWorkers.length > 0 ? (
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Top Workers Today</p>
+                      <div className="mt-1 space-y-1">
+                        {mgTopWorkers.map((w) => (
+                          <div key={w.workerId} className="flex items-center justify-between gap-2 text-xs">
+                            <span className="min-w-0 truncate font-semibold text-[#111827]">
+                              {w.name} <span className="font-normal text-[#9CA3AF]">· {w.role}</span>
+                            </span>
+                            <span className="shrink-0 text-[#4B5563]">
+                              {w.hours}h{mgCanViewCosts ? ` · ${w.amount.toFixed(3)} KWD` : ""}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      {mgLeastActiveWorker ? (
+                        <p className="mt-1 text-[11px] text-[#9CA3AF]">Least active: {mgLeastActiveWorker.name} ({mgLeastActiveWorker.hours}h)</p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[#9CA3AF]">No worker hours logged today.</p>
+                  )}
+
+                  {mgTopJobCardsByLabor.length > 0 ? (
+                    <div className="border-t border-[#EEF2F6] pt-2">
+                      <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Job Card Labor Cost</p>
+                      <div className="mt-1 space-y-1">
+                        {mgTopJobCardsByLabor.map((jc) => (
+                          <Link
+                            key={jc.id}
+                            href={`/maintenance/work-orders/${jc.id}`}
+                            className="flex items-center justify-between gap-2 text-xs transition hover:text-[#ED1C24]"
+                          >
+                            <span className="min-w-0 truncate font-semibold text-[#111827]">
+                              {jc.workOrderNumber} <span className="font-normal text-[#9CA3AF]">· {jc.assetLabel ?? "No asset"}</span>
+                            </span>
+                            <span className="shrink-0 text-[#4B5563]">
+                              {jc.totalHours}h{mgCanViewCosts ? ` · ${jc.totalAmount.toFixed(3)} KWD` : ""}
+                            </span>
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+
+                {/* Task 8 — Vehicle Expiry Alerts. */}
+                <div className="space-y-2 rounded-md border border-[#DDE2EA] bg-white p-3 shadow-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-black leading-tight text-[#111827]">Vehicle Expiry Alerts</h3>
+                    {/* Vehicle Expiry Alerts Modal Unit 10B.1, Task 1/6: this
+                        specific button now opens the in-page modal (full
+                        list) instead of navigating away — the KPI card above
+                        and the "Vehicle Expiry" quick-action tile are
+                        untouched and still link straight to the filtered
+                        /assets/vehicles page. */}
+                    <Link href="/dashboard?vehicleExpiry=1" scroll={false} className="shrink-0 text-xs font-bold text-[#ED1C24] hover:text-[#c9151c]">
+                      View Expiring Vehicles
+                    </Link>
+                  </div>
+                  {mgTopVehicleAlerts.length === 0 ? (
+                    <p className="text-xs text-[#9CA3AF]">No vehicle documents expiring within {MG_VEHICLE_EXPIRY_WINDOW_DAYS} days.</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {mgTopVehicleAlerts.map((v) => {
+                        const urgent = v.expired || v.daysRemaining <= 7;
+                        // Task 6 — the row's 4 required fields: vehicle/plate,
+                        // expiry type, expiry date, days remaining.
+                        return (
+                          <Link
+                            key={`${v.assetId}-${v.document}`}
+                            href={`/assets/${v.assetId}`}
+                            className={`flex items-center justify-between gap-2 rounded-md border-l-4 px-2.5 py-1.5 text-xs transition hover:bg-gray-50 ${urgent ? "border-l-[#ED1C24]" : "border-l-[#F59E0B]"}`}
+                          >
+                            <span className="min-w-0">
+                              <span className="block truncate font-semibold text-[#111827]">
+                                {v.assetCode}{v.plateNumber ? ` · ${v.plateNumber}` : ""}
+                              </span>
+                              <span className="block truncate text-[#9CA3AF]">
+                                {v.document} · {v.expiryDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                              </span>
+                            </span>
+                            <span className={`shrink-0 font-bold ${urgent ? "text-[#ED1C24]" : "text-[#B45309]"}`}>
+                              {v.expired ? `${Math.abs(v.daysRemaining)}d overdue` : `${v.daysRemaining}d left`}
+                            </span>
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+
+            {/* Manager Dashboard UI Polish and Realtime Verification Unit
+                10B, Task 1/4: Legacy submitted rows only — pre-existing
+                "Under Review" Job Cards from before this workflow moved to
+                closure-only approval. Collapsed by default (native
+                <details>, no JS/client component needed) so it never
+                competes with the Attention Board/Labor/Vehicle sections
+                above for visual weight; shown at all only when a legacy row
+                actually exists. */}
+            {mgSubmittedRows.length > 0 && (
+              <details className="group overflow-hidden rounded-md border border-[#E5E7EB] bg-white">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 [&::-webkit-details-marker]:hidden">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-[#B0B7C3]">Legacy submitted rows only</p>
+                    <p className="mt-0.5 truncate text-xs text-[#9CA3AF]">These are pre-workflow records kept for compatibility.</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <StatusBadge label={`${mgSubmittedRows.length} legacy row${mgSubmittedRows.length !== 1 ? "s" : ""}`} tone="gray" />
+                    <span className="rounded-md border border-[#E5E7EB] px-3 py-1.5 text-xs font-bold text-[#4B5563] transition hover:bg-gray-50 group-open:hidden">
+                      View Legacy Rows
+                    </span>
+                    <span className="hidden rounded-md border border-[#E5E7EB] px-3 py-1.5 text-xs font-bold text-[#4B5563] transition hover:bg-gray-50 group-open:inline-block">
+                      Hide
+                    </span>
+                  </div>
+                </summary>
+                <div className="divide-y divide-[#EEF2F6] border-t border-[#EEF2F6]">
+                  {mgSubmittedRows.map((row) => <ManagerActionRow key={row.id} row={row} />)}
+                </div>
+              </details>
+            )}
 
             {/* Manager Needs Your Action Waiting-on-Data-Entry UI Cleanup
                 Task 3: a separate, always-visible-when-relevant reminder —
-                shown regardless of whether Needs Your Action itself has
-                rows, since correction requests waiting on Data Entry are
-                informational for Manager, not folded into the "nothing to
-                do" / "something to do" empty-state logic above. Amber, not
-                red — this isn't a Manager error state, just a status the
-                Manager should stay aware of. */}
+                correction requests waiting on Data Entry are informational
+                for Manager. Amber, not red — this isn't a Manager error
+                state, just a status the Manager should stay aware of. */}
             {mgCorrectionCount > 0 && (
               <section className="rounded-md border border-amber-200 bg-amber-50 p-4 shadow-sm">
                 <div className="flex items-start gap-3">
@@ -1767,8 +2147,8 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                     <p className="text-sm font-black text-amber-900">Waiting on Data Entry</p>
                     <p className="mt-1 text-sm leading-relaxed text-amber-800">
                       {mgCorrectionCount === 1
-                        ? "1 correction request is waiting for Data Entry. It will return to Needs Your Action after resubmission."
-                        : `${mgCorrectionCount} correction requests are waiting for Data Entry. They will return to Needs Your Action after resubmission.`}
+                        ? "1 correction request is waiting for Data Entry. It will return here after resubmission."
+                        : `${mgCorrectionCount} correction requests are waiting for Data Entry. They will return here after resubmission.`}
                     </p>
                     <Link
                       href="/maintenance/work-orders?status=Correction"
@@ -2023,6 +2403,13 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           activeWorkers={newJobCardActiveWorkers}
           canAssignAtCreation={canAssignAtCreation}
         />
+      )}
+
+      {/* Vehicle Expiry Alerts Modal Unit 10B.1: opened via ?vehicleExpiry=1,
+          same overlay convention as the modals above — closing strips the
+          param and returns to /dashboard. */}
+      {showVehicleExpiryModal && (
+        <VehicleExpiryModal alerts={mgVehicleAlertsForModal} closeHref="/dashboard" />
       )}
     </>
   );

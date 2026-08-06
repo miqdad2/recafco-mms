@@ -5,14 +5,13 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts as canViewCostsForContext } from "@/lib/security/permissions";
-import { listWorkerProfiles, type WorkerProfileRow } from "@/lib/backend/workers/service";
+import { listWorkerProfiles } from "@/lib/backend/workers/service";
 import { WORKER_TYPES, SKILL_CATEGORIES } from "@/lib/backend/workers/constants";
 import { getWorkerActivitySummaries, type WorkerActivityStatus } from "@/lib/work-orders/work-session-totals";
-import { displaySimplifiedStatus, simplifiedStatusTone } from "@/lib/work-orders/simplified-status";
+import { WorkerCard } from "@/components/workers/worker-card";
 
 // Convert Technician Page to Worker Activity Dashboard Unit 9F.
 //
@@ -51,22 +50,17 @@ function statusToFilterValue(status: WorkerActivityStatus | "Inactive"): StatusF
   return "available";
 }
 
-// Task 3/7 — color rules: Working Now green, Paused amber, Assigned blue
-// (tied to a Job Card but not started), Available gray/neutral, Inactive a
-// muted gray with the whole card visually receded.
-function statusTone(status: WorkerActivityStatus | "Inactive"): "green" | "amber" | "blue" | "gray" {
-  if (status === "Working Now") return "green";
-  if (status === "Paused") return "amber";
-  if (status === "Assigned") return "blue";
-  return "gray"; // Available / Inactive
-}
-
-function statusAccentClass(status: WorkerActivityStatus | "Inactive"): string {
-  if (status === "Working Now") return "border-l-[#16A34A]";
-  if (status === "Paused") return "border-l-[#F59E0B]";
-  if (status === "Assigned") return "border-l-[#2563EB]";
-  return "border-l-[#D1D5DB]"; // Available / Inactive
-}
+// Worker Activity Manager Hours and Payment Detail Unit 10C, Task 10: a
+// default priority sort — Working Now first, then Paused, then Assigned/Not
+// Started, then Available, then Inactive last. Stable sort, so ties keep
+// listWorkerProfiles()'s existing is_active-desc/name-asc order.
+const STATUS_SORT_RANK: Record<WorkerActivityStatus | "Inactive", number> = {
+  "Working Now": 0,
+  Paused: 1,
+  Assigned: 2,
+  Available: 3,
+  Inactive: 4,
+};
 
 type SearchParamsShape = {
   q?: string;
@@ -100,6 +94,13 @@ export default async function AssignmentsPage({
   // page's own permission model is unchanged (out of scope for this unit).
   const canManageWorkerProfiles = context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
   const canViewCosts = canViewCostsForContext(context);
+  // Worker Activity Manager Hours and Payment Detail Unit 10C, Task 2/7:
+  // gates the Worker Activity Detail modal's "Correct Session" action —
+  // same manager-role check the Job Card detail page's own Work Time
+  // Tracking section already uses for WorkerSessionRow/SessionHistoryModal.
+  // Data Entry can still open the detail modal (read-only); this only
+  // controls whether the correction button renders inside it.
+  const isManager = context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
 
   const workers = await listWorkerProfiles();
   const activityMap = await getWorkerActivitySummaries(prisma, workers.map((w) => w.id));
@@ -150,6 +151,11 @@ export default async function AssignmentsPage({
     }
     return true;
   });
+
+  // Task 10 — Working Now first, then Paused, then Assigned/Not Started,
+  // then Available, then Inactive. Array#sort is stable, so ties keep the
+  // filtered order above.
+  filtered.sort((a, b) => STATUS_SORT_RANK[a.status] - STATUS_SORT_RANK[b.status]);
 
   // Task 3 — summary cards, computed over every active worker (Inactive
   // workers never contribute to Working Now/Paused/Available/hours).
@@ -267,7 +273,7 @@ export default async function AssignmentsPage({
         ) : (
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {filtered.map((w) => (
-              <WorkerCard key={w.id} worker={w} canViewCosts={canViewCosts} canManageWorkerProfiles={canManageWorkerProfiles} />
+              <WorkerCard key={w.id} worker={w} canViewCosts={canViewCosts} canManageWorkerProfiles={canManageWorkerProfiles} isManager={isManager} />
             ))}
           </div>
         )}
@@ -315,103 +321,6 @@ function SummaryCardLink({ href, label, value, icon: Icon, tone, active }: {
   );
 }
 
-function MiniChip({ label }: { label: string }) {
-  return (
-    <span className="inline-flex items-center rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] font-bold text-gray-700">
-      {label}
-    </span>
-  );
-}
-
-type CombinedWorker = WorkerProfileRow & {
-  status: WorkerActivityStatus | "Inactive";
-  current_job_card: {
-    work_order_id: string;
-    work_order_number: string | null;
-    status: string;
-    issue: string;
-    asset_label: string | null;
-  } | null;
-  today_hours: number;
-  month_hours: number;
-  month_amount: number;
-};
-
-// Task 5/6 — one compact card per worker. Never taller than: identity row,
-// one current-Job-Card block (or a one-line "no active Job Card" note), and
-// one footer row of hours + actions.
-function WorkerCard({ worker, canViewCosts, canManageWorkerProfiles }: {
-  worker: CombinedWorker;
-  canViewCosts: boolean;
-  canManageWorkerProfiles: boolean;
-}) {
-  const jc = worker.current_job_card;
-  const jcDisplayStatus = jc ? displaySimplifiedStatus(jc.status) : null;
-
-  return (
-    <div className={`rounded-md border-l-4 bg-white p-3 shadow-sm ${statusAccentClass(worker.status)} ${!worker.is_active ? "opacity-60" : ""}`}>
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <p className="truncate text-sm font-black text-[#111827]">{worker.name}</p>
-            <MiniChip label={worker.worker_type} />
-            {worker.skill_category ? <MiniChip label={worker.skill_category} /> : null}
-          </div>
-          {worker.phone ? <p className="mt-0.5 text-xs text-[#6B7280]">{worker.phone}</p> : null}
-        </div>
-        <StatusBadge label={worker.status} tone={statusTone(worker.status)} />
-      </div>
-
-      {/* Task 6 — current Job Card */}
-      {jc ? (
-        <div className="mt-2 rounded-md bg-[#F8FAFC] px-2.5 py-2">
-          <p className="truncate text-xs font-bold text-[#111827]">
-            {jc.work_order_number ?? "Job Card"}
-            {jc.asset_label ? <span className="ml-1.5 font-normal text-[#6B7280]">· {jc.asset_label}</span> : null}
-          </p>
-          <p className="mt-0.5 truncate text-xs text-[#4B5563]">{jc.issue}</p>
-          {jcDisplayStatus ? (
-            <div className="mt-1">
-              <StatusBadge label={jcDisplayStatus} tone={simplifiedStatusTone(jcDisplayStatus)} />
-            </div>
-          ) : null}
-        </div>
-      ) : (
-        <p className="mt-2 text-xs text-[#9CA3AF]">No active Job Card.</p>
-      )}
-
-      {/* Footer — hours + actions */}
-      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-[#EEF2F6] pt-2">
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-[#6B7280]">
-          <span>Today: <strong className="text-[#111827]">{worker.today_hours} h</strong></span>
-          <span>This month: <strong className="text-[#111827]">{worker.month_hours} h</strong></span>
-          {canViewCosts ? <span>Cost (month): <strong className="text-[#111827]">{worker.month_amount.toFixed(3)} KWD</strong></span> : null}
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {jc ? (
-            <Link
-              href={`/maintenance/work-orders/${jc.work_order_id}`}
-              className="inline-flex min-h-7 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-2 py-1 text-[11px] font-bold text-[#111827] transition hover:bg-gray-50"
-            >
-              Open Job Card
-            </Link>
-          ) : null}
-          <Link
-            href="/maintenance/daily-activity"
-            className="inline-flex min-h-7 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-2 py-1 text-[11px] font-bold text-[#111827] transition hover:bg-gray-50"
-          >
-            Open Daily Activity
-          </Link>
-          {canManageWorkerProfiles ? (
-            <Link
-              href="/admin/worker-profiles"
-              className="inline-flex min-h-7 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-2 py-1 text-[11px] font-bold text-[#111827] transition hover:bg-gray-50"
-            >
-              Worker Profile
-            </Link>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
+// MiniChip, CombinedWorker, and WorkerCard itself moved to
+// components/workers/worker-card.tsx (Unit 10C) — a plain server component
+// can't hold the client state "View Details" needs.

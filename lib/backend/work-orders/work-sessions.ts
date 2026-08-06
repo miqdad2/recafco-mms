@@ -365,6 +365,20 @@ export async function editWorkSession(context: CurrentUserContext, input: EditWo
       throw new AppError("This Job Card is closed. Work sessions can no longer be changed.", { code: "WORKFLOW_ERROR" });
     }
 
+    // Manager Worker Time Correction Enhancement Unit 10C.1, Task 6: captured
+    // here (before the update overwrites the row) so the audit log can record
+    // the full before/after trail, not just the corrected values — the row
+    // itself only ever holds its current (latest) values, so this is the only
+    // place the "original" side of a correction can still be read. Returned
+    // as part of the transaction result (rather than an outer `let` captured
+    // by this closure) so it's plain, un-narrowed data at the call site.
+    const original = {
+      startedAt: existing.started_at.toISOString(),
+      endedAt: (existing.stopped_at ?? existing.paused_at)?.toISOString() ?? null,
+      durationMinutes: existing.duration_minutes,
+      calculatedAmount: Number(existing.calculated_amount),
+    };
+
     const durationMinutes = diffMinutes(startedAt, stoppedAt);
     const calculatedAmount = computeAmount(durationMinutes, Number(existing.hourly_rate_snapshot));
 
@@ -389,9 +403,15 @@ export async function editWorkSession(context: CurrentUserContext, input: EditWo
       sessionId: updated.id,
       durationMinutes,
       calculatedAmount,
-    } satisfies SessionMutationResult;
+      original,
+    } satisfies SessionMutationResult & { original: typeof original };
   });
 
+  // Task 6 — full before/after correction trail: original start/end/
+  // duration/amount alongside the corrected values already captured by
+  // notifyAndAudit's own audit metadata (duration_minutes/calculated_amount
+  // = the new/corrected figures), plus the reason, actor, and timestamp
+  // writeAuditLog already records for every audit entry.
   await notifyAndAudit(
     context,
     REALTIME_EVENTS.JOB_CARD_WORK_TIME_UPDATED,
@@ -400,7 +420,15 @@ export async function editWorkSession(context: CurrentUserContext, input: EditWo
     "Work session corrected",
     `Manager corrected ${result.workerName}'s session on ${result.workOrderNumber ?? "a Job Card"} — ${result.durationMinutes} min.`,
     result,
-    { correctionReason: input.correctionReason.trim() }
+    {
+      correctionReason: input.correctionReason.trim(),
+      original_started_at: result.original.startedAt,
+      original_ended_at: result.original.endedAt ?? undefined,
+      original_duration_minutes: result.original.durationMinutes,
+      original_calculated_amount: result.original.calculatedAmount,
+      corrected_started_at: startedAt.toISOString(),
+      corrected_ended_at: stoppedAt.toISOString(),
+    }
   );
 
   return result;

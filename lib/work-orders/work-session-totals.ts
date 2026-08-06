@@ -39,6 +39,9 @@ export type WorkerLaborRow = {
   // site is unaffected).
   today_minutes?: number;
   today_hours?: number;
+  // One-Screen Manager Dashboard Unit 10, Task 5: same optional-only-via-
+  // the-bulk-function convention as today_minutes/today_hours above.
+  today_amount?: number;
 };
 
 export type WorkOrderLaborSummary = {
@@ -186,10 +189,18 @@ export async function getWorkOrderLaborSummariesBulk(
       // cards elsewhere use created_at >= start-of-day). Tracked per worker
       // (Task 5's "Today's worked time" row) as well as summed into the
       // Job Card-level today_minutes/today_amount below (Task 2's KPI card).
+      // One-Screen Manager Dashboard Unit 10, Task 5: today_amount is now
+      // also tracked per worker (was already summed at the Job Card level
+      // above) — the Manager dashboard's "top workers today" snapshot needs
+      // a real per-worker today figure, not an hourly_rate_snapshot*hours
+      // approximation. Same stored calculated_amount per session, just a
+      // narrower sum — no calculation logic changed.
       let workerTodayMinutes = 0;
+      let workerTodayAmount = 0;
       for (const r of rows) {
         if (r.started_at >= todayStart) {
           workerTodayMinutes += r.duration_minutes;
+          workerTodayAmount += Number(r.calculated_amount);
           todayAmount += Number(r.calculated_amount);
         }
       }
@@ -217,6 +228,7 @@ export async function getWorkOrderLaborSummariesBulk(
         active_session_started_at: activeSession?.started_at.toISOString() ?? null,
         today_minutes: workerTodayMinutes,
         today_hours: Math.round((workerTodayMinutes / 60) * 100) / 100,
+        today_amount: Math.round(workerTodayAmount * 1000) / 1000,
       };
     });
 
@@ -347,6 +359,13 @@ export type WorkerCurrentJobCard = {
   status: string;
   issue: string;
   asset_label: string | null;
+  // Worker Activity Manager Hours and Payment Detail Unit 10C, Task 8: the
+  // CURRENT assignment's own rate snapshot — distinct from the worker
+  // profile's present-day hourly_rate (shown separately, if at all, as
+  // "Current profile rate"). Never used to recompute an already-stored
+  // session's calculated_amount; purely a display passthrough.
+  worker_assignment_id: string;
+  hourly_rate_snapshot: number;
 };
 
 export type WorkerActivitySummary = {
@@ -380,6 +399,7 @@ export async function getWorkerActivitySummaries(
       select: {
         id: true,
         worker_id: true,
+        hourly_rate_snapshot: true,
         work_orders: {
           select: {
             id: true,
@@ -446,6 +466,8 @@ export async function getWorkerActivitySummaries(
           asset_label: chosen.work_orders.assets
             ? `${chosen.work_orders.assets.asset_name}${chosen.work_orders.assets.plate_number ? ` (${chosen.work_orders.assets.plate_number})` : ""}`
             : null,
+          worker_assignment_id: chosen.id,
+          hourly_rate_snapshot: Number(chosen.hourly_rate_snapshot),
         }
       : null;
 
@@ -469,4 +491,196 @@ export async function getWorkerActivitySummaries(
   }
 
   return result;
+}
+
+// Worker Activity Manager Hours and Payment Detail Unit 10C, Task 3/4/5/6/12
+// — a single worker's detail breakdown for the Worker Activity Detail modal:
+// Today/This Week/This Month totals, a per-Job-Card breakdown across the
+// current month (with per-period sub-figures so the modal's tabs don't need
+// separate queries), and a recent session history list (latest 20 of the
+// current month, every status including Cancelled, so a correction/
+// cancellation trail stays visible — the same "cancelled rows kept for audit
+// history" rule getSessionsForAssignment already follows). Exactly one
+// session query, scoped to one worker and one month window — no per-Job-Card
+// loop, no N+1.
+//
+// Task 4 — week boundary: no "start of week" convention existed anywhere in
+// this codebase before this unit (confirmed by search). RECAFCO is a
+// Kuwait-based company on a Sunday-Thursday work week, so "this week" is
+// defined here as the most recent Sunday 00:00 through now — establishing,
+// not assuming, a convention; documented here since nothing else in the
+// codebase decides this today.
+export type WorkerActivityPeriodTotal = { hours: number; amount: number; jobCardCount: number };
+
+export type WorkerActivityJobCardBreakdown = {
+  workOrderId: string;
+  workOrderAssignmentId: string;
+  workOrderNumber: string | null;
+  assetLabel: string | null;
+  issue: string;
+  lastActivityAt: string;
+  hoursToday: number;
+  amountToday: number;
+  hoursWeek: number;
+  amountWeek: number;
+  hoursMonth: number;
+  amountMonth: number;
+  currentSessionStatus: "Active" | "Paused" | null;
+};
+
+export type WorkerActivitySessionRow = {
+  id: string;
+  workOrderId: string;
+  workOrderNumber: string | null;
+  workerAssignmentId: string;
+  assetLabel: string | null;
+  startedAt: string;
+  pausedAt: string | null;
+  stoppedAt: string | null;
+  durationMinutes: number;
+  status: string;
+  calculatedAmount: number;
+  isManualEntry: boolean;
+  correctionReason: string | null;
+  // Manager Worker Time Correction Enhancement Unit 10C.1, Task 7: whoever
+  // corrected this session, for the "Corrected by {name}" line — same
+  // profiles_edited_by relation getSessionsForAssignment already resolves.
+  editedByName: string | null;
+};
+
+export type WorkerActivityDetail = {
+  today: WorkerActivityPeriodTotal;
+  week: WorkerActivityPeriodTotal;
+  month: WorkerActivityPeriodTotal;
+  jobCards: WorkerActivityJobCardBreakdown[];
+  recentSessions: WorkerActivitySessionRow[];
+};
+
+export async function getWorkerActivityDetail(db: DbClient, workerId: string): Promise<WorkerActivityDetail> {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const weekStart = new Date(todayStart);
+  weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+  const monthStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), 1);
+
+  const sessions = await db.workOrderWorkSession.findMany({
+    where: { worker_id: workerId, started_at: { gte: monthStart } },
+    orderBy: { started_at: "desc" },
+    select: {
+      id: true,
+      work_order_id: true,
+      worker_assignment_id: true,
+      started_at: true,
+      paused_at: true,
+      stopped_at: true,
+      status: true,
+      duration_minutes: true,
+      calculated_amount: true,
+      is_manual_entry: true,
+      correction_reason: true,
+      profiles_edited_by: { select: { full_name: true } },
+      work_orders: {
+        select: {
+          work_order_number: true,
+          operator_complaint: true,
+          description_of_work: true,
+          assets: { select: { asset_name: true, plate_number: true } },
+        },
+      },
+    },
+  });
+
+  let todayMinutes = 0, todayAmount = 0;
+  let weekMinutes = 0, weekAmount = 0;
+  let monthMinutes = 0, monthAmount = 0;
+  const todayJobCards = new Set<string>();
+  const weekJobCards = new Set<string>();
+  const monthJobCards = new Set<string>();
+
+  const jobCardMap = new Map<string, WorkerActivityJobCardBreakdown>();
+
+  for (const s of sessions) {
+    const assetLabel = s.work_orders.assets
+      ? `${s.work_orders.assets.asset_name}${s.work_orders.assets.plate_number ? ` (${s.work_orders.assets.plate_number})` : ""}`
+      : null;
+    let jc = jobCardMap.get(s.work_order_id);
+    if (!jc) {
+      jc = {
+        workOrderId: s.work_order_id,
+        workOrderAssignmentId: s.worker_assignment_id,
+        workOrderNumber: s.work_orders.work_order_number,
+        assetLabel,
+        issue: s.work_orders.operator_complaint || s.work_orders.description_of_work || "No issue description",
+        lastActivityAt: s.started_at.toISOString(), // sessions are desc-ordered, so the first hit is the most recent
+        hoursToday: 0, amountToday: 0, hoursWeek: 0, amountWeek: 0, hoursMonth: 0, amountMonth: 0,
+        currentSessionStatus: null,
+      };
+      jobCardMap.set(s.work_order_id, jc);
+    }
+
+    // Cancelled sessions are kept in recentSessions (below) for audit
+    // visibility but never counted toward hours/pay totals — same rule
+    // every other labor total in this file already follows.
+    if (s.status !== "Cancelled") {
+      const minutes = s.duration_minutes;
+      const amount = Number(s.calculated_amount);
+      monthMinutes += minutes; monthAmount += amount; monthJobCards.add(s.work_order_id);
+      jc.hoursMonth += minutes / 60; jc.amountMonth += amount;
+      if (s.started_at >= weekStart) {
+        weekMinutes += minutes; weekAmount += amount; weekJobCards.add(s.work_order_id);
+        jc.hoursWeek += minutes / 60; jc.amountWeek += amount;
+      }
+      if (s.started_at >= todayStart) {
+        todayMinutes += minutes; todayAmount += amount; todayJobCards.add(s.work_order_id);
+        jc.hoursToday += minutes / 60; jc.amountToday += amount;
+      }
+    }
+
+    // The most recent Active/Paused session per Job Card (sessions are
+    // desc-ordered, so the first Active/Paused hit wins) — mirrors the same
+    // "currently open session" derivation getWorkerActivitySummaries uses.
+    if ((s.status === "Active" || s.status === "Paused") && jc.currentSessionStatus === null) {
+      jc.currentSessionStatus = s.status;
+    }
+  }
+
+  const jobCards = [...jobCardMap.values()]
+    .map((jc) => ({
+      ...jc,
+      hoursToday: Math.round(jc.hoursToday * 100) / 100,
+      amountToday: Math.round(jc.amountToday * 1000) / 1000,
+      hoursWeek: Math.round(jc.hoursWeek * 100) / 100,
+      amountWeek: Math.round(jc.amountWeek * 1000) / 1000,
+      hoursMonth: Math.round(jc.hoursMonth * 100) / 100,
+      amountMonth: Math.round(jc.amountMonth * 1000) / 1000,
+    }))
+    .sort((a, b) => (a.lastActivityAt < b.lastActivityAt ? 1 : -1));
+
+  // Task 6 — latest 20 of the already month-scoped fetch, every status.
+  const recentSessions: WorkerActivitySessionRow[] = sessions.slice(0, 20).map((s) => ({
+    id: s.id,
+    workOrderId: s.work_order_id,
+    workOrderNumber: s.work_orders.work_order_number,
+    workerAssignmentId: s.worker_assignment_id,
+    assetLabel: s.work_orders.assets
+      ? `${s.work_orders.assets.asset_name}${s.work_orders.assets.plate_number ? ` (${s.work_orders.assets.plate_number})` : ""}`
+      : null,
+    startedAt: s.started_at.toISOString(),
+    pausedAt: s.paused_at?.toISOString() ?? null,
+    stoppedAt: s.stopped_at?.toISOString() ?? null,
+    durationMinutes: s.duration_minutes,
+    status: s.status,
+    calculatedAmount: Number(s.calculated_amount),
+    isManualEntry: s.is_manual_entry,
+    correctionReason: s.correction_reason,
+    editedByName: s.profiles_edited_by?.full_name ?? null,
+  }));
+
+  return {
+    today: { hours: Math.round((todayMinutes / 60) * 100) / 100, amount: Math.round(todayAmount * 1000) / 1000, jobCardCount: todayJobCards.size },
+    week: { hours: Math.round((weekMinutes / 60) * 100) / 100, amount: Math.round(weekAmount * 1000) / 1000, jobCardCount: weekJobCards.size },
+    month: { hours: Math.round((monthMinutes / 60) * 100) / 100, amount: Math.round(monthAmount * 1000) / 1000, jobCardCount: monthJobCards.size },
+    jobCards,
+    recentSessions,
+  };
 }
