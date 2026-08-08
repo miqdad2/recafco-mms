@@ -68,6 +68,8 @@ import { VEHICLE_CATEGORIES } from "@/lib/assets/categories";
 import { getExpiryStatus } from "@/lib/assets/vehicle-status";
 import { StoreSendMaterialsPopup } from "@/components/store/store-send-materials-popup";
 import { VehicleExpiryModal, type VehicleExpiryAlertRow } from "@/components/dashboard/vehicle-expiry-modal";
+import { ClosedJobCardsSummaryCard } from "@/components/dashboard/closed-job-cards-summary";
+import { ActiveJobCardsModal } from "@/components/dashboard/active-job-cards-modal";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
 import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
@@ -253,8 +255,25 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 // text-lg for a visually stronger number — while staying a compact
 // horizontal card (icon + label + value in one row), nowhere near the
 // original tall vertical `StatCard`.
-function TodaySummaryCard({ href, label, value, icon: Icon, tone }: {
-  href: string; label: string; value: number | string; icon: LucideIcon; tone: "red" | "amber" | "green" | "blue" | "gray";
+//
+// Manager Dashboard Today Summary Card Size Polish Unit 10E.1, Task 1/2/5:
+// `size` defaults to "sm" (unchanged — still what the Data Entry dashboard's
+// Today Summary row uses) so this polish stays scoped to the Manager row,
+// which now passes size="md" — a moderately taller/bolder card (~64px vs.
+// ~56px), not a new parallel component, so both rows keep sharing one card
+// system (Unit 9E.5's own stated goal) while only the Manager row grows.
+function TodaySummaryCard({ href, label, value, icon: Icon, tone, size = "sm", title, scroll }: {
+  href: string; label: string; value: number | string; icon: LucideIcon; tone: "red" | "amber" | "green" | "blue" | "gray"; size?: "sm" | "md";
+  // Manager Dashboard KPI Click Behavior Clarification Unit 10E.4, Task 5:
+  // an optional native-title tooltip, distinct from a Quick Action tile's
+  // always-visible helper line — used for KPI cards whose wording alone
+  // ("Active Jobs") doesn't make the "opens a filtered view, not the
+  // working page" distinction obvious.
+  title?: string;
+  // Passed through to next/link's own `scroll` prop — false for KPI cards
+  // that open an in-page modal via a query param (same page, no reason to
+  // jump scroll position), same convention "View Expiring Vehicles" already used.
+  scroll?: boolean;
 }) {
   const toneClass = {
     red: "bg-[#ED1C24]",
@@ -263,17 +282,26 @@ function TodaySummaryCard({ href, label, value, icon: Icon, tone }: {
     blue: "bg-[#2563EB]",
     gray: "bg-[#6B7280]",
   }[tone];
+  const isMd = size === "md";
   return (
     <Link
       href={href}
-      className="flex items-center gap-2 rounded-md border border-[#E5E7EB] bg-white px-3 py-2.5 transition hover:border-[#2563EB] hover:shadow-sm"
+      title={title}
+      scroll={scroll}
+      className={`flex items-center gap-2.5 rounded-md border border-[#E5E7EB] bg-white transition hover:border-[#2563EB] hover:shadow-sm ${
+        isMd ? "px-3.5 py-3" : "px-3 py-2.5"
+      }`}
     >
       <span className={`inline-flex shrink-0 rounded-md p-2 text-white ${toneClass}`}>
-        <Icon className="h-4 w-4" aria-hidden="true" />
+        <Icon className={isMd ? "h-[18px] w-[18px]" : "h-4 w-4"} aria-hidden="true" />
       </span>
       <span className="min-w-0">
-        <span className="block truncate text-[10px] font-black uppercase leading-tight text-[#6B7280]">{label}</span>
-        <span className="block text-lg font-black leading-tight text-[#111827]">{value}</span>
+        {/* Task 2 — two-line-safe label (line-clamp instead of a hard
+            single-line truncate) as a defensive fallback for the size="md"
+            row; the real fix is the shorter labels the Manager row itself
+            now passes in. */}
+        <span className={`block text-[10px] font-black uppercase leading-tight text-[#6B7280] ${isMd ? "line-clamp-2" : "truncate"}`}>{label}</span>
+        <span className={`block font-black leading-tight text-[#111827] ${isMd ? "text-xl" : "text-lg"}`}>{value}</span>
       </span>
     </Link>
   );
@@ -608,6 +636,7 @@ type PageProps = {
     new_job_card?: string;
     asset_id?: string;
     vehicleExpiry?: string;
+    activeJobs?: string;
   }>;
 };
 
@@ -633,6 +662,19 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   // Shared by Manager's and Store Keeper's "Offline Inventory Control" KPI.
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
+
+  // Manager Closed Job Cards Summary and Global Navigation Improvements
+  // Unit 10E, Task 1/5: week (Sunday-start, same Kuwait work-week convention
+  // as getWorkerActivityDetail(), Unit 10C) and month boundaries for the
+  // Closed Job Cards KPI counts — a cheap updated_at-scoped count (uses the
+  // existing idx_work_orders_status_updated_at index), not the more precise
+  // approvals.decided_at the modal's own list/detail views resolve per row
+  // (see app/actions/closed-job-cards.ts's header comment for why the two
+  // sources agree for every row this codebase's own closure functions
+  // produce).
+  const mgWeekStart = new Date(todayStart);
+  mgWeekStart.setDate(mgWeekStart.getDate() - mgWeekStart.getDay());
+  const mgMonthStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), 1);
 
   // ── Normal User data ─────────────────────────────────────────────
   // One-Screen Data Entry Dashboard Unit 9E, Task 12: the sample size used
@@ -958,6 +1000,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           // Closure Requested is the new Manager-facing decision count.
           safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Closure Requested" }] } })),
           safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: { in: ACTIVE_JOB_CARD_STATUSES } }] } })),
+          // Task 1 — Closed Job Cards KPI: week/month counts.
+          safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Closed", updated_at: { gte: mgWeekStart } }] } })),
+          safeNum(prisma.work_orders.count({ where: { AND: [mgBase, { status: "Closed", updated_at: { gte: mgMonthStart } }] } })),
         ])
       : Promise.resolve(null),
     // Approval Workflow Unit 4, Task 9: Job Cards waiting for Manager to
@@ -1060,6 +1105,8 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const mgClosedRecentCount = mgData?.[2] ?? 0;
   const mgClosureRequestedCount = mgData?.[3] ?? 0;
   const mgActiveCount = mgData?.[4] ?? 0;
+  const mgClosedWeekCount = mgData?.[5] ?? 0;
+  const mgClosedMonthCount = mgData?.[6] ?? 0;
   const mgCanViewCosts = canViewCostsForContext(context);
 
   // Task 9 — resolve closure-requester names in one bulk read.
@@ -1111,6 +1158,21 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   // by worker (a worker can appear on more than one active assignment).
   const mgWorkerTodayTotals = new Map<string, { name: string; role: string; minutes: number; amount: number }>();
 
+  // Manager Dashboard KPI Click Behavior Clarification Unit 10E.4, Task 1/2:
+  // rows for the Active Job Cards KPI modal — built from the exact same
+  // per-Job-Card values this loop already derives for the attention board
+  // below (no new query, no new calculation).
+  const mgActiveJobCardsForModal: {
+    id: string;
+    workOrderNumber: string | null;
+    assetLabel: string | null;
+    issue: string;
+    workersLabel: string;
+    materialsLabel: string;
+    workStatus: string;
+    detailHref: string;
+  }[] = [];
+
   for (const wo of mgActiveSample) {
     const detailHref = `/maintenance/work-orders/${wo.id}`;
     const fulfillment = mgFulfillmentMap.get(wo.id) ?? [];
@@ -1146,6 +1208,35 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     }
 
     const assetLabel = wo.assets ? `${wo.assets.asset_name}${wo.assets.plate_number ? ` (${wo.assets.plate_number})` : ""}` : null;
+
+    // Task 2 — Active Job Cards modal row: worker count/status and
+    // materials status in the same plain wording the rest of this
+    // dashboard/Daily Activity already use for these exact conditions.
+    const workerCount = laborSummary?.workers.length ?? wo.work_order_assignments.length;
+    const workersLabel = !hasAssignment
+      ? "No workers assigned"
+      : `${workerCount} worker${workerCount !== 1 ? "s" : ""}${hasActiveSession ? " · Working Now" : anyWorkerPaused ? " · Paused" : ""}`;
+    const materialsAvailability = summarizeMaterialAvailability(fulfillment);
+    const materialsLabel =
+      materialsAvailability === "issuable"
+        ? "Ready to Issue"
+        : materialsAvailability === "partial"
+          ? "Partially Available"
+          : materialsBlocking
+            ? "Materials Pending"
+            : materialsAvailability === "fulfilled"
+              ? "Materials Completed"
+              : "No Materials";
+    mgActiveJobCardsForModal.push({
+      id: wo.id,
+      workOrderNumber: wo.work_order_number,
+      assetLabel,
+      issue: wo.operator_complaint || wo.description_of_work || "No issue description",
+      workersLabel,
+      materialsLabel,
+      workStatus: displaySimplifiedStatus(wo.status),
+      detailHref,
+    });
 
     // Task 4 — one bucket per active Job Card, in the task's own priority
     // order (materials(2) > paused(3) > high labor(4) > no workers(5)).
@@ -1426,6 +1517,12 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         expired: v.expired,
       }))
     : [];
+
+  // Manager Dashboard KPI Click Behavior Clarification Unit 10E.4, Task 1:
+  // opened via ?activeJobs=1, same overlay convention as ?vehicleExpiry=1
+  // above — mgActiveJobCardsForModal is already fully built (no new query),
+  // this just gates rendering the modal itself.
+  const showActiveJobCardsModal = isManager && sp.activeJobs === "1";
 
   // New Job Card Modal Wizard Refactor: opened via ?new_job_card=1 as an
   // overlay on top of the dashboard, same convention as ?sendPreview below —
@@ -1921,25 +2018,58 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             overpower the attention board"). */}
         {isManager && mgData && (
           <>
-            {/* Task 3 — KPI row, one row on desktop. */}
+            {/* Task 3 — KPI row, one row on desktop. Manager Dashboard
+                Today Summary Card Size Polish Unit 10E.1, Task 3: explicit
+                md/lg steps (2 -> 3 -> 4 -> 9) instead of jumping straight
+                from 2 to 9 at xl, so the row degrades gracefully on
+                tablet-width screens instead of staying stuck at 4-wide. */}
             <section className="space-y-1.5">
               <SectionLabel>Today Summary</SectionLabel>
-              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 xl:grid-cols-8">
-                <TodaySummaryCard href="/maintenance/daily-activity" label="Active Job Cards" value={mgActiveCount} icon={Wrench} tone="blue" />
-                <TodaySummaryCard href="/maintenance/work-orders?status=ClosureRequested" label="Closure Requests" value={mgClosureRequestedCount} icon={ClipboardList} tone={mgClosureRequestedCount > 0 ? "amber" : "green"} />
-                <TodaySummaryCard href="/maintenance/daily-activity?status=working" label="Working Now" value={mgWorkingNowCount} icon={PlayCircle} tone="green" />
-                <TodaySummaryCard href="/maintenance/daily-activity?status=paused" label="Paused Workers" value={mgPausedCount} icon={PauseCircle} tone="amber" />
-                <TodaySummaryCard href="/maintenance/daily-activity?status=materials-pending" label="Materials Pending" value={mgMaterialsPendingCount} icon={ShoppingCart} tone={mgMaterialsPendingCount > 0 ? "red" : "green"} />
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-9">
+                {/* Task 2 — shorter labels so none of these truncate mid-word
+                    at size="md" (Active Jobs / Closure Requests / Working Now /
+                    Paused / Materials Pending / Closed Jobs / Vehicle Expiry /
+                    Labor Hours).
+                    Manager Dashboard KPI Click Behavior Clarification Unit
+                    10E.4, Task 1/7: KPI cards now open a filtered detail
+                    view (modal or filtered list), never the exact same
+                    plain "/maintenance/daily-activity" the Daily Activity
+                    Quick Action tile below already offers — Active Jobs
+                    (Task 1, opens the Active Job Cards modal) and Labor
+                    Hours/Cost (Task 7, opens Worker Activity) were the two
+                    offenders; Working Now/Paused/Materials Pending already
+                    used a `?status=` filter distinct from the plain link,
+                    so they're unchanged. */}
                 <TodaySummaryCard
-                  href="/assets/vehicles?insurance=expiring_15&registration=expiring_15"
-                  label="Vehicle Expiry Alerts"
+                  size="md"
+                  href="/dashboard?activeJobs=1"
+                  scroll={false}
+                  title="View active Job Cards"
+                  label="Active Jobs"
+                  value={mgActiveCount}
+                  icon={Wrench}
+                  tone="blue"
+                />
+                <TodaySummaryCard size="md" href="/maintenance/work-orders?status=ClosureRequested" label="Closure Requests" value={mgClosureRequestedCount} icon={ClipboardList} tone={mgClosureRequestedCount > 0 ? "amber" : "green"} />
+                <TodaySummaryCard size="md" href="/maintenance/daily-activity?status=working" label="Working Now" value={mgWorkingNowCount} icon={PlayCircle} tone="green" />
+                <TodaySummaryCard size="md" href="/maintenance/daily-activity?status=paused" label="Paused" value={mgPausedCount} icon={PauseCircle} tone="amber" />
+                <TodaySummaryCard size="md" href="/maintenance/daily-activity?status=materials-pending" label="Materials Pending" value={mgMaterialsPendingCount} icon={ShoppingCart} tone={mgMaterialsPendingCount > 0 ? "red" : "green"} />
+                {/* Task 1/2 — Closed Job Cards KPI: click opens the Closed
+                    Job Cards modal (Task 2/3/4) instead of navigating. */}
+                <ClosedJobCardsSummaryCard weekCount={mgClosedWeekCount} monthCount={mgClosedMonthCount} />
+                <TodaySummaryCard
+                  size="md"
+                  href="/dashboard?vehicleExpiry=1"
+                  scroll={false}
+                  title="View expiring vehicles"
+                  label="Vehicle Expiry"
                   value={mgVehicleAlertCount}
                   icon={ShieldAlert}
                   tone={mgVehicleAlertCount === 0 ? "green" : mgTopVehicleAlerts.some((v) => v.expired || v.daysRemaining <= 7) ? "red" : "amber"}
                 />
-                <TodaySummaryCard href="/maintenance/daily-activity" label="Labor Hours Today" value={Math.round(mgHoursTodaySum * 100) / 100} icon={Activity} tone="blue" />
+                <TodaySummaryCard size="md" href="/maintenance/assignments" title="View Worker Activity" label="Labor Hours" value={Math.round(mgHoursTodaySum * 100) / 100} icon={Activity} tone="blue" />
                 {mgCanViewCosts ? (
-                  <TodaySummaryCard href="/maintenance/daily-activity" label="Labor Cost Today" value={`${mgAmountTodaySum.toFixed(3)} KWD`} icon={Activity} tone="gray" />
+                  <TodaySummaryCard size="md" href="/maintenance/assignments" title="View Worker Activity" label="Labor Cost" value={`${mgAmountTodaySum.toFixed(3)} KWD`} icon={Activity} tone="gray" />
                 ) : null}
               </div>
               <div className="flex flex-wrap gap-x-4 gap-y-0.5 px-0.5 text-[11px] font-semibold text-[#9CA3AF]">
@@ -2410,6 +2540,12 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           param and returns to /dashboard. */}
       {showVehicleExpiryModal && (
         <VehicleExpiryModal alerts={mgVehicleAlertsForModal} closeHref="/dashboard" />
+      )}
+
+      {/* Manager Dashboard KPI Click Behavior Clarification Unit 10E.4,
+          Task 1: opened via ?activeJobs=1, same overlay convention. */}
+      {showActiveJobCardsModal && (
+        <ActiveJobCardsModal jobCards={mgActiveJobCardsForModal} totalActiveCount={mgActiveCount} closeHref="/dashboard" />
       )}
     </>
   );

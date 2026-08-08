@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/ui/page-header";
+import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { WorkerProfilesView } from "@/components/admin/worker-profiles-view";
@@ -19,6 +20,7 @@ export default async function WorkerProfilesPage() {
       <PageHeader
         title="Worker Profiles"
         description="Maintenance workers available for Internal Team assignment — Supervisors, Technicians, and Helpers/Labor. These do not need a system login."
+        actions={<PageNavigationActions secondaryLinks={[{ label: "Worker Activity", href: "/maintenance/assignments" }]} />}
       />
       <div className="p-4 lg:p-6">
         <WorkerProfilesView workers={workers} />

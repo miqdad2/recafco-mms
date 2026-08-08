@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { AlertTriangle, Car, ShieldAlert } from "lucide-react";
 
-import { BackLink } from "@/components/ui/back-link";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
+import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
@@ -263,7 +263,7 @@ export default async function VehiclesPage({
             items={[{ label: "Assets & Equipment", href: "/assets" }, { label: "Vehicles & Mobile Equipment" }]}
           />
         }
-        actions={<BackLink href="/assets" label="Back to Assets & Equipment" />}
+        actions={<PageNavigationActions secondaryLinks={[{ label: "Assets & Equipment", href: "/assets" }]} />}
       />
 
       <div className="space-y-4 p-4 lg:p-6">

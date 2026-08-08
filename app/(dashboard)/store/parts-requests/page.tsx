@@ -5,6 +5,7 @@ import type { LucideIcon } from "lucide-react";
 
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
+import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/dashboard/stat-card";
 import {
@@ -851,16 +852,19 @@ export default async function PartsRequestsPage({
         title="Materials Requests"
         description="Materials requested for Job Cards — track and receive them here."
         actions={
-          canCreate ? (
-            <Link
-              className="focus-ring inline-flex min-h-10 items-center gap-2 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-semibold text-white hover:bg-[#c9151c]"
-              href="?newRequest=1"
-              scroll={false}
-            >
-              <Plus className="h-4 w-4" />
-              New materials request
-            </Link>
-          ) : null
+          <>
+            <PageNavigationActions />
+            {canCreate ? (
+              <Link
+                className="focus-ring inline-flex min-h-10 items-center gap-2 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-semibold text-white hover:bg-[#c9151c]"
+                href="?newRequest=1"
+                scroll={false}
+              >
+                <Plus className="h-4 w-4" />
+                New materials request
+              </Link>
+            ) : null}
+          </>
         }
       />
 

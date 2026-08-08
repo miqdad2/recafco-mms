@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
+import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { MaterialDetailModal } from "@/components/store/material-detail-modal";
 import { AddNewMaterialForm } from "@/components/store/add-new-material-form";
 import { ReceiveMaterialForm } from "@/components/store/receive-material-form";
@@ -223,10 +224,13 @@ export function StoreBalanceView({
         title="Offline Inventory Control"
         description="Track maintenance materials, received quantities, issued quantities, and current balance."
         actions={
-          <Link href="/store/offline-inventory/movements" className={secondaryBtn}>
-            <Activity className="h-4 w-4" aria-hidden />
-            View Movement History
-          </Link>
+          <>
+            <PageNavigationActions secondaryLinks={[{ label: "Materials Requests", href: "/store/parts-requests" }]} />
+            <Link href="/store/offline-inventory/movements" className={secondaryBtn}>
+              <Activity className="h-4 w-4" aria-hidden />
+              View Movement History
+            </Link>
+          </>
         }
       />
 

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
+import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { requirePermission } from "@/lib/auth/context";
 import { getReportLandingStats } from "@/lib/reports/data";
 
@@ -29,6 +30,7 @@ export default async function ReportsLandingPage() {
       <PageHeader
         title="Maintenance Reports"
         description="View job cards, asset history, materials usage, and maintenance performance."
+        actions={<PageNavigationActions />}
       />
 
       <div className="p-4 lg:p-6 space-y-6">

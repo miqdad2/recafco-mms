@@ -19,6 +19,7 @@ import {
   type ServiceContractState,
 } from "@/app/actions/service-contracts";
 import { PageHeader } from "@/components/ui/page-header";
+import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { cn } from "@/lib/utils";
 
@@ -429,14 +430,18 @@ export function ServiceContractsShell({
         title="Service Contracts"
         description="Track service contracts linked to assets — service provider, coverage, expiry dates, and renewal schedules."
         actions={
-          <button
-            type="button"
-            onClick={() => setOpenModal(true)}
-            className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
-          >
-            <Plus className="h-4 w-4" aria-hidden />
-            New Service Contract
-          </button>
+          <>
+            {/* Missing Page Navigation Buttons Fix Unit 10E.3, Task 3. */}
+            <PageNavigationActions secondaryLinks={[{ label: "Assets & Equipment", href: "/assets" }]} />
+            <button
+              type="button"
+              onClick={() => setOpenModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
+            >
+              <Plus className="h-4 w-4" aria-hidden />
+              New Service Contract
+            </button>
+          </>
         }
       />
 

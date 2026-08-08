@@ -21,6 +21,7 @@ import type { Prisma } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
+import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission, type CurrentUserContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
@@ -613,6 +614,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         <PageHeader
           title="Executive Work Orders"
           description="High-risk work orders, blocked operations, and items needing executive attention."
+          actions={<PageNavigationActions showJobCards={false} />}
         />
         <div className="space-y-4 p-4 lg:p-6">
 
@@ -1285,13 +1287,18 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           title="Job Cards"
           description="Track job cards, technician work, waiting materials, and repair history."
           actions={
-            <Link
-              href={buildHref({ ...sp, new_job_card: "1" })}
-              className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
-            >
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              Create Job Card
-            </Link>
+            <>
+              {/* Missing Page Navigation Buttons Fix Unit 10E.3, Task 2:
+                  already on Job Cards, so that button is suppressed here. */}
+              <PageNavigationActions showJobCards={false} secondaryLinks={[{ label: "Materials Requests", href: "/store/parts-requests" }]} />
+              <Link
+                href={buildHref({ ...sp, new_job_card: "1" })}
+                className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Create Job Card
+              </Link>
+            </>
           }
         />
         <div className="p-4 lg:p-6">
@@ -1373,13 +1380,18 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         title="Job Cards"
         description="Search, filter, and track Job Cards."
         actions={
-          <Link
-            href={buildHref({ ...sp, new_job_card: "1" })}
-            className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            Create Job Card
-          </Link>
+          <>
+            {/* Missing Page Navigation Buttons Fix Unit 10E.3, Task 2:
+                already on Job Cards, so that button is suppressed here. */}
+            <PageNavigationActions showJobCards={false} secondaryLinks={[{ label: "Materials Requests", href: "/store/parts-requests" }]} />
+            <Link
+              href={buildHref({ ...sp, new_job_card: "1" })}
+              className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Create Job Card
+            </Link>
+          </>
         }
       />
 

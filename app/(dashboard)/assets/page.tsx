@@ -5,6 +5,7 @@ import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
+import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
@@ -552,22 +553,25 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         title="Assets & Equipment"
         description="Manage machines, equipment, vehicles, condition, and repair history."
         actions={
-          canManage ? (
-            <>
-              <Link href="/assets/import" title="Upload many assets or vehicles from Excel.">
-                <Button variant="secondary" className="gap-2">
-                  <Upload className="h-4 w-4" aria-hidden="true" />
-                  Import Excel
-                </Button>
-              </Link>
-              <Link href="/assets/new" title="Add one asset or vehicle manually.">
-                <Button className="gap-2">
-                  <Plus className="h-4 w-4" aria-hidden="true" />
-                  New Asset
-                </Button>
-              </Link>
-            </>
-          ) : undefined
+          <>
+            <PageNavigationActions />
+            {canManage ? (
+              <>
+                <Link href="/assets/import" title="Upload many assets or vehicles from Excel.">
+                  <Button variant="secondary" className="gap-2">
+                    <Upload className="h-4 w-4" aria-hidden="true" />
+                    Import Excel
+                  </Button>
+                </Link>
+                <Link href="/assets/new" title="Add one asset or vehicle manually.">
+                  <Button className="gap-2">
+                    <Plus className="h-4 w-4" aria-hidden="true" />
+                    New Asset
+                  </Button>
+                </Link>
+              </>
+            ) : null}
+          </>
         }
       />
 

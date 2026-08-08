@@ -5,6 +5,7 @@ import { Activity, Briefcase, CheckCircle2, PauseCircle, PlayCircle, Search } fr
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { DailyActivityBoard } from "@/components/work-orders/daily-activity-board";
+import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { WORKERS_SECTION_ID, type DailyActivityCardData, type DailyActivityChip } from "@/components/work-orders/daily-activity-card";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
@@ -535,11 +536,17 @@ export default async function DailyActivityPage({
           Left untouched so every other page keeps its existing header. */}
       <div className="border-b border-[#DDE2EA] bg-white px-4 py-2.5 sm:px-6">
         <PageBreadcrumb items={[{ label: "Daily Activity" }]} />
-        <div className="mt-0.5 border-l-4 border-[#ED1C24] pl-3">
-          <h1 className="text-lg font-black leading-tight text-[#111827] sm:text-xl">Daily Activity</h1>
-          <p className="mt-0.5 text-xs leading-snug text-[#6B7280] sm:text-sm">
-            Monitor active Job Cards, workers, materials, and closure readiness. Open a Job Card for full details.
-          </p>
+        <div className="mt-0.5 flex flex-wrap items-start justify-between gap-2 border-l-4 border-[#ED1C24] pl-3">
+          <div>
+            <h1 className="text-lg font-black leading-tight text-[#111827] sm:text-xl">Daily Activity</h1>
+            <p className="mt-0.5 text-xs leading-snug text-[#6B7280] sm:text-sm">
+              Monitor active Job Cards, workers, materials, and closure readiness. Open a Job Card for full details.
+            </p>
+          </div>
+          {/* Manager Closed Job Cards Summary and Global Navigation
+              Improvements Unit 10E, Task 8/9: already ON Daily Activity, so
+              that button is suppressed here — Back/Dashboard/Job Cards only. */}
+          <PageNavigationActions showDailyActivity={false} secondaryLinks={[{ label: "Materials Requests", href: "/store/parts-requests" }]} />
         </div>
       </div>
 

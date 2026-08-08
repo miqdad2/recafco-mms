@@ -18,6 +18,7 @@ import { addWorkOrderMaterialAction } from "@/app/actions/maintenance";
 import { respondToClarificationAction } from "@/app/actions/workflow";
 import { uploadWorkOrderFileAction, deleteWorkOrderAttachmentAction } from "@/app/actions/files";
 import { BackLink } from "@/components/ui/back-link";
+import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
@@ -640,7 +641,13 @@ export default async function WorkOrderDetailPage({
         }
         actions={
           <>
-            <BackLink href="/maintenance/work-orders" label="Back to Job Cards" />
+            {/* Manager Closed Job Cards Summary and Global Navigation
+                Improvements Unit 10E, Task 8/9: replaces the plain "Back to
+                Job Cards" link with the consistent Back/Dashboard/Daily
+                Activity/Job Cards set — "Job Cards" below covers the exact
+                same destination the old BackLink pointed at, so nothing is
+                lost, just widened. */}
+            <PageNavigationActions secondaryLinks={[{ label: "Materials Requests", href: "/store/parts-requests" }]} />
             {canPrint ? (
               <Link href={`/maintenance/work-orders/${wo.id}/print`}>
                 <Button variant="secondary">

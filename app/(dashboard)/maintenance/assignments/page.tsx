@@ -5,6 +5,7 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
+import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts as canViewCostsForContext } from "@/lib/security/permissions";
@@ -193,11 +194,14 @@ export default async function AssignmentsPage({
 
       <div className="border-b border-[#DDE2EA] bg-white px-4 py-2.5 sm:px-6">
         <PageBreadcrumb items={[{ label: "Worker Activity" }]} />
-        <div className="mt-0.5 border-l-4 border-[#ED1C24] pl-3">
-          <h1 className="text-lg font-black leading-tight text-[#111827] sm:text-xl">Worker Activity</h1>
-          <p className="mt-0.5 text-xs leading-snug text-[#6B7280] sm:text-sm">
-            Monitor maintenance worker status, current Job Cards, and hours. Assign workers from a Job Card.
-          </p>
+        <div className="mt-0.5 flex flex-wrap items-start justify-between gap-2 border-l-4 border-[#ED1C24] pl-3">
+          <div>
+            <h1 className="text-lg font-black leading-tight text-[#111827] sm:text-xl">Worker Activity</h1>
+            <p className="mt-0.5 text-xs leading-snug text-[#6B7280] sm:text-sm">
+              Monitor maintenance worker status, current Job Cards, and hours. Assign workers from a Job Card.
+            </p>
+          </div>
+          <PageNavigationActions />
         </div>
       </div>
 
