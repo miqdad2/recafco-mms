@@ -43,7 +43,7 @@ import { buildBalanceKey, canManageOfflineInventory } from "@/lib/store/offline-
 import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import { WorkTimeTracking } from "@/components/work-orders/work-time-tracking";
-import { ScrollToSection } from "@/components/work-orders/scroll-to-section";
+import { JobCardTabHashRedirect } from "@/components/work-orders/job-card-tab-hash-redirect";
 import {
   displaySimplifiedStatus,
   simplifiedStatusTone,
@@ -84,6 +84,20 @@ const DISPLAY_STAGES = ["Draft", "Active", "Closure Requested", "Closed"] as con
 // manually (same convention as that file's own duplicated constants), used
 // here only to decide when the Next Action panel's 7-case ladder applies.
 const ACTIVE_BUCKET_STATUSES = ["Approved", "Waiting Materials", "Partially Issued", "Materials Issued", "Assigned", "In Progress"];
+
+// Job Card Detail Tab-Based Layout Redesign Unit 10F, Task 2. Same pattern
+// as the Asset Details page's own TABS array (app/(dashboard)/assets/[id]/
+// page.tsx) — id/label pairs, ?tab= query param, "overview" default.
+const TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "assignment", label: "Assignment & Work Time" },
+  { id: "materials", label: "Materials" },
+  { id: "attachments", label: "Attachments" },
+  { id: "closure", label: "Closure" },
+  { id: "history", label: "History" },
+] as const;
+
+type TabId = (typeof TABS)[number]["id"];
 
 function statusToStageIndex(status: string): number {
   const simplified = displaySimplifiedStatus(status);
@@ -202,6 +216,7 @@ export default async function WorkOrderDetailPage({
     kind?: string;
     editAssignment?: string;
     recordMaterial?: string;
+    tab?: string;
   }>;
 }) {
   const context = await requirePermission("work_orders.view");
@@ -210,6 +225,10 @@ export default async function WorkOrderDetailPage({
   const warningMessage = resolvedSearch.warning;
   const successMessage = resolvedSearch.success;
   const successKind = resolvedSearch.kind === "materials" ? "materials" : "correction";
+  // Job Card Detail Tab-Based Layout Redesign Unit 10F, Task 2: defaults to
+  // "overview" for a missing/unrecognized value, same convention as the
+  // Asset Details page's own activeTab.
+  const activeTab: TabId = TABS.some((t) => t.id === resolvedSearch.tab) ? (resolvedSearch.tab as TabId) : "overview";
   // Job Card Detail Simplification Unit 8C: the Edit Assignment and Record
   // Material Used forms (previously always-visible inline forms) now open as
   // modals via these query params, following the same pattern already used
@@ -355,6 +374,16 @@ export default async function WorkOrderDetailPage({
 
   const latestRejection =
     wo.status === "Rejected" ? (wo.approvals.find((a) => a.status === "Rejected") ?? null) : null;
+
+  // Job Card Detail Tab-Based Layout Redesign Unit 10F, Task 7: closed
+  // date/closed by, for the calm "This Job Card is closed" Closure tab
+  // state. wo.approvals is already sorted decided_at desc (see
+  // workOrderControlInclude above), so .find() naturally returns the most
+  // recent "Closed" approval — the exact same source (and same
+  // most-recent-first resolution) Unit 10E's Closed Job Cards modal already
+  // reads for this fact, just via the data this page already loaded instead
+  // of a fresh query.
+  const closedApproval = wo.status === "Closed" ? (wo.approvals.find((a) => a.status === "Closed") ?? null) : null;
 
   const canViewCosts = canViewCostsForContext(context);
   const canManage = hasPermission(context, "work_orders.manage");
@@ -515,7 +544,13 @@ export default async function WorkOrderDetailPage({
       return { message: "This Job Card is closed.", buttons: [] as ActionButton[] };
     }
     if (wo.status === "Closure Requested") {
-      const buttons: ActionButton[] = isManagerRoleForSessions ? [{ label: "Approve Closure", href: "#closure-panel" }] : [];
+      // Job Card Detail Tab-Based Layout Redesign Unit 10F, Task 3/10: every
+      // button below now switches tabs via `?tab=` instead of jumping to a
+      // page anchor — the target section only renders once its tab is
+      // active, so a hash-only link can no longer reliably reach it. Only
+      // this page's own internal links changed; JobCardTabHashRedirect
+      // (Task 10) handles old hash links arriving from other pages.
+      const buttons: ActionButton[] = isManagerRoleForSessions ? [{ label: "Approve Closure", href: "?tab=closure" }] : [];
       return { message: "Waiting for Manager approval to close this Job Card.", buttons };
     }
     // Job Card Action Clarity Fix Task 5: same Issue/Receive/partial wording
@@ -525,13 +560,13 @@ export default async function WorkOrderDetailPage({
     // is already sitting in Offline Inventory.
     if (materialsAvailability === "partial") {
       const buttons: ActionButton[] = [];
-      if (canIssueFromJobCard) buttons.push({ label: "Issue Available", href: "#parts" });
+      if (canIssueFromJobCard) buttons.push({ label: "Issue Available", href: "?tab=materials" });
       buttons.push({ label: activeMaterialsRequest ? "Receive Shortage" : materialsButtonLabel, href: materialsButtonHref });
       return { message: "Some materials are available. Issue available stock and receive shortage later.", buttons };
     }
     if (materialsAvailability === "issuable") {
       const buttons: ActionButton[] = canIssueFromJobCard
-        ? [{ label: "Issue Material", href: "#parts" }]
+        ? [{ label: "Issue Material", href: "?tab=materials" }]
         : [{ label: activeMaterialsRequest ? "Receive Materials" : materialsButtonLabel, href: materialsButtonHref }];
       return { message: "Materials are available. Issue materials to this Job Card.", buttons };
     }
@@ -542,15 +577,15 @@ export default async function WorkOrderDetailPage({
       return { message: "Materials are pending. Receive materials when they arrive.", buttons };
     }
     if (!hasAssignment) {
-      return { message: "Assign workers to start work tracking.", buttons: [{ label: "Assign Workers", href: "?editAssignment=1#assignment" }] };
+      return { message: "Assign workers to start work tracking.", buttons: [{ label: "Assign Workers", href: "?editAssignment=1&tab=assignment" }] };
     }
     if (hasInternalTeam && laborSummary.has_active_session) {
-      return { message: "Work is in progress. Pause or stop active sessions when needed.", buttons: [{ label: "Track Work", href: "#work-time-tracking" }] };
+      return { message: "Work is in progress. Pause or stop active sessions when needed.", buttons: [{ label: "Track Work", href: "?tab=assignment" }] };
     }
     if (hasInternalTeam && laborSummary.total_minutes === 0) {
-      return { message: "Workers are assigned. Start work tracking.", buttons: [{ label: "Track Work", href: "#work-time-tracking" }] };
+      return { message: "Workers are assigned. Start work tracking.", buttons: [{ label: "Track Work", href: "?tab=assignment" }] };
     }
-    return { message: "Work is ready for closure request.", buttons: [{ label: "Request Closure", href: "#closure-panel" }] };
+    return { message: "Work is ready for closure request.", buttons: [{ label: "Request Closure", href: "?tab=closure" }] };
   })();
 
   const stageIndex = statusToStageIndex(wo.status);
@@ -587,7 +622,12 @@ export default async function WorkOrderDetailPage({
         watch={["job_card.", "work_order.", "materials_request.", "store_materials.", "technician_job."]}
         enabled={!isTerminal}
       />
-      <ScrollToSection paramName="section" paramValue="work-time" targetId="work-time-tracking" />
+      {/* Job Card Detail Tab-Based Layout Redesign Unit 10F, Task 10:
+          replaces the old ScrollToSection (a "?section=work-time" scroll
+          helper, never actually linked to anywhere in the codebase per a
+          full-repo search) — now that page content is split behind tabs, a
+          hash-only deep link needs to switch tabs, not just scroll. */}
+      <JobCardTabHashRedirect />
       {successMessage === "clarification-sent" && (
         <CorrectionRequestSentModal
           jobCardId={wo.id}
@@ -732,9 +772,32 @@ export default async function WorkOrderDetailPage({
             <StatusBadge label={`Work Time: ${workTimeChip.label}`} tone={workTimeChip.tone} />
             <StatusBadge label={`Closure: ${closureChip.label}`} tone={closureChip.tone} />
           </div>
+
+          {/* ── Tab bar (Task 2) — same style/query-param pattern as the
+              Asset Details page's own tab bar. ─────────────────────────── */}
+          <div className="overflow-x-auto border-t border-[#EEF2F6]">
+            <div className="flex min-w-max px-2">
+              {TABS.map((tab) => {
+                const isActive = tab.id === activeTab;
+                return (
+                  <Link
+                    key={tab.id}
+                    href={`/maintenance/work-orders/${wo.id}?tab=${tab.id}`}
+                    className={`whitespace-nowrap px-4 py-3 text-xs font-bold transition ${
+                      isActive
+                        ? "border-b-2 border-[#ED1C24] text-[#ED1C24]"
+                        : "border-b-2 border-transparent text-[#4B5563] hover:text-[#111827]"
+                    }`}
+                  >
+                    {tab.label}
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
         </section>
 
-        {/* ── 3. Next Action panel ────────────────────────────────────────
+        {/* ── 3. Next Action panel (Task 3 — Overview tab only) ───────────
             Premium Job Card Detail Page Redesign Unit 8C.2, Task 3: a
             stronger left-accent treatment (not just another white card) so
             it reads as the one place to look for "what do I do next". For
@@ -748,6 +811,7 @@ export default async function WorkOrderDetailPage({
             Work Time Tracking, Materials, or the Closure panel. No new forms
             here; every button either navigates or reuses an existing action
             already rendered elsewhere. */}
+        {activeTab === "overview" && (
         <section
           id="next-action"
           className="rounded-lg border border-[#F3D6D6] border-l-4 border-l-[#ED1C24] bg-red-50/40 p-5 shadow-sm"
@@ -792,8 +856,9 @@ export default async function WorkOrderDetailPage({
             />
           </div>
         </section>
+        )}
 
-        {/* ── Flash banners ───────────────────────────────────────────────── */}
+        {/* ── Flash banners (global — shown on every tab) ─────────────────── */}
         {errorMessage ? (
           <div className="rounded-md border border-[#DC2626] bg-red-50 p-4">
             <p className="text-sm font-black text-[#DC2626]">Action could not be completed</p>
@@ -970,11 +1035,14 @@ export default async function WorkOrderDetailPage({
           </div>
         )}
 
-        {/* ── Two-column layout ────────────────────────────────────────────── */}
+        {/* ── Overview tab: two-column layout (Task 3/9) — main content +
+            the Quick Facts/QR sidebar, kept only here per Task 9 ("on other
+            tabs, avoid repeating the same sidebar"). ─────────────────────── */}
+        {activeTab === "overview" && (
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_24rem]">
           <main className="space-y-6">
 
-            {/* 1 — Overview (Premium Job Card Detail Page Redesign Unit
+            {/* Overview (Premium Job Card Detail Page Redesign Unit
                 8C.2, Task 5): Asset Details and Problem Details combined
                 into one section, two clear sub-groups side by side on
                 desktop. Status is deliberately not repeated here — it
@@ -1106,8 +1174,50 @@ export default async function WorkOrderDetailPage({
                 </details>
               ) : null}
             </section>
+          </main>
 
-            {/* 2 — Assignment (Job Card Detail Simplification Unit 8C).
+          <aside className="space-y-5">
+            {/* Quick Facts */}
+            <section className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
+              <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Quick Facts</p>
+              <dl className="mt-3 space-y-3 text-sm">
+                <InfoLine label="Status" value={(() => {
+                  const simplified = displaySimplifiedStatus(wo.status);
+                  return (
+                    <div className="flex flex-wrap items-center gap-1">
+                      <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />
+                      {hasPendingCorrection && (
+                        <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
+                      )}
+                    </div>
+                  );
+                })()} />
+                {wo.maintenance_type ? <InfoLine label="Type" value={wo.maintenance_type} /> : null}
+                {wo.ordered_by ? <InfoLine label="Reported by" value={wo.ordered_by} /> : null}
+                <InfoLine label="Created" value={formatDateValue(wo.created_at)} />
+                <InfoLine
+                  label="Technician"
+                  value={
+                    wo.work_order_assignments.length > 0
+                      ? wo.work_order_assignments.map((a) => a.profiles?.full_name ?? "—").join(", ")
+                      : "Not assigned"
+                  }
+                />
+                {wo.assets ? (
+                  <InfoLine label="Asset" value="View profile" href={`/assets/${wo.asset_id}`} />
+                ) : null}
+              </dl>
+            </section>
+
+            <QrLinkCard title="Job Card QR" href={`/maintenance/work-orders/${wo.id}`} />
+          </aside>
+        </div>
+        )}
+
+        {/* ── Assignment & Work Time tab (Task 4) ──────────────────────────── */}
+        {activeTab === "assignment" && (
+        <div className="space-y-6">
+            {/* Assignment (Job Card Detail Simplification Unit 8C).
                 Read-only summary only — the actual Assign Work / Internal
                 Team roster forms (WorkflowActions section="assignment",
                 logic untouched) now live in the "Edit Assignment" modal
@@ -1117,7 +1227,7 @@ export default async function WorkOrderDetailPage({
                 <SectionHeader eyebrow="Who's doing the work" title="Assignment" icon={Users} />
                 {canEditAssignmentNow ? (
                   <Link
-                    href={`/maintenance/work-orders/${wo.id}?editAssignment=1`}
+                    href={`/maintenance/work-orders/${wo.id}?editAssignment=1&tab=assignment`}
                     className="inline-flex min-h-10 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
                   >
                     Edit Assignment
@@ -1204,7 +1314,7 @@ export default async function WorkOrderDetailPage({
                     <p className="text-sm text-[#6B7280]">No workers assigned yet.</p>
                     {canEditAssignmentNow ? (
                       <Link
-                        href={`/maintenance/work-orders/${wo.id}?editAssignment=1`}
+                        href={`/maintenance/work-orders/${wo.id}?editAssignment=1&tab=assignment`}
                         className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-red-700"
                       >
                         <Users className="h-4 w-4" aria-hidden /> Assign Workers
@@ -1215,7 +1325,7 @@ export default async function WorkOrderDetailPage({
               </div>
             </section>
 
-            {/* 3 — Work Time Tracking (Work Session Time Tracking and Labor
+            {/* Work Time Tracking (Work Session Time Tracking and Labor
                 Cost Calculation Unit 8, Task 6) — its own section, separate
                 from Assignment above (which is about who's assigned, not
                 time actually worked). Notes/labor records that used to sit
@@ -1229,8 +1339,13 @@ export default async function WorkOrderDetailPage({
               canViewCosts={canViewCosts}
               canAssign={hasPermission(context, "work_orders.assign") || context.role?.slug === "super_admin"}
             />
+        </div>
+        )}
 
-            {/* 4 — Materials (Job Card Detail Simplification Unit 8C:
+        {/* ── Materials tab (Task 5) ───────────────────────────────────────── */}
+        {activeTab === "materials" && (
+        <div className="space-y-6">
+            {/* Materials (Job Card Detail Simplification Unit 8C:
                 summary cards + one clear Action per row; "Record material
                 used" moved into a modal instead of an always-visible form). */}
             <section id="parts" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
@@ -1415,7 +1530,7 @@ export default async function WorkOrderDetailPage({
               {canManage && !["Closed", "Cancelled", "Rejected"].includes(wo.status) ? (
                 <div className="mt-5">
                   <Link
-                    href={`/maintenance/work-orders/${wo.id}?recordMaterial=1`}
+                    href={`/maintenance/work-orders/${wo.id}?recordMaterial=1&tab=materials`}
                     className="inline-flex min-h-10 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-4 py-2 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
                   >
                     Record Material Used
@@ -1462,8 +1577,12 @@ export default async function WorkOrderDetailPage({
                 )}
               </div>
             </section>
+        </div>
+        )}
 
-            {/* 5 — Attachments */}
+        {/* ── Attachments tab (Task 6) ─────────────────────────────────────── */}
+        {activeTab === "attachments" && (
+        <div className="space-y-6">
             <section id="attachments" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
               <SectionHeader eyebrow="Files" title="Attachments" icon={Paperclip} />
 
@@ -1507,7 +1626,7 @@ export default async function WorkOrderDetailPage({
                               <form action={deleteWorkOrderAttachmentAction}>
                                 <input type="hidden" name="attachment_id" value={file.id} />
                                 <input type="hidden" name="work_order_id" value={wo.id} />
-                                <input type="hidden" name="return_to" value={`/maintenance/work-orders/${wo.id}`} />
+                                <input type="hidden" name="return_to" value={`/maintenance/work-orders/${wo.id}?tab=attachments`} />
                                 <button type="submit" className="text-sm text-red-500 hover:text-red-700 hover:underline">
                                   Delete
                                 </button>
@@ -1535,7 +1654,7 @@ export default async function WorkOrderDetailPage({
                     <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Upload File</p>
                     <form action={uploadWorkOrderFileAction} className="grid gap-3 sm:grid-cols-[200px_1fr_auto]">
                       <input type="hidden" name="work_order_id" value={wo.id} />
-                      <input type="hidden" name="return_to" value={`/maintenance/work-orders/${wo.id}#attachments`} />
+                      <input type="hidden" name="return_to" value={`/maintenance/work-orders/${wo.id}?tab=attachments`} />
                       <select name="attachment_type" className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
                         {[
                           "Problem Photo",
@@ -1567,7 +1686,7 @@ export default async function WorkOrderDetailPage({
                     <p className="mb-2 text-xs font-black uppercase tracking-wide text-[#4B5563]">Take Photo</p>
                     <form action={uploadWorkOrderFileAction} className="grid gap-3 sm:grid-cols-[200px_1fr_auto]">
                       <input type="hidden" name="work_order_id" value={wo.id} />
-                      <input type="hidden" name="return_to" value={`/maintenance/work-orders/${wo.id}#attachments`} />
+                      <input type="hidden" name="return_to" value={`/maintenance/work-orders/${wo.id}?tab=attachments`} />
                       <select name="attachment_type" className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm">
                         {[
                           "Problem Photo",
@@ -1598,8 +1717,13 @@ export default async function WorkOrderDetailPage({
                 </div>
               )}
             </section>
+        </div>
+        )}
 
-            {/* 6 — Closure panel (Job Card Detail Simplification Unit 8C).
+        {/* ── Closure tab (Task 7) ─────────────────────────────────────────── */}
+        {activeTab === "closure" && (
+        <div className="space-y-6">
+            {/* Closure panel (Job Card Detail Simplification Unit 8C).
                 Readiness summary computed read-only from the same data used
                 elsewhere on this page (materialFulfillment/parts_requests/
                 laborSummary) — never calls the backend guards directly, just
@@ -1612,7 +1736,20 @@ export default async function WorkOrderDetailPage({
               <div className="mt-4">
                 <StatusBadge label={closureChip.label} tone={closureChip.tone} />
                 {wo.status === "Closed" ? (
-                  <p className="mt-3 text-sm text-[#4B5563]">This Job Card is closed.</p>
+                  <>
+                    <p className="mt-3 text-sm text-[#4B5563]">This Job Card is closed.</p>
+                    {/* Task 7 — closed date/closed by, when available. Reuses
+                        wo.approvals (already loaded by the existing Prisma
+                        include for this page — no new query) exactly the way
+                        Unit 10E's Closed Job Cards modal resolves the same
+                        fact from the same table. */}
+                    {closedApproval ? (
+                      <p className="mt-1 text-xs text-[#6B7280]">
+                        Closed {formatDateTimeValue(closedApproval.decided_at)}
+                        {closedApproval.decided_by ? ` by ${actorName(closedApproval.decided_by)}` : ""}
+                      </p>
+                    ) : null}
+                  </>
                 ) : closureReady ? (
                   <p className="mt-3 text-sm text-[#4B5563]">
                     {wo.status === "Closure Requested"
@@ -1665,50 +1802,12 @@ export default async function WorkOrderDetailPage({
                 )}
               </div>
             </section>
-          </main>
-
-          {/* ── 7. Sidebar — lightweight info only (Job Card Detail
-              Simplification Unit 8C: no forms here any more; Assign/Track
-              Work/Materials/Closure actions all moved to their own sections
-              above). ─────────────────────────────────────────────────── */}
-          <aside className="space-y-5">
-            {/* Quick Facts */}
-            <section className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">
-              <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Quick Facts</p>
-              <dl className="mt-3 space-y-3 text-sm">
-                <InfoLine label="Status" value={(() => {
-                  const simplified = displaySimplifiedStatus(wo.status);
-                  return (
-                    <div className="flex flex-wrap items-center gap-1">
-                      <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />
-                      {hasPendingCorrection && (
-                        <StatusBadge label={NEEDS_UPDATE_LABEL} tone={NEEDS_UPDATE_TONE} />
-                      )}
-                    </div>
-                  );
-                })()} />
-                {wo.maintenance_type ? <InfoLine label="Type" value={wo.maintenance_type} /> : null}
-                {wo.ordered_by ? <InfoLine label="Reported by" value={wo.ordered_by} /> : null}
-                <InfoLine label="Created" value={formatDateValue(wo.created_at)} />
-                <InfoLine
-                  label="Technician"
-                  value={
-                    wo.work_order_assignments.length > 0
-                      ? wo.work_order_assignments.map((a) => a.profiles?.full_name ?? "—").join(", ")
-                      : "Not assigned"
-                  }
-                />
-                {wo.assets ? (
-                  <InfoLine label="Asset" value="View profile" href={`/assets/${wo.asset_id}`} />
-                ) : null}
-              </dl>
-            </section>
-
-            <QrLinkCard title="Job Card QR" href={`/maintenance/work-orders/${wo.id}`} />
-          </aside>
         </div>
+        )}
 
-        {/* ── Activity Timeline — bottom accordion ─────────────────────────── */}
+        {/* ── History tab (Task 8) — Activity Timeline + System Audit ─────── */}
+        {activeTab === "history" && (
+        <div className="space-y-6">
         <section id="timeline" className="overflow-hidden rounded-md border border-[#DDE2EA] bg-white shadow-sm">
           <details open>
             <summary className="flex cursor-pointer select-none items-center gap-3 p-5 hover:bg-gray-50">
@@ -1772,6 +1871,8 @@ export default async function WorkOrderDetailPage({
             </details>
           ) : null}
         </section>
+        </div>
+        )}
       </div>
 
       {/* Job Card Detail Simplification Unit 8C — Edit Assignment modal.
@@ -1783,7 +1884,7 @@ export default async function WorkOrderDetailPage({
         <LargeFormModal
           title="Edit Assignment"
           subtitle="Assign or update who is working on this Job Card."
-          closeHref={`/maintenance/work-orders/${wo.id}`}
+          closeHref={`/maintenance/work-orders/${wo.id}?tab=assignment`}
         >
           <WorkflowActions
             section="assignment"
@@ -1811,7 +1912,7 @@ export default async function WorkOrderDetailPage({
         <LargeFormModal
           title="Record Material Used"
           subtitle="Log a material consumed on this Job Card."
-          closeHref={`/maintenance/work-orders/${wo.id}`}
+          closeHref={`/maintenance/work-orders/${wo.id}?tab=materials`}
         >
           <form action={addWorkOrderMaterialAction} className="space-y-4">
             <input type="hidden" name="work_order_id" value={wo.id} />
