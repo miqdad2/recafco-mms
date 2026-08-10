@@ -524,17 +524,14 @@ export async function closeWorkOrderAction(formData: FormData) {
 
 // Approval Workflow Unit 4, Task 4: Data Entry (or Supervisor/Manager/
 // super_admin, per requestJobCardClosure's own role check) requests Manager
-// approval to close. Requires a completion note — same >= 10 character
-// convention as the existing request-correction/close actions.
+// approval to close. Unit 10F.6B, Task 2: the completion note is now
+// optional (requestJobCardClosure itself no longer requires it) — no
+// client-side length gate here either.
 export async function requestJobCardClosureAction(formData: FormData) {
   const context = await requireUser();
   const id = idFrom(formData);
   const note = String(formData.get("note") ?? "").trim();
   let targetPath = `/maintenance/work-orders/${id}`;
-
-  if (note.length < 10) {
-    redirect(`${targetPath}?error=closing-note-required`);
-  }
 
   try {
     const result = await requestJobCardClosure(context, id, note);
@@ -546,6 +543,51 @@ export async function requestJobCardClosureAction(formData: FormData) {
     redirect(await workflowErrorPath(id, error));
   }
   redirect(targetPath);
+}
+
+// Daily Activity Closure Request Modal with Attachments Unit 10F.6.
+//
+// requestJobCardClosureAction above always redirect()s — correct for the
+// Job Card detail page's own full-page form, but incompatible with a modal
+// that must stay open (in a Server Action invoked outside a plain
+// <form action> submit, redirect() still forces client-side navigation).
+// This wraps the EXACT SAME service call (requestJobCardClosure — every
+// guard, every notification, every audit log is the real backend, nothing
+// duplicated) in a useActionState-shaped, non-redirecting result instead,
+// so the Daily Activity closure modal can show a backend error inline and
+// stay open, or close itself and toast on success — never navigate away.
+export type RequestJobCardClosureModalState =
+  | { ok: true; workOrderId: string }
+  | { ok: false; error: string }
+  | null;
+
+export async function requestJobCardClosureModalAction(
+  _prev: RequestJobCardClosureModalState,
+  formData: FormData
+): Promise<RequestJobCardClosureModalState> {
+  const context = await requireUser();
+
+  let id: string;
+  try {
+    id = parseWorkOrderId(formData.get("work_order_id"));
+  } catch (error) {
+    return { ok: false, error: safeErrorMessage(error) };
+  }
+
+  // Unit 10F.6B, Task 2: the completion note is optional — requestJobCardClosure
+  // itself no longer requires a minimum length, so this wrapper doesn't either.
+  const note = String(formData.get("note") ?? "").trim();
+
+  try {
+    const result = await requestJobCardClosure(context, id, note);
+    revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/maintenance/daily-activity");
+    revalidatePath("/dashboard");
+    return { ok: true, workOrderId: result.workOrderId };
+  } catch (error) {
+    return { ok: false, error: safeErrorMessage(error) };
+  }
 }
 
 // Approval Workflow Unit 4, Task 5: Manager (or super_admin) approves a
@@ -566,6 +608,49 @@ export async function approveJobCardClosureAction(formData: FormData) {
     redirect(await workflowErrorPath(id, error));
   }
   redirect(targetPath);
+}
+
+// Manager Dashboard Closure Requests Modal Unit 10G, Task 5.
+//
+// approveJobCardClosureAction above always redirect()s — correct for the
+// Job Card detail page's own Closure tab form, but incompatible with the
+// dashboard's Closure Requests modal, which should stay open (or close
+// itself and refresh in place) rather than navigate to the Job Card detail
+// page on every approval. Wraps the EXACT SAME service call
+// (approveJobCardClosure — same status transition, same "Closed" approvals
+// row, same notification, same audit log, same realtime event; nothing
+// duplicated) in a useActionState-shaped, non-redirecting result instead,
+// matching the identical pattern already established by
+// requestJobCardClosureModalAction above.
+export type ApproveJobCardClosureModalState =
+  | { ok: true; workOrderId: string }
+  | { ok: false; error: string }
+  | null;
+
+export async function approveJobCardClosureModalAction(
+  _prev: ApproveJobCardClosureModalState,
+  formData: FormData
+): Promise<ApproveJobCardClosureModalState> {
+  const context = await requireUser();
+
+  let id: string;
+  try {
+    id = parseWorkOrderId(formData.get("work_order_id"));
+  } catch (error) {
+    return { ok: false, error: safeErrorMessage(error) };
+  }
+
+  const comments = parseWorkflowComment(formData.get("comments"));
+
+  try {
+    const result = await approveJobCardClosure(context, id, comments);
+    revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/dashboard");
+    return { ok: true, workOrderId: result.workOrderId };
+  } catch (error) {
+    return { ok: false, error: safeErrorMessage(error) };
+  }
 }
 
 export async function returnWorkOrderToDraftAction(formData: FormData) {

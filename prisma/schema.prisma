@@ -1203,6 +1203,13 @@ model WorkflowMapVersion {
 
 model WorkerProfile {
   id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  // Worker Profile Form Simplification and Division Rename Unit 10G.6, Task
+  // 1: additive, nullable — existing rows have none. Uniqueness among
+  // active workers is enforced by a partial unique index in this unit's
+  // migration (not representable in Prisma's schema language), plus a
+  // service-level check (lib/backend/workers/service.ts) for a clean error
+  // message before the DB constraint would ever fire.
+  employee_id    String?
   name           String
   worker_type    String
   hourly_rate    Decimal   @default(0) @db.Decimal(12, 3)

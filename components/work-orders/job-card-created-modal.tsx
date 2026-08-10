@@ -57,28 +57,34 @@ export function JobCardCreatedModal({
   // Save Draft Success Popup Submit Option Cleanup Task 2/3/6: this same
   // modal renders for both outcomes of the create wizard — saved as Draft
   // (isDraft, driven by the just-created record's real status === "Created")
-  // or started directly (status === "Approved", displayed as "Active") —
+  // or created directly (status === "Approved", displayed as "Active") —
   // never confused, since isDraft is derived from the actual DB status, not
   // from user intent guessed some other way.
-  const modalTitle = isDraft ? "Job Card Draft Saved" : "Job Card Started Successfully";
+  //
+  // New Job Card Button Wording and Success Popup Clarity Unit 10F.2, Task
+  // 3/6: "Job Card Started Successfully" read as if a worker timer had
+  // started — it only creates/activates the Job Card. Worker time only ever
+  // starts from Daily Activity/Work Time Tracking, so this title (and every
+  // other string in this modal) avoids "Start"/"Started" for that reason.
+  const modalTitle = isDraft ? "Job Card Draft Saved" : "Job Card Created Successfully";
   const modalMessage = isDraft ? "has been saved as draft." : "is now Active.";
 
-  // Simplify Assignment Picker and Started Modal Unit 7D, Task 9/12: direct,
-  // case-based guidance instead of the old one-size-fits-all "Assign work,
-  // update details, or request closure once work is done." Uses only data
-  // already available from the creation result (no heavy new queries) —
-  // real material-shortage detection would need a fresh per-item query this
-  // unit deliberately doesn't add, so that case falls back to the materials
-  // case below it, which is still accurate and still actionable.
+  // Unit 10F.2, Task 4: for the just-created (Active) case, the correct next
+  // step is Daily Activity — that's where materials are issued/received and
+  // worker time is started/paused/stopped, not this popup or the Job Card
+  // page itself. `activeSubStep` keeps the same materials-before-assignment
+  // priority the previous ladder used, just phrased around Daily Activity.
   const nextStepText = isDraft
-    ? "Start this Job Card when you're ready to begin work."
+    ? "Activate this Job Card when you're ready to begin work."
     : !canViewFull
       ? "Open the Job Card to continue."
-      : !hasAssignment
-        ? "Assign workers to this Job Card."
-        : hasRequiredMaterials
-          ? "Review materials and issue available stock when ready."
-          : "Open the Job Card to track work time and updates.";
+      : "Open Daily Activity to issue materials, track worker time, and monitor this Job Card.";
+
+  const activeSubStep = hasRequiredMaterials
+    ? "Review materials in Daily Activity, then issue available stock or receive missing materials."
+    : hasAssignment
+      ? "Track worker time from Daily Activity."
+      : "Assign workers from the Job Card or Daily Activity.";
 
   const warnings: string[] = [];
   if (attachmentWarning) warnings.push("Job Card created, but some attachments failed to upload.");
@@ -111,26 +117,42 @@ export function JobCardCreatedModal({
   });
 
   const nextStepDescription = !isDraft ? (
-    <>
-      {nextStepText}
-      <span className="mt-1 block text-xs font-normal text-[#6B7280]">
-        {hasAssignment ? "Workers are assigned. You can track work time from the Job Card." : "Assignment can be added now from the Job Card."}
-      </span>
-    </>
+    canViewFull ? (
+      <>
+        {nextStepText}
+        <span className="mt-1 block text-xs font-normal text-[#6B7280]">{activeSubStep}</span>
+      </>
+    ) : (
+      nextStepText
+    )
   ) : (
     nextStepText
   );
 
+  // Unit 10F.2, Task 1/6: renamed from "Start Job Card" — this form still
+  // calls the exact same submitWorkOrderAction with the exact same hidden
+  // fields, only the label changed, since this literally just moves the
+  // record Draft -> Active (never starts a worker timer either).
   const primaryAction: WorkflowSuccessAction | undefined =
     isDraft && canViewFull
       ? {
           kind: "form",
-          label: "Start Job Card",
+          label: "Activate Job Card",
           action: submitWorkOrderAction,
           hiddenFields: { work_order_id: jobCardId!, return_to: dismissHref, return_to_param: "preview" },
         }
       : canViewFull
-        ? { kind: "link", label: "Continue This Job Card", href: `/maintenance/work-orders/${jobCardId}`, onClick: dismiss }
+        ? {
+            // Task 5: primary next step after creation is Daily Activity, not
+            // the Job Card page — `q` reuses Daily Activity's existing
+            // free-text search (matches on work_order_number) to land the
+            // user already filtered to this one Job Card when the number is
+            // known; no new query support was added for this.
+            kind: "link",
+            label: "Open in Daily Activity",
+            href: jobCardNumber ? `/maintenance/daily-activity?q=${encodeURIComponent(jobCardNumber)}` : "/maintenance/daily-activity",
+            onClick: dismiss,
+          }
         : undefined;
 
   return (
@@ -147,10 +169,27 @@ export function JobCardCreatedModal({
       nextStepDescription={nextStepDescription}
       progressSteps={{ steps: WORKFLOW_STAGES, currentIndex: isDraft ? 0 : 1 }}
       primaryAction={primaryAction}
-      secondaryActions={[
-        { kind: "link", label: "Create Another Job Card", href: "/maintenance/work-orders/new", onClick: dismiss },
-        { kind: "link", label: "Go to Job Cards", href: "/maintenance/work-orders", onClick: dismiss },
-      ]}
+      secondaryActions={
+        // Task 5: for the just-created (Active) case, "View Job Card
+        // Details" replaces "Continue This Job Card" as a secondary button
+        // alongside "Create Another Job Card"; "Go to Job Cards" moves to
+        // the shared small/neutral trailing slot below (`closeLabel`) since
+        // `dismissHref` already points at the Job Cards list either way —
+        // same destination, no behavior change. Draft keeps its previous
+        // two secondary buttons unchanged (Task 7).
+        isDraft
+          ? [
+              { kind: "link", label: "Create Another Job Card", href: "/maintenance/work-orders/new", onClick: dismiss },
+              { kind: "link", label: "Go to Job Cards", href: "/maintenance/work-orders", onClick: dismiss },
+            ]
+          : [
+              ...(canViewFull
+                ? [{ kind: "link" as const, label: "View Job Card Details", href: `/maintenance/work-orders/${jobCardId}`, onClick: dismiss }]
+                : []),
+              { kind: "link", label: "Create Another Job Card", href: "/maintenance/work-orders/new", onClick: dismiss },
+            ]
+      }
+      closeLabel={isDraft ? undefined : "Go to Job Cards"}
       closeAction={dismiss}
     />
   );

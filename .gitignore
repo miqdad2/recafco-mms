@@ -11,3 +11,9 @@ vercel
 
 # Private uploaded files — stored on local disk, must not be committed
 uploads/
+
+# Playwright E2E generated artifacts
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/

@@ -12,6 +12,7 @@ import { AssignmentForm } from "@/components/work-orders/assignment-form";
 import { InternalTeamRosterForm } from "@/components/work-orders/internal-team-roster-form";
 import { Button } from "@/components/ui/button";
 import type { CurrentUserContext } from "@/lib/auth/context";
+import { canViewCosts } from "@/lib/security/permissions";
 import type { PermissionKey } from "@/types/database";
 import type { WorkerProfileRow } from "@/lib/backend/workers/service";
 
@@ -256,7 +257,12 @@ export function WorkflowActions({
             <p className="text-sm font-black text-[#111827]">
               {internalTeamRoster.length ? "Edit Internal Team" : "Assign Internal Team"}
             </p>
-            <InternalTeamRosterForm workOrderId={workOrderId} workers={activeWorkers} currentRoster={internalTeamRoster} />
+            <InternalTeamRosterForm
+              workOrderId={workOrderId}
+              workers={activeWorkers}
+              currentRoster={internalTeamRoster}
+              canViewCosts={canViewCosts(context)}
+            />
           </div>
         ) : null}
       </div>
@@ -278,13 +284,17 @@ export function WorkflowActions({
         {canRequestClosure ? (
           <form action={requestJobCardClosureAction} className="space-y-2">
             <input type="hidden" name="work_order_id" value={workOrderId} />
+            {/* Closure Request Modal Optional Note and Multiple Custom
+                Attachments Unit 10F.6B, Task 9: note is optional — matches
+                the Daily Activity closure modal's rule (requestJobCardClosure
+                itself no longer requires one), so there is only one rule
+                across both surfaces. */}
             <textarea
               className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
               name="note"
-              placeholder="Describe the completed work (required, min 10 characters)"
-              required
-              minLength={10}
+              placeholder="Add remarks about completed work, if needed."
             />
+            <p className="text-xs text-[#9CA3AF]">Optional. Add remarks if needed.</p>
             <Button type="submit" className="w-full">Request Closure</Button>
           </form>
         ) : null}
@@ -407,11 +417,15 @@ export function WorkflowActions({
   return (
     <div className="grid gap-3">
 
-      {/* Created — start directly, no Manager approval needed (Unit 4) */}
+      {/* Created — activate directly, no Manager approval needed (Unit 4).
+          New Job Card Button Wording and Success Popup Clarity Unit 10F.2,
+          Task 1/6: renamed from "Start Job Card" — this only moves the
+          record Draft -> Active, never a worker timer; same
+          submitWorkOrderAction, same hidden field. */}
       {canSubmit ? (
         <form action={submitWorkOrderAction}>
           <input type="hidden" name="work_order_id" value={workOrderId} />
-          <Button type="submit" className="w-full">Start Job Card</Button>
+          <Button type="submit" className="w-full">Activate Job Card</Button>
         </form>
       ) : null}
 

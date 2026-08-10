@@ -63,9 +63,33 @@ const TEAM_FILTERS = ["Auto", "Mechanical", "Electrical", "Other"] as const;
 // drift/bug.
 const MATERIALS_FILTERS = ["all", "Materials Pending", "Ready to Issue", "Partially Available", "Materials Completed", "No Materials"] as const;
 
-function formatDate(v: Date | null | undefined): string {
+// Daily Activity New Job Card Visibility and Timestamp Polish Unit 10F.5.
+//
+// "Created: Today, 1:55 PM" / "Yesterday, 4:20 PM" / "Aug 9, 2026, 1:55 PM" —
+// no existing helper in this codebase already produces this exact
+// relative-day + time format (the previous formatDate here was date-only,
+// with no other call site, so it's replaced rather than kept alongside;
+// the Job Card detail page's own formatDateTimeValue is always the full
+// date, never "Today"/"Yesterday"), so this is a new, narrowly-scoped
+// helper, used only for createdLabel below.
+function formatCreatedLabel(v: Date | null | undefined): string {
   if (!v) return "-";
-  return v.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const now = new Date();
+  const isSameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const time = v.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  if (isSameDay(v, now)) return `Today, ${time}`;
+  if (isSameDay(v, yesterday)) return `Yesterday, ${time}`;
+  return `${v.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}, ${time}`;
+}
+
+// Task 2 — a Job Card reads as "new" for exactly one hour after creation;
+// purely a display window, not a workflow/status concept.
+const NEW_JOB_CARD_WINDOW_MS = 60 * 60 * 1000;
+function isRecentlyCreated(v: Date | null | undefined): boolean {
+  if (!v) return false;
+  return Date.now() - v.getTime() < NEW_JOB_CARD_WINDOW_MS;
 }
 
 // Task 9 — five plain states instead of Unit 9's four, so "some available,
@@ -79,6 +103,17 @@ function materialsChipFor(
   materialsIncomplete: boolean
 ): DailyActivityChip {
   if (!hasAnyPartsRequests && !hasAnyRequiredPartsTracking) return { label: "No Materials", tone: "gray" };
+  // Material Fulfillment Status and Inventory Reservation Clarity Fix Unit
+  // 10F.3, Task 1: fully-issued Required Materials always wins, checked
+  // before the open-Materials-Request fallback below. A linked Materials
+  // Request's own `status` column can lag behind actual issuance (it's
+  // never touched by Offline Inventory Control's own direct Issue Material
+  // action against work_order_required_parts — see
+  // syncPartsRequestStatusAfterFullIssueInTx), so an open request must never
+  // override what getMaterialFulfillmentForWorkOrders already proves true:
+  // materialsIncomplete === false means every required row's remaining_qty
+  // is 0.
+  if (hasAnyRequiredPartsTracking && !materialsIncomplete) return { label: "Materials Completed", tone: "green" };
   if (materialsAvailability === "issuable") return { label: "Ready to Issue", tone: "blue" };
   if (materialsAvailability === "partial") return { label: "Partially Available", tone: "amber" };
   if (openPartsRequests > 0 || materialsIncomplete) return { label: "Materials Pending", tone: "red" };
@@ -234,6 +269,10 @@ export default async function DailyActivityPage({
     has_active_session: false,
     today_minutes: 0,
     today_amount: 0,
+    week_minutes: 0,
+    week_amount: 0,
+    month_minutes: 0,
+    month_amount: 0,
   };
   const emptyFulfillment: MaterialFulfillment[] = [];
 
@@ -341,7 +380,9 @@ export default async function DailyActivityPage({
         : null;
 
     // Task 9 — the one-line material alert shown only when materials need
-    // attention (never for "No Materials"/"Materials Completed").
+    // attention (never for "No Materials"). Unit 10F.3, Task 3: also shows a
+    // calm confirmation line once fully issued, instead of no line at all —
+    // never "Materials are pending." for this state.
     const materialAlert =
       materialsChip.label === "Materials Pending"
         ? "Materials are pending."
@@ -349,7 +390,9 @@ export default async function DailyActivityPage({
           ? "Material is available to issue."
           : materialsChip.label === "Partially Available"
             ? "Some materials are available; shortage remains."
-            : null;
+            : materialsChip.label === "Materials Completed" && fulfillment.length > 0
+              ? "All required materials have been issued to this Job Card."
+              : null;
 
     const isUnusualActiveSession = !ACTIVE_JOB_CARD_STATUSES.includes(wo.status) && laborSummary.has_active_session;
 
@@ -384,31 +427,41 @@ export default async function DailyActivityPage({
     const assignHref = `${detailHref}?editAssignment=1#assignment`;
     const closureHref = `${detailHref}#closure-panel`;
     const workersAnchorHref = `#${WORKERS_SECTION_ID}`;
+    // Unit 10F.3, Task 2: "Materials Completed" gets its own tier — same
+    // materials-first priority the Pending/Ready-to-Issue/Partially
+    // Available branches below already have — instead of silently falling
+    // through to the assignment/work-time ladder with no acknowledgement
+    // that materials are done. Never "Materials are pending..." for this
+    // Job Card once materialsChip reads "Materials Completed" (Task 1 fix).
     const nextAction: { message: string; buttonLabel: string | null; href: string | null } =
       wo.status === "Closure Requested"
         ? { message: "Waiting for Manager approval to close this Job Card.", buttonLabel: null, href: null }
-        : materialsChip.label === "Materials Pending"
-          ? {
-              message:
-                materialsActionLabel === "Receive Materials"
-                  ? "Materials are pending. Receive materials when they arrive."
-                  : "Materials are pending. Review the request to resolve it.",
-              buttonLabel: materialsActionLabel,
-              href: materialsActionHref,
-            }
-          : materialsChip.label === "Ready to Issue" || materialsChip.label === "Partially Available"
-            ? { message: `${materialAlert ?? "Materials need action."} Issue material to the assigned workers.`, buttonLabel: materialsActionLabel, href: materialsActionHref }
-            : !hasAssignment
-              ? { message: "No workers assigned yet.", buttonLabel: canEditAssignment ? "Assign Workers" : null, href: canEditAssignment ? assignHref : null }
-              : workTimeChip.label === "Not Started"
-                ? { message: "Workers are assigned. Start tracking work below.", buttonLabel: "Track Work", href: workersAnchorHref }
-                : workTimeChip.label === "Working"
-                  ? { message: "Work is in progress.", buttonLabel: null, href: null }
-                  : workTimeChip.label === "Paused"
-                    ? { message: "Worker is paused. Resume work when ready.", buttonLabel: "Resume Work", href: workersAnchorHref }
-                    : closureReady
-                      ? { message: "Job Card is ready for closure request.", buttonLabel: canRequestClosureRole ? "Request Closure" : null, href: canRequestClosureRole ? closureHref : null }
-                      : { message: "No action needed right now.", buttonLabel: null, href: null };
+        : materialsChip.label === "Materials Completed" && fulfillment.length > 0
+          ? closureReady
+            ? { message: "Ready for closure.", buttonLabel: canRequestClosureRole ? "Request Closure" : null, href: canRequestClosureRole ? closureHref : null }
+            : { message: "Materials are completed. Continue work tracking or request closure when ready.", buttonLabel: null, href: null }
+          : materialsChip.label === "Materials Pending"
+            ? {
+                message:
+                  materialsActionLabel === "Receive Materials"
+                    ? "Materials are pending. Receive materials when they arrive."
+                    : "Materials are pending. Review the request to resolve it.",
+                buttonLabel: materialsActionLabel,
+                href: materialsActionHref,
+              }
+            : materialsChip.label === "Ready to Issue" || materialsChip.label === "Partially Available"
+              ? { message: `${materialAlert ?? "Materials need action."} Issue material to the assigned workers.`, buttonLabel: materialsActionLabel, href: materialsActionHref }
+              : !hasAssignment
+                ? { message: "No workers assigned yet.", buttonLabel: canEditAssignment ? "Assign Workers" : null, href: canEditAssignment ? assignHref : null }
+                : workTimeChip.label === "Not Started"
+                  ? { message: "Workers are assigned. Start tracking work below.", buttonLabel: "Track Work", href: workersAnchorHref }
+                  : workTimeChip.label === "Working"
+                    ? { message: "Work is in progress.", buttonLabel: null, href: null }
+                    : workTimeChip.label === "Paused"
+                      ? { message: "Worker is paused. Resume work when ready.", buttonLabel: "Resume Work", href: workersAnchorHref }
+                      : closureReady
+                        ? { message: "Ready for closure.", buttonLabel: canRequestClosureRole ? "Request Closure" : null, href: canRequestClosureRole ? closureHref : null }
+                        : { message: "No action needed right now.", buttonLabel: null, href: null };
 
     return {
       wo,
@@ -498,7 +551,11 @@ export default async function DailyActivityPage({
       isUnusualActiveSession: c.isUnusualActiveSession,
       assetLabel: c.assetLabel,
       issue: c.issue,
-      createdLabel: formatDate(c.wo.created_at),
+      createdLabel: formatCreatedLabel(c.wo.created_at),
+      // Task 2 — drives the list row's "NEW" badge; a pure display window,
+      // not a workflow/status concept, so it's derived here rather than
+      // stored anywhere.
+      isNewJobCard: isRecentlyCreated(c.wo.created_at),
       workTeam: c.workTeam,
       assignmentChip: c.assignmentChip,
       materialsChip: c.materialsChip,

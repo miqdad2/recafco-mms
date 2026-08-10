@@ -12,7 +12,9 @@
     "prisma:generate": "prisma generate",
     "auth:set-password": "node scripts/set-local-password.mjs",
     "db:check": "node --env-file=.env scripts/db-check.mjs",
-    "seed:demo-users": "node scripts/seed-demo-users.mjs"
+    "seed:demo-users": "node scripts/seed-demo-users.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:cleanup": "node --env-file=.env scripts/e2e-mms-cleanup.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
@@ -30,6 +32,7 @@
     "zod": "latest"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@tailwindcss/postcss": "latest",
     "@types/node": "latest",
     "@types/react": "latest",

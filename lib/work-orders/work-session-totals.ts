@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { Prisma } from "@prisma/client";
+
 import { prisma } from "@/lib/db/prisma";
 import type { BackendTransaction } from "@/lib/backend/shared/transaction";
 
@@ -42,6 +44,27 @@ export type WorkerLaborRow = {
   // One-Screen Manager Dashboard Unit 10, Task 5: same optional-only-via-
   // the-bulk-function convention as today_minutes/today_hours above.
   today_amount?: number;
+  // Manager Dashboard Closure Requests Modal Unit 10G (Task 3/4 follow-up):
+  // same optional-only-via-the-bulk-function convention — skill_category is
+  // a plain passthrough of the worker's profile (no new query, added to the
+  // same worker_profiles select the bulk function already does); sessions_count
+  // is a free byproduct of the same per-assignment session grouping the bulk
+  // function already computes for the totals below (rows.length), not a new
+  // query either.
+  skill_category?: string | null;
+  sessions_count?: number;
+  // Manager Dashboard Labor Cost Period Summary Unit 10G.5, Task 4/5:
+  // same optional-only-via-the-bulk-function convention as today_minutes
+  // above — the per-worker session rows are already fetched with no date
+  // filter, so week/month are extra in-memory buckets over the same rows,
+  // not a new query. Same Sunday-start week boundary getWorkerActivityDetail
+  // already established.
+  week_minutes?: number;
+  week_hours?: number;
+  week_amount?: number;
+  month_minutes?: number;
+  month_hours?: number;
+  month_amount?: number;
 };
 
 export type WorkOrderLaborSummary = {
@@ -132,6 +155,13 @@ export async function getWorkOrderLaborSummary(db: DbClient, workOrderId: string
 export type DailyActivityLaborSummary = WorkOrderLaborSummary & {
   today_minutes: number;
   today_amount: number;
+  // Manager Dashboard Labor Cost Period Summary Unit 10G.5, Task 4/5: same
+  // "already-fetched rows, extra in-memory bucket" extension as today_*
+  // above — see the week/month comment on WorkerLaborRow.
+  week_minutes: number;
+  week_amount: number;
+  month_minutes: number;
+  month_amount: number;
 };
 
 export async function getWorkOrderLaborSummariesBulk(
@@ -143,11 +173,16 @@ export async function getWorkOrderLaborSummariesBulk(
 
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
+  // Unit 10G.5 — same Sunday-start week boundary getWorkerActivityDetail
+  // already established (RECAFCO is Kuwait-based, Sunday-Thursday work week).
+  const weekStart = new Date(todayStart);
+  weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+  const monthStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), 1);
 
   const [assignments, sessions] = await Promise.all([
     db.workOrderWorkerAssignment.findMany({
       where: { work_order_id: { in: workOrderIds }, status: "active" },
-      include: { worker_profiles: { select: { id: true, name: true } } },
+      include: { worker_profiles: { select: { id: true, name: true, skill_category: true } } },
       orderBy: [{ worker_role: "asc" }, { assigned_at: "asc" }],
     }),
     db.workOrderWorkSession.findMany({
@@ -175,6 +210,10 @@ export async function getWorkOrderLaborSummariesBulk(
     let totalAmount = 0;
     let todayMinutes = 0;
     let todayAmount = 0;
+    let weekMinutes = 0;
+    let weekAmount = 0;
+    let monthMinutes = 0;
+    let monthAmount = 0;
     let hasActiveSession = false;
 
     const workers: WorkerLaborRow[] = woAssignments.map((a) => {
@@ -184,27 +223,48 @@ export async function getWorkOrderLaborSummariesBulk(
       totalMinutes += minutes;
       totalAmount += amount;
 
-      // "Today" — sessions that started today, same simple day-boundary
-      // convention as every other "today" figure in this app (e.g. KPI
-      // cards elsewhere use created_at >= start-of-day). Tracked per worker
-      // (Task 5's "Today's worked time" row) as well as summed into the
-      // Job Card-level today_minutes/today_amount below (Task 2's KPI card).
-      // One-Screen Manager Dashboard Unit 10, Task 5: today_amount is now
-      // also tracked per worker (was already summed at the Job Card level
-      // above) — the Manager dashboard's "top workers today" snapshot needs
-      // a real per-worker today figure, not an hourly_rate_snapshot*hours
-      // approximation. Same stored calculated_amount per session, just a
-      // narrower sum — no calculation logic changed.
+      // "Today"/"This Week"/"This Month" — sessions bucketed by started_at,
+      // same simple day-boundary convention as every other period figure in
+      // this app (getWorkerActivityDetail's Today/Week/Month, and every
+      // other "today" KPI elsewhere use started_at/created_at >= boundary).
+      // Tracked per worker (Task 5's "Today's worked time" row) as well as
+      // summed into the Job Card-level totals below (Task 2's KPI card /
+      // Unit 10G.5's Labor Snapshot period summary). One-Screen Manager
+      // Dashboard Unit 10, Task 5: today_amount is also tracked per worker
+      // — the Manager dashboard's "top workers" snapshot needs a real
+      // per-worker figure, not an hourly_rate_snapshot*hours approximation.
+      // Manager Dashboard Labor Cost Period Summary Unit 10G.5, Task 5: same
+      // stored calculated_amount per session, just wider sums — no
+      // calculation logic changed, and cancelled sessions are already
+      // excluded by the outer sessions query (status: { not: "Cancelled" }),
+      // so a corrected session's CURRENT (post-correction) duration_minutes/
+      // calculated_amount is what gets summed here, automatically.
       let workerTodayMinutes = 0;
       let workerTodayAmount = 0;
+      let workerWeekMinutes = 0;
+      let workerWeekAmount = 0;
+      let workerMonthMinutes = 0;
+      let workerMonthAmount = 0;
       for (const r of rows) {
-        if (r.started_at >= todayStart) {
-          workerTodayMinutes += r.duration_minutes;
-          workerTodayAmount += Number(r.calculated_amount);
-          todayAmount += Number(r.calculated_amount);
+        if (r.started_at >= monthStart) {
+          workerMonthMinutes += r.duration_minutes;
+          workerMonthAmount += Number(r.calculated_amount);
+          monthAmount += Number(r.calculated_amount);
+          if (r.started_at >= weekStart) {
+            workerWeekMinutes += r.duration_minutes;
+            workerWeekAmount += Number(r.calculated_amount);
+            weekAmount += Number(r.calculated_amount);
+          }
+          if (r.started_at >= todayStart) {
+            workerTodayMinutes += r.duration_minutes;
+            workerTodayAmount += Number(r.calculated_amount);
+            todayAmount += Number(r.calculated_amount);
+          }
         }
       }
       todayMinutes += workerTodayMinutes;
+      weekMinutes += workerWeekMinutes;
+      monthMinutes += workerMonthMinutes;
 
       const activeSession = rows.find((r) => r.status === "Active") ?? null;
       if (activeSession) hasActiveSession = true;
@@ -229,6 +289,14 @@ export async function getWorkOrderLaborSummariesBulk(
         today_minutes: workerTodayMinutes,
         today_hours: Math.round((workerTodayMinutes / 60) * 100) / 100,
         today_amount: Math.round(workerTodayAmount * 1000) / 1000,
+        week_minutes: workerWeekMinutes,
+        week_hours: Math.round((workerWeekMinutes / 60) * 100) / 100,
+        week_amount: Math.round(workerWeekAmount * 1000) / 1000,
+        month_minutes: workerMonthMinutes,
+        month_hours: Math.round((workerMonthMinutes / 60) * 100) / 100,
+        month_amount: Math.round(workerMonthAmount * 1000) / 1000,
+        skill_category: a.worker_profiles.skill_category,
+        sessions_count: rows.length,
       };
     });
 
@@ -240,10 +308,85 @@ export async function getWorkOrderLaborSummariesBulk(
       has_active_session: hasActiveSession,
       today_minutes: todayMinutes,
       today_amount: Math.round(todayAmount * 1000) / 1000,
+      week_minutes: weekMinutes,
+      week_amount: Math.round(weekAmount * 1000) / 1000,
+      month_minutes: monthMinutes,
+      month_amount: Math.round(monthAmount * 1000) / 1000,
     });
   }
 
   return result;
+}
+
+// Manager Dashboard Labor Cost Period Summary Unit 10G.5, Task 2/4/5: a true
+// company-wide (visibility-scoped) Today/This Week/This Month labor total —
+// deliberately NOT derived from getWorkOrderLaborSummariesBulk's per-Job-Card
+// figures above, because that function (as called from the Manager
+// dashboard) is only ever fed the ~30 most-recently-updated ACTIVE Job
+// Cards. A Job Card worked on this week but already Closed (and so outside
+// that active sample) would silently disappear from a week/month total
+// derived that way — exactly the "looks like it's not updating" confusion
+// this unit exists to fix. This is a separate, lightweight read instead:
+// one query, bounded to the current month (the widest period asked for),
+// scoped by the caller's own work-order visibility filter through the
+// work_orders relation, with today/week/month bucketed in-memory over the
+// same rows — same "fetch once, bucket by boundary" convention
+// getWorkerActivityDetail already established, and the same started_at
+// boundary/duration_minutes/calculated_amount every other total in this
+// file already uses (cancelled sessions excluded by the query itself, and a
+// corrected session's current stored values are summed automatically since
+// nothing here re-derives them).
+export type LaborPeriodTotals = {
+  today: { hours: number; amount: number };
+  week: { hours: number; amount: number };
+  month: { hours: number; amount: number };
+};
+
+export async function getLaborPeriodTotals(
+  db: DbClient,
+  opts: {
+    workOrderWhere: Prisma.work_ordersWhereInput;
+    todayStart: Date;
+    weekStart: Date;
+    monthStart: Date;
+  }
+): Promise<LaborPeriodTotals> {
+  const sessions = await db.workOrderWorkSession.findMany({
+    where: {
+      status: { not: "Cancelled" },
+      started_at: { gte: opts.monthStart },
+      work_orders: { is: opts.workOrderWhere },
+    },
+    select: { started_at: true, duration_minutes: true, calculated_amount: true },
+  });
+
+  let todayMinutes = 0;
+  let todayAmount = 0;
+  let weekMinutes = 0;
+  let weekAmount = 0;
+  let monthMinutes = 0;
+  let monthAmount = 0;
+
+  for (const s of sessions) {
+    const minutes = s.duration_minutes;
+    const amount = Number(s.calculated_amount);
+    monthMinutes += minutes;
+    monthAmount += amount;
+    if (s.started_at >= opts.weekStart) {
+      weekMinutes += minutes;
+      weekAmount += amount;
+    }
+    if (s.started_at >= opts.todayStart) {
+      todayMinutes += minutes;
+      todayAmount += amount;
+    }
+  }
+
+  return {
+    today: { hours: Math.round((todayMinutes / 60) * 100) / 100, amount: Math.round(todayAmount * 1000) / 1000 },
+    week: { hours: Math.round((weekMinutes / 60) * 100) / 100, amount: Math.round(weekAmount * 1000) / 1000 },
+    month: { hours: Math.round((monthMinutes / 60) * 100) / 100, amount: Math.round(monthAmount * 1000) / 1000 },
+  };
 }
 
 export type SessionRow = {

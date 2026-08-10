@@ -41,6 +41,19 @@ export type CriticalPopupPayload = {
   secondaryLabel: string | null;
   secondaryHref: string | null;
   jobCardNumber: string | null;
+  // Critical Workflow Popup Review Modal Unit 10G.7, Task 1/2/4/5: when a
+  // rule declares `reviewMode`, the popup's primary button opens a review
+  // modal in place instead of navigating (workOrderId is what that modal
+  // fetches by) — direct navigation is preserved as "Open Full Job Card"
+  // (jobCardDetailHref), always the canonical Job Card detail URL rather
+  // than whatever the notification's own action_url happens to be, so the
+  // fallback link is dependable even if action_url ever points somewhere
+  // narrower. Rules with no reviewMode (every existing Data Entry rule)
+  // keep the exact prior plain-link behavior — workOrderId/reviewMode are
+  // simply null for them.
+  workOrderId: string | null;
+  reviewMode: "closure_review" | "job_card_summary" | null;
+  jobCardDetailHref: string | null;
 };
 
 type PopupRule = {
@@ -51,6 +64,7 @@ type PopupRule = {
   primaryLabel: string;
   secondaryLabel?: string;
   secondaryHref?: string;
+  reviewMode?: "closure_review" | "job_card_summary";
 };
 
 // Task 3 — Data Entry sees a popup only for Manager-originated Job Card
@@ -76,27 +90,35 @@ const DATA_ENTRY_RULES: Record<string, PopupRule> = {
 
 // Task 4 — Manager sees a popup only for Data-Entry-originated Job Card
 // events.
+// Critical Workflow Popup Review Modal Unit 10G.7, Task 1/2/4: these three
+// rules now open a review modal in place (reviewMode) instead of navigating
+// the Manager away from the dashboard — the primary label changed to match
+// (Task 2/4's exact spec: "Review Closure" / "View Summary"). Data Entry's
+// own rules above are untouched.
 const MANAGER_RULES: Record<string, PopupRule> = {
   "job_card.closure_requested": {
     expectedActorRoles: ["maintenance_data_entry", "super_admin"],
     title: "Closure Approval Needed",
     iconVariant: "warning",
     buildMessage: (n) => `Data Entry requested closure for Job Card ${n}.`,
-    primaryLabel: "Review Job Card",
+    primaryLabel: "Review Closure",
+    reviewMode: "closure_review",
   },
   "job_card.created": {
     expectedActorRoles: ["maintenance_data_entry", "super_admin"],
     title: "New Active Job Card",
     iconVariant: "info",
     buildMessage: (n) => `Job Card ${n} has been started.`,
-    primaryLabel: "Open Job Card",
+    primaryLabel: "View Summary",
+    reviewMode: "job_card_summary",
   },
   "job_card.started": {
     expectedActorRoles: ["maintenance_data_entry", "super_admin"],
     title: "New Active Job Card",
     iconVariant: "info",
     buildMessage: (n) => `Job Card ${n} has been started.`,
-    primaryLabel: "Open Job Card",
+    primaryLabel: "View Summary",
+    reviewMode: "job_card_summary",
   },
 };
 
@@ -174,6 +196,11 @@ export async function getCriticalWorkflowPopup(
   // Task 7 — action_url first, then the Job Card fallback, then /notifications.
   const primaryHref =
     top.action_url ?? (top.entity_type === "work_order" && top.entity_id ? `/maintenance/work-orders/${top.entity_id}` : "/notifications");
+  const workOrderId = top.entity_type === "work_order" && top.entity_id ? top.entity_id : null;
+  // Unit 10G.7, Task 5: always the canonical Job Card detail URL (not
+  // action_url) — the dependable "Open Full Job Card" fallback regardless
+  // of where action_url happens to point for this particular event.
+  const jobCardDetailHref = workOrderId ? `/maintenance/work-orders/${workOrderId}` : null;
 
   return {
     id: top.id,
@@ -182,8 +209,15 @@ export async function getCriticalWorkflowPopup(
     iconVariant: rule.iconVariant,
     primaryLabel: rule.primaryLabel,
     primaryHref,
-    secondaryLabel: rule.secondaryLabel ?? null,
-    secondaryHref: rule.secondaryHref ?? null,
+    // A reviewMode rule's secondary action is always "Open Full Job Card",
+    // computed here rather than hardcoded per-rule (Task 5) — every other
+    // rule's secondary action (e.g. Data Entry's "Open Daily Activity")
+    // keeps its own static rule-level label/href, unchanged.
+    secondaryLabel: rule.reviewMode ? "Open Full Job Card" : (rule.secondaryLabel ?? null),
+    secondaryHref: rule.reviewMode ? jobCardDetailHref : (rule.secondaryHref ?? null),
     jobCardNumber,
+    workOrderId,
+    reviewMode: rule.reviewMode ?? null,
+    jobCardDetailHref,
   };
 }

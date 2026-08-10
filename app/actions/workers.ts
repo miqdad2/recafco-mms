@@ -19,6 +19,7 @@ export type WorkerProfileState = { ok: true } | { ok: false; error: string } | n
 function parseWorkerProfileForm(formData: FormData) {
   return workerProfileSchema.parse({
     id: formData.get("id") || undefined,
+    employeeId: formData.get("employee_id") || undefined,
     name: formData.get("name"),
     workerType: formData.get("worker_type"),
     hourlyRate: formData.get("hourly_rate"),

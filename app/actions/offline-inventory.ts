@@ -19,6 +19,7 @@ import {
 } from "@/lib/store/offline-inventory-data";
 import { emitOfflineInventoryRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
+import { syncPartsRequestStatusAfterFullIssueInTx } from "@/lib/backend/parts-requests/service";
 
 export type OfflineMovementState =
   // Add New Material Category Flexibility Cleanup Task 7: `category` is only
@@ -555,7 +556,7 @@ export async function issueOfflineMaterialAction(
         throw new Error("Issued quantity cannot be greater than current balance.");
       }
 
-      return tx.offline_inventory_movements.create({
+      const movement = await tx.offline_inventory_movements.create({
         data: {
           movement_type:         "ISSUED",
           movement_date:         new Date(movementDate),
@@ -575,6 +576,18 @@ export async function issueOfflineMaterialAction(
           created_by:            context.userId,
         },
       });
+
+      // Material Fulfillment Status and Inventory Reservation Clarity Fix
+      // Unit 10F.3, Task 5: if this Issue just fully satisfied the linked
+      // Job Card's Required Materials, sync its Materials Request off
+      // Requested/Approved/Waiting Stock/Partially Issued to Issued — see
+      // syncPartsRequestStatusAfterFullIssueInTx for why that sync doesn't
+      // already happen anywhere else. No-op when there's nothing to sync.
+      if (woIdRaw) {
+        await syncPartsRequestStatusAfterFullIssueInTx(tx, context, woIdRaw);
+      }
+
+      return movement;
     });
 
     await Promise.all([

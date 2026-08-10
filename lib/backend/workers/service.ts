@@ -4,6 +4,7 @@ import type { CurrentUserContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { AppError } from "@/lib/errors/app-error";
 import { assertActiveUser, assertBackendPermission } from "@/lib/backend/security/guards";
+import { isManagerRole } from "@/lib/security/permissions";
 import { writeAuditLog } from "@/lib/audit/log";
 import { emitWorkerProfileRealtimeEvent } from "@/lib/realtime/events";
 import { normalizeMaterialKey } from "@/lib/materials/normalize-material";
@@ -23,8 +24,29 @@ function assertCanManageWorkers(context: CurrentUserContext) {
   assertBackendPermission(context, "work_orders.assign");
 }
 
+// Worker Rate Visibility and Data Entry Lockdown Unit 10F.4, Task 4: Data
+// Entry can still create a worker profile (assertCanManageWorkers above,
+// unchanged — createWorkerProfile keeps using it), but editing an EXISTING
+// profile (name/type/rate/etc.) or deactivating/reactivating one is now
+// Manager/Super Admin only. Hiding the Edit/Deactivate buttons in the UI
+// (components/admin/worker-profiles-view.tsx) is not enough on its own — a
+// Data Entry user could otherwise still reach updateWorkerProfile/
+// setWorkerProfileActive with a hand-built form submission (saveWorkerProfileAction
+// happily accepted a hidden `id` field before this unit). This is enforced
+// here, not in app/actions/workers.ts, matching this file's existing
+// pattern (the action layer is thin; the service layer is the real gate —
+// same shape as editWorkSession/cancelWorkSession's assertIsManager in
+// lib/backend/work-orders/work-sessions.ts).
+function assertCanEditWorkerProfile(context: CurrentUserContext) {
+  assertActiveUser(context);
+  if (!isManagerRole(context)) {
+    throw new AppError("Only a Manager can edit or deactivate a worker profile.", { code: "FORBIDDEN" });
+  }
+}
+
 export type WorkerProfileRow = {
   id: string;
+  employee_id: string | null;
   name: string;
   worker_type: string;
   hourly_rate: number;
@@ -38,6 +60,7 @@ export type WorkerProfileRow = {
 
 function toRow(w: {
   id: string;
+  employee_id: string | null;
   name: string;
   worker_type: string;
   hourly_rate: unknown;
@@ -50,6 +73,7 @@ function toRow(w: {
 }): WorkerProfileRow {
   return {
     id: w.id,
+    employee_id: w.employee_id,
     name: w.name,
     worker_type: w.worker_type,
     hourly_rate: Number(w.hourly_rate),
@@ -74,9 +98,14 @@ export async function listWorkerProfiles(opts?: {
       ...(opts?.workerType ? { worker_type: opts.workerType } : {}),
       ...(search
         ? {
+            // Worker Profile Form Simplification and Division Rename Unit
+            // 10G.6, Task 6: search also matches Employee ID and Division
+            // (skill_category) — name/phone matching is unchanged.
             OR: [
               { name: { contains: search, mode: "insensitive" } },
               { phone: { contains: search, mode: "insensitive" } },
+              { employee_id: { contains: search, mode: "insensitive" } },
+              { skill_category: { contains: search, mode: "insensitive" } },
             ],
           }
         : {}),
@@ -116,6 +145,26 @@ async function findDuplicateActiveWorker(name: string, phone: string | undefined
   });
 }
 
+// Worker Profile Form Simplification and Division Rename Unit 10G.6, Task
+// 1/7: mirrors findDuplicateActiveWorker's own "active workers only" scope
+// exactly — a deactivated worker's employee_id can be reused by a genuine
+// replacement hire. Case-insensitive (normalizeMaterialKey), so "EMP-1025"
+// and "emp-1025" are treated as the same ID. This is the clean, actionable
+// error path; the migration's partial unique index
+// (worker_profiles_employee_id_active_unique) is the hard backstop against
+// a race between two concurrent creates.
+async function findDuplicateEmployeeId(employeeId: string | undefined, excludeId?: string) {
+  const target = normalizeMaterialKey(employeeId);
+  if (!target) return undefined;
+
+  const candidates = await prisma.workerProfile.findMany({
+    where: { is_active: true, employee_id: { not: null }, ...(excludeId ? { id: { not: excludeId } } : {}) },
+    select: { id: true, name: true, employee_id: true },
+  });
+
+  return candidates.find((c) => normalizeMaterialKey(c.employee_id) === target);
+}
+
 export async function createWorkerProfile(context: CurrentUserContext, input: WorkerProfileInput) {
   assertCanManageWorkers(context);
 
@@ -126,9 +175,17 @@ export async function createWorkerProfile(context: CurrentUserContext, input: Wo
       { code: "VALIDATION_ERROR" }
     );
   }
+  const dupeEmployeeId = await findDuplicateEmployeeId(input.employeeId);
+  if (dupeEmployeeId) {
+    throw new AppError(
+      `Employee ID "${dupeEmployeeId.employee_id}" is already used by active worker "${dupeEmployeeId.name}". Use a different Employee ID.`,
+      { code: "VALIDATION_ERROR" }
+    );
+  }
 
   const created = await prisma.workerProfile.create({
     data: {
+      employee_id: input.employeeId || null,
       name: input.name,
       worker_type: input.workerType,
       hourly_rate: input.hourlyRate,
@@ -156,7 +213,7 @@ export async function createWorkerProfile(context: CurrentUserContext, input: Wo
 }
 
 export async function updateWorkerProfile(context: CurrentUserContext, id: string, input: WorkerProfileInput) {
-  assertCanManageWorkers(context);
+  assertCanEditWorkerProfile(context);
 
   const existing = await prisma.workerProfile.findUnique({ where: { id } });
   if (!existing) throw new AppError("Worker profile not found.", { code: "NOT_FOUND" });
@@ -168,10 +225,18 @@ export async function updateWorkerProfile(context: CurrentUserContext, id: strin
       { code: "VALIDATION_ERROR" }
     );
   }
+  const dupeEmployeeId = await findDuplicateEmployeeId(input.employeeId, id);
+  if (dupeEmployeeId) {
+    throw new AppError(
+      `Employee ID "${dupeEmployeeId.employee_id}" is already used by active worker "${dupeEmployeeId.name}". Use a different Employee ID.`,
+      { code: "VALIDATION_ERROR" }
+    );
+  }
 
   const updated = await prisma.workerProfile.update({
     where: { id },
     data: {
+      employee_id: input.employeeId || null,
       name: input.name,
       worker_type: input.workerType,
       hourly_rate: input.hourlyRate,
@@ -202,7 +267,7 @@ export async function updateWorkerProfile(context: CurrentUserContext, id: strin
 }
 
 export async function setWorkerProfileActive(context: CurrentUserContext, id: string, isActive: boolean) {
-  assertCanManageWorkers(context);
+  assertCanEditWorkerProfile(context);
 
   const existing = await prisma.workerProfile.findUnique({ where: { id } });
   if (!existing) throw new AppError("Worker profile not found.", { code: "NOT_FOUND" });

@@ -45,7 +45,11 @@ function emptyMaterialRow(): RequiredMaterialRowState {
   return {
     description: "",
     partNumber: "",
-    qty: "1",
+    // Required Materials Empty Row Quantity UX Fix Unit 10F.5, Task 1: an
+    // empty row must not look like a real material row with Qty 1 — blank
+    // until the user actually enters a material name (see
+    // handleMaterialNameChange/handleSelectSuggestion, Task 2).
+    qty: "",
     unit: "PCS",
     notes: "",
     materialKey: null,
@@ -256,7 +260,9 @@ export function WorkOrderWizard({
   const formRef = useRef<HTMLFormElement>(null);
   const [step, setStep] = useState(1);
   const [selectedAssetId, setSelectedAssetId] = useState(preselectedAssetId ?? "");
-  const [numPartRows, setNumPartRows] = useState(3);
+  // Unit 10F.5, Task 3 (Recommended): one empty row by default + Add Row,
+  // instead of 3 always-visible rows that looked like real material lines.
+  const [numPartRows, setNumPartRows] = useState(1);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [reviewData, setReviewData] = useState<Record<string, string>>({});
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
@@ -295,9 +301,21 @@ export function WorkOrderWizard({
   }
 
   function handleMaterialNameChange(index: number, value: string) {
+    // Unit 10F.5, Task 2: quantity only ever defaults to 1 once the user has
+    // actually entered a material name, and only if they haven't already
+    // typed a quantity of their own — clearing the name back to blank does
+    // not clear a quantity the user already entered.
+    const currentQty = partRows[index]?.qty ?? "";
+    const shouldDefaultQty = value.trim() !== "" && currentQty.trim() === "";
     // Task 5: editing the name after a suggestion was selected clears the
     // link — the row goes back to "New Material" until re-matched.
-    updateRow(index, { description: value, materialKey: null, balance: null, showSuggestions: true });
+    updateRow(index, {
+      description: value,
+      materialKey: null,
+      balance: null,
+      showSuggestions: true,
+      ...(shouldDefaultQty ? { qty: "1" } : {}),
+    });
     setDirty(true);
 
     if (searchTimers.current[index]) clearTimeout(searchTimers.current[index]);
@@ -326,6 +344,9 @@ export function WorkOrderWizard({
   }
 
   function handleSelectSuggestion(index: number, match: OfflineInventorySearchMatch) {
+    // Task 2 — selecting a suggestion counts as entering a material name too.
+    const currentQty = partRows[index]?.qty ?? "";
+    const shouldDefaultQty = currentQty.trim() === "";
     updateRow(index, {
       description: match.display_name,
       partNumber: match.part_number ?? "",
@@ -335,6 +356,7 @@ export function WorkOrderWizard({
       suggestions: [],
       showSuggestions: false,
       searched: false,
+      ...(shouldDefaultQty ? { qty: "1" } : {}),
     });
   }
 
@@ -406,11 +428,23 @@ export function WorkOrderWizard({
 
     if (step === 4 && form) {
       const fd = new FormData(form);
+      // Unit 10F.5, Task 6: a completely blank extra row (no description)
+      // never blocks submit. A row WITH a material name needs a quantity —
+      // "Enter quantity." when it's blank, a distinct "Quantity must be
+      // greater than 0." once something was entered but isn't a valid
+      // positive whole number. Stops at the first offending row so one
+      // message shows at a time, top to bottom.
       for (let i = 0; i < MAX_PART_ROWS; i++) {
         if (!fd.get(`req_part_description_${i}`)?.toString().trim()) continue;
-        const qty = Number(fd.get(`req_part_quantity_${i}`));
+        const qtyRaw = fd.get(`req_part_quantity_${i}`)?.toString().trim();
+        if (!qtyRaw) {
+          errs.required_parts = "Enter quantity.";
+          break;
+        }
+        const qty = Number(qtyRaw);
         if (!Number.isInteger(qty) || qty <= 0) {
-          errs.required_parts = "Quantity must be a whole number greater than 0.";
+          errs.required_parts = "Quantity must be greater than 0.";
+          break;
         }
       }
     }
@@ -1115,7 +1149,7 @@ export function WorkOrderWizard({
                 )}
                 {assignment.assignNow && (
                   <p className="mt-3 text-xs text-[#9CA3AF]">
-                    If you Save Draft, assignment will be saved when the Job Card is started — Draft does not save assignment yet.
+                    If you Save Draft, assignment will be saved when the Job Card is activated — Draft does not save assignment yet.
                   </p>
                 )}
               </ReviewSection>
@@ -1148,6 +1182,15 @@ export function WorkOrderWizard({
                   <p className="text-sm italic text-[#9CA3AF]">No materials requested</p>
                 )}
               </ReviewSection>
+
+              {/* New Job Card Button Wording and Success Popup Clarity Unit
+                  10F.2, Task 2: "Create Job Card" makes the Job Card Active —
+                  it does not start worker time, which only ever starts from
+                  Daily Activity. Wording-only; submit_for_approval's backend
+                  behavior is unchanged. */}
+              <p className="text-xs text-[#9CA3AF]">
+                The Job Card will be created as Active. Worker time is tracked from Daily Activity.
+              </p>
             </div>
           </WizardCard>
         </div>
@@ -1204,7 +1247,7 @@ export function WorkOrderWizard({
                     value="submit_for_approval"
                     className="focus-ring inline-flex items-center justify-center rounded-md bg-[#ED1C24] px-5 py-2 text-sm font-bold text-white transition hover:bg-red-700"
                   >
-                    Start Job Card
+                    Create Job Card
                   </button>
                 </>
               )}
@@ -1345,9 +1388,11 @@ function normalizeSearchText(s: string): string {
   return s.trim().toLowerCase();
 }
 
+// Worker Profile Form Simplification and Division Rename Unit 10G.6, Task 6:
+// also matches Employee ID — name/phone/division/type matching unchanged.
 function matchesWorkerQuery(w: WorkerProfileRow, q: string): boolean {
   if (!q) return true;
-  return [w.name, w.phone, w.skill_category, w.worker_type]
+  return [w.employee_id, w.name, w.phone, w.skill_category, w.worker_type]
     .filter((v): v is string => Boolean(v))
     .some((v) => v.toLowerCase().includes(q));
 }
@@ -1435,7 +1480,6 @@ function WorkerPickerField({
               className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#E5E7EB] bg-white py-1 pl-3 pr-1.5 text-xs font-semibold text-[#111827]"
             >
               <span className="truncate">{w.name}</span>
-              <span className="shrink-0 text-[#9CA3AF]">— {w.hourly_rate.toFixed(3)} KWD/hr</span>
               <button
                 type="button"
                 onClick={() => removeWorker(w.id)}
@@ -1464,7 +1508,7 @@ function WorkerPickerField({
             onKeyDown={(e) => {
               if (e.key === "Enter") e.preventDefault();
             }}
-            placeholder={`Search ${label.toLowerCase()} by name, phone, or skill…`}
+            placeholder={`Search ${label.toLowerCase()} by employee ID, name, or division…`}
             className={`${inp} pl-8`}
           />
 
@@ -1486,9 +1530,12 @@ function WorkerPickerField({
                         }}
                         className="block w-full px-3 py-2 text-left hover:bg-gray-50"
                       >
-                        <p className="text-sm font-bold text-[#111827]">{w.name}</p>
+                        <p className="text-sm font-bold text-[#111827]">
+                          {w.employee_id ? `${w.employee_id} • ` : ""}
+                          {w.name}
+                        </p>
                         <p className="mt-0.5 truncate text-[11px] text-[#6B7280]">
-                          {w.worker_type} — {w.hourly_rate.toFixed(3)} KWD/hr
+                          {w.worker_type}
                           {w.skill_category ? ` • ${w.skill_category}` : ""}
                           {w.phone ? ` • ${w.phone}` : ""}
                         </p>

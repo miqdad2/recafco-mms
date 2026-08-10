@@ -105,6 +105,15 @@ export async function getMaterialFulfillmentForWorkOrder(
     const required_qty = Number(r.quantity_required);
     const issued_qty = issuedByKey.get(key) ?? 0;
     const remaining_qty = Math.max(required_qty - issued_qty, 0);
+    // Material Fulfillment Status and Inventory Reservation Clarity Fix Unit
+    // 10F.3, Task 8 (documented, not implemented this unit): available_now
+    // is a Job-Card-independent Offline Inventory balance — it does not
+    // reserve/subtract quantity already promised to OTHER active Job Cards'
+    // own remaining_qty for this same material identity. Two Job Cards each
+    // requiring more than the shared balance can both read "issuable" for
+    // the same physical units until one of them actually issues. Future
+    // improvement: subtract other active Job Cards' outstanding
+    // remaining_qty for this identity before computing shortage/status here.
     const available_now = Math.max(balanceByKey.get(key) ?? 0, 0);
     const shortage_qty = Math.max(remaining_qty - available_now, 0);
 

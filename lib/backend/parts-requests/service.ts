@@ -10,6 +10,7 @@ import {
   assertNoActiveDuplicateMaterialsRequest,
   findPartsRequestForWorkflow,
   findWorkOrderForPartsRequest,
+  getActiveMaterialsRequestForJobCard,
   getJobCardNumber,
   lockPartsRequestForUpdate,
   updatePartsRequestStatus
@@ -27,6 +28,7 @@ import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { canTransition, transitionError } from "@/lib/workflows/status-rules";
 import { normalizeCategory } from "@/components/store/offline-inventory-types";
 import { emitMaterialsRequestRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
+import { anyMaterialsIncomplete, getMaterialFulfillmentForWorkOrder } from "@/lib/work-orders/material-fulfillment";
 
 type PartsRequestResult = {
   partsRequestId: string;
@@ -372,6 +374,67 @@ async function syncJobCardMaterialStatusInTx(tx: BackendTransaction, context: Cu
 /** Public, transaction-wrapped entry point for syncJobCardMaterialStatusInTx. */
 export async function syncJobCardMaterialStatus(context: CurrentUserContext, workOrderId: string) {
   return withBackendTransaction(context.userId, (tx) => syncJobCardMaterialStatusInTx(tx, context, workOrderId));
+}
+
+/**
+ * Material Fulfillment Status and Inventory Reservation Clarity Fix Unit
+ * 10F.3, Task 5. Offline Inventory Control's own Issue Material action
+ * (issueOfflineMaterialAction, app/actions/offline-inventory.ts) deducts
+ * stock and links the movement to a Job Card via related_work_order_id, but
+ * it never touches parts_requests — it has no parts_request_id to update.
+ * When a Job Card's Required Materials were already sitting in Offline
+ * Inventory (no formal Receive needed), that direct Issue is the ONLY thing
+ * that ever satisfies the Job Card's materials — so the auto-created linked
+ * Materials Request would otherwise stay at Requested/Approved/Waiting
+ * Stock/Partially Issued forever, even once
+ * getMaterialFulfillmentForWorkOrder shows every required-parts row fully
+ * issued. That stale status is what made the Materials/Next-Action/Closure
+ * UI keep saying "pending"/"Receive Materials" for a Job Card that had
+ * nothing left to receive or issue.
+ *
+ * Reuses getMaterialFulfillmentForWorkOrder/anyMaterialsIncomplete (no
+ * duplicate calculation) and getActiveMaterialsRequestForJobCard/
+ * lockPartsRequestForUpdate/updatePartsRequestStatus/canTransition (no
+ * duplicate write logic) — the exact same helpers issueMaterials() above
+ * already uses for the Receive flow. "Requested"/"Approved"/"Waiting
+ * Stock"/"Partially Issued" -> "Issued" is a legal direct transition from
+ * every one of those (lib/workflows/status-rules.ts), so this never needs
+ * to weaken/bypass canTransition. Does NOT touch parts_request_items —
+ * issued_quantity there specifically records what was formally received via
+ * the Receive Materials flow, and fabricating that history when the
+ * shortfall was actually covered by pre-existing stock would misrepresent
+ * what really happened. Silent no-op (not an error) if there's no linked
+ * request, it's already Issued, the Job Card has no Required Materials
+ * rows, or materials aren't fully issued yet — this is a best-effort
+ * consistency fix-up, not a workflow step of its own, so it must never fail
+ * the caller's real action (Issue Material) if it can't apply.
+ *
+ * Future improvement (Task 8, not implemented this unit): available_now in
+ * getMaterialFulfillmentForWorkOrder is a Job-Card-independent Offline
+ * Inventory balance — it does not reserve/set aside quantity already
+ * promised to OTHER active Job Cards' Required Materials. Two Job Cards
+ * both requiring more than the shared balance can each show "Ready to
+ * Issue" for the same units of stock until one of them actually issues.
+ * A real fix would need available_now to subtract other active Job Cards'
+ * outstanding remaining_qty for the same material identity before deciding
+ * "issuable" vs "partial"/"shortage".
+ */
+export async function syncPartsRequestStatusAfterFullIssueInTx(
+  tx: BackendTransaction,
+  context: CurrentUserContext,
+  workOrderId: string
+) {
+  const fulfillment = await getMaterialFulfillmentForWorkOrder(tx, workOrderId);
+  if (fulfillment.length === 0 || anyMaterialsIncomplete(fulfillment)) return;
+
+  const active = await getActiveMaterialsRequestForJobCard(tx, workOrderId);
+  if (!active) return;
+
+  const locked = await lockPartsRequestForUpdate(tx, active.id);
+  if (!locked || !canTransition("parts_request", locked.status, "Issued")) return;
+
+  await updatePartsRequestStatus(tx, locked.id, "Issued", context.userId);
+  await syncJobCardMaterialStatusInTx(tx, context, workOrderId);
 }
 
 /**

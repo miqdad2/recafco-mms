@@ -8,7 +8,7 @@ import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
-import { canViewCosts as canViewCostsForContext } from "@/lib/security/permissions";
+import { canViewCosts as canViewCostsForContext, isManagerRole } from "@/lib/security/permissions";
 import { listWorkerProfiles } from "@/lib/backend/workers/service";
 import { WORKER_TYPES, SKILL_CATEGORIES } from "@/lib/backend/workers/constants";
 import { getWorkerActivitySummaries, type WorkerActivityStatus } from "@/lib/work-orders/work-session-totals";
@@ -91,9 +91,12 @@ export default async function AssignmentsPage({
   // Task 9/10 — only Manager/Super Admin get a link into Worker Profiles
   // (view/edit master data) from this page. Data Entry (which also holds
   // work_orders.assign, the permission gating this whole page) never sees
-  // it here — this restricts the LINK on this page only; the destination
-  // page's own permission model is unchanged (out of scope for this unit).
-  const canManageWorkerProfiles = context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
+  // it here. Worker Rate Visibility and Data Entry Lockdown Unit 10F.4: the
+  // destination page (/admin/worker-profiles) now enforces this same
+  // restriction itself (both display and server-side), so this is no
+  // longer just a link-hiding convenience — reused from
+  // lib/security/permissions.ts instead of a locally-duplicated check.
+  const canManageWorkerProfiles = isManagerRole(context);
   const canViewCosts = canViewCostsForContext(context);
   // Worker Activity Manager Hours and Payment Detail Unit 10C, Task 2/7:
   // gates the Worker Activity Detail modal's "Correct Session" action —
@@ -101,7 +104,7 @@ export default async function AssignmentsPage({
   // Tracking section already uses for WorkerSessionRow/SessionHistoryModal.
   // Data Entry can still open the detail modal (read-only); this only
   // controls whether the correction button renders inside it.
-  const isManager = context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
+  const isManager = isManagerRole(context);
 
   const workers = await listWorkerProfiles();
   const activityMap = await getWorkerActivitySummaries(prisma, workers.map((w) => w.id));
@@ -239,7 +242,7 @@ export default async function AssignmentsPage({
               ))}
             </select>
             <select name="skill" defaultValue={skillFilter} className="focus-ring rounded-md border border-[#E5E7EB] px-2 py-1 text-xs">
-              <option value="all">All Skill Categories</option>
+              <option value="all">All Divisions</option>
               {SKILL_CATEGORIES.map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}

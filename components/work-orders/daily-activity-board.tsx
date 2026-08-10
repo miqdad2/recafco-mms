@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { DailyActivityListRow, DailyActivitySelectedPanel, type DailyActivityCardData } from "@/components/work-orders/daily-activity-card";
 import { IssueMaterialModal, ReceiveMaterialsModal } from "@/components/work-orders/daily-activity-materials-modal";
+import { DailyActivityClosureModal } from "@/components/work-orders/daily-activity-closure-modal";
 
 // Daily Activity Compact Control Board Unit 9C, Task 4/9.
 //
@@ -31,6 +32,11 @@ export function DailyActivityBoard({ cards, canPrint }: { cards: DailyActivityCa
   // at open time so it can't drift if the user re-selects a different row
   // while a modal is open (the modal itself is closed first either way).
   const [materialsModal, setMaterialsModal] = useState<{ workOrderId: string; mode: "issue" | "receive" } | null>(null);
+  // Daily Activity Closure Request Modal with Attachments Unit 10F.6, Task
+  // 1: same client-state pattern as materialsModal above — always keyed off
+  // `selected` at open time, so it can't drift if the user re-selects a
+  // different row while the modal is open.
+  const [closureModalOpen, setClosureModalOpen] = useState(false);
 
   function handleSelect(id: string) {
     setSelectedId(id);
@@ -70,6 +76,7 @@ export function DailyActivityBoard({ cards, canPrint }: { cards: DailyActivityCa
             canPrint={canPrint}
             onIssueMaterial={() => setMaterialsModal({ workOrderId: selected.id, mode: "issue" })}
             onReceiveMaterial={() => setMaterialsModal({ workOrderId: selected.id, mode: "receive" })}
+            onRequestClosure={() => setClosureModalOpen(true)}
           />
         ) : null}
       </div>
@@ -78,6 +85,10 @@ export function DailyActivityBoard({ cards, canPrint }: { cards: DailyActivityCa
         <IssueMaterialModal workOrderId={materialsModal.workOrderId} onClose={() => setMaterialsModal(null)} />
       ) : materialsModal?.mode === "receive" ? (
         <ReceiveMaterialsModal workOrderId={materialsModal.workOrderId} onClose={() => setMaterialsModal(null)} />
+      ) : null}
+
+      {closureModalOpen && selected ? (
+        <DailyActivityClosureModal card={selected} onClose={() => setClosureModalOpen(false)} />
       ) : null}
     </div>
   );

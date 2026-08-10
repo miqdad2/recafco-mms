@@ -61,7 +61,7 @@ import {
   anyMaterialsIncomplete,
   summarizeMaterialAvailability,
 } from "@/lib/work-orders/material-fulfillment";
-import { getWorkOrderLaborSummariesBulk } from "@/lib/work-orders/work-session-totals";
+import { getWorkOrderLaborSummariesBulk, getLaborPeriodTotals } from "@/lib/work-orders/work-session-totals";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
 import { hasPermission, canViewCosts as canViewCostsForContext } from "@/lib/security/permissions";
 import { VEHICLE_CATEGORIES } from "@/lib/assets/categories";
@@ -70,6 +70,7 @@ import { StoreSendMaterialsPopup } from "@/components/store/store-send-materials
 import { VehicleExpiryModal, type VehicleExpiryAlertRow } from "@/components/dashboard/vehicle-expiry-modal";
 import { ClosedJobCardsSummaryCard } from "@/components/dashboard/closed-job-cards-summary";
 import { ActiveJobCardsModal } from "@/components/dashboard/active-job-cards-modal";
+import { ClosureRequestsModal } from "@/components/dashboard/closure-requests-modal";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
 import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
@@ -637,6 +638,7 @@ type PageProps = {
     asset_id?: string;
     vehicleExpiry?: string;
     activeJobs?: string;
+    closureRequests?: string;
   }>;
 };
 
@@ -1009,6 +1011,20 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     // approve a pending closure request — the primary Manager decision now.
     // Task 9 (Unit 10): "requested by" needs the requester's name, resolved
     // in bulk below via created_by.
+    // Manager Dashboard Closure Requests Modal Unit 10G, extended/lightened
+    // again by Closure Requests Review Popup Unit 10G.2, Task 1/10: the full
+    // worker/materials/attachments/note breakdown moved to
+    // getClosureReviewDetailAction (app/actions/closure-requests.ts),
+    // fetched on demand only when a Manager clicks "Review Closure" — this
+    // list query goes back to just what a compact row needs:
+    // operator_complaint (issue text) and an attachment COUNT (`_count`,
+    // not the full relation — no attachment metadata shipped for every row
+    // any more). Still ONE query, reused by both the existing attention
+    // board below and the (now-compact) modal list. `take: 50` matches the
+    // modal's own display cap; the attention board only ever uses the first
+    // 5 anyway (see mgAttentionBoard's .slice(0, 5) below), so this cannot
+    // change its behavior. mgClosureRequestedCount (a separate, uncapped
+    // count query above) remains the authoritative KPI number.
     isManager
       ? prisma.work_orders.findMany({
           where: { AND: [mgBase, { status: "Closure Requested" }] },
@@ -1019,11 +1035,14 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             updated_at: true,
             created_at: true,
             description_of_work: true,
+            operator_complaint: true,
             created_by: true,
             assets: { select: { asset_name: true } },
             parts_requests: { select: { status: true }, orderBy: { created_at: "desc" }, take: 1 },
+            _count: { select: { work_order_attachments: true } },
           },
           orderBy: { updated_at: "asc" },
+          take: 50,
         })
       : Promise.resolve([] as Array<{
           id: string;
@@ -1032,9 +1051,11 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           updated_at: Date;
           created_at: Date;
           description_of_work: string | null;
+          operator_complaint: string | null;
           created_by: string | null;
           assets: { asset_name: string } | null;
           parts_requests: { status: string }[];
+          _count: { work_order_attachments: number };
         }>),
     // Shared by Manager's and Store Keeper's "Offline Inventory Control" KPI.
     (isManager || isStoreKeeper)
@@ -1119,10 +1140,37 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   // ── Task 3/4/5/6/12 — bulk materials + labor read across the active
   // sample (2 groupBy queries + 2 session queries total, not per-card). ────
   const mgActiveIds = mgActiveSample.map((w) => w.id);
-  const [mgFulfillmentMap, mgLaborMap] = isManager
+  // Manager Dashboard Labor Cost Period Summary Unit 10G.5, Task 2/4/5:
+  // mgLaborPeriodTotals is a SEPARATE, sample-independent read (see
+  // getLaborPeriodTotals's own comment) — it is the source of truth for the
+  // Today/This Week/This Month header figures below; mgLaborMap (still
+  // scoped to mgActiveIds, unchanged) remains the source for the per-worker/
+  // per-Job-Card breakdowns, same "active/recent sample" scope this
+  // dashboard already used before this unit.
+  const [mgFulfillmentMap, mgLaborMap, mgLaborPeriodTotals] = isManager
     ? await Promise.all([
         getMaterialFulfillmentForWorkOrders(prisma, mgActiveIds),
         getWorkOrderLaborSummariesBulk(prisma, mgActiveIds),
+        getLaborPeriodTotals(prisma, { workOrderWhere: mgBase, todayStart, weekStart: mgWeekStart, monthStart: mgMonthStart }),
+      ])
+    : ([new Map(), new Map(), { today: { hours: 0, amount: 0 }, week: { hours: 0, amount: 0 }, month: { hours: 0, amount: 0 } }] as [
+        Awaited<ReturnType<typeof getMaterialFulfillmentForWorkOrders>>,
+        Awaited<ReturnType<typeof getWorkOrderLaborSummariesBulk>>,
+        Awaited<ReturnType<typeof getLaborPeriodTotals>>,
+      ]);
+
+  // Manager Dashboard Closure Requests Modal Unit 10G, Task 9: a SEPARATE
+  // bulk materials + labor read, scoped to the Closure-Requested Job Card
+  // IDs specifically — "Closure Requested" is not in ACTIVE_JOB_CARD_STATUSES
+  // (lib/work-orders/simplified-status-display.ts), so mgActiveIds/
+  // mgFulfillmentMap/mgLaborMap above never cover these rows. Still just 2
+  // bulk queries total (not per-card), same helpers Daily Activity and the
+  // Active Job Cards modal already use — no new query shape.
+  const mgClosureIds = mgClosureRequestedAll.map((w) => w.id);
+  const [mgClosureFulfillmentMap, mgClosureLaborMap] = isManager
+    ? await Promise.all([
+        getMaterialFulfillmentForWorkOrders(prisma, mgClosureIds),
+        getWorkOrderLaborSummariesBulk(prisma, mgClosureIds),
       ])
     : ([new Map(), new Map()] as [
         Awaited<ReturnType<typeof getMaterialFulfillmentForWorkOrders>>,
@@ -1132,8 +1180,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   let mgMaterialsPendingCount = 0;
   let mgWorkingNowCount = 0;
   let mgPausedCount = 0;
-  let mgHoursTodaySum = 0;
-  let mgAmountTodaySum = 0;
 
   type MgAttentionCandidate = NeedsAttentionItem & { rank: number; sortKey: string };
   const mgAttentionCandidates: MgAttentionCandidate[] = [];
@@ -1150,13 +1196,57 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     });
   }
 
+  // Closure Requests Review Popup Unit 10G.2, Task 1/10: lightened back down
+  // to just the compact-row summary fields — the full worker/materials/
+  // attachments/note breakdown now lives in getClosureReviewDetailAction
+  // (app/actions/closure-requests.ts), fetched only when a Manager clicks
+  // "Review Closure". mgClosureFulfillmentMap/mgClosureLaborMap (the bulk
+  // reads just above) are still exactly what these summary figures need —
+  // still no new query for the list itself.
+  const mgClosureRequestsForModal = mgClosureRequestedAll.map((r) => {
+    const requesterName = r.created_by ? mgClosureRequesterNameById.get(r.created_by) ?? null : null;
+    const fulfillment = mgClosureFulfillmentMap.get(r.id) ?? [];
+    const laborSummary = mgClosureLaborMap.get(r.id) ?? { workers: [], total_minutes: 0, total_hours: 0, total_amount: 0, has_active_session: false, today_minutes: 0, today_amount: 0, week_minutes: 0, week_amount: 0, month_minutes: 0, month_amount: 0 };
+    const materialsAvailability = summarizeMaterialAvailability(fulfillment);
+    const materialsLabel =
+      materialsAvailability === "fulfilled"
+        ? "Materials Completed"
+        : materialsAvailability === "issuable"
+          ? "Ready to Issue"
+          : materialsAvailability === "partial"
+            ? "Partially Available"
+            : materialsAvailability === "shortage"
+              ? "Materials Pending"
+              : "No Materials";
+    return {
+      id: r.id,
+      workOrderNumber: r.work_order_number,
+      assetLabel: r.assets?.asset_name ?? null,
+      issue: r.operator_complaint || r.description_of_work || "No issue description",
+      requestedByName: requesterName,
+      requestedAtLabel: r.updated_at.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }),
+      workersCount: laborSummary.workers.length,
+      totalHours: laborSummary.total_hours,
+      totalAmount: mgCanViewCosts ? laborSummary.total_amount : null,
+      materialsLabel,
+      attachmentsCount: r._count.work_order_attachments,
+      detailHref: `/maintenance/work-orders/${r.id}`,
+    };
+  });
+
   // Task 6/12 — top 3 active Job Cards by labor hours (Job Card Labor Cost
   // snapshot), derived from the same bulk labor read, no extra query.
+  // Manager Dashboard Labor Cost Period Summary Unit 10G.5, Task 4: both this
+  // list and the per-worker map below are now THIS WEEK-scoped (was
+  // all-time/today respectively) — the task's own recommended default,
+  // "because Manager wants meaningful current workload." Same
+  // laborSummary.week_minutes/week_amount extension added to
+  // getWorkOrderLaborSummariesBulk, no recalculation.
   type MgJobCardLabor = { id: string; workOrderNumber: string | null; assetLabel: string | null; status: string; totalHours: number; totalAmount: number };
   const mgJobCardLaborRows: MgJobCardLabor[] = [];
-  // Task 5 — per-worker "today" totals across every active Job Card, summed
-  // by worker (a worker can appear on more than one active assignment).
-  const mgWorkerTodayTotals = new Map<string, { name: string; role: string; minutes: number; amount: number }>();
+  // Task 4/5 — per-worker "this week" totals across every active Job Card,
+  // summed by worker (a worker can appear on more than one active assignment).
+  const mgWorkerWeekTotals = new Map<string, { name: string; role: string; minutes: number; amount: number }>();
 
   // Manager Dashboard KPI Click Behavior Clarification Unit 10E.4, Task 1/2:
   // rows for the Active Job Cards KPI modal — built from the exact same
@@ -1190,20 +1280,19 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     if (anyWorkerPaused && !hasActiveSession) mgPausedCount += 1;
 
     if (laborSummary) {
-      mgHoursTodaySum += laborSummary.today_minutes / 60;
-      mgAmountTodaySum += laborSummary.today_amount;
-      if (laborSummary.total_hours > 0) {
+      const weekHours = Math.round((laborSummary.week_minutes / 60) * 100) / 100;
+      if (weekHours > 0) {
         mgJobCardLaborRows.push({
           id: wo.id, workOrderNumber: wo.work_order_number,
           assetLabel: wo.assets ? `${wo.assets.asset_name}${wo.assets.plate_number ? ` (${wo.assets.plate_number})` : ""}` : null,
-          status: wo.status, totalHours: laborSummary.total_hours, totalAmount: laborSummary.total_amount,
+          status: wo.status, totalHours: weekHours, totalAmount: laborSummary.week_amount,
         });
       }
       for (const w of laborSummary.workers) {
-        const entry = mgWorkerTodayTotals.get(w.worker_id) ?? { name: w.worker_name, role: w.worker_role, minutes: 0, amount: 0 };
-        entry.minutes += w.today_minutes ?? 0;
-        entry.amount += w.today_amount ?? 0;
-        mgWorkerTodayTotals.set(w.worker_id, entry);
+        const entry = mgWorkerWeekTotals.get(w.worker_id) ?? { name: w.worker_name, role: w.worker_role, minutes: 0, amount: 0 };
+        entry.minutes += w.week_minutes ?? 0;
+        entry.amount += w.week_amount ?? 0;
+        mgWorkerWeekTotals.set(w.worker_id, entry);
       }
     }
 
@@ -1272,18 +1361,18 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     }
   }
 
-  const mgTopWorkersToday = [...mgWorkerTodayTotals.entries()]
+  const mgTopWorkersWeek = [...mgWorkerWeekTotals.entries()]
     .map(([workerId, v]) => ({
       workerId, name: v.name, role: v.role,
       hours: Math.round((v.minutes / 60) * 100) / 100,
       amount: Math.round(v.amount * 1000) / 1000,
     }))
     .sort((a, b) => b.hours - a.hours);
-  const mgTopWorkers = mgTopWorkersToday.slice(0, 3);
-  // Task 7 — least active ASSIGNED worker today (must have logged at least
-  // some time — a worker with zero minutes just hasn't started, which is
-  // "Not Started", not "least active").
-  const mgLeastActiveWorker = [...mgTopWorkersToday].reverse().find((w) => w.hours > 0) ?? null;
+  const mgTopWorkers = mgTopWorkersWeek.slice(0, 3);
+  // Task 7 — least active ASSIGNED worker this week (must have logged at
+  // least some time — a worker with zero minutes just hasn't started, which
+  // is "Not Started", not "least active").
+  const mgLeastActiveWorker = [...mgTopWorkersWeek].reverse().find((w) => w.hours > 0) ?? null;
 
   const mgTopJobCardsByLabor = [...mgJobCardLaborRows].sort((a, b) => b.totalHours - a.totalHours).slice(0, 3);
 
@@ -1523,6 +1612,11 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   // above — mgActiveJobCardsForModal is already fully built (no new query),
   // this just gates rendering the modal itself.
   const showActiveJobCardsModal = isManager && sp.activeJobs === "1";
+
+  // Manager Dashboard Closure Requests Modal Unit 10G, Task 1: same overlay
+  // convention as ?activeJobs=1 above — mgClosureRequestsForModal is already
+  // fully built (no new query), this just gates rendering the modal itself.
+  const showClosureRequestsModal = isManager && sp.closureRequests === "1";
 
   // New Job Card Modal Wizard Refactor: opened via ?new_job_card=1 as an
   // overlay on top of the dashboard, same convention as ?sendPreview below —
@@ -2008,7 +2102,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             Dashboard UI Polish and Realtime Verification Unit 10B: a
             command center in the task's own priority order — 1) KPI row,
             2) Needs Manager Attention (the main section, left column),
-            3) Labor Snapshot Today, 4) Vehicle Expiry Alerts (both stacked
+            3) Labor Snapshot, 4) Vehicle Expiry Alerts (both stacked
             in the right column, secondary to Attention), 5) Legacy
             Submitted Rows — now collapsed behind a native <details> panel
             (Task 4) so the pre-workflow "Under Review" records it holds
@@ -2050,7 +2144,22 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                   icon={Wrench}
                   tone="blue"
                 />
-                <TodaySummaryCard size="md" href="/maintenance/work-orders?status=ClosureRequested" label="Closure Requests" value={mgClosureRequestedCount} icon={ClipboardList} tone={mgClosureRequestedCount > 0 ? "amber" : "green"} />
+                {/* Manager Dashboard Closure Requests Modal Unit 10G, Task
+                    1: opens the Closure Requests modal in place instead of
+                    navigating to the Job Cards list — same ?activeJobs=1-
+                    style overlay convention as Active Jobs above. The Job
+                    Cards closure-requested filter itself is untouched and
+                    still reachable (Quick Action tile below, Task 11). */}
+                <TodaySummaryCard
+                  size="md"
+                  href="/dashboard?closureRequests=1"
+                  scroll={false}
+                  title="Review closure requests"
+                  label="Closure Requests"
+                  value={mgClosureRequestedCount}
+                  icon={ClipboardList}
+                  tone={mgClosureRequestedCount > 0 ? "amber" : "green"}
+                />
                 <TodaySummaryCard size="md" href="/maintenance/daily-activity?status=working" label="Working Now" value={mgWorkingNowCount} icon={PlayCircle} tone="green" />
                 <TodaySummaryCard size="md" href="/maintenance/daily-activity?status=paused" label="Paused" value={mgPausedCount} icon={PauseCircle} tone="amber" />
                 <TodaySummaryCard size="md" href="/maintenance/daily-activity?status=materials-pending" label="Materials Pending" value={mgMaterialsPendingCount} icon={ShoppingCart} tone={mgMaterialsPendingCount > 0 ? "red" : "green"} />
@@ -2067,9 +2176,21 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                   icon={ShieldAlert}
                   tone={mgVehicleAlertCount === 0 ? "green" : mgTopVehicleAlerts.some((v) => v.expired || v.daysRemaining <= 7) ? "red" : "amber"}
                 />
-                <TodaySummaryCard size="md" href="/maintenance/assignments" title="View Worker Activity" label="Labor Hours" value={Math.round(mgHoursTodaySum * 100) / 100} icon={Activity} tone="blue" />
+                {/* Manager Dashboard Labor Cost Period Summary Unit 10G.5,
+                    Task 1/3: sourced from mgLaborPeriodTotals.today — a
+                    company-wide (visibility-scoped) read, not limited to the
+                    30-active-Job-Card sample the rest of this section uses,
+                    so this is never an undercount. Correctly shows 0/0.000
+                    KWD when no session started today; that is not a
+                    calculation bug — see getLaborPeriodTotals's own comment
+                    and the Unit 10G.5 report. Labels now explicitly say
+                    "Today" (Task 3, Option A) since This Week/This Month are
+                    now shown just below in the Labor Snapshot card, and
+                    without the word "Today" a Manager could otherwise read
+                    these two KPIs as an all-time total. */}
+                <TodaySummaryCard size="md" href="/maintenance/assignments" title="View Worker Activity" label="Labor Hours Today" value={mgLaborPeriodTotals.today.hours} icon={Activity} tone="blue" />
                 {mgCanViewCosts ? (
-                  <TodaySummaryCard size="md" href="/maintenance/assignments" title="View Worker Activity" label="Labor Cost" value={`${mgAmountTodaySum.toFixed(3)} KWD`} icon={Activity} tone="gray" />
+                  <TodaySummaryCard size="md" href="/maintenance/assignments" title="View Worker Activity" label="Labor Cost Today" value={`${mgLaborPeriodTotals.today.amount.toFixed(3)} KWD`} icon={Activity} tone="gray" />
                 ) : null}
               </div>
               <div className="flex flex-wrap gap-x-4 gap-y-0.5 px-0.5 text-[11px] font-semibold text-[#9CA3AF]">
@@ -2116,21 +2237,54 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               </section>
 
               <section className="space-y-3">
-                {/* Task 5/6/7 — Labor Snapshot (worker + Job Card labor cost). */}
+                {/* Task 4/5/6/7 — Labor Snapshot (worker + Job Card labor
+                    cost). Manager Dashboard Labor Cost Period Summary Unit
+                    10G.5: header dropped "Today" (it now covers all three
+                    periods, not just today) and gained a Today/This Week/
+                    This Month period summary — the fix for "looks like
+                    labor cost is not updating" when sessions are from
+                    yesterday or earlier: Today can correctly read 0h/0.000
+                    KWD while This Week/This Month still show the real total. */}
                 <div className="space-y-2 rounded-md border border-[#DDE2EA] bg-white p-3 shadow-sm">
                   <div className="flex items-center justify-between gap-2">
-                    <h3 className="text-sm font-black leading-tight text-[#111827]">Labor Snapshot Today</h3>
+                    <h3 className="text-sm font-black leading-tight text-[#111827]">Labor Snapshot</h3>
                     <Link href="/maintenance/assignments" className="shrink-0 text-xs font-bold text-[#ED1C24] hover:text-[#c9151c]">
                       View Worker Activity
                     </Link>
                   </div>
-                  {/* Task 5 — compact stat row: Hours/Pay stay as plain
-                      labeled numbers, Working/Paused use small pill badges
-                      so the two "who's active right now" counts are the
-                      first thing a glance lands on. */}
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[#4B5563]">
-                    <span>Hours: <strong className="text-[#111827]">{Math.round(mgHoursTodaySum * 100) / 100}h</strong></span>
-                    {mgCanViewCosts ? <span>Pay: <strong className="text-[#111827]">{mgAmountTodaySum.toFixed(3)} KWD</strong></span> : null}
+
+                  {/* Task 4 — period summary: Today / This Week / This
+                      Month, each Hours + (if canViewCosts) Pay. Every figure
+                      comes from mgLaborPeriodTotals (getLaborPeriodTotals) —
+                      one company-wide, visibility-scoped read, not the
+                      30-active-Job-Card sample the Top Workers/Job Card
+                      Labor Cost lists below still use — so these three
+                      numbers can never disagree with each other. */}
+                  <div className="space-y-0.5 rounded-md bg-[#F9FAFB] px-2.5 py-2 text-xs text-[#4B5563]">
+                    <div className="flex items-center justify-between">
+                      <span>Today</span>
+                      <span className="font-bold text-[#111827]">
+                        {mgLaborPeriodTotals.today.hours}h{mgCanViewCosts ? ` / ${mgLaborPeriodTotals.today.amount.toFixed(3)} KWD` : ""}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>This Week</span>
+                      <span className="font-bold text-[#111827]">
+                        {mgLaborPeriodTotals.week.hours}h{mgCanViewCosts ? ` / ${mgLaborPeriodTotals.week.amount.toFixed(3)} KWD` : ""}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>This Month</span>
+                      <span className="font-bold text-[#111827]">
+                        {mgLaborPeriodTotals.month.hours}h{mgCanViewCosts ? ` / ${mgLaborPeriodTotals.month.amount.toFixed(3)} KWD` : ""}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Task 5 — "who's active right now" stays a plain pill
+                      row, unrelated to any period (Active/Paused is a
+                      current-state count, not a time-bucketed total). */}
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-bold text-[#16A34A]">
                       Working {mgWorkingNowCount}
                     </span>
@@ -2139,9 +2293,13 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                     </span>
                   </div>
 
+                  {/* Task 4 — Top Workers now defaults to This Week (was
+                      Today) — "meaningful current workload" per the task's
+                      own recommendation, not just whoever clocked in since
+                      midnight. */}
                   {mgTopWorkers.length > 0 ? (
                     <div>
-                      <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Top Workers Today</p>
+                      <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Top Workers This Week</p>
                       <div className="mt-1 space-y-1">
                         {mgTopWorkers.map((w) => (
                           <div key={w.workerId} className="flex items-center justify-between gap-2 text-xs">
@@ -2159,12 +2317,12 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                       ) : null}
                     </div>
                   ) : (
-                    <p className="text-xs text-[#9CA3AF]">No worker hours logged today.</p>
+                    <p className="text-xs text-[#9CA3AF]">No worker hours logged this week.</p>
                   )}
 
                   {mgTopJobCardsByLabor.length > 0 ? (
                     <div className="border-t border-[#EEF2F6] pt-2">
-                      <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Job Card Labor Cost</p>
+                      <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Job Card Labor Cost This Week</p>
                       <div className="mt-1 space-y-1">
                         {mgTopJobCardsByLabor.map((jc) => (
                           <Link
@@ -2546,6 +2704,15 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           Task 1: opened via ?activeJobs=1, same overlay convention. */}
       {showActiveJobCardsModal && (
         <ActiveJobCardsModal jobCards={mgActiveJobCardsForModal} totalActiveCount={mgActiveCount} closeHref="/dashboard" />
+      )}
+
+      {/* Manager Dashboard Closure Requests Modal Unit 10G, Task 1: opened
+          via ?closureRequests=1, same overlay convention. Unit 10G.2:
+          canViewCosts is no longer a prop here — the list's own totalAmount
+          is already null-or-real per row (computed above), and the Closure
+          Review popup fetches its own canViewCosts server-side. */}
+      {showClosureRequestsModal && (
+        <ClosureRequestsModal jobCards={mgClosureRequestsForModal} totalCount={mgClosureRequestedCount} closeHref="/dashboard" />
       )}
     </>
   );

@@ -76,10 +76,26 @@ export function JobCardSubmittedModal({ data, dismissHref, hideViewJobCard = fal
     value: <span className={hasMaterials ? "font-semibold text-[#16A34A]" : "font-semibold text-[#9CA3AF]"}>{hasMaterials ? "Added" : "None"}</span>,
   });
 
+  // New Job Card Button Wording and Success Popup Clarity Unit 10F.2, Task
+  // 3-6: this modal fires whenever a previously-saved Draft is activated
+  // (submitWorkOrderAction, `success=job-card-submitted`) from anywhere —
+  // dashboard, Job Cards list, Job Card detail page, Materials Requests
+  // list. "Job Card Started"/"Continue This Job Card" read the same way the
+  // wizard's own "Start Job Card" did — as if a worker timer had started.
+  // Renamed to "Activated" (accurate: Draft -> Active) and pointed at Daily
+  // Activity, same as JobCardCreatedModal. Unlike that modal, `dismissHref`
+  // here varies by host page (e.g. "/dashboard"), so "Go to Job Cards" stays
+  // its own explicit, hardcoded-href button rather than reusing
+  // closeAction/closeLabel — reusing it would silently send dashboard/detail
+  // page callers to the wrong place.
+  const dailyActivityHref = data.work_order_number
+    ? `/maintenance/daily-activity?q=${encodeURIComponent(data.work_order_number)}`
+    : "/maintenance/daily-activity";
+
   return (
     <WorkflowSuccessModal
       headingId="jc-submitted-heading"
-      title="Job Card Started"
+      title="Job Card Activated"
       description={
         <>
           Job Card <span className="font-bold text-[#111827]">{data.work_order_number ?? "—"}</span> is now Active.
@@ -87,15 +103,16 @@ export function JobCardSubmittedModal({ data, dismissHref, hideViewJobCard = fal
         </>
       }
       summaryItems={summaryItems}
-      nextStepDescription={hasMaterials ? "Review materials and issue available stock when ready." : "Open the Job Card to continue."}
-      primaryAction={
-        hideViewJobCard
-          ? { kind: "link", label: "Go to Job Cards", href: "/maintenance/work-orders", onClick: dismiss }
-          : { kind: "link", label: "Continue This Job Card", href: `/maintenance/work-orders/${data.id}`, onClick: dismiss }
+      nextStepDescription={
+        hasMaterials
+          ? "Review materials in Daily Activity, then issue available stock or receive missing materials."
+          : "Open Daily Activity to track worker time and monitor this Job Card."
       }
+      primaryAction={{ kind: "link", label: "Open in Daily Activity", href: dailyActivityHref, onClick: dismiss }}
       secondaryActions={[
+        ...(hideViewJobCard ? [] : [{ kind: "link" as const, label: "View Job Card Details", href: `/maintenance/work-orders/${data.id}`, onClick: dismiss }]),
         { kind: "link", label: "Create Another Job Card", href: "/maintenance/work-orders/new", onClick: dismiss },
-        ...(hideViewJobCard ? [] : [{ kind: "link" as const, label: "Go to Job Cards", href: "/maintenance/work-orders", onClick: dismiss }]),
+        { kind: "link", label: "Go to Job Cards", href: "/maintenance/work-orders", onClick: dismiss },
       ]}
       closeAction={dismiss}
     />

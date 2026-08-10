@@ -233,6 +233,58 @@ export async function toggleUserActiveAction(formData: FormData) {
   redirect(`${backUrl}?success=${is_active ? "activated" : "deactivated"}`);
 }
 
+// ── Cost access (Super Admin only) ────────────────────────────────────────────
+//
+// Unit 10G.4: controls profiles.can_view_costs directly — the same field
+// canViewCosts() (lib/security/permissions.ts) already reads everywhere
+// (Closure Review, Worker Activity, Reports, Closed Jobs). This action never
+// touches role_permissions/costs.view, and never grants anything beyond this
+// one profile's own flag — Data Entry stays hidden from costs unless a
+// Super Admin explicitly flips this for that specific account.
+
+export async function updateUserCostAccessAction(formData: FormData) {
+  const context = await requirePermission("admin.users.manage");
+
+  if (context.role?.slug !== "super_admin") {
+    redirect("/admin/users?error=insufficient-permissions");
+  }
+
+  const parsed = z
+    .object({
+      profile_id: z.string().uuid(),
+      can_view_costs: z.preprocess((v) => v === "true", z.boolean())
+    })
+    .safeParse(Object.fromEntries(formData));
+
+  if (!parsed.success) redirect("/admin/users?error=invalid-input");
+  const { profile_id, can_view_costs } = parsed.data;
+  const backUrl = `/admin/users/${profile_id}`;
+
+  const target = await prisma.profiles.update({
+    where: { id: profile_id },
+    data: { can_view_costs },
+    select: { full_name: true }
+  });
+
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "user.cost_access_updated",
+    entityType: "profile",
+    entityId: profile_id,
+    summary: `${can_view_costs ? "Granted" : "Revoked"} cost visibility for ${target.full_name}`,
+    metadata: { can_view_costs }
+  });
+  await emitRealtimeEvent({
+    eventType: REALTIME_EVENTS.USER_UPDATED,
+    entityType: "profile",
+    entityId: profile_id,
+    actorProfileId: context.userId
+  });
+
+  revalidatePath(backUrl);
+  redirect(`${backUrl}?success=cost-access-updated`);
+}
+
 // ── Unlock account ────────────────────────────────────────────────────────────
 
 export async function unlockUserAccountAction(formData: FormData) {

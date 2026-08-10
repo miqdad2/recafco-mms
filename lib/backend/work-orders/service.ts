@@ -1021,9 +1021,13 @@ async function assertNoActiveWorkSessions(tx: BackendTransaction, workOrderId: s
 export async function requestJobCardClosure(context: CurrentUserContext, workOrderId: string, note: string) {
   assertCanRequestJobCardClosure(context);
 
-  if (!note || note.trim().length < 10) {
-    throw new AppError("A completion note is required to request closure (min 10 characters).", { code: "VALIDATION_ERROR" });
-  }
+  // Closure Request Modal Optional Note and Multiple Custom Attachments
+  // Unit 10F.6B, Task 2: the completion note is no longer required — Data
+  // Entry/Manager feedback was that materials-completed + no-active-session
+  // is what actually gates readiness (the real guards below), not prose.
+  // Empty/whitespace-only input is stored as null, matching the nullable
+  // `comments String?` column already in the schema — no migration needed.
+  const trimmedNote = (note ?? "").trim();
 
   const result = await withBackendTransaction(context.userId, async (tx) => {
     const existing = await findWorkflowWorkOrder(tx, workOrderId);
@@ -1058,7 +1062,7 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
 
     const row = await updateWorkOrderStatus(tx, workOrderId, CLOSURE_REQUESTED_STATUS, context.userId);
     await tx.approvals.create({
-      data: { work_order_id: workOrderId, status: CLOSURE_REQUESTED_STATUS, decided_by: context.userId, comments: note.trim() }
+      data: { work_order_id: workOrderId, status: CLOSURE_REQUESTED_STATUS, decided_by: context.userId, comments: trimmedNote || null }
     });
 
     return {
@@ -1080,10 +1084,10 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
       entityId: result.workOrderId,
       actorId: context.userId,
       recipientUserIds: recipients,
-      metadata: { job_card_number: result.workOrderNumber ?? "Job Card", note: note.trim() },
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card", note: trimmedNote },
       actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
-    auditWorkflow(context, "work_order.closure_requested", result, `Closure requested for ${result.workOrderNumber ?? "work order"}`, { note: note.trim() }),
+    auditWorkflow(context, "work_order.closure_requested", result, `Closure requested for ${result.workOrderNumber ?? "work order"}`, { note: trimmedNote }),
     emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_CLOSURE_REQUESTED, result.workOrderId, context.userId)
   ]);
 

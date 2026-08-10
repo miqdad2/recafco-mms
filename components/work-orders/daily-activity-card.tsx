@@ -40,6 +40,10 @@ export type DailyActivityCardData = {
   assetLabel: string | null;
   issue: string;
   createdLabel: string;
+  // Daily Activity New Job Card Visibility and Timestamp Polish Unit 10F.5,
+  // Task 2: true for the first 60 minutes after creation — drives the list
+  // row's "NEW" badge only, not a workflow/status concept.
+  isNewJobCard: boolean;
   workTeam: string | null;
   assignmentChip: DailyActivityChip;
   materialsChip: DailyActivityChip;
@@ -121,6 +125,21 @@ function TinyStatusBadge({ label, tone }: DailyActivityChip) {
   );
 }
 
+// Daily Activity New Job Card Visibility and Timestamp Polish Unit 10F.5,
+// Task 2: always blue, never red — a "new" Job Card is informational, not a
+// problem. `animate-pulse` is Tailwind's built-in calm opacity fade (not a
+// blink), applied only to this small badge, never the whole card; it stops
+// being rendered at all once isNewJobCard turns false (60 minutes, Task 2),
+// which is what actually "stops" it — the CSS animation itself doesn't need
+// its own timer.
+function NewBadge() {
+  return (
+    <span className="inline-flex shrink-0 animate-pulse items-center rounded border border-blue-300 bg-blue-100 px-1 py-0.5 text-[9px] font-black leading-none text-blue-700">
+      NEW
+    </span>
+  );
+}
+
 // ── Left list row (Task 1/2/3) ──────────────────────────────────────────────
 
 export function DailyActivityListRow({
@@ -143,15 +162,22 @@ export function DailyActivityListRow({
         isSelected ? "bg-blue-50 ring-1 ring-[#93C5FD]" : "ring-1 ring-[#E5E7EB] hover:bg-gray-50"
       }`}
     >
+      {/* Line 1 — Job Card number + status badge + NEW badge */}
       <div className="flex items-center justify-between gap-1.5">
         <span className="truncate text-xs font-black text-[#111827]">{card.workOrderNumber ?? "Job Card"}</span>
         <div className="flex shrink-0 items-center gap-1">
           {card.isUnusualActiveSession ? <AlertTriangle className="h-3 w-3 text-amber-600" aria-hidden="true" /> : null}
+          {card.isNewJobCard ? <NewBadge /> : null}
           <TinyStatusBadge label={card.displayStatus} tone={card.displayStatusTone} />
         </div>
       </div>
+      {/* Line 2 — asset / vehicle / plate */}
       <p className="truncate text-[11px] text-[#6B7280]">{card.assetLabel ?? "No asset linked"}</p>
+      {/* Line 3 — issue text */}
       <p className="line-clamp-1 text-[11px] text-[#374151]">{card.issue}</p>
+      {/* Line 4 — created date/time */}
+      <p className="mt-0.5 truncate text-[10px] text-[#9CA3AF]">Created: {card.createdLabel}</p>
+      {/* Line 5 — material / work / assignment chips */}
       <div className="mt-1 flex flex-wrap gap-1">
         <MiniChip label={card.materialsChip.label} tone={card.materialsChip.tone} />
         <MiniChip label={card.workTimeChip.label} tone={card.workTimeChip.tone} />
@@ -168,6 +194,7 @@ export function DailyActivitySelectedPanel({
   canPrint,
   onIssueMaterial,
   onReceiveMaterial,
+  onRequestClosure,
 }: {
   card: DailyActivityCardData;
   canPrint: boolean;
@@ -176,6 +203,11 @@ export function DailyActivitySelectedPanel({
   // card.materialsModalAction says so (see the button rendering below).
   onIssueMaterial: () => void;
   onReceiveMaterial: () => void;
+  // Daily Activity Closure Request Modal with Attachments Unit 10F.6, Task
+  // 1: opens the closure request modal for THIS card instead of navigating
+  // to the Job Card detail page's Closure tab — only ever called when
+  // card.showRequestClosure says so (see the button rendering below).
+  onRequestClosure: () => void;
 }) {
   const detailHref = card.detailHref;
   // Task 6/12 — never repeat the same click as both the panel's one primary
@@ -203,6 +235,9 @@ export function DailyActivitySelectedPanel({
               {card.workOrderNumber ?? "Job Card"}
             </Link>
             <StatusBadge label={card.displayStatus} tone={card.displayStatusTone} />
+            {/* Task 6 — reinforces "this is the new Job Card I just
+                selected," the same badge/condition as the list row. */}
+            {card.isNewJobCard ? <NewBadge /> : null}
             {card.isUnusualActiveSession ? (
               <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-black text-amber-800">
                 <AlertTriangle className="h-3 w-3" aria-hidden="true" /> Active work session
@@ -210,8 +245,9 @@ export function DailyActivitySelectedPanel({
             ) : null}
           </div>
           <p className="mt-1 text-sm text-[#374151]">{card.issue}</p>
+          {/* Task 6 — "Created: Today, 1:55 PM" in the selected panel header. */}
           <p className="mt-0.5 text-xs text-[#6B7280]">
-            {card.assetLabel ?? "No asset linked"} · Created {card.createdLabel}
+            {card.assetLabel ?? "No asset linked"} · Created: {card.createdLabel}
             {card.workTeam ? ` · ${card.workTeam}` : ""}
           </p>
         </div>
@@ -237,6 +273,19 @@ export function DailyActivitySelectedPanel({
             <button
               type="button"
               onClick={materialsOnClick}
+              className={`inline-flex min-h-8 items-center justify-center rounded-md px-3.5 py-1.5 text-xs font-bold text-white transition ${
+                nextActionIsUrgent ? "bg-[#ED1C24] hover:bg-[#c8181e]" : "bg-[#2563EB] hover:bg-blue-700"
+              }`}
+            >
+              {card.nextAction.buttonLabel}
+            </button>
+          ) : requestClosureIsPrimary ? (
+            // Unit 10F.6, Task 1 — Request Closure as the Next Action opens
+            // the closure modal in place instead of navigating to the Job
+            // Card detail page's Closure tab.
+            <button
+              type="button"
+              onClick={onRequestClosure}
               className={`inline-flex min-h-8 items-center justify-center rounded-md px-3.5 py-1.5 text-xs font-bold text-white transition ${
                 nextActionIsUrgent ? "bg-[#ED1C24] hover:bg-[#c8181e]" : "bg-[#2563EB] hover:bg-blue-700"
               }`}
@@ -371,12 +420,15 @@ export function DailyActivitySelectedPanel({
         {card.closureChip.label === "Ready" ? <p className="mt-1 text-xs font-semibold text-[#16A34A]">Ready for closure request.</p> : null}
         {card.showRequestClosure && !requestClosureIsPrimary ? (
           <div className="mt-1.5">
-            <Link
-              href={`${detailHref}#closure-panel`}
+            {/* Unit 10F.6, Task 1 — opens the closure modal instead of
+                navigating to the Job Card detail page's Closure tab. */}
+            <button
+              type="button"
+              onClick={onRequestClosure}
               className="inline-flex min-h-7 items-center rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1 text-xs font-bold text-[#111827] transition hover:bg-gray-50"
             >
               Request Closure
-            </Link>
+            </button>
           </div>
         ) : null}
       </div>

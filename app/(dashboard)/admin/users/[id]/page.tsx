@@ -3,6 +3,7 @@ import {
   Archive,
   ArrowLeft,
   CheckCircle2,
+  DollarSign,
   KeyRound,
   Lock,
   LogOut,
@@ -24,7 +25,8 @@ import {
   restoreUserAction,
   revokeUserSessionsAction,
   toggleUserActiveAction,
-  unlockUserAccountAction
+  unlockUserAccountAction,
+  updateUserCostAccessAction
 } from "@/app/actions/user-access";
 import { resetUserPasswordAction } from "@/app/actions/admin";
 import { AutoRefresh } from "@/components/auto-refresh";
@@ -133,7 +135,8 @@ export default async function UserDetailPage({
     unlocked: "Account unlocked.",
     "sessions-revoked": "All active sessions revoked.",
     "password-reset": "Temporary password set. User must change it on next login.",
-    "password-change-forced": "User will be required to change their password on next login."
+    "password-change-forced": "User will be required to change their password on next login.",
+    "cost-access-updated": "Cost access updated."
   };
 
   const errorMessages: Record<string, string> = {
@@ -353,6 +356,31 @@ export default async function UserDetailPage({
                 </form>
               )}
             </Card>
+
+            {isSuperAdminViewer && (
+              <Card title="Cost Access">
+                <p className="mb-3 text-sm text-[#4B5563]">
+                  Controls whether this user can view labor rates, worker pay, and cost reports.
+                </p>
+                <form action={updateUserCostAccessAction} className="flex items-center justify-between gap-3">
+                  <input type="hidden" name="profile_id" value={profileId} />
+                  <label className="flex items-center gap-2 text-sm font-semibold text-[#111827]">
+                    <input
+                      type="checkbox"
+                      name="can_view_costs"
+                      value="true"
+                      defaultChecked={profile.can_view_costs}
+                      className="h-4 w-4 rounded border-[#E5E7EB] text-[#ED1C24] focus:ring-[#ED1C24]"
+                    />
+                    Can view costs
+                  </label>
+                  <Button type="submit" variant="secondary" className="gap-2">
+                    <DollarSign className="h-4 w-4" aria-hidden="true" />
+                    Save Cost Access
+                  </Button>
+                </form>
+              </Card>
+            )}
 
             <Card title="Account actions">
               <div className="space-y-3">

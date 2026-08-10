@@ -18,11 +18,18 @@ export function InternalTeamRosterForm({
   workers,
   currentRoster,
   onSaved,
+  canViewCosts = false,
 }: {
   workOrderId: string;
   workers: WorkerProfileRow[];
   currentRoster: CurrentRosterRow[];
   onSaved?: () => void;
+  // Hide Worker Hourly Rate from Data Entry Assignment Picker Unit 10F.1,
+  // Task 2: this same roster form is also used from the Job Card detail
+  // Assignment & Work Time tab, where Manager/Super Admin should still see
+  // rates per the existing cost-visibility rule. Defaults to hidden so any
+  // other caller that doesn't pass this explicitly stays on the safe side.
+  canViewCosts?: boolean;
 }) {
   const [state, formAction, isPending] = useActionState<InternalTeamRosterState, FormData>(
     saveInternalTeamRosterAction,
@@ -78,7 +85,7 @@ export function InternalTeamRosterForm({
           <option value="">No supervisor</option>
           {supervisors.map((w) => (
             <option key={w.id} value={w.id}>
-              {w.name} — {w.hourly_rate.toFixed(3)} KWD/hr
+              {canViewCosts ? `${w.name} — ${w.hourly_rate.toFixed(3)} KWD/hr` : w.name}
             </option>
           ))}
         </select>
@@ -96,7 +103,7 @@ export function InternalTeamRosterForm({
         >
           {technicians.map((w) => (
             <option key={w.id} value={w.id}>
-              {w.name} — {w.hourly_rate.toFixed(3)} KWD/hr
+              {canViewCosts ? `${w.name} — ${w.hourly_rate.toFixed(3)} KWD/hr` : w.name}
             </option>
           ))}
         </select>
@@ -114,7 +121,7 @@ export function InternalTeamRosterForm({
         >
           {helpers.map((w) => (
             <option key={w.id} value={w.id}>
-              {w.name} — {w.hourly_rate.toFixed(3)} KWD/hr
+              {canViewCosts ? `${w.name} — ${w.hourly_rate.toFixed(3)} KWD/hr` : w.name}
             </option>
           ))}
         </select>

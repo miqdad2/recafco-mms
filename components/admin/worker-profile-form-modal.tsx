@@ -14,11 +14,22 @@ const lbl = "block text-xs font-bold text-[#4B5563] mb-1";
 
 export function WorkerProfileFormModal({
   worker,
+  canViewCosts,
   onClose,
 }: {
   worker: WorkerProfileRow | null;
+  // Worker Rate Visibility and Data Entry Lockdown Unit 10F.4, Task 3: this
+  // modal only ever opens in edit mode (`worker` set) for Manager/Super
+  // Admin — the caller (worker-profiles-view.tsx) hides the Edit button for
+  // everyone else. Data Entry only ever reaches this in create mode
+  // (`worker` null), where the rate field still shows (Task 3, Option A —
+  // Data Entry enters it once at creation) with an explanatory note; it
+  // stays hidden for anyone without cost visibility in the (Data-Entry-
+  // unreachable) edit case, as a defensive default.
+  canViewCosts: boolean;
   onClose: () => void;
 }) {
+  const showRateField = !worker || canViewCosts;
   const [state, formAction, isPending] = useActionState<WorkerProfileState, FormData>(saveWorkerProfileAction, null);
 
   useEffect(() => {
@@ -72,6 +83,29 @@ export function WorkerProfileFormModal({
           <form action={formAction} className="space-y-3">
             {worker && <input type="hidden" name="id" value={worker.id} />}
 
+            {/* Worker Profile Form Simplification and Division Rename Unit
+                10G.6, Task 1: Employee ID, Name, Worker Type, Division,
+                Hourly Rate — that exact order, matching the task's own
+                "company-style" form spec. Required on create (a fresh
+                profile should always get one); left optional on edit so an
+                existing pre-Unit-10G.6 profile with no employee_id yet
+                doesn't get blocked from being saved for an unrelated change
+                (Task 8 — old rows are never required to backfill one). */}
+            <div>
+              <label htmlFor="wp-employee-id" className={lbl}>
+                Employee ID {!worker && <span className="text-[#ED1C24]">*</span>}
+              </label>
+              <input
+                id="wp-employee-id"
+                name="employee_id"
+                required={!worker}
+                defaultValue={worker?.employee_id ?? ""}
+                placeholder="e.g. EMP-1025"
+                className={inp}
+                disabled={isPending}
+              />
+            </div>
+
             <div>
               <label htmlFor="wp-name" className={lbl}>
                 Name <span className="text-[#ED1C24]">*</span>
@@ -98,30 +132,10 @@ export function WorkerProfileFormModal({
               </select>
             </div>
 
+            {/* Task 2: label is "Division" — the underlying field name
+                (skill_category) and stored values are unchanged. */}
             <div>
-              <label htmlFor="wp-rate" className={lbl}>
-                Hourly Rate (KWD) <span className="text-[#ED1C24]">*</span>
-              </label>
-              <input
-                id="wp-rate"
-                name="hourly_rate"
-                type="number"
-                min="0"
-                step="0.001"
-                required
-                defaultValue={worker?.hourly_rate ?? 0}
-                className={inp}
-                disabled={isPending}
-              />
-            </div>
-
-            <div>
-              <label htmlFor="wp-phone" className={lbl}>Phone</label>
-              <input id="wp-phone" name="phone" defaultValue={worker?.phone ?? ""} placeholder="Optional" className={inp} disabled={isPending} />
-            </div>
-
-            <div>
-              <label htmlFor="wp-skill" className={lbl}>Skill Category</label>
+              <label htmlFor="wp-skill" className={lbl}>Division</label>
               <select id="wp-skill" name="skill_category" defaultValue={worker?.skill_category ?? ""} className={inp} disabled={isPending}>
                 <option value="">Not specified</option>
                 {SKILL_CATEGORIES.map((c) => (
@@ -130,18 +144,63 @@ export function WorkerProfileFormModal({
               </select>
             </div>
 
-            <div>
-              <label htmlFor="wp-notes" className={lbl}>Notes</label>
-              <textarea
-                id="wp-notes"
-                name="notes"
-                rows={2}
-                defaultValue={worker?.notes ?? ""}
-                placeholder="Optional"
-                className={`${inp} resize-none`}
-                disabled={isPending}
-              />
-            </div>
+            {showRateField ? (
+              <div>
+                <label htmlFor="wp-rate" className={lbl}>
+                  Hourly Rate (KWD) <span className="text-[#ED1C24]">*</span>
+                </label>
+                <input
+                  id="wp-rate"
+                  name="hourly_rate"
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  required
+                  defaultValue={worker?.hourly_rate ?? 0}
+                  className={inp}
+                  disabled={isPending}
+                />
+                {/* Task 3/4 — shown only for Data Entry (canViewCosts false) at
+                    creation; a Manager/Super Admin never sees this note. */}
+                {!worker && !canViewCosts && (
+                  <p className="mt-1 text-xs text-[#9CA3AF]">
+                    Hourly rate is saved for Manager review and cannot be edited by Data Entry after creation.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <input type="hidden" name="hourly_rate" value={worker?.hourly_rate ?? 0} />
+            )}
+
+            {/* Task 3, Option A: Phone/Notes removed from the Add Worker
+                (create) form entirely — Data Entry is never asked for them,
+                and the "company-style" simplified form stops at Hourly Rate.
+                They stay available only in edit mode, which this modal only
+                ever opens in for Manager/Super Admin (Data Entry has no Edit
+                button — see worker-profiles-view.tsx and this file's own
+                canViewCosts comment above), so `worker` being set already
+                means the actor is authorized to see/change them. */}
+            {worker && (
+              <>
+                <div>
+                  <label htmlFor="wp-phone" className={lbl}>Phone</label>
+                  <input id="wp-phone" name="phone" defaultValue={worker?.phone ?? ""} placeholder="Optional" className={inp} disabled={isPending} />
+                </div>
+
+                <div>
+                  <label htmlFor="wp-notes" className={lbl}>Notes</label>
+                  <textarea
+                    id="wp-notes"
+                    name="notes"
+                    rows={2}
+                    defaultValue={worker?.notes ?? ""}
+                    placeholder="Optional"
+                    className={`${inp} resize-none`}
+                    disabled={isPending}
+                  />
+                </div>
+              </>
+            )}
 
             <div className="flex items-center gap-2 border-t border-[#F3F4F6] pt-4">
               <button

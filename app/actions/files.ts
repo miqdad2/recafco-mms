@@ -261,6 +261,91 @@ export async function uploadWorkOrderFileAction(formData: FormData) {
   redirect(withSuccessParam(String(formData.get("return_to") || `/maintenance/work-orders/${workOrderId}`), "file-uploaded"));
 }
 
+// Daily Activity Closure Request Modal with Attachments Unit 10F.6.
+//
+// uploadWorkOrderFileAction above always redirect()s on completion — correct
+// for the Job Card detail page's Attachments tab form, but incompatible
+// with the Daily Activity closure modal, which must stay open through the
+// whole submit sequence (upload, then request closure) and report either
+// step's failure inline. This reuses every real piece of the upload logic
+// (canUploadWorkOrder's permission/existence checks, uploadPrivateFile's
+// validation+disk write, the identical work_order_attachments insert, the
+// identical audit log entry, the identical file.uploaded notification) —
+// only the final redirect vs. returned-state step differs. No new storage
+// mechanism, no new column, no new permission.
+export type WorkOrderAttachmentUploadState =
+  | { ok: true; fileName: string; attachmentType: string }
+  | { ok: false; error: string }
+  | null;
+
+export async function uploadWorkOrderFileModalAction(
+  _prev: WorkOrderAttachmentUploadState,
+  formData: FormData
+): Promise<WorkOrderAttachmentUploadState> {
+  let workOrderId: string;
+  try {
+    workOrderId = uuid.parse(formData.get("work_order_id"));
+  } catch {
+    return { ok: false, error: "Invalid Job Card." };
+  }
+
+  // canUploadWorkOrder() itself still redirect()s on the (rare, for this
+  // modal's actual audience — Data Entry/Manager/Super Admin, who already
+  // hold files.upload per this function's own comment above) denied/
+  // not-found cases — reused as-is rather than re-implementing its
+  // permission rule a second time.
+  const context = await canUploadWorkOrder(workOrderId);
+  const attachmentType = text.parse(formData.get("attachment_type") || "Attachment");
+  const file = fileFrom(formData);
+  if (!file) return { ok: false, error: "Select a file to upload." };
+
+  const result = await uploadPrivateFile("work-order-files", workOrderId, file);
+  if (result.error || !result.path) return { ok: false, error: result.error ?? "File upload failed." };
+
+  try {
+    await prisma.work_order_attachments.create({
+      data: {
+        work_order_id: workOrderId,
+        attachment_type: attachmentType,
+        file_name: file.name,
+        file_path: result.path,
+        content_type: file.type,
+        file_size: file.size,
+        uploaded_by: context.userId,
+      },
+    });
+  } catch {
+    return { ok: false, error: "File uploaded but could not be recorded. Please try again from Job Card Attachments." };
+  }
+
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "file.upload",
+    entityType: "work_order",
+    entityId: workOrderId,
+    summary: `Uploaded ${attachmentType} file to work order`,
+    metadata: { fileName: file.name, bucket: "work-order-files" },
+  });
+  await notifyByEvent({
+    eventKey: "file.uploaded",
+    entityType: "work_order",
+    entityId: workOrderId,
+    actorId: context.userId,
+    recipientRoles: ["maintenance_manager"],
+    metadata: {
+      entity_type: "work_order",
+      file_name: safeStorageName(file.name),
+      action_url: `/maintenance/work-orders/${workOrderId}`,
+    },
+    actionUrl: `/maintenance/work-orders/${workOrderId}`,
+    actionLabel: "Open work order",
+  });
+
+  revalidatePath(`/maintenance/work-orders/${workOrderId}`);
+  revalidatePath("/maintenance/daily-activity");
+  return { ok: true, fileName: file.name, attachmentType };
+}
+
 export async function uploadAssetFileAction(formData: FormData) {
   const context = await requireUser();
   const assetId = uuid.parse(formData.get("asset_id"));

@@ -33,7 +33,7 @@ export type WorkflowSuccessSummaryItem = {
 export type WorkflowSuccessAction =
   | { kind: "link"; label: string; href: string; onClick?: () => void }
   | { kind: "button"; label: string; onClick: () => void }
-  // For the one case (Start Job Card on a just-created Draft) where the
+  // For the one case (Activate Job Card on a just-created Draft) where the
   // primary action is a real server-action form submit, not a navigation —
   // hiddenFields become <input type="hidden"> children of the <form>.
   | { kind: "form"; label: string; action: (formData: FormData) => void | Promise<void>; hiddenFields?: Record<string, string> };

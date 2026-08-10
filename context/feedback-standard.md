@@ -11,7 +11,7 @@ patterns below instead of hand-rolling a new popup/banner style.
 Centered, backdrop-blocking, requires an explicit dismiss. Use for major
 workflow actions where the user needs "what happened, what's next":
 
-- Job Card Started / Job Card Draft Saved / Job Card Created
+- Job Card Created Successfully / Job Card Draft Saved / Job Card Activated
 - Job Card Closed
 - Closure Requested / Closure Approved
 - Materials Request Created / Materials Received
@@ -32,18 +32,27 @@ Pass `title`, `description`, `primaryAction`/`secondaryActions`
 `nextStepDescription`, `progressSteps` (stage pill row), and `warnings`
 (amber inline notices, e.g. "some attachments failed to upload").
 
-**Wording pattern (Task 4):**
-- Title: short, past-tense-ish state — "Job Card Started", "Closure
-  Requested", "Materials Request Created".
+**Wording pattern (Task 4; revised by New Job Card Button Wording and
+Success Popup Clarity Unit 10F.2):**
+- Title: short, past-tense-ish state — "Job Card Created Successfully",
+  "Closure Requested", "Materials Request Created". Avoid "Started"/
+  "Start" for anything that isn't literally a worker time session starting
+  (Unit 10F.2) — a Job Card being created/activated is not that, even
+  though the underlying action is named `submitWorkOrderAction`.
 - Description: `<record> <id> is now <state>.` — concrete, names the record.
-- Next step: a specific instruction — "Continue this Job Card to assign
-  workers, issue materials, or track work time." Never the old vague
-  "Assign work, update details, or request closure once work is done."
-  (retired by this unit — every modal now uses case-specific next-step text).
-- Buttons: primary is the one useful next click ("Continue This Job Card",
-  "View Job Card", "Go to Materials Request"); secondary are "Create
-  Another"/"Go to List"; the de-emphasized text-only "Close" always exists
-  and always calls the same `closeAction`.
+- Next step: a specific instruction. For a Job Card, prefer routing to
+  Daily Activity — that's where materials are issued/received and worker
+  time is started/paused/stopped, not the popup or the Job Card page
+  itself — e.g. "Open Daily Activity to issue materials, track worker
+  time, and monitor this Job Card." Never the old vague "Assign work,
+  update details, or request closure once work is done."
+- Buttons: primary is the one useful next click ("Open in Daily Activity",
+  "View Job Card", "Go to Materials Request"); secondary are "View Job
+  Card Details"/"Create Another"/"Go to List"; the de-emphasized text-only
+  "Close" always exists and always calls the same `closeAction` — reuse it
+  for a "Go to List"-type label only when `dismissHref` genuinely lands on
+  that list on every call site (verify every caller first; otherwise keep
+  "Go to List" as its own explicit, hardcoded-href button instead).
 
 ### 2. Quick Feedback Toast — `components/ui/action-toast.tsx`
 

@@ -484,7 +484,17 @@ export default async function WorkOrderDetailPage({
   // why" before the user attempts an action that would otherwise fail.
   const pendingMaterialsRequestsCount = wo.parts_requests.filter((r) => r.status !== "Issued").length;
   const materialsIncomplete = anyMaterialsIncomplete(materialFulfillment);
-  const materialsPendingForClosure = pendingMaterialsRequestsCount > 0 || materialsIncomplete;
+  // Material Fulfillment Status and Inventory Reservation Clarity Fix Unit
+  // 10F.3, Task 1/2: an open Materials Request's own `status` column can lag
+  // behind actual issuance (Offline Inventory Control's own direct Issue
+  // Material action never touches parts_requests — see
+  // syncPartsRequestStatusAfterFullIssueInTx), so it must never make the
+  // Materials chip/Next Action message say "pending" once every required
+  // row is actually fully issued. This is display-only — closureBlockers
+  // below still checks pendingMaterialsRequestsCount directly, unchanged,
+  // since that's the real backend closure gate's frontend mirror.
+  const materialsFullyIssued = materialFulfillment.length > 0 && !materialsIncomplete;
+  const materialsPendingForClosure = !materialsFullyIssued && (pendingMaterialsRequestsCount > 0 || materialsIncomplete);
   // Job Card Action Clarity Fix Task 5: "none" when this Job Card has no
   // work_order_required_parts rows — the Next Action panel's materials
   // branch below falls back to the plain pending-request check above in
@@ -508,11 +518,13 @@ export default async function WorkOrderDetailPage({
   const materialsChip: { label: string; tone: BadgeTone } =
     wo.parts_requests.length === 0 && materialFulfillment.length === 0
       ? { label: "No materials", tone: "gray" }
-      : materialsAvailability === "issuable" || materialsAvailability === "partial"
-        ? { label: "Ready to Issue", tone: "blue" }
-        : openPartsRequests > 0 || materialsIncomplete
-          ? { label: "Pending", tone: "amber" }
-          : { label: "Completed", tone: "green" };
+      : materialsFullyIssued
+        ? { label: "Completed", tone: "green" }
+        : materialsAvailability === "issuable" || materialsAvailability === "partial"
+          ? { label: "Ready to Issue", tone: "blue" }
+          : openPartsRequests > 0 || materialsIncomplete
+            ? { label: "Pending", tone: "amber" }
+            : { label: "Completed", tone: "green" };
   const anyWorkerPaused = laborSummary.workers.some((w) => w.status === "Paused");
   const workTimeChip: { label: string; tone: BadgeTone } = !hasInternalTeam
     ? { label: "Not Started", tone: "gray" }

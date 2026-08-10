@@ -49,7 +49,7 @@ Do not assume Supabase Auth, Supabase Storage, shadcn/ui, Radix UI, Recharts, Re
 
 ## Current Database State
 
-The previous local PostgreSQL operational database was not recovered. The codebase and migration history were recovered from Git. A fresh PostgreSQL database was created and all 29 SQL migrations were applied.
+The previous local PostgreSQL operational database was not recovered. The codebase and migration history were recovered from Git. A fresh PostgreSQL database was created and all 30 SQL migrations were applied (30th: `worker_profiles_employee_id_unit10g6`, additive nullable `employee_id` column on `worker_profiles`).
 
 Verified baseline:
 
