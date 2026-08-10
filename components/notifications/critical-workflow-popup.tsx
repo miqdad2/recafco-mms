@@ -1,7 +1,7 @@
 "use client";
 
 import { startTransition, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 import { getCriticalWorkflowPopupAction, markNotificationReadAction } from "@/app/actions/notifications";
 import { useRealtimeConnection } from "@/components/realtime/realtime-connection-provider";
@@ -75,6 +75,7 @@ type ReviewSession = { notificationId: string; workOrderId: string; mode: "closu
 
 export function CriticalWorkflowPopup() {
   const router = useRouter();
+  const pathname = usePathname();
   const { subscribe } = useRealtimeConnection();
   const [popup, setPopup] = useState<CriticalPopupPayload | null>(null);
   const [reviewing, setReviewing] = useState<ReviewSession | null>(null);
@@ -121,6 +122,26 @@ export function CriticalWorkflowPopup() {
       unsubscribe();
     };
   }, [subscribe]);
+
+  // Unit 10G.8, Task 7 — route-change safety cleanup. The primary fix for
+  // the "popup stuck on screen after navigating" bug is closing this
+  // component's own state synchronously in each button's onClick (see
+  // JobCardSummaryModal's Open Daily Activity / Open Full Job Card links,
+  // and this file's markReadAndClose/close for the non-reviewMode path).
+  // This guard is a defense-in-depth backstop for any OTHER navigation not
+  // going through those handlers (e.g. a sidebar link clicked while a
+  // popup/review modal happened to still be open) — it does not add the
+  // notification to the session-dismissed set (a route change is not a
+  // deliberate Dismiss), so the same notification can still resurface via a
+  // later SSE event or the next dashboard load, per Task 6.
+  const mountedPathnameRef = useRef(pathname);
+  useEffect(() => {
+    if (mountedPathnameRef.current === pathname) return;
+    mountedPathnameRef.current = pathname;
+    activeIdRef.current = null;
+    setPopup(null);
+    setReviewing(null);
+  }, [pathname]);
 
   function close() {
     if (popup) addDismissedId(popup.id);

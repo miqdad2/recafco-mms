@@ -42,9 +42,22 @@ import { getWorkOrderLaborSummary, getWorkOrderLaborSummariesBulk } from "@/lib/
 // further transitions, so updated_at is frozen at the same moment (3) would
 // report for every row this codebase's own closure functions produced.
 
-function assertIsManagerRole(context: CurrentUserContext) {
-  if (context.role?.slug !== "super_admin" && context.role?.slug !== "maintenance_manager") {
-    throw new Error("Only a Manager can view the Closed Job Cards summary.");
+// Data Entry Dashboard Closure and Closed Jobs Clarity Unit 10G.9, Task 3/8:
+// widened from Manager-only to also allow Data Entry — a "role-safe variant"
+// per Task 8, reusing this file directly rather than duplicating it, because
+// every cost/pay field below was ALREADY gated by canViewCosts (never
+// hardcoded to "Manager sees this"), not by this role check. Data Entry
+// simply had no way to call it at all before this unit; now that it can,
+// canViewCosts already resolves to false for Data Entry (no costs.view
+// permission, no can_view_costs flag by default) exactly as it does
+// everywhere else in the app — so cost/pay stays hidden from Data Entry with
+// no new gating logic needed here. visibilityFilter (applied below, per
+// role) still scopes every row to what that caller could already see
+// elsewhere, so this grants no new Job Card visibility either.
+function assertCanViewClosedJobCards(context: CurrentUserContext) {
+  const slug = context.role?.slug;
+  if (slug !== "super_admin" && slug !== "maintenance_manager" && slug !== "maintenance_data_entry") {
+    throw new Error("You do not have permission to view Closed Job Cards.");
   }
 }
 
@@ -81,7 +94,13 @@ function materialsSummaryLabel(fulfillment: MaterialFulfillment[]): string {
 }
 
 export type ClosedJobCardsFilter = {
-  period: "week" | "month" | "custom";
+  // Data Entry Dashboard Closure and Closed Jobs Clarity Unit 10G.9, Task 3:
+  // "last14days" added alongside the existing week/month/custom options —
+  // the Data Entry "Closed Recently" card's own default (its dashboard tile
+  // already counts on this exact rolling 14-day window), matching Task 3's
+  // "Options: Last 14 days / This Month / Custom range." Manager's own
+  // default ("week") is untouched.
+  period: "week" | "month" | "custom" | "last14days";
   from?: string;
   to?: string;
   search?: string;
@@ -100,13 +119,14 @@ export type ClosedJobCardListRow = {
   materialsSummary: string;
 };
 
-// Task 6 — list caps: This Week default max 50, This Month max 100.
+// Task 6 — list caps: This Week/Last 14 Days default max 50, This Month max 100.
 const WEEK_LIMIT = 50;
 const MONTH_LIMIT = 100;
+const LAST_14_DAYS_LIMIT = 50;
 
 export async function getClosedJobCardsListAction(filter: ClosedJobCardsFilter): Promise<ClosedJobCardListRow[]> {
   const context = await requireUser();
-  assertIsManagerRole(context);
+  assertCanViewClosedJobCards(context);
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
   const canViewCosts = canViewCostsForContext(context);
 
@@ -116,6 +136,13 @@ export async function getClosedJobCardsListAction(filter: ClosedJobCardsFilter):
   if (filter.period === "week") {
     rangeStart = getWeekStart();
     limit = WEEK_LIMIT;
+  } else if (filter.period === "last14days") {
+    // Task 3 — same rolling 14-day window as the Data Entry dashboard's own
+    // "Closed Recently" tile count (app/(dashboard)/dashboard/page.tsx's
+    // recentlyClosedSince), so the tile's number and this list never disagree.
+    rangeStart = new Date();
+    rangeStart.setDate(rangeStart.getDate() - 14);
+    limit = LAST_14_DAYS_LIMIT;
   } else if (filter.period === "month") {
     rangeStart = getMonthStart();
     limit = MONTH_LIMIT;
@@ -234,7 +261,7 @@ export type ClosedJobCardDetail = {
 
 export async function getClosedJobCardDetailAction(workOrderId: string): Promise<ClosedJobCardDetail | null> {
   const context = await requireUser();
-  assertIsManagerRole(context);
+  assertCanViewClosedJobCards(context);
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
   const canViewCosts = canViewCostsForContext(context);
 

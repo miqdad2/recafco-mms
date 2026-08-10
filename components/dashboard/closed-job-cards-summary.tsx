@@ -56,10 +56,61 @@ export function ClosedJobCardsSummaryCard({ weekCount, monthCount }: { weekCount
   );
 }
 
+// Data Entry Dashboard Closure and Closed Jobs Clarity Unit 10G.9, Task 3:
+// Data Entry's own "Closed Recently" tile — same click-to-open-a-popup
+// mechanism as ClosedJobCardsSummaryCard above (Task 9's "does not leave
+// dashboard"), but styled to match the plain TodaySummaryCard tiles the rest
+// of Data Entry's Today Summary row uses (single count + one-line subtitle),
+// not Manager's own two-number KPI tile style — and opens the SAME
+// ClosedJobCardsModal (Task 8 — reused, not duplicated) with
+// defaultPeriod="last14days" and the Data Entry period set. No cost/pay is
+// shown here for the same reason as everywhere else in this modal:
+// canViewCosts (resolved server-side in the action) is false for Data Entry.
+export function DataEntryClosedRecentlyCard({ count }: { count: number }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-2.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2.5 text-left transition hover:border-[#2563EB] hover:shadow-sm"
+      >
+        <span className="inline-flex shrink-0 rounded-md bg-[#16A34A] p-2 text-white">
+          <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate text-[10px] font-black uppercase leading-tight text-[#6B7280]">Closed Recently</span>
+          <span className="block text-lg font-black leading-tight text-[#111827]">{count}</span>
+          <span className="block truncate text-[10px] text-[#9CA3AF]">Closed in last 14 days</span>
+        </span>
+      </button>
+      {open ? (
+        <ClosedJobCardsModal
+          onClose={() => setOpen(false)}
+          defaultPeriod="last14days"
+          periods={DATA_ENTRY_PERIODS}
+          subtitle="Closed Job Cards you can review — no cost or pay shown."
+        />
+      ) : null}
+    </>
+  );
+}
+
 // ── List modal ───────────────────────────────────────────────────────────
 
-const PERIODS: { value: ClosedJobCardsFilter["period"]; label: string }[] = [
+const MANAGER_PERIODS: { value: ClosedJobCardsFilter["period"]; label: string }[] = [
   { value: "week", label: "This Week" },
+  { value: "month", label: "This Month" },
+  { value: "custom", label: "Custom" },
+];
+
+// Data Entry Dashboard Closure and Closed Jobs Clarity Unit 10G.9, Task 3:
+// Data Entry's own period set — "Last 14 Days" (its dashboard tile's own
+// window) replaces "This Week", "This Month" and "Custom" both kept exactly
+// as Task 3 asks ("Custom range if existing Closed Jobs modal supports it" —
+// it already does). Manager's MANAGER_PERIODS above is untouched.
+const DATA_ENTRY_PERIODS: { value: ClosedJobCardsFilter["period"]; label: string }[] = [
+  { value: "last14days", label: "Last 14 Days" },
   { value: "month", label: "This Month" },
   { value: "custom", label: "Custom" },
 ];
@@ -92,8 +143,22 @@ function ListRow({ row, onViewDetails }: { row: ClosedJobCardListRow; onViewDeta
   );
 }
 
-function ClosedJobCardsModal({ onClose }: { onClose: () => void }) {
-  const [period, setPeriod] = useState<ClosedJobCardsFilter["period"]>("week");
+function ClosedJobCardsModal({
+  onClose,
+  defaultPeriod = "week",
+  periods = MANAGER_PERIODS,
+  subtitle = "Review completed work, labor hours, and materials.",
+}: {
+  onClose: () => void;
+  // Task 3/8 — additive, optional: Manager's existing call site
+  // (ClosedJobCardsSummaryCard below) passes neither, so its behavior is
+  // byte-for-byte unchanged (still defaults to "week"/MANAGER_PERIODS).
+  // DataEntryClosedRecentlyCard passes "last14days"/DATA_ENTRY_PERIODS.
+  defaultPeriod?: ClosedJobCardsFilter["period"];
+  periods?: { value: ClosedJobCardsFilter["period"]; label: string }[];
+  subtitle?: string;
+}) {
+  const [period, setPeriod] = useState<ClosedJobCardsFilter["period"]>(defaultPeriod);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [search, setSearch] = useState("");
@@ -144,9 +209,9 @@ function ClosedJobCardsModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <LargeFormModal title="Closed Job Cards" subtitle="Review completed work, labor hours, and materials." onClose={onClose}>
+    <LargeFormModal title="Closed Job Cards" subtitle={subtitle} onClose={onClose}>
       <div className="flex flex-wrap items-center gap-2">
-        {PERIODS.map((p) => (
+        {periods.map((p) => (
           <button
             key={p.value}
             type="button"

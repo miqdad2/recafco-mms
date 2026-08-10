@@ -119,5 +119,9 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"]
+  // manifest.webmanifest excluded — unauthenticated requests for it were
+  // being redirected to the /login page's HTML by updateSession() below,
+  // which the browser then failed to parse as JSON ("Manifest: Line 1,
+  // column 1, Syntax error").
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest.webmanifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"]
 };

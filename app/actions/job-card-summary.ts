@@ -33,6 +33,21 @@ function materialsStatusLabel(status: ReturnType<typeof summarizeMaterialAvailab
   return "No Materials Required";
 }
 
+// Unit 10G.8, Task 1/2: worker names grouped the same way the Internal Team
+// roster form (components/work-orders/internal-team-roster-form.tsx) and
+// backend (lib/backend/work-orders/worker-roster.ts) already label roles —
+// "Supervisor" / "Technician" / "Helper/Labor" — so this popup uses the
+// exact same terminology as the rest of the app. `legacy` covers Job Cards
+// assigned before/without the Internal Team roster (freelancer, external
+// company, or the older single-technician login assignment), only ever
+// populated when the roster itself is empty (Task 2's stated priority).
+export type JobCardSummaryWorkers = {
+  supervisor: string[];
+  technicians: string[];
+  helpers: string[];
+  legacy: string[];
+};
+
 export type JobCardSummaryDetail = {
   id: string;
   workOrderNumber: string | null;
@@ -44,6 +59,7 @@ export type JobCardSummaryDetail = {
   workTeam: string;
   assignmentStatusLabel: string;
   workersCount: number;
+  workers: JobCardSummaryWorkers;
   materialsStatusLabel: string;
   attachmentsCount: number;
   nextAction: string;
@@ -59,13 +75,31 @@ export async function getJobCardSummaryAction(workOrderId: string): Promise<JobC
   assertIsManagerRole(context);
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
 
+  // Unit 10G.8, Task 2: worker names come from this same single Job Card
+  // fetch (no per-row N+1) — the Internal Team roster joined to
+  // worker_profiles for the name, plus the legacy work_order_assignments
+  // table (freelancer/external company/single-technician-login assignment)
+  // as a fallback only used when the roster itself is empty.
   const wo = await prisma.work_orders.findFirst({
     where: { id: workOrderId, deleted_at: null, AND: [visibilityFilter] },
     select: {
       id: true, work_order_number: true, status: true, created_at: true, created_by: true,
       operator_complaint: true, description_of_work: true, worker_type: true,
       assets: { select: { asset_name: true, plate_number: true } },
-      work_order_worker_assignments: { where: { status: "active" }, select: { id: true } },
+      work_order_worker_assignments: {
+        where: { status: "active" },
+        select: { worker_role: true, worker_profiles: { select: { name: true } } },
+        orderBy: [{ worker_role: "asc" }, { assigned_at: "asc" }],
+      },
+      work_order_assignments: {
+        select: {
+          assignment_type: true,
+          external_name: true,
+          external_company: true,
+          profiles: { select: { full_name: true } },
+        },
+        orderBy: { assigned_at: "desc" },
+      },
       _count: { select: { work_order_attachments: true } },
     },
   });
@@ -77,11 +111,34 @@ export async function getJobCardSummaryAction(workOrderId: string): Promise<JobC
     getMaterialFulfillmentForWorkOrder(prisma, wo.id),
   ]);
 
-  const workersCount = wo.work_order_worker_assignments.length;
+  // Unit 10G.8, Task 2: priority 1 — Internal Team roster (worker_profiles
+  // names, grouped by worker_role exactly as worker-roster.ts assigns it).
+  const roster = wo.work_order_worker_assignments;
+  const supervisor = roster.filter((r) => r.worker_role === "Supervisor").map((r) => r.worker_profiles.name);
+  const technicians = roster.filter((r) => r.worker_role === "Technician").map((r) => r.worker_profiles.name);
+  const helpers = roster.filter((r) => r.worker_role === "Helper/Labor").map((r) => r.worker_profiles.name);
+
+  // Priority 2 — legacy assignment (freelancer / external company / the
+  // older single-technician login assignment), only when the roster above
+  // is empty. Priority 3 ("Not assigned") falls out naturally when both are
+  // empty — workersCount stays 0 and every group below stays [].
+  const legacy: string[] =
+    roster.length === 0
+      ? wo.work_order_assignments
+          .map((a) => {
+            if (a.assignment_type === "FREELANCER") return a.external_name ? `${a.external_name} (Freelancer)` : null;
+            if (a.assignment_type === "EXTERNAL_COMPANY") return a.external_company ? `${a.external_company} (External Company)` : null;
+            return a.profiles?.full_name ? `${a.profiles.full_name} (Technician)` : null;
+          })
+          .filter((n): n is string => Boolean(n))
+      : [];
+
+  const workers: JobCardSummaryWorkers = { supervisor, technicians, helpers, legacy };
+  const workersCount = roster.length > 0 ? roster.length : legacy.length;
   const hasAssignment = workersCount > 0;
   const assignmentStatusLabel = !hasAssignment
     ? "No workers assigned"
-    : `${workersCount} worker${workersCount !== 1 ? "s" : ""}${activeSession?.status === "Active" ? " · Working Now" : activeSession?.status === "Paused" ? " · Paused" : ""}`;
+    : `${workersCount} worker${workersCount !== 1 ? "s" : ""} assigned${activeSession?.status === "Active" ? " · Working Now" : activeSession?.status === "Paused" ? " · Paused" : ""}`;
 
   const materialsAvailability = summarizeMaterialAvailability(fulfillment);
   const materialsBlocking = materialsAvailability === "shortage" || materialsAvailability === "partial";
@@ -107,6 +164,7 @@ export async function getJobCardSummaryAction(workOrderId: string): Promise<JobC
     workTeam: wo.worker_type,
     assignmentStatusLabel,
     workersCount,
+    workers,
     materialsStatusLabel: materialsStatusLabel(materialsAvailability),
     attachmentsCount: wo._count.work_order_attachments,
     nextAction,

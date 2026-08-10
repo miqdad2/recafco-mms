@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
-import { getJobCardSummaryAction, type JobCardSummaryDetail } from "@/app/actions/job-card-summary";
+import { getJobCardSummaryAction, type JobCardSummaryDetail, type JobCardSummaryWorkers } from "@/app/actions/job-card-summary";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { StatusBadge } from "@/components/ui/status-badge";
 
@@ -24,6 +24,48 @@ function materialsBadgeTone(label: string): "green" | "amber" | "red" | "blue" |
   if (label === "Partially Issued" || label === "Materials Pending") return "amber";
   if (label === "Ready to Issue") return "blue";
   return "gray";
+}
+
+// Unit 10G.8, Task 1 — compact "first 3 names, then +N more" per role group.
+const MAX_NAMES_SHOWN = 3;
+function formatNames(names: string[]): string {
+  if (names.length <= MAX_NAMES_SHOWN) return names.join(", ");
+  const shown = names.slice(0, MAX_NAMES_SHOWN).join(", ");
+  return `${shown} +${names.length - MAX_NAMES_SHOWN} more`;
+}
+
+function WorkerGroupRow({ label, names }: { label: string; names: string[] }) {
+  if (names.length === 0) return null;
+  return (
+    <p className="mt-1 text-xs text-[#374151]">
+      <span className="font-semibold text-[#111827]">{label}:</span> {formatNames(names)}
+    </p>
+  );
+}
+
+// Task 1/3 — worker name + role/division only, never rate/pay/KWD. Priority
+// 1 (Internal Team roster, grouped by role) beats priority 2 (legacy
+// freelancer/external company/single-technician assignment) beats "no
+// workers assigned" — matching getJobCardSummaryAction's own priority.
+function AssignmentWorkers({ workers }: { workers: JobCardSummaryWorkers }) {
+  const hasRoster = workers.supervisor.length > 0 || workers.technicians.length > 0 || workers.helpers.length > 0;
+  if (hasRoster) {
+    return (
+      <div className="mt-1.5">
+        <WorkerGroupRow label="Supervisor" names={workers.supervisor} />
+        <WorkerGroupRow label="Technicians" names={workers.technicians} />
+        <WorkerGroupRow label="Helpers / Labor" names={workers.helpers} />
+      </div>
+    );
+  }
+  if (workers.legacy.length > 0) {
+    return (
+      <div className="mt-1.5">
+        <WorkerGroupRow label="Assigned" names={workers.legacy} />
+      </div>
+    );
+  }
+  return <p className="mt-1.5 text-xs text-[#9CA3AF]">No workers assigned</p>;
 }
 
 export function JobCardSummaryModal({
@@ -97,7 +139,7 @@ export function JobCardSummaryModal({
           <div className="rounded-md border border-[#E5E7EB] bg-white p-3">
             <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Assignment</p>
             <p className="mt-1 text-sm font-semibold text-[#111827]">{detail.assignmentStatusLabel}</p>
-            <p className="mt-0.5 text-xs text-[#6B7280]">{detail.workersCount} worker{detail.workersCount !== 1 ? "s" : ""} assigned</p>
+            <AssignmentWorkers workers={detail.workers} />
           </div>
           <div className="rounded-md border border-[#E5E7EB] bg-white p-3">
             <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Materials</p>
@@ -114,14 +156,31 @@ export function JobCardSummaryModal({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 border-t border-[#F3F4F6] pt-4">
+          {/* Unit 10G.8, Task 4/5/7: both links now close this modal (which,
+              via the critical popup's own onClose wiring, also dismisses the
+              parent popup — see components/notifications/critical-workflow-popup.tsx's
+              closeReview) on click, same pattern already used elsewhere in
+              the app (e.g. material-detail-modal.tsx's Receive/Issue links)
+              — a bare <Link> with no onClick left this modal mounted over
+              whatever page it navigated to, since the critical popup lives
+              in the persistent app layout and its React state survives a
+              client-side route change. "Open Daily Activity" reuses the
+              same `?q=<jobCardNumber>` focus/select convention the New Job
+              Card success modal's own "Open in Daily Activity" link already
+              uses (Daily Activity has no `?jobCardId=` param — this is the
+              existing, already-working way to land pre-filtered/selected on
+              one specific Job Card); falls back to the plain board when the
+              number isn't available for any reason. */}
           <Link
-            href="/maintenance/daily-activity"
+            href={detail.workOrderNumber ? `/maintenance/daily-activity?q=${encodeURIComponent(detail.workOrderNumber)}` : "/maintenance/daily-activity"}
+            onClick={onClose}
             className="inline-flex min-h-9 items-center rounded-md bg-[#ED1C24] px-3.5 py-1.5 text-sm font-bold text-white transition hover:bg-red-700"
           >
             Open Daily Activity
           </Link>
           <Link
             href={detail.detailHref}
+            onClick={onClose}
             className="inline-flex min-h-9 items-center rounded-md border border-[#E5E7EB] bg-white px-3.5 py-1.5 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
           >
             Open Full Job Card

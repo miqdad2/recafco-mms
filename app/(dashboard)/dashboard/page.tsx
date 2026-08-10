@@ -68,7 +68,8 @@ import { VEHICLE_CATEGORIES } from "@/lib/assets/categories";
 import { getExpiryStatus } from "@/lib/assets/vehicle-status";
 import { StoreSendMaterialsPopup } from "@/components/store/store-send-materials-popup";
 import { VehicleExpiryModal, type VehicleExpiryAlertRow } from "@/components/dashboard/vehicle-expiry-modal";
-import { ClosedJobCardsSummaryCard } from "@/components/dashboard/closed-job-cards-summary";
+import { ClosedJobCardsSummaryCard, DataEntryClosedRecentlyCard } from "@/components/dashboard/closed-job-cards-summary";
+import { WaitingManagerApprovalCard, type WaitingApprovalRow } from "@/components/dashboard/waiting-manager-approval-card";
 import { ActiveJobCardsModal } from "@/components/dashboard/active-job-cards-modal";
 import { ClosureRequestsModal } from "@/components/dashboard/closure-requests-modal";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
@@ -699,7 +700,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   // small secondary preview rather than competing for height.
   const NU_RECENT_LIMIT = 2;
 
-  const [nuQueue, nuActiveSample, nuDraftSample, nuRecentRows] = isNormalUser ? await Promise.all([
+  const [nuQueue, nuActiveSample, nuDraftSample, nuRecentRows, nuClosureRequestedRows] = isNormalUser ? await Promise.all([
     Promise.all([
       prisma.work_orders.findMany({
         where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Under Review" }] },
@@ -793,7 +794,31 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         take: NU_RECENT_LIMIT,
       })
       .catch(() => []),
-  ]) : [null, [], [], []];
+    // Data Entry Dashboard Closure and Closed Jobs Clarity Unit 10G.9, Task
+    // 2: lean sample of this viewer's own "Closure Requested" Job Cards, for
+    // the Waiting Manager Approval popup — same compact-row shape (no full
+    // attachments/session history) as every other list on this dashboard.
+    // nuQueue.closureRequestedCount (computed above, uncapped) stays the
+    // authoritative card number; this capped-at-50 list is only for the
+    // popup, same convention as Manager's own mgClosureRequestedAll/
+    // mgClosureRequestedCount split.
+    prisma.work_orders
+      .findMany({
+        where: { AND: [{ deleted_at: null }, visibilityFilter, { status: "Closure Requested" }] },
+        select: {
+          id: true,
+          work_order_number: true,
+          updated_at: true,
+          operator_complaint: true,
+          description_of_work: true,
+          created_by: true,
+          assets: { select: { asset_name: true, plate_number: true } },
+        },
+        orderBy: { updated_at: "asc" },
+        take: 50,
+      })
+      .catch(() => []),
+  ]) : [null, [], [], [], []];
 
   const nuRecent: NuJobCardRow[] = nuRecentRows.length
     ? await (async () => {
@@ -812,6 +837,54 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           materials_request_status: r.parts_requests[0]?.status ?? null,
           has_pending_correction:   pendingCorrectionIds.has(r.id),
         }));
+      })()
+    : [];
+
+  // Data Entry Dashboard Closure and Closed Jobs Clarity Unit 10G.9, Task 2:
+  // enrich the capped Closure Requested sample above with materials status
+  // and worker-hours-only labor totals (no cost/pay field even exists on
+  // this row shape — see WaitingApprovalRow) for the Waiting Manager
+  // Approval popup. "Requested by" resolves from work_orders.created_by,
+  // matching Manager's own mgClosureRequestsForModal (below) exactly, not
+  // getClosureReviewDetailAction's separate approvals-row resolution — same
+  // "compact list" precedent, not the deep-review one.
+  const nuClosureRequestedForModal: WaitingApprovalRow[] = nuClosureRequestedRows.length
+    ? await (async () => {
+        const requesterIds = [...new Set(nuClosureRequestedRows.map((r) => r.created_by).filter((id): id is string => Boolean(id)))];
+        const [requesters, fulfillmentMap, laborMap] = await Promise.all([
+          requesterIds.length
+            ? prisma.profiles.findMany({ where: { id: { in: requesterIds } }, select: { id: true, full_name: true } })
+            : Promise.resolve([]),
+          getMaterialFulfillmentForWorkOrders(prisma, nuClosureRequestedRows.map((r) => r.id)),
+          getWorkOrderLaborSummariesBulk(prisma, nuClosureRequestedRows.map((r) => r.id)),
+        ]);
+        const requesterNameById = new Map(requesters.map((p) => [p.id, p.full_name]));
+        return nuClosureRequestedRows.map((r) => {
+          const fulfillment = fulfillmentMap.get(r.id) ?? [];
+          const laborSummary = laborMap.get(r.id);
+          const materialsAvailability = summarizeMaterialAvailability(fulfillment);
+          const materialsLabel =
+            materialsAvailability === "fulfilled"
+              ? "Fully Issued"
+              : materialsAvailability === "partial"
+                ? "Partially Issued"
+                : materialsAvailability === "issuable"
+                  ? "Ready to Issue"
+                  : materialsAvailability === "shortage"
+                    ? "Not Issued"
+                    : "No Materials";
+          return {
+            id: r.id,
+            workOrderNumber: r.work_order_number,
+            assetLabel: r.assets ? `${r.assets.asset_name}${r.assets.plate_number ? ` (${r.assets.plate_number})` : ""}` : null,
+            issue: r.operator_complaint || r.description_of_work || "No issue description",
+            requestedAtLabel: r.updated_at.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }),
+            requestedByName: r.created_by ? requesterNameById.get(r.created_by) ?? null : null,
+            materialsLabel,
+            totalHours: laborSummary?.total_hours ?? 0,
+            detailHref: `/maintenance/work-orders/${r.id}`,
+          };
+        });
       })()
     : [];
 
@@ -908,7 +981,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         candidates.push({
           id: wo.id, rank: 4, updatedAt: wo.updated_at.toISOString(),
           workOrderNumber: wo.work_order_number, assetLabel, issue,
-          badgeLabel: "Ready for Closure", badgeTone: "blue",
+          // Unit 10G.9, Task 1: same rename as the Today Summary card, for
+          // consistent wording across this one dashboard.
+          badgeLabel: "Ready to Request Closure", badgeTone: "blue",
           // One-Screen Dashboard No-Scroll Unit 9E.2, Task 8: "Ready for
           // Closure -> Open Job Card" (not a direct "Request Closure" click
           // from this compact row) — Request Closure still happens on the
@@ -1989,28 +2064,33 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               </div>
             )}
 
-            {/* Task 1/3 — Today Summary: 6 clickable cards, sized up
-                moderately, one row on desktop. Materials Pending/Working
-                Now/Paused/Ready for Closure are derived from the active
-                sample computed above; Closure Requested and Closed Recently
-                stay as small secondary text links rather than full cards. */}
+            {/* Data Entry Dashboard Closure and Closed Jobs Clarity Unit
+                10G.9, Task 1/2/3/4/5: 8 clickable cards, in the task's own
+                exact order — Active Jobs, Materials Pending, Working Now,
+                Paused Workers, Ready to Request Closure, Waiting Manager
+                Approval, Closed Recently, Drafts Not Started. "Ready for
+                Closure" renamed to "Ready to Request Closure" (Task 1 — Data
+                Entry requests closure, Manager approves it, the old label
+                read like Data Entry does the closing). The two small
+                secondary text links this section used to end with
+                ("N awaiting Manager closure approval" / "N closed in the
+                last 14 days") are gone — Waiting Manager Approval and Closed
+                Recently are now full dedicated cards instead (Task 4), each
+                opening its own popup without leaving the dashboard (Task 9). */}
             <section className="space-y-1.5">
               <SectionLabel>Today Summary</SectionLabel>
-              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 xl:grid-cols-6">
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 xl:grid-cols-8">
                 <TodaySummaryCard href="/maintenance/daily-activity" label="Active Job Cards" value={nuQueue.activeCount} icon={ClipboardList} tone="blue" />
                 <TodaySummaryCard href="/maintenance/daily-activity?status=materials-pending" label="Materials Pending" value={nuMaterialsPendingCount} icon={ShoppingCart} tone={nuMaterialsPendingCount > 0 ? "red" : "green"} />
                 <TodaySummaryCard href="/maintenance/daily-activity?status=working" label="Working Now" value={nuWorkingNowCount} icon={PlayCircle} tone="green" />
                 <TodaySummaryCard href="/maintenance/daily-activity?status=paused" label="Paused Workers" value={nuPausedCount} icon={PauseCircle} tone="amber" />
-                <TodaySummaryCard href="/maintenance/daily-activity?status=ready-closure" label="Ready for Closure" value={nuReadyForClosureCount} icon={CheckCircle2} tone="blue" />
+                {/* Task 9 — preferred click behavior: Open Daily Activity
+                    filtered to Ready for Closure (the filter value itself is
+                    unchanged, only this card's own label changed). */}
+                <TodaySummaryCard href="/maintenance/daily-activity?status=ready-closure" label="Ready to Request Closure" value={nuReadyForClosureCount} icon={CheckCircle2} tone="blue" />
+                <WaitingManagerApprovalCard count={nuQueue.closureRequestedCount} jobCards={nuClosureRequestedForModal} />
+                <DataEntryClosedRecentlyCard count={nuQueue.closedRecentCount} />
                 <TodaySummaryCard href="/maintenance/work-orders?status=New" label="Drafts Not Started" value={nuQueue.draftCount} icon={FileText} tone="gray" />
-              </div>
-              <div className="flex flex-wrap gap-x-4 gap-y-0.5 px-0.5 text-[11px] font-semibold text-[#9CA3AF]">
-                <Link href="/maintenance/work-orders?status=ClosureRequested" className="hover:text-[#111827]">
-                  {nuQueue.closureRequestedCount} awaiting Manager closure approval →
-                </Link>
-                <Link href="/maintenance/work-orders?status=Closed" className="hover:text-[#111827]">
-                  {nuQueue.closedRecentCount} closed in the last 14 days →
-                </Link>
               </div>
             </section>
 

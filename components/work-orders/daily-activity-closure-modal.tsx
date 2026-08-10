@@ -9,6 +9,7 @@ import { uploadWorkOrderFileModalAction } from "@/app/actions/files";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { dispatchActionToast } from "@/lib/action-messages";
+import { createClientId } from "@/lib/client/safe-id";
 import type { DailyActivityCardData } from "@/components/work-orders/daily-activity-card";
 
 // Daily Activity Closure Request Modal with Attachments Unit 10F.6, extended
@@ -46,7 +47,7 @@ const MAX_ATTACHMENT_ROWS = 5;
 type AttachmentRow = { id: string; type: string; file: File | null };
 
 function emptyAttachmentRow(): AttachmentRow {
-  return { id: crypto.randomUUID(), type: "", file: null };
+  return { id: createClientId("attachment"), type: "", file: null };
 }
 
 const inp =
