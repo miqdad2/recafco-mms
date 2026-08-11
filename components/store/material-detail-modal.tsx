@@ -50,11 +50,9 @@ function balanceTone(balance: number): "green" | "amber" | "red" {
 
 export function MaterialDetailModal({
   item,
-  canIssue,
   onClose,
 }: {
   item: BalanceItem;
-  canIssue: boolean;
   onClose: () => void;
 }) {
   const [rows, setRows] = useState<MaterialMovementRow[] | null>(null);
@@ -192,11 +190,14 @@ export function MaterialDetailModal({
             </section>
           </div>
 
-          {/* Footer — non-scrolling, stays visible below the body's own scroll area */}
+          {/* Footer — non-scrolling, stays visible below the body's own
+              scroll area. Inventory Control Page Simplification Unit
+              10G.16, Task 4: "Receive More"/"Issue Material" removed from
+              here too — this modal is opened only from the Inventory
+              Control table's generic "View" row action, so it follows the
+              same "safe review page" rule as the row/card actions. Receive/
+              Issue remain available through Daily Activity. */}
           <div className="border-t border-[#E5E7EB] px-6 py-4">
-            {canIssue && item.balance <= 0 && (
-              <p className="mb-2 text-xs text-[#9CA3AF]">No available balance to issue.</p>
-            )}
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <Link
                 href={`/store/offline-inventory/movements?q=${encodeURIComponent(item.display_name)}`}
@@ -204,46 +205,13 @@ export function MaterialDetailModal({
               >
                 View Full History
               </Link>
-              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                {canIssue && (
-                  <Link
-                    href={`?receiveMaterial=${encodeURIComponent(item.key)}`}
-                    scroll={false}
-                    onClick={onClose}
-                    className="inline-flex items-center justify-center rounded-md bg-[#16A34A] px-5 py-2.5 text-sm font-bold text-white hover:bg-green-700"
-                  >
-                    Receive More
-                  </Link>
-                )}
-                {canIssue && (
-                  item.balance > 0 ? (
-                    <Link
-                      href={`?issueMaterial=${encodeURIComponent(item.key)}`}
-                      scroll={false}
-                      onClick={onClose}
-                      className="inline-flex items-center justify-center rounded-md bg-[#ED1C24] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#c8181e]"
-                    >
-                      Issue Material
-                    </Link>
-                  ) : (
-                    <button
-                      type="button"
-                      disabled
-                      title="No available balance to issue."
-                      className="inline-flex cursor-not-allowed items-center justify-center rounded-md bg-gray-100 px-5 py-2.5 text-sm font-bold text-[#9CA3AF]"
-                    >
-                      Issue Material
-                    </button>
-                  )
-                )}
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="inline-flex items-center justify-center rounded-md border border-[#E5E7EB] px-5 py-2.5 text-sm font-bold text-[#4B5563] hover:bg-gray-50"
-                >
-                  Close
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex items-center justify-center rounded-md border border-[#E5E7EB] px-5 py-2.5 text-sm font-bold text-[#4B5563] hover:bg-gray-50"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>

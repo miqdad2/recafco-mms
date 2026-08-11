@@ -1350,6 +1350,7 @@ export default async function WorkOrderDetailPage({
               isManager={isManagerRoleForSessions}
               canViewCosts={canViewCosts}
               canAssign={hasPermission(context, "work_orders.assign") || context.role?.slug === "super_admin"}
+              estimatedTotalHours={wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null}
             />
         </div>
         )}
@@ -1421,7 +1422,13 @@ export default async function WorkOrderDetailPage({
                       const remainingQty = f?.remaining_qty ?? requiredQty;
                       const availableNow = f?.available_now ?? 0;
                       const shortageQty = f?.shortage_qty ?? 0;
-                      const status = f?.status ?? "shortage";
+                      const status = f?.status ?? "needs_receiving";
+                      // Unit 10G.14, Task 8 — canIssueRow covers both
+                      // ready_to_issue (available_now >= remainingQty) and
+                      // partial_available (0 < available_now < remainingQty);
+                      // the label below distinguishes the two ("Issue
+                      // Material" vs "Issue Available") without changing
+                      // which rows the button appears on.
                       const canIssueRow = canIssueFromJobCard && remainingQty > 0 && availableNow > 0;
                       const issueHref = `/store/offline-inventory?issueMaterial=${encodeURIComponent(
                         buildBalanceKey({ part_id: row.part_id, manual_material_name: row.part_id ? null : row.description, unit })
@@ -1440,14 +1447,14 @@ export default async function WorkOrderDetailPage({
                           <StatusBadge
                             label={
                               status === "fulfilled" ? "Fully Issued"
-                              : status === "partial_issued" ? "Partially Issued"
-                              : status === "shortage" ? "Shortage"
+                              : status === "partial_available" ? "Partially Available"
+                              : status === "needs_receiving" ? "Needs Receiving"
                               : "Ready to Issue"
                             }
                             tone={
                               status === "fulfilled" ? "green"
-                              : status === "partial_issued" ? "amber"
-                              : status === "shortage" ? "red"
+                              : status === "partial_available" ? "amber"
+                              : status === "needs_receiving" ? "red"
                               : "blue"
                             }
                           />
@@ -1457,19 +1464,26 @@ export default async function WorkOrderDetailPage({
                             </p>
                           )}
                         </div>,
-                        <div key="action">
+                        <div key="action" className="flex flex-wrap items-center gap-1.5">
                           {/* Premium Job Card Detail Page Redesign Unit
                               8C.2, Task 8/12: small pill buttons instead of
                               bare text links — Issue/Receive/Request stay
                               the one red call-to-action per row; View
                               Request is neutral (navigation only); Fulfilled
-                              is a plain green label, not a link. */}
+                              is a plain green label, not a link. Unit
+                              10G.14, Task 8: rebuilt as ONE mutually-
+                              exclusive primary action (matching the original
+                              ternary chain's behavior exactly) plus an
+                              optional second "Receive Shortage" pill only
+                              for a partial_available row with an open
+                              request — issuing the available portion alone
+                              doesn't cover the remaining shortage. */}
                           {canIssueRow ? (
                             <Link
                               href={issueHref}
                               className="inline-flex items-center rounded-md bg-[#ED1C24] px-2.5 py-1 text-[11px] font-bold text-white transition hover:bg-[#c8181e]"
                             >
-                              Issue Material
+                              {status === "partial_available" ? "Issue Available" : "Issue Material"}
                             </Link>
                           ) : remainingQty > 0 && activeMaterialsRequest ? (
                             <Link
@@ -1497,6 +1511,14 @@ export default async function WorkOrderDetailPage({
                               <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> Fulfilled
                             </span>
                           )}
+                          {canIssueRow && status === "partial_available" && activeMaterialsRequest ? (
+                            <Link
+                              href={materialsButtonHref}
+                              className="inline-flex items-center rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1 text-[11px] font-bold text-[#4B5563] transition hover:bg-gray-50"
+                            >
+                              Receive Shortage
+                            </Link>
+                          ) : null}
                         </div>,
                       ];
                     })}
@@ -1911,7 +1933,15 @@ export default async function WorkOrderDetailPage({
                 : null
             }
             activeWorkers={activeWorkers}
-            internalTeamRoster={wo.work_order_worker_assignments.map((r) => ({ worker_id: r.worker_id, worker_role: r.worker_role }))}
+            internalTeamRoster={wo.work_order_worker_assignments.map((r) => ({
+              worker_id: r.worker_id,
+              worker_role: r.worker_role,
+              // Estimated Work Hours for Job Cards and Workers Unit 10G.13,
+              // Task 4: carried through so InternalTeamRosterForm can
+              // resubmit it unchanged on a roster edit, instead of silently
+              // wiping it.
+              estimated_hours: r.estimated_hours !== null ? Number(r.estimated_hours) : null,
+            }))}
             hasPendingCorrection={hasPendingCorrection}
           />
         </LargeFormModal>

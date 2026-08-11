@@ -13,6 +13,11 @@ export type MobileNavigationItem = {
   href: string;
   label: string;
   iconKey: NavIconKey;
+  // Data Entry Sidebar Reports/Notifications Disable Unit 10G.19: same
+  // visible-but-non-interactive treatment as the desktop sidebar's NavLink —
+  // applies to both the bottom quick bar and the full drawer list below.
+  disabled?: boolean;
+  disabledLabel?: string;
 };
 
 type MobileNavigationProps = {
@@ -42,6 +47,20 @@ export function MobileNavigation({ items }: MobileNavigationProps) {
         {quickItems.map((item) => {
           const Icon = navIcons[item.iconKey];
           const isActive = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
+
+          if (item.disabled) {
+            return (
+              <span
+                key={item.href}
+                className="relative flex min-h-16 min-w-0 cursor-not-allowed flex-col items-center justify-center gap-1 border-t-2 border-transparent px-1 text-[11px] font-bold text-[#9CA3AF] opacity-60"
+                aria-disabled="true"
+                title={item.disabledLabel}
+              >
+                <Icon className="h-5 w-5 shrink-0" aria-hidden="true" />
+                <span className="max-w-full truncate">{item.label}</span>
+              </span>
+            );
+          }
 
           return (
             <Link
@@ -97,6 +116,22 @@ export function MobileNavigation({ items }: MobileNavigationProps) {
           {items.map((item) => {
             const Icon = navIcons[item.iconKey];
             const isActive = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
+
+            if (item.disabled) {
+              return (
+                <span
+                  key={item.href}
+                  className="flex min-h-12 cursor-not-allowed items-center gap-3 rounded-md px-3 py-2.5 text-sm font-bold text-[#9CA3AF] opacity-60"
+                  aria-disabled="true"
+                  title={item.disabledLabel}
+                >
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#F3F5F8] text-[#9CA3AF]">
+                    <Icon className="h-4 w-4" aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 truncate">{item.label}</span>
+                </span>
+              );
+            }
 
             return (
               <Link

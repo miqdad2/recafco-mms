@@ -4,6 +4,8 @@ export type CollapsibleNavItem = {
   href: string;
   label: string;
   iconKey: NavIconKey;
+  disabled?: boolean;
+  disabledLabel?: string;
 };
 
 export type CollapsibleNavGroup = {
@@ -23,7 +25,14 @@ export function CollapsibleNav({ groups }: { groups: CollapsibleNavGroup[] }) {
           )}
           <div className="space-y-1">
             {group.items.map((item) => (
-              <NavLink key={item.href} href={item.href} label={item.label} iconKey={item.iconKey} />
+              <NavLink
+                key={item.href}
+                href={item.href}
+                label={item.label}
+                iconKey={item.iconKey}
+                disabled={item.disabled}
+                disabledLabel={item.disabledLabel}
+              />
             ))}
           </div>
         </div>

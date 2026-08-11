@@ -247,6 +247,7 @@ export default async function DailyActivityPage({
         worker_type: true,
         created_at: true,
         ordered_by: true,
+        estimated_labor_hours: true,
         assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
         departments: { select: { name: true } },
         work_order_assignments: { select: { id: true } },
@@ -468,6 +469,12 @@ export default async function DailyActivityPage({
       fulfillment,
       materialsTotals,
       laborSummary,
+      // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 7:
+      // converted to a plain number here (not left as wo.estimated_labor_hours,
+      // a Prisma Decimal) — matches this codebase's existing convention of
+      // never passing a raw Decimal instance down into a rendering
+      // component (see the edit page's own .toNumber() calls).
+      estimatedHours: wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null,
       materialsChip,
       workTimeChip,
       assignmentChip,
@@ -515,7 +522,6 @@ export default async function DailyActivityPage({
   // everything else is a fast in-memory reduce over what's already loaded. ─
   const workersWorkingNow = computed.reduce((n, c) => n + c.laborSummary.workers.filter((w) => w.status === "Active").length, 0);
   const pausedWorkers = computed.reduce((n, c) => n + c.laborSummary.workers.filter((w) => w.status === "Paused").length, 0);
-  const totalLaborMinutesToday = computed.reduce((n, c) => n + c.laborSummary.today_minutes, 0);
   const totalLaborAmountToday = computed.reduce((n, c) => n + c.laborSummary.today_amount, 0);
   const readyForClosureCount = computed.filter((c) => c.closureReady).length;
   const hasAnyFilter = Boolean(search || statusFilter !== "all" || teamFilter || materialsFilter !== "all");
@@ -568,6 +574,10 @@ export default async function DailyActivityPage({
       materialsModalAction: c.materialsModalAction,
       materialsSecondaryAction: c.materialsSecondaryAction,
       materialsTotals: c.materialsTotals,
+      // Unit 10G.14, Task 4 — per-line fulfillment rows, so the selected
+      // Job Card panel can show each required material's own Required /
+      // Available / Issued / Status, not just the job-card-wide totals sum.
+      fulfillment: c.fulfillment,
       priorityBucket: c.priorityBucket,
       priorityLabel: PRIORITY_LABEL[c.priorityBucket],
       nextAction: c.nextAction,
@@ -578,6 +588,8 @@ export default async function DailyActivityPage({
       isManager: isManagerRole,
       canViewCosts,
       detailHref: c.detailHref,
+      // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 7.
+      estimatedHours: c.estimatedHours,
     };
   });
 
@@ -609,16 +621,22 @@ export default async function DailyActivityPage({
 
       <div className="space-y-2 p-3 lg:p-4">
         {/* Summary cards (Task 4) — compact horizontal cards, still clickable
-            shortcuts into the filters below. */}
-        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
+            shortcuts into the filters below. Daily Activity Summary
+            Simplification Unit 10G.15: "Labor Hours Today" removed — this
+            page is for monitoring/controlling active Job Cards, not labor
+            reporting (labor hours still live on Worker Activity, the
+            Manager dashboard, Job Card detail, Closure Review, and
+            Reports). The remaining 4 cards now get 2x2 on mobile/tablet and
+            one full-width row on desktop, with roomier spacing/sizing at
+            lg to fill the space the removed card left behind. */}
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 lg:gap-3">
           <SummaryCardLink href={statusHref("all")} label="Active Job Cards" value={totalActiveCount} icon={Briefcase} tone="blue" active={statusFilter === "all"} />
           <SummaryCardLink href={statusHref("working")} label="Working Now" value={workersWorkingNow} icon={PlayCircle} tone="green" active={statusFilter === "working"} />
           <SummaryCardLink href={statusHref("paused")} label="Paused" value={pausedWorkers} icon={PauseCircle} tone="amber" active={statusFilter === "paused"} />
-          <SummaryCard label="Labor Hours Today" value={Math.round((totalLaborMinutesToday / 60) * 100) / 100} icon={Activity} tone="blue" />
+          <SummaryCardLink href={statusHref("ready-closure")} label="Ready for Closure" value={readyForClosureCount} icon={CheckCircle2} tone="green" active={statusFilter === "ready-closure"} />
           {canViewCosts ? (
             <SummaryCard label="Labor Cost Today" value={`${totalLaborAmountToday.toFixed(3)} KWD`} icon={Activity} tone="gray" />
           ) : null}
-          <SummaryCardLink href={statusHref("ready-closure")} label="Ready for Closure" value={readyForClosureCount} icon={CheckCircle2} tone="green" active={statusFilter === "ready-closure"} />
         </div>
 
         {/* Filters (Task 5) — one tight row: quick status chips, search,
@@ -723,13 +741,13 @@ function SummaryCard({
   }[tone];
 
   return (
-    <div className="flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-2 py-1.5">
-      <div className={`inline-flex shrink-0 rounded-md p-1 text-white ${toneClass}`}>
-        <Icon className="h-3 w-3" aria-hidden="true" />
+    <div className="flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-2 py-1.5 lg:gap-2.5 lg:px-4 lg:py-3">
+      <div className={`inline-flex shrink-0 rounded-md p-1 text-white lg:p-1.5 ${toneClass}`}>
+        <Icon className="h-3 w-3 lg:h-4 lg:w-4" aria-hidden="true" />
       </div>
       <div className="min-w-0">
-        <p className="truncate text-[9px] font-black uppercase leading-tight text-[#6B7280]">{label}</p>
-        <p className="truncate text-sm font-black leading-tight text-[#111827]">{value}</p>
+        <p className="truncate text-[9px] font-black uppercase leading-tight text-[#6B7280] lg:text-[10px]">{label}</p>
+        <p className="truncate text-sm font-black leading-tight text-[#111827] lg:text-lg">{value}</p>
       </div>
     </div>
   );
@@ -767,14 +785,14 @@ function SummaryCardLink({
   return (
     <Link
       href={href}
-      className={`flex items-center gap-1.5 rounded-md border bg-white px-2 py-1.5 transition hover:border-[#2563EB] hover:shadow-sm ${active ? "border-[#2563EB] ring-1 ring-[#93C5FD]" : "border-[#E5E7EB]"}`}
+      className={`flex items-center gap-1.5 rounded-md border bg-white px-2 py-1.5 transition hover:border-[#2563EB] hover:shadow-sm lg:gap-2.5 lg:px-4 lg:py-3 ${active ? "border-[#2563EB] ring-1 ring-[#93C5FD]" : "border-[#E5E7EB]"}`}
     >
-      <div className={`inline-flex shrink-0 rounded-md p-1 text-white ${toneClass}`}>
-        <Icon className="h-3 w-3" aria-hidden="true" />
+      <div className={`inline-flex shrink-0 rounded-md p-1 text-white lg:p-1.5 ${toneClass}`}>
+        <Icon className="h-3 w-3 lg:h-4 lg:w-4" aria-hidden="true" />
       </div>
       <div className="min-w-0">
-        <p className="truncate text-[9px] font-black uppercase leading-tight text-[#6B7280]">{label}</p>
-        <p className="truncate text-sm font-black leading-tight text-[#111827]">{value}</p>
+        <p className="truncate text-[9px] font-black uppercase leading-tight text-[#6B7280] lg:text-[10px]">{label}</p>
+        <p className="truncate text-sm font-black leading-tight text-[#111827] lg:text-lg">{value}</p>
       </div>
     </Link>
   );

@@ -15,6 +15,15 @@ import type { BackendTransaction } from "@/lib/backend/shared/transaction";
 
 type DbClient = typeof prisma | BackendTransaction;
 
+// Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 5/6/8/9:
+// the actual classifier lives in lib/work-orders/hours-variance.ts (a
+// client-safe file, no "server-only" import) since several CLIENT
+// components (ClosureReviewModal, WorkerSessionRow, etc.) need to call it
+// directly — importing anything from THIS file (server-only) would break
+// their build. Re-exported here too so server-side callers of this file can
+// still import both from one place if convenient.
+export { computeHoursVariance, hoursVarianceTone, type HoursVariance, type HoursVarianceStatus } from "@/lib/work-orders/hours-variance";
+
 export type WorkerSessionStatus = "Not Started" | "Active" | "Paused" | "Completed";
 
 export type WorkerLaborRow = {
@@ -65,6 +74,15 @@ export type WorkerLaborRow = {
   month_minutes?: number;
   month_hours?: number;
   month_amount?: number;
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 2/6:
+  // optional per-worker planning estimate (WorkOrderWorkerAssignment.
+  // estimated_hours), passed through as-is — never used to recompute
+  // duration_minutes/calculated_amount, only ever compared against
+  // total_hours via computeHoursVariance() above. Always populated (not a
+  // bulk-only field like today_*/week_*/month_* above) since the assignment
+  // row is already fetched with no `select` clause in both functions below,
+  // so this is a zero-cost passthrough of a column already in memory.
+  estimated_hours: number | null;
 };
 
 export type WorkOrderLaborSummary = {
@@ -128,6 +146,7 @@ export async function getWorkOrderLaborSummary(db: DbClient, workOrderId: string
       total_amount: Math.round(amount * 1000) / 1000,
       active_session_id: activeSession?.id ?? null,
       active_session_started_at: activeSession?.started_at.toISOString() ?? null,
+      estimated_hours: a.estimated_hours !== null ? Number(a.estimated_hours) : null,
     };
   });
 
@@ -297,6 +316,7 @@ export async function getWorkOrderLaborSummariesBulk(
         month_amount: Math.round(workerMonthAmount * 1000) / 1000,
         skill_category: a.worker_profiles.skill_category,
         sessions_count: rows.length,
+        estimated_hours: a.estimated_hours !== null ? Number(a.estimated_hours) : null,
       };
     });
 
@@ -509,6 +529,11 @@ export type WorkerCurrentJobCard = {
   // session's calculated_amount; purely a display passthrough.
   worker_assignment_id: string;
   hourly_rate_snapshot: number;
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 10:
+  // this worker's own estimate on their current Job Card, if set — a plain
+  // passthrough of WorkOrderWorkerAssignment.estimated_hours, shown
+  // alongside (not replacing) the existing today/month totals below.
+  estimated_hours: number | null;
 };
 
 export type WorkerActivitySummary = {
@@ -543,6 +568,7 @@ export async function getWorkerActivitySummaries(
         id: true,
         worker_id: true,
         hourly_rate_snapshot: true,
+        estimated_hours: true,
         work_orders: {
           select: {
             id: true,
@@ -611,6 +637,7 @@ export async function getWorkerActivitySummaries(
             : null,
           worker_assignment_id: chosen.id,
           hourly_rate_snapshot: Number(chosen.hourly_rate_snapshot),
+          estimated_hours: chosen.estimated_hours !== null ? Number(chosen.estimated_hours) : null,
         }
       : null;
 

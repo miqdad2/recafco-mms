@@ -41,7 +41,7 @@ export default async function StoreBalancePage({
   // directly and prepended below rather than silently dropped from the list.
   const issueWorkOrderId = sp.workOrder || null;
 
-  const [{ balanceItems, totalOpeningStock, totalReceived, totalIssued, balance }, workOrdersRaw, presetWorkOrder] =
+  const [{ balanceItems, totalReceived, totalIssued, balance }, workOrdersRaw, presetWorkOrder] =
     await Promise.all([
       getOfflineInventoryBalance(),
       showReceiveMaterial || showIssueMaterial ? getWorkOrderOptions() : Promise.resolve([]),
@@ -74,7 +74,6 @@ export default async function StoreBalancePage({
       <RealtimeRefresh watch={["offline_inventory.", "material_ledger.", "store_materials.", "materials_request.", "job_card."]} />
       <StoreBalanceView
         balanceItems={balanceItems}
-        totalOpeningStock={totalOpeningStock}
         totalReceived={totalReceived}
         totalIssued={totalIssued}
         balance={balance}

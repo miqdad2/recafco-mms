@@ -40,6 +40,7 @@ export default async function EditWorkOrderPage({ params }: { params: Promise<{ 
     total_work_order_cost: rawWorkOrder.total_work_order_cost?.toNumber() ?? null,
     next_service_kilometer: rawWorkOrder.next_service_kilometer?.toNumber() ?? null,
     next_service_running_hours: rawWorkOrder.next_service_running_hours?.toNumber() ?? null,
+    estimated_labor_hours: rawWorkOrder.estimated_labor_hours?.toNumber() ?? null,
   } : null;
 
   const labor = rawLabor.map((row) => ({

@@ -45,7 +45,14 @@ export type StoreSendMaterialsData = {
 
 function SendItemRow({ item }: { item: StoreSendMaterialsData["items"][number] }) {
   const remaining = Math.max(item.quantity_requested - item.issued_quantity, 0);
-  const [qtyReceivedNow, setQtyReceivedNow] = useState(remaining);
+  // Unit 10G.14, Task 6 — default to the actual shortage (remaining minus
+  // what's already available in Offline Inventory), not the full remaining
+  // requirement, when a current balance is known. Falls back to the old
+  // full-remaining default when `balance` is undefined (callers that don't
+  // supply it, e.g. the standalone Materials Request page) — unchanged
+  // behavior there. Still fully editable up to `remaining` either way.
+  const shortage = item.balance !== undefined ? Math.max(remaining - Math.max(item.balance, 0), 0) : remaining;
+  const [qtyReceivedNow, setQtyReceivedNow] = useState(shortage);
   const newTotal = item.issued_quantity + qtyReceivedNow;
 
   return (

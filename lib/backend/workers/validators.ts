@@ -34,6 +34,14 @@ export const internalTeamRosterSchema = z.object({
   technicianIds: z.array(z.string().uuid()).optional().default([]),
   helperIds: z.array(z.string().uuid()).optional().default([]),
   notes: z.string().trim().max(500).optional(),
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 2/4:
+  // optional per-worker planning estimate, keyed by worker_profiles.id (not
+  // worker_assignment_id — a new assignment row's id doesn't exist yet at
+  // the moment this form is submitted). Only entries whose key matches a
+  // worker actually being assigned in this same submission are applied
+  // (checked in assignInternalTeamRoster); a stray/stale key is silently
+  // ignored, never an error.
+  estimatedHoursByWorkerId: z.record(z.string().uuid(), z.number().min(0)).optional().default({}),
 });
 
 export type InternalTeamRosterInput = z.infer<typeof internalTeamRosterSchema>;

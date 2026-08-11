@@ -8,6 +8,7 @@ import { FileText } from "lucide-react";
 import { LargeFormModal, useLargeFormModal } from "@/components/ui/large-form-modal";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { ClosureReviewModal } from "@/components/dashboard/closure-review-modal";
+import { computeHoursVariance } from "@/lib/work-orders/hours-variance";
 
 // Manager Dashboard Closure Requests Modal Unit 10G, restructured by Closure
 // Requests Review Popup Unit 10G.2.
@@ -32,6 +33,11 @@ export type ClosureRequestRow = {
   workersCount: number;
   totalHours: number;
   totalAmount: number | null;
+  // Manager Closure Review Estimated vs Actual Labor Transparency Unit
+  // 10G.21, Task 3 — Job-Card-level estimate (work_orders.estimated_labor_hours),
+  // hours-only and unconditional on canViewCosts, matching the estimate
+  // visibility rule used by every other Estimated/Actual surface.
+  estimatedHours: number | null;
   materialsLabel: string;
   attachmentsCount: number;
   detailHref: string;
@@ -65,10 +71,29 @@ function ClosureRequestListRow({ row, onReview }: { row: ClosureRequestRow; onRe
         <StatusBadge label={row.materialsLabel} tone={materialsTone(row.materialsLabel)} />
       </div>
 
-      {/* Task 1 — compact summary line only; no inline expansion. */}
+      {/* Task 1 — compact summary line only; no inline expansion.
+          Unit 10G.21, Task 3: "Labor hours" relabeled "Actual" and paired
+          with "Estimated"/"Variance" so the row reads as a comparison, not
+          just a raw total — same plain-text-spans layout as before (no
+          badge/color added here) to keep the list from getting crowded;
+          the full color-coded status lives one click away in Review
+          Closure. */}
       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[#6B7280]">
         <span>Workers: <strong className="text-[#111827]">{row.workersCount}</strong></span>
-        <span>Labor hours: <strong className="text-[#111827]">{row.totalHours}</strong></span>
+        <span>Estimated: <strong className="text-[#111827]">{row.estimatedHours !== null ? `${row.estimatedHours} h` : "Not recorded"}</strong></span>
+        <span>Actual: <strong className="text-[#111827]">{row.totalHours} h</strong></span>
+        {row.estimatedHours !== null ? (() => {
+          const variance = computeHoursVariance(row.estimatedHours, row.totalHours);
+          return variance.varianceHours !== null ? (
+            <span>
+              Variance:{" "}
+              <strong className="text-[#111827]">
+                {variance.varianceHours >= 0 ? "+" : ""}
+                {variance.varianceHours} h
+              </strong>
+            </span>
+          ) : null;
+        })() : null}
         {row.totalAmount !== null ? <span>Labor cost: <strong className="text-[#111827]">{row.totalAmount.toFixed(3)} KWD</strong></span> : null}
         <span className="inline-flex items-center gap-1">
           <FileText className="h-3 w-3" aria-hidden="true" /> {row.attachmentsCount} attachment{row.attachmentsCount === 1 ? "" : "s"}

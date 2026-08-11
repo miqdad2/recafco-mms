@@ -18,6 +18,15 @@
  * filter" stock balance that Issue/Receive Material consumed during the
  * test run).
  *
+ * Unit 10G.14: also deletes offline_inventory_movements for any material
+ * whose manual_material_name starts with "E2E-MMS-" (e.g. a fresh
+ * OPENING_STOCK row a test seeds for its own dedicated "existing stock"
+ * fixture) — these aren't linked to a work_order_id/parts_request_id, so
+ * the two filters above alone would never catch them. Matched independently
+ * of whether any E2E-MMS Job Card currently exists, since this class of row
+ * can outlive its Job Card (e.g. left over from a run that failed before
+ * creating one).
+ *
  * Guard: set CONFIRM_E2E_MMS_CLEANUP=true to execute. Without it, the
  * script prints a warning and exits without deleting anything.
  *
@@ -49,14 +58,14 @@ const prIds = partsRequests.map((p) => p.id);
 
 console.log(`[e2e-mms-cleanup] Found ${woIds.length} E2E MMS Job Card(s): ${workOrders.map((w) => w.work_order_number).join(", ") || "(none)"}`);
 
-if (woIds.length === 0) {
-  console.log("[e2e-mms-cleanup] Nothing to clean up.");
-  await prisma.$disconnect();
-  process.exit(0);
-}
-
 const movementsDeleted = await prisma.offline_inventory_movements.deleteMany({
-  where: { OR: [{ related_work_order_id: { in: woIds } }, { parts_request_id: { in: prIds } }] },
+  where: {
+    OR: [
+      { related_work_order_id: { in: woIds } },
+      { parts_request_id: { in: prIds } },
+      { manual_material_name: { startsWith: "E2E-MMS-" } },
+    ],
+  },
 });
 const notifDeleted = await prisma.notifications.deleteMany({ where: { entity_id: { in: [...woIds, ...prIds] } } });
 const auditDeleted = await prisma.audit_logs.deleteMany({
@@ -75,9 +84,11 @@ console.log(`  work_orders (+ cascades):    ${woDeleted.count}`);
 
 const remainingWo = await prisma.work_orders.count({ where: { ordered_by: MARKER } });
 const engineFilterBalanceMovements = await prisma.offline_inventory_movements.count({ where: { manual_material_name: "engine filter" } });
+const remainingE2EMaterials = await prisma.offline_inventory_movements.count({ where: { manual_material_name: { startsWith: "E2E-MMS-" } } });
 
 console.log("\nPost-cleanup:");
 console.log(`  remaining E2E MMS work_orders: ${remainingWo}`);
 console.log(`  "engine filter" movements remaining (should equal the pre-test count): ${engineFilterBalanceMovements}`);
+console.log(`  remaining "E2E-MMS-" prefixed material movements: ${remainingE2EMaterials}`);
 
 await prisma.$disconnect();

@@ -297,6 +297,13 @@ export async function editMaterialsRequest(context: CurrentUserContext, input: E
     }
 
     if (input.items?.length) {
+      const itemIds = input.items.map((item) => item.itemId);
+      const rows = await tx.parts_request_items.findMany({
+        where: { id: { in: itemIds } },
+        select: { id: true, parts_request_id: true }
+      });
+      const requestIdByItemId = new Map(rows.map((row) => [row.id, row.parts_request_id]));
+
       for (const item of input.items) {
         const { itemId, ...fields } = item;
         const data: Record<string, unknown> = {};
@@ -306,8 +313,7 @@ export async function editMaterialsRequest(context: CurrentUserContext, input: E
         if (fields.remarks !== undefined) data.remarks = fields.remarks;
         if (Object.keys(data).length === 0) continue;
 
-        const row = await tx.parts_request_items.findUnique({ where: { id: itemId }, select: { parts_request_id: true } });
-        if (!row || row.parts_request_id !== input.partsRequestId) {
+        if (requestIdByItemId.get(itemId) !== input.partsRequestId) {
           throw new AppError("Materials request item not found on this request.", { code: "NOT_FOUND" });
         }
         await tx.parts_request_items.update({ where: { id: itemId }, data });
@@ -531,7 +537,15 @@ export async function markWaitingStock(context: CurrentUserContext, input: { par
 // "Completed") is intentionally excluded — it's terminal, nothing left to
 // receive.
 const ISSUABLE_MATERIALS_REQUEST_STATUSES = ["Requested", "Approved", "Waiting Stock", "Partially Issued"];
-const MATERIALS_REQUEST_ITEM_UNIT = "PCS"; // parts_request_items has no unit column (Unit 5 — see report)
+// parts_request_items has no unit column (Unit 5 — see report) — used only
+// as the last-resort fallback in resolveReceiveUnit below (Unit 10G.14),
+// when neither a catalog part nor a matching Required Materials row can
+// supply the real unit. No schema change: the real unit, when available,
+// comes from the catalog parts table (catalog items) or from this Materials
+// Request's own linked Job Card's work_order_required_parts row (manual
+// items), matched by description — the same identity work_order_required_parts
+// was auto-created from at Job Card creation (app/actions/maintenance.ts).
+const MATERIALS_REQUEST_ITEM_UNIT = "PCS";
 
 /**
  * Records materials received against a Materials Request — the active, sole
@@ -611,6 +625,40 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
     const itemById = new Map(items.map((item) => [item.id, item]));
     const newIssuedById = new Map(items.map((item) => [item.id, Number(item.issued_quantity)]));
 
+    // Unit 10G.14: resolve the REAL unit for each item's received movement
+    // instead of always hardcoding MATERIALS_REQUEST_ITEM_UNIT ("PCS") —
+    // that hardcoding silently broke the receive step for any required
+    // material measured in something other than PCS (e.g. "liter"): the
+    // movement recorded under the wrong unit never matched
+    // getMaterialFulfillmentForWorkOrder's identity (part_id, or
+    // description+unit case-insensitive), so available_now stayed 0 forever
+    // even after receiving. Catalog items (part_id set) get their unit from
+    // the parts table; manual items get it from this request's linked Job
+    // Card's own work_order_required_parts row, matched by description (the
+    // exact identity it was auto-created from at Job Card creation).
+    const catalogPartIds = [...new Set(items.map((i) => i.part_id).filter((id): id is string => Boolean(id)))];
+    const catalogUnitByPartId = catalogPartIds.length
+      ? new Map(
+          (await tx.parts.findMany({ where: { id: { in: catalogPartIds } }, select: { id: true, unit_of_measure: true } })).map(
+            (p) => [p.id, p.unit_of_measure]
+          )
+        )
+      : new Map<string, string>();
+    const requiredPartUnitByDescription = request.work_order_id
+      ? new Map(
+          (
+            await tx.workOrderRequiredPart.findMany({
+              where: { work_order_id: request.work_order_id },
+              select: { description: true, unit_of_measure: true }
+            })
+          ).map((r) => [r.description.toLowerCase(), r.unit_of_measure])
+        )
+      : new Map<string, string>();
+    function resolveReceiveUnit(item: { part_id: string | null; description: string }): string {
+      if (item.part_id) return catalogUnitByPartId.get(item.part_id) ?? MATERIALS_REQUEST_ITEM_UNIT;
+      return requiredPartUnitByDescription.get(item.description.toLowerCase()) ?? MATERIALS_REQUEST_ITEM_UNIT;
+    }
+
     // Unit 7: per-item issue detail for the Job Card timeline (Task 4/5) —
     // the audit log previously only recorded the overall request status, not
     // which material/quantity actually moved in this call.
@@ -661,7 +709,7 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
           ss_rec_code: item.ss_rec_code,
           category: normalizeCategory(null),
           quantity: delta,
-          unit: MATERIALS_REQUEST_ITEM_UNIT,
+          unit: resolveReceiveUnit(item),
           counterparty: input.issuedTo ?? null,
           purpose: `Material receive — ${request.parts_request_number ?? request.id}`,
           related_work_order_id: request.work_order_id,

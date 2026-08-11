@@ -17,7 +17,7 @@ import type { PermissionKey } from "@/types/database";
 import type { WorkerProfileRow } from "@/lib/backend/workers/service";
 
 type Technician = { id: string; full_name: string };
-type CurrentRosterRow = { worker_id: string; worker_role: string };
+type CurrentRosterRow = { worker_id: string; worker_role: string; estimated_hours: number | null };
 
 type CurrentAssignment = {
   type: string;

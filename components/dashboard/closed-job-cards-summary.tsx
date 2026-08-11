@@ -13,6 +13,7 @@ import {
 } from "@/app/actions/closed-job-cards";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours-variance";
 
 // Manager Closed Job Cards Summary and Global Navigation Improvements Unit
 // 10E, Part A.
@@ -79,7 +80,10 @@ export function DataEntryClosedRecentlyCard({ count }: { count: number }) {
           <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
         </span>
         <span className="min-w-0">
-          <span className="block truncate text-[10px] font-black uppercase leading-tight text-[#6B7280]">Closed Recently</span>
+          {/* Data Entry Today Summary Label Clarity Unit 10G.12, Task 3:
+              "Closed Recently" -> "Closed" — label only, same count/logic,
+              same "Closed in last 14 days" subtitle right below. */}
+          <span className="block truncate text-[10px] font-black uppercase leading-tight text-[#6B7280]">Closed</span>
           <span className="block text-lg font-black leading-tight text-[#111827]">{count}</span>
           <span className="block truncate text-[10px] text-[#9CA3AF]">Closed in last 14 days</span>
         </span>
@@ -127,6 +131,11 @@ function ListRow({ row, onViewDetails }: { row: ClosedJobCardListRow; onViewDeta
         <p className="mt-0.5 text-[11px] text-[#9CA3AF]">
           Closed {row.closedAtLabel}
           {row.closedByName ? ` by ${row.closedByName}` : ""} · {row.workersCount} worker{row.workersCount !== 1 ? "s" : ""} · {row.totalHours}h
+          {/* Estimated Work Hours for Job Cards and Workers Unit 10G.13,
+              Task 9: a brief "Est: Xh" in the compact row — the full
+              Estimated/Actual/Variance comparison lives in the detail
+              popup below (View Details). */}
+          {row.estimatedHours !== null ? ` (Est: ${row.estimatedHours}h)` : ""}
           {row.totalAmount !== null ? ` · ${row.totalAmount.toFixed(3)} KWD` : ""} · {row.materialsSummary}
         </p>
       </div>
@@ -351,6 +360,31 @@ function ClosedJobCardDetailModal({ workOrderId, onBack, onClose }: { workOrderI
             </div>
           </div>
 
+          {/* Manager Closure Review Estimated vs Actual Labor Transparency
+              Unit 10G.21, Task 12: same Job-Card-level Estimated/Actual/
+              Variance display reused from the Closure Review modal — Actual
+              Hours now always renders even with no estimate ("Not
+              recorded"/"Not available" fallbacks plus a gray "No Estimate"
+              badge), replacing Unit 10G.13's "hide entirely" behavior, for
+              consistency with the Closure Review popup this Job Card went
+              through before it was closed. */}
+          <div className="mt-4 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-2.5">
+            <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Estimated vs Actual</p>
+            {(() => {
+              const variance = computeHoursVariance(detail.estimatedHours, detail.totalHours);
+              return (
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#4B5563]">
+                  <span>Estimated: <strong className="text-[#111827]">{detail.estimatedHours !== null ? `${detail.estimatedHours} h` : "Not recorded"}</strong></span>
+                  <span>Actual: <strong className="text-[#111827]">{detail.totalHours} h</strong></span>
+                  {variance.varianceHours !== null && (
+                    <span>Variance: <strong className="text-[#111827]">{variance.varianceHours >= 0 ? "+" : ""}{variance.varianceHours} h</strong></span>
+                  )}
+                  <StatusBadge label={variance.label} tone={hoursVarianceTone(variance.status)} />
+                </div>
+              );
+            })()}
+          </div>
+
           {/* Workers */}
           <div className="mt-4">
             <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">
@@ -360,18 +394,33 @@ function ClosedJobCardDetailModal({ workOrderId, onBack, onClose }: { workOrderI
               <p className="mt-1.5 text-xs text-[#9CA3AF]">No workers recorded on this Job Card.</p>
             ) : (
               <div className="mt-1.5 divide-y divide-[#EEF2F6] overflow-hidden rounded-md border border-[#E5E7EB]">
-                {detail.workers.map((w, i) => (
-                  <div key={`${w.name}-${i}`} className="flex flex-wrap items-center justify-between gap-2 p-2.5 text-xs">
-                    <div className="min-w-0">
-                      <p className="truncate font-semibold text-[#111827]">{w.name}</p>
-                      <p className="text-[11px] text-[#6B7280]">{w.role}</p>
+                {detail.workers.map((w, i) => {
+                  // Unit 10G.21, Task 12 — per-worker estimate/variance,
+                  // unconditional on canViewCosts (only hourlyRate/totalPay
+                  // below stay gated); always computed now (was
+                  // conditional on w.estimatedHours !== null in Unit
+                  // 10G.13) so a no-estimate worker still shows "Est: Not
+                  // recorded" with a gray "No Estimate" badge instead of no
+                  // line at all.
+                  const workerVariance = computeHoursVariance(w.estimatedHours, w.hours);
+                  return (
+                    <div key={`${w.name}-${i}`} className="flex flex-wrap items-center justify-between gap-2 p-2.5 text-xs">
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold text-[#111827]">{w.name}</p>
+                        <p className="text-[11px] text-[#6B7280]">{w.role}</p>
+                      </div>
+                      <div className="text-right text-[#4B5563]">
+                        <p>{w.hours}h</p>
+                        {w.hourlyRate !== null ? <p className="text-[11px] text-[#9CA3AF]">{w.hourlyRate.toFixed(3)} KWD/hr{w.totalPay !== null ? ` · ${w.totalPay.toFixed(3)} KWD` : ""}</p> : null}
+                        <p className="mt-0.5 flex items-center justify-end gap-1 text-[11px] text-[#9CA3AF]">
+                          Est: {w.estimatedHours !== null ? `${w.estimatedHours}h` : "Not recorded"}
+                          {workerVariance.varianceHours !== null && ` (${workerVariance.varianceHours >= 0 ? "+" : ""}${workerVariance.varianceHours}h)`}
+                          <StatusBadge label={workerVariance.label} tone={hoursVarianceTone(workerVariance.status)} />
+                        </p>
+                      </div>
                     </div>
-                    <div className="text-right text-[#4B5563]">
-                      <p>{w.hours}h</p>
-                      {w.hourlyRate !== null ? <p className="text-[11px] text-[#9CA3AF]">{w.hourlyRate.toFixed(3)} KWD/hr{w.totalPay !== null ? ` · ${w.totalPay.toFixed(3)} KWD` : ""}</p> : null}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

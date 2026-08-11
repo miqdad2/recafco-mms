@@ -6,7 +6,8 @@ import { prisma } from "@/lib/db/prisma";
 import { buildBalanceKey } from "@/lib/store/offline-inventory-data";
 import type { BackendTransaction } from "@/lib/backend/shared/transaction";
 
-// Required Materials Issue and Shortage Tracking Unit 6.
+// Required Materials Issue and Shortage Tracking Unit 6, restated by
+// Required Materials Existing Stock vs New Material Logic Fix Unit 10G.14.
 //
 // Everything here is DERIVED — no new column, no stored "issued" total.
 // required_qty comes from work_order_required_parts.quantity_required
@@ -20,10 +21,31 @@ import type { BackendTransaction } from "@/lib/backend/shared/transaction";
 // deducts stock; only Offline Inventory Control's own Issue Material action
 // (movement_type "ISSUED") does, and it already enforces "cannot issue more
 // than the current balance".
+//
+// Unit 10G.14: status is now a pure function of remaining_qty vs
+// available_now — NOT of whether some quantity has already been issued.
+// Before this unit, a line with any issued_qty > 0 was labeled
+// "partial_issued" even when its remaining balance had zero stock left
+// (misleadingly implying more could be issued). The four states below match
+// that unit's own spec exactly:
+//   fulfilled:         issued_qty >= required_qty (remaining_qty <= 0)
+//   ready_to_issue:    remaining_qty > 0 AND available_now >= remaining_qty
+//   partial_available: remaining_qty > 0 AND 0 < available_now < remaining_qty
+//   needs_receiving:   remaining_qty > 0 AND available_now <= 0
+// A newly-typed material with no Offline Inventory match simply has no
+// movement rows for its identity, so available_now naturally computes to 0
+// and it lands on needs_receiving — no special-casing required.
 
 type DbClient = typeof prisma | BackendTransaction;
 
-export type MaterialFulfillmentStatus = "fulfilled" | "partial_issued" | "shortage" | "ready";
+export type MaterialFulfillmentStatus = "fulfilled" | "ready_to_issue" | "partial_available" | "needs_receiving";
+
+function deriveStatus(remaining_qty: number, available_now: number): MaterialFulfillmentStatus {
+  if (remaining_qty <= 1e-9) return "fulfilled";
+  if (available_now >= remaining_qty - 1e-9) return "ready_to_issue";
+  if (available_now > 1e-9) return "partial_available";
+  return "needs_receiving";
+}
 
 export type MaterialFulfillment = {
   id: string;
@@ -116,12 +138,7 @@ export async function getMaterialFulfillmentForWorkOrder(
     // remaining_qty for this identity before computing shortage/status here.
     const available_now = Math.max(balanceByKey.get(key) ?? 0, 0);
     const shortage_qty = Math.max(remaining_qty - available_now, 0);
-
-    let status: MaterialFulfillmentStatus;
-    if (remaining_qty <= 1e-9) status = "fulfilled";
-    else if (issued_qty > 1e-9) status = "partial_issued";
-    else if (shortage_qty > 1e-9) status = "shortage";
-    else status = "ready";
+    const status = deriveStatus(remaining_qty, available_now);
 
     return {
       id: r.id,
@@ -203,12 +220,7 @@ export async function getMaterialFulfillmentForWorkOrders(
     const remaining_qty = Math.max(required_qty - issued_qty, 0);
     const available_now = Math.max(balanceByKey.get(key) ?? 0, 0);
     const shortage_qty = Math.max(remaining_qty - available_now, 0);
-
-    let status: MaterialFulfillmentStatus;
-    if (remaining_qty <= 1e-9) status = "fulfilled";
-    else if (issued_qty > 1e-9) status = "partial_issued";
-    else if (shortage_qty > 1e-9) status = "shortage";
-    else status = "ready";
+    const status = deriveStatus(remaining_qty, available_now);
 
     const entry: MaterialFulfillment = {
       id: r.id,

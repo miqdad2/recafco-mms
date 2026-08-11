@@ -36,6 +36,10 @@ export type WorkerActivityDetailCurrentJobCard = {
   asset_label: string | null;
   worker_assignment_id: string;
   hourly_rate_snapshot: number;
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 10:
+  // this worker's own estimate for the current Job Card, if set — hours
+  // only, never gated by canViewCosts (unlike hourly_rate_snapshot above).
+  estimated_hours: number | null;
 };
 
 type Period = "today" | "week" | "month";
@@ -158,6 +162,9 @@ export function WorkerActivityDetailModal({
               {currentJobCard.asset_label ? <span className="ml-1.5 font-normal text-[#6B7280]">· {currentJobCard.asset_label}</span> : null}
             </p>
             <p className="mt-0.5 text-[#4B5563]">{currentJobCard.issue}</p>
+            {currentJobCard.estimated_hours !== null ? (
+              <p className="mt-0.5 text-[#6B7280]">Estimated for this worker: <strong className="text-[#111827]">{currentJobCard.estimated_hours} h</strong></p>
+            ) : null}
           </div>
         ) : (
           <p className="mt-2 text-xs text-[#9CA3AF]">No active Job Card.</p>

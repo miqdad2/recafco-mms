@@ -64,6 +64,12 @@ test.describe("RECAFCO MMS full workflow", () => {
 
     await test.step("Step 3 — Work Team & Assignment", async () => {
       await wizard.locator('input[name="worker_type"][value="Mechanical"]').check({ force: true });
+
+      // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task
+      // 1/15: Job Card total estimated hours, entered before "Assign work
+      // now" — the field is visible regardless of assignment state.
+      await wizard.locator('input[name="estimated_labor_hours"]').fill("2");
+
       await wizard.getByLabel("Assign work now").check();
       await wizard.getByRole("button", { name: "Internal Team" }).click();
 
@@ -75,6 +81,12 @@ test.describe("RECAFCO MMS full workflow", () => {
       // shows an hourly rate or "KWD" regardless of role — confirm here.
       await expect(wizard.getByText(FIXTURE_WORKER_NAME, { exact: false }).first()).toBeVisible();
       await expect(wizard.getByText(/KWD/)).toHaveCount(0);
+
+      // Unit 10G.13, Task 2/15: per-worker estimated hours, optional, shown
+      // once the worker is selected. Task 13 — Data Entry can enter/see
+      // hours but the input carries no rate/pay text alongside it.
+      await wizard.getByLabel("Estimated hours").fill("2");
+      await expect(wizard.getByText(/Hourly Rate/)).toHaveCount(0);
 
       await wizard.getByRole("button", { name: "Next" }).click();
     });
@@ -281,6 +293,17 @@ test.describe("RECAFCO MMS full workflow", () => {
       await expect(reviewModal.getByText(/Total Pay:/)).toBeVisible();
       await expect(reviewModal.getByText(/Total Hours:/)).toBeVisible();
       await expect(reviewModal.getByText(/Sessions:/)).toBeVisible();
+    });
+
+    await test.step("Closure Review: verify estimated vs actual hours (Unit 10G.13, Task 8)", async () => {
+      // Job-Card-level: Estimated total hours (2, entered by Data Entry in
+      // Step 3) vs Actual total hours vs Variance, before Approve Closure.
+      await expect(reviewModal.getByText(/Estimated vs Actual/)).toBeVisible();
+      await expect(reviewModal.getByText(/Actual:/).first()).toBeVisible();
+      // "Estimated:" appears twice — once for the Job-Card total, once for
+      // FIXTURE_WORKER_NAME's own estimate (both entered as 2 in Step 3).
+      await expect(reviewModal.getByText(/Estimated:/)).toHaveCount(2);
+      await expect(reviewModal.getByText(/Variance:/).first()).toBeVisible();
     });
 
     await test.step("Closure Review: verify materials completion", async () => {

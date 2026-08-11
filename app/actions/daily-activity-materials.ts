@@ -62,7 +62,7 @@ export async function getJobCardMaterialsModalDataAction(workOrderId: string): P
           parts_request_number: true,
           status: true,
           parts_request_items: {
-            select: { id: true, description: true, quantity_requested: true, issued_quantity: true },
+            select: { id: true, description: true, part_id: true, quantity_requested: true, issued_quantity: true },
           },
         },
       },
@@ -73,6 +73,30 @@ export async function getJobCardMaterialsModalDataAction(workOrderId: string): P
   const fulfillment = await getMaterialFulfillmentForWorkOrder(prisma, workOrderId);
   const activeRequestRow = wo.parts_requests[0] ?? null;
 
+  // Unit 10G.14, Task 6 (the confirmed root cause of "both materials need to
+  // be received" when only one actually does): a Materials Request's own
+  // line items are copied 1:1 from Required Materials at Job Card creation
+  // (app/actions/maintenance.ts's auto-create), regardless of whether
+  // Offline Inventory already has enough stock for that line — so this list
+  // used to be shown completely unfiltered here. Cross-reference each item
+  // against the same fulfillment rows the rest of Daily Activity already
+  // uses (matched by part_id when the item is a catalog part, else by
+  // description — the same identity convention material-fulfillment.ts's
+  // own identityFilterFor already uses) and only keep items whose remaining
+  // requirement isn't already fully covered by current stock. An item with
+  // no fulfillment match at all (e.g. a Materials Request created outside
+  // the Required Materials flow) is kept — conservative default, same as
+  // before this fix for that edge case.
+  function findFulfillment(item: { part_id: string | null; description: string }) {
+    if (item.part_id) return fulfillment.find((f) => f.part_id === item.part_id) ?? null;
+    return fulfillment.find((f) => !f.part_id && f.description.toLowerCase() === item.description.toLowerCase()) ?? null;
+  }
+  const receivableItems = (activeRequestRow?.parts_request_items ?? []).filter((item) => {
+    const match = findFulfillment(item);
+    if (!match) return true;
+    return match.status === "partial_available" || match.status === "needs_receiving";
+  });
+
   return {
     workOrderId: wo.id,
     workOrderNumber: wo.work_order_number,
@@ -81,25 +105,35 @@ export async function getJobCardMaterialsModalDataAction(workOrderId: string): P
     canIssue: canManageOfflineInventory(context),
     canReceive: canReceiveIssueMaterials(context),
     fulfillment,
-    activeRequest: activeRequestRow
-      ? {
-          id: activeRequestRow.id,
-          parts_request_number: activeRequestRow.parts_request_number,
-          status: activeRequestRow.status,
-          work_order_id: wo.id,
-          work_order_number: wo.work_order_number,
-          work_order_status: wo.status,
-          problem_summary: wo.operator_complaint || wo.description_of_work || null,
-          asset_name: wo.assets?.asset_name ?? null,
-          plate_number: wo.assets?.plate_number ?? null,
-          items: activeRequestRow.parts_request_items.map((item) => ({
-            id: item.id,
-            description: item.description,
-            quantity_requested: Number(item.quantity_requested),
-            issued_quantity: Number(item.issued_quantity),
-            balance: undefined,
-          })),
-        }
-      : null,
+    // null when there's an active request but every one of its lines is
+    // already ready_to_issue/fulfilled — "nothing left that needs
+    // receiving" reads the same as "no active request" to the Receive
+    // Materials modal (Task 3: never show Receive Materials once stock is
+    // already available to issue).
+    activeRequest:
+      activeRequestRow && receivableItems.length > 0
+        ? {
+            id: activeRequestRow.id,
+            parts_request_number: activeRequestRow.parts_request_number,
+            status: activeRequestRow.status,
+            work_order_id: wo.id,
+            work_order_number: wo.work_order_number,
+            work_order_status: wo.status,
+            problem_summary: wo.operator_complaint || wo.description_of_work || null,
+            asset_name: wo.assets?.asset_name ?? null,
+            plate_number: wo.assets?.plate_number ?? null,
+            items: receivableItems.map((item) => ({
+              id: item.id,
+              description: item.description,
+              quantity_requested: Number(item.quantity_requested),
+              issued_quantity: Number(item.issued_quantity),
+              // Task 6 — the matched fulfillment row's current Offline
+              // Inventory balance, so the popup can default "Quantity
+              // received now" to the actual shortage (remaining - already
+              // available) instead of the full remaining requirement.
+              balance: findFulfillment(item)?.available_now,
+            })),
+          }
+        : null,
   };
 }

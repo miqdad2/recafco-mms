@@ -32,9 +32,17 @@ function assertIsManagerRole(context: CurrentUserContext) {
 // exported/shared, matching this codebase's existing convention of small
 // per-file label-mapping helpers (e.g. materialRowLabel in
 // components/dashboard/closure-requests-modal.tsx).
-function materialsStatusLabel(status: MaterialFulfillment["status"]): "Fully Issued" | "Partially Issued" | "Not Issued" {
-  if (status === "fulfilled") return "Fully Issued";
-  if (status === "partial_issued") return "Partially Issued";
+//
+// Unit 10G.14: computed directly from the raw required/issued/remaining
+// numbers rather than MaterialFulfillment["status"] — that status is now a
+// pure availability read (ready_to_issue/partial_available/needs_receiving),
+// answering "what should happen next," while this 3-state label answers a
+// different question this Closure Review popup actually needs — "how much
+// of this line has been issued to the Job Card so far" — which stays
+// meaningful regardless of current Offline Inventory stock.
+function materialsStatusLabel(f: MaterialFulfillment): "Fully Issued" | "Partially Issued" | "Not Issued" {
+  if (f.remaining_qty <= 1e-9) return "Fully Issued";
+  if (f.issued_qty > 1e-9) return "Partially Issued";
   return "Not Issued";
 }
 
@@ -69,6 +77,11 @@ export type ClosureReviewWorker = {
   totalPay: number | null;
   sessionsCount: number;
   status: string;
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 8: this
+  // worker's own estimate (WorkOrderWorkerAssignment.estimated_hours), if
+  // set — visible regardless of canViewCosts (hours only, not gated like
+  // hourlyRate/totalPay above).
+  estimatedHours: number | null;
 };
 
 export type ClosureReviewMaterial = {
@@ -103,6 +116,9 @@ export type ClosureReviewDetail = {
   workersCount: number;
   totalHours: number;
   totalAmount: number | null;
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 8:
+  // work_orders.estimated_labor_hours — visible regardless of canViewCosts.
+  estimatedHours: number | null;
   materials: ClosureReviewMaterial[];
   materialsFullyIssued: boolean;
   attachments: ClosureReviewAttachment[];
@@ -126,6 +142,7 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
       created_at: true,
       operator_complaint: true,
       description_of_work: true,
+      estimated_labor_hours: true,
       assets: { select: { asset_name: true, plate_number: true } },
       approvals: {
         where: { status: "Closure Requested" },
@@ -180,7 +197,7 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
     issuedQty: f.issued_qty,
     remainingQty: f.remaining_qty,
     unit: f.unit,
-    status: materialsStatusLabel(f.status),
+    status: materialsStatusLabel(f),
   }));
 
   return {
@@ -209,10 +226,12 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
       totalPay: canViewCosts ? w.total_amount : null,
       sessionsCount: w.sessions_count ?? 0,
       status: w.status,
+      estimatedHours: w.estimated_hours,
     })),
     workersCount: laborSummary.workers.length,
     totalHours: laborSummary.total_hours,
     totalAmount: canViewCosts ? laborSummary.total_amount : null,
+    estimatedHours: wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null,
     materials,
     materialsFullyIssued: materials.length > 0 && materials.every((m) => m.status === "Fully Issued"),
     attachments,

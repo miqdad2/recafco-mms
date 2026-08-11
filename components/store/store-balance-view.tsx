@@ -36,7 +36,6 @@ import {
 
 export interface StoreBalanceViewProps {
   balanceItems: BalanceItem[];
-  totalOpeningStock: number;
   totalReceived: number;
   totalIssued: number;
   balance: number;
@@ -92,19 +91,19 @@ function SummaryCard({
     <Wrapper
       type={onClick ? "button" : undefined}
       onClick={onClick}
-      className={`w-full rounded-md border bg-white p-4 text-left shadow-sm transition ${
+      className={`w-full rounded-md border bg-white p-6 text-left shadow-sm transition ${
         onClick ? "cursor-pointer hover:border-[#ED1C24]/40 hover:bg-gray-50" : ""
       } ${active ? "border-[#ED1C24] ring-1 ring-[#ED1C24]" : "border-[#E5E7EB]"}`}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className={`rounded-md p-2 text-white ${bg[tone]}`}>
-          <Icon className="h-4 w-4" aria-hidden />
+        <div className={`rounded-md p-3 text-white ${bg[tone]}`}>
+          <Icon className="h-5 w-5" aria-hidden />
         </div>
-        <span className="text-2xl font-black text-[#111827]">
+        <span className="text-3xl font-black text-[#111827] sm:text-4xl">
           {value.toLocaleString("en-US", { maximumFractionDigits: 2 })}
         </span>
       </div>
-      <p className="mt-3 text-xs font-black uppercase tracking-wide text-[#4B5563]">{title}</p>
+      <p className="mt-4 text-sm font-black uppercase tracking-wide text-[#4B5563]">{title}</p>
     </Wrapper>
   );
 }
@@ -136,7 +135,6 @@ function QuickActionCard({
 
 export function StoreBalanceView({
   balanceItems,
-  totalOpeningStock,
   totalReceived,
   totalIssued,
   balance,
@@ -221,7 +219,7 @@ export function StoreBalanceView({
   return (
     <>
       <PageHeader
-        title="Offline Inventory Control"
+        title="Inventory Control"
         description="Track maintenance materials, received quantities, issued quantities, and current balance."
         actions={
           <>
@@ -235,12 +233,15 @@ export function StoreBalanceView({
       />
 
       <div className="space-y-4 p-4 lg:p-6">
-        {/* Simplification Task 2: one unified "Material Actions" section —
-            Add New Material / Receive Material / Issue Material / View
-            Movement History — for every canManage role. Setup actions
-            (Add Opening Stock / Import Opening Stock) are one-time,
-            pre-go-live steps and stay tucked away for Super Admin only so
-            Data Entry/Manager aren't shown actions they don't need daily. */}
+        {/* Simplification Task 2: one unified "Material Actions" section for
+            every canManage role. Inventory Control Page Simplification Unit
+            10G.16, Task 2: narrowed to Add New Material / View Movement
+            History only — Receive Material / Issue Material removed (not
+            just disabled) so direct receive/issue never happens outside the
+            Daily Activity Job Card workflow. Setup actions (Add Opening
+            Stock / Import Opening Stock) are one-time, pre-go-live steps and
+            stay tucked away for Super Admin only so Data Entry/Manager
+            aren't shown actions they don't need daily. */}
         {canManage && (
           <section className="space-y-3">
             <div>
@@ -248,24 +249,20 @@ export function StoreBalanceView({
                 <Activity className="h-3.5 w-3.5" aria-hidden />
                 Material Actions
               </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {/* Inventory Control Page Simplification Unit 10G.16, Task 2:
+                  direct Receive Material / Issue Material cards removed from
+                  this page entirely (not just disabled) so Data Entry/Manager
+                  never receive or issue outside the Daily Activity Job Card
+                  workflow. Both actions remain fully available from Daily
+                  Activity — see components/work-orders/daily-activity-materials-modal.tsx
+                  and components/store/store-send-materials-popup.tsx — and
+                  their standalone routes/server actions are untouched. */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <QuickActionCard
                   href="?addMaterial=1"
                   icon={PlusCircle}
                   title="Add New Material"
-                  description="Register a new material not yet tracked in Offline Inventory Control."
-                />
-                <QuickActionCard
-                  href="?receiveMaterial=1"
-                  icon={ArrowDownToLine}
-                  title="Receive Material"
-                  description="Record new materials received by Maintenance."
-                />
-                <QuickActionCard
-                  href="?issueMaterial=1"
-                  icon={ArrowUpFromLine}
-                  title="Issue Material"
-                  description="Issue materials for a Job Card or maintenance work."
+                  description="Register a new material not yet tracked in Inventory Control."
                 />
                 <QuickActionCard
                   href="/store/offline-inventory/movements"
@@ -302,26 +299,25 @@ export function StoreBalanceView({
               </div>
             )}
             <p className="text-xs text-[#9CA3AF]">
-              Search a material, check its balance, then receive or issue materials.
+              Use Daily Activity to receive or issue materials for a Job Card.
             </p>
           </section>
         )}
         {!canManage && (
           <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3 text-sm font-semibold text-[#4B5563]">
-            Offline Inventory Control records maintenance material movements linked to Job Cards.
+            Inventory Control records maintenance material movements linked to Job Cards.
           </div>
         )}
 
-        {/* KPI cards — Initial Stock, Received, Issued, Balance. "Initial
-            Stock" is display wording only — internally this is still the
-            OPENING_STOCK movement type / totalOpeningStock value, unchanged. */}
-        <section className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
-          <SummaryCard
-            title="Initial Stock"
-            value={totalOpeningStock}
-            tone="blue"
-            icon={PackagePlus}
-          />
+        {/* Inventory Control Page Simplification Unit 10G.16, Task 5/6: the
+            "Initial Stock" KPI card is removed from this page-level summary
+            (display only — the underlying OPENING_STOCK movement type and
+            totalOpeningStock/balance server-side calculation, and the
+            per-material Stock Summary in MaterialDetailModal, are both
+            unchanged). Remaining 3 cards are enlarged and given more room
+            now that there are only 3 of them: 1 column on mobile, 2 on
+            tablet (wraps cleanly), 3 equal-width on desktop. */}
+        <section className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
           <SummaryCard
             title="Total Received"
             value={totalReceived}
@@ -342,7 +338,7 @@ export function StoreBalanceView({
           />
         </section>
         <p className="-mt-2 text-xs text-[#9CA3AF]">
-          Current Balance = Initial Stock + Received − Issued
+          Current Balance is calculated from all received and issued inventory movements, including any opening balances already recorded.
         </p>
 
         {/* Offline Inventory Manager Access and Always-Visible Search Fix
@@ -441,10 +437,6 @@ export function StoreBalanceView({
                     <PlusCircle className="h-4 w-4" aria-hidden />
                     Add New Material
                   </Link>
-                  <Link href="?receiveMaterial=1" className={secondaryBtn}>
-                    <ArrowDownToLine className="h-4 w-4" aria-hidden />
-                    Receive Material
-                  </Link>
                   {isSuperAdmin && (
                     <>
                       <Link href="/store/offline-inventory/opening-stock" className={secondaryBtn}>
@@ -527,34 +519,20 @@ export function StoreBalanceView({
                           <td className="hidden whitespace-nowrap px-4 py-3 text-xs text-[#4B5563] lg:table-cell">
                             {fmtDate(item.last_movement_date)}
                           </td>
+                          {/* Inventory Control Page Simplification Unit
+                              10G.16, Task 4: "Receive More"/"Issue" row
+                              actions removed — Inventory Control is now a
+                              safe review page for everyone who can reach it.
+                              Receive/Issue still happen through Daily
+                              Activity for correct Job Card tracking. */}
                           <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                            <div className="flex items-center gap-3">
-                              <button
-                                type="button"
-                                onClick={() => setViewKey(item.key)}
-                                className="text-xs font-bold text-[#4B5563] hover:text-[#111827] hover:underline"
-                              >
-                                View
-                              </button>
-                              {canManage && (
-                                <Link
-                                  href={`?receiveMaterial=${encodeURIComponent(item.key)}`}
-                                  scroll={false}
-                                  className="text-xs font-bold text-[#16A34A] hover:underline"
-                                >
-                                  Receive More
-                                </Link>
-                              )}
-                              {canManage && item.balance > 0 && (
-                                <Link
-                                  href={`?issueMaterial=${encodeURIComponent(item.key)}`}
-                                  scroll={false}
-                                  className="text-xs font-bold text-[#ED1C24] hover:underline"
-                                >
-                                  Issue
-                                </Link>
-                              )}
-                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setViewKey(item.key)}
+                              className="text-xs font-bold text-[#4B5563] hover:text-[#111827] hover:underline"
+                            >
+                              View
+                            </button>
                           </td>
                         </tr>
                       ))}
@@ -568,17 +546,25 @@ export function StoreBalanceView({
       </div>
 
       {viewItem && (
-        <MaterialDetailModal item={viewItem} canIssue={canManage} onClose={() => setViewKey(null)} />
+        <MaterialDetailModal item={viewItem} onClose={() => setViewKey(null)} />
       )}
 
       {/* Large Popup Conversion — Add New Material / Receive Material /
           Issue Material open as modals from this page; their standalone
           pages (/add-material, /receive, /issue) still exist and still work
-          for direct URL access. */}
+          for direct URL access.
+          Inventory Control Page Simplification Unit 10G.16, Task 3: the
+          Receive/Issue modals below are no longer reachable from any
+          generic card/row/button on this page (Task 2/4), but the
+          ?receiveMaterial=/?issueMaterial= param handling itself is left
+          fully intact — a Job Card's Materials section "Issue" link (see
+          app/(dashboard)/maintenance/work-orders/[id]/page.tsx) still deep-
+          links here with a specific work order attached, and must keep
+          working. */}
       {showAddMaterial && (
         <LargeFormModal
           title="Add New Material"
-          subtitle="Register a new material in Offline Inventory Control."
+          subtitle="Register a new material in Inventory Control."
           onClose={closeFormModal}
         >
           <AddNewMaterialForm modalMode />

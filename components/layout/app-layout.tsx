@@ -10,6 +10,7 @@ import { BrandLogo } from "@/components/layout/brand-logo";
 import { MobileNavigation } from "@/components/layout/mobile-navigation";
 import { type NavIconKey } from "@/components/layout/nav-link";
 import { CollapsibleNav, type CollapsibleNavGroup } from "@/components/layout/collapsible-nav";
+import { LiveTopClock } from "@/components/layout/live-top-clock";
 import { NotificationBell } from "@/components/notifications/notification-bell";
 import { NotificationToastCenter } from "@/components/notifications/notification-toast-center";
 import { CriticalWorkflowPopup } from "@/components/notifications/critical-workflow-popup";
@@ -73,7 +74,7 @@ const navigationGroups: NavGroup[] = [
       { href: "/maintenance/daily-activity", label: "Daily Activity",          iconKey: "Activity",      permission: "work_orders.view" },
       { href: "/maintenance/work-orders",  label: "Job Cards",                 iconKey: "ClipboardList", permission: "work_orders.view" },
       { href: "/store/parts-requests",     label: "Materials Requests",        iconKey: "ShoppingCart",  permission: "parts_requests.view" },
-      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
+      { href: "/store/offline-inventory",  label: "Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
       { href: "/assets/service-contracts", label: "Service Contracts",         iconKey: "FileText",      permission: "assets.view" }
     ]
   },
@@ -113,7 +114,7 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
       { href: "/maintenance/daily-activity", label: "Daily Activity",          iconKey: "Activity",      permission: "work_orders.view" },
       { href: "/maintenance/work-orders",  label: "Job Cards",                 iconKey: "ClipboardList", permission: "work_orders.view" },
       { href: "/store/parts-requests",     label: "Materials Requests",        iconKey: "ShoppingCart",  permission: "parts_requests.view" },
-      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
+      { href: "/store/offline-inventory",  label: "Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
       { href: "/assets/service-contracts", label: "Service Contracts",         iconKey: "FileText",      permission: "assets.view" }
     ]
   },
@@ -132,11 +133,13 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
 // ── Store Keeper ───────────────────────────────────────────────────────────────
 // Simplified Job Card Approval Workflow Unit Task 6: Store has left the
 // active workflow (no Job Card approval/materials gate depends on Store any
-// more). Store Keeper can still log in, but its nav now shows only Offline
-// Inventory Control — Materials Requests / Send Materials / Sent Materials /
-// Inventory Check are all removed from the sidebar. None of those routes are
-// deleted; they remain reachable by direct URL (still permission-gated) for
-// anyone who needs historical/print access.
+// more). Store Keeper can still log in, but its nav now shows only Inventory
+// Control (sidebar label — Data Entry Dashboard Simplification Unit 10G.10,
+// Task 3; the page itself is still titled "Offline Inventory Control") —
+// Materials Requests / Send Materials / Sent Materials / Inventory Check are
+// all removed from the sidebar. None of those routes are deleted; they
+// remain reachable by direct URL (still permission-gated) for anyone who
+// needs historical/print access.
 
 const storeKeeperNavigationGroups: NavGroup[] = [
   {
@@ -148,7 +151,7 @@ const storeKeeperNavigationGroups: NavGroup[] = [
   {
     label: null,
     items: [
-      { href: "/store/offline-inventory", label: "Offline Inventory Control", iconKey: "ArrowDownUp", permission: "parts.view" }
+      { href: "/store/offline-inventory", label: "Inventory Control", iconKey: "ArrowDownUp", permission: "parts.view" }
     ]
   },
   {
@@ -271,7 +274,7 @@ const normalUserNavigationGroups: NavGroup[] = [
       { href: "/maintenance/daily-activity", label: "Daily Activity",          iconKey: "Activity",      permission: "work_orders.view" },
       { href: "/maintenance/work-orders",  label: "Job Cards",                 iconKey: "ClipboardList", permission: "work_orders.view" },
       { href: "/store/parts-requests",     label: "Materials Requests",        iconKey: "ShoppingCart",  permission: "parts_requests.view" },
-      { href: "/store/offline-inventory",  label: "Offline Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
+      { href: "/store/offline-inventory",  label: "Inventory Control", iconKey: "ArrowDownUp",   permission: "parts.view" },
       { href: "/assets/service-contracts", label: "Service Contracts",         iconKey: "FileText",      permission: "assets.view" }
     ]
   },
@@ -295,6 +298,17 @@ function canSee(context: CurrentUserContext, item: NavItem) {
   return !permission || context.role?.slug === "super_admin" || context.permissions.includes(permission);
 }
 
+// Data Entry Sidebar Reports/Notifications Disable Unit 10G.19: Maintenance
+// Data Entry keeps `reports.view`/`notifications.view` (so both items still
+// pass canSee() above and stay visible, and direct /reports or
+// /notifications navigation still works — see the progress-tracker phase
+// note for why that's an intentional, documented follow-up rather than a
+// gap) — this only changes how the *sidebar entries themselves* render, by
+// href, regardless of which array they came from. Every other role's items
+// are untouched.
+const DATA_ENTRY_DISABLED_HREFS = new Set(["/reports", "/notifications"]);
+const DATA_ENTRY_DISABLED_LABEL = "Manager/Admin only";
+
 // ── Layout ─────────────────────────────────────────────────────────────────────
 
 export async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -308,6 +322,7 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
   const isStoreKeeper = roleSlug === "store_keeper";
   const isTechnician = roleSlug === "technician";
   const isViewerAuditor = roleSlug === "viewer_auditor";
+  const isMaintenanceDataEntry = roleSlug === "maintenance_data_entry";
 
   // Simplified Job Card Approval Workflow Unit Task 6: Inventory Check was a
   // Store-approval-gate feature (E4 in the old flow); no longer injected into
@@ -325,7 +340,21 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
     : normalUserNavigationGroups;
 
   const visibleGroups: CollapsibleNavGroup[] = groups
-    .map((group) => ({ ...group, items: group.items.filter((item) => canSee(context, item)) }))
+    .map((group) => ({
+      ...group,
+      items: group.items
+        .filter((item) => canSee(context, item))
+        .map((item) => {
+          const disabled = isMaintenanceDataEntry && DATA_ENTRY_DISABLED_HREFS.has(item.href);
+          return {
+            href: item.href,
+            label: item.label,
+            iconKey: item.iconKey,
+            disabled,
+            disabledLabel: disabled ? DATA_ENTRY_DISABLED_LABEL : undefined,
+          };
+        }),
+    }))
     .filter((group) => group.items.length > 0);
 
   const allVisibleItems = visibleGroups.flatMap((g) => g.items);
@@ -349,7 +378,12 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
         </aside>
 
         <div className="lg:pl-64">
-          <header className="sticky top-0 z-10 flex min-h-16 items-center justify-end gap-3 border-b border-[#DDE2EA] bg-white/95 px-3 backdrop-blur sm:px-6">
+          <header className="sticky top-0 z-10 flex min-h-16 items-center justify-between gap-3 border-b border-[#DDE2EA] bg-white/95 px-3 backdrop-blur sm:px-6">
+            {/* Top Navbar Clock Placement Unit 10G.20D, Task 1/3/8: lives in
+                the shared app top bar (not the dashboard-only greeting
+                header), so it's visible on every authenticated page — role
+                badge/bell/user/logout stay on the right, untouched below. */}
+            <LiveTopClock />
             <div className="flex min-w-0 items-center gap-2 sm:gap-3">
               <div className="hidden sm:block">
                 <StatusBadge label={context.role?.name ?? "No role"} tone="blue" />
@@ -383,7 +417,15 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
             role other than Data Entry/Manager this always resolves to no
             popup (checked server-side), so it's a no-op for everyone else. */}
         <CriticalWorkflowPopup />
-        <MobileNavigation items={allVisibleItems.map(({ href, label, iconKey }) => ({ href, label, iconKey }))} />
+        <MobileNavigation
+          items={allVisibleItems.map(({ href, label, iconKey, disabled, disabledLabel }) => ({
+            href,
+            label,
+            iconKey,
+            disabled,
+            disabledLabel,
+          }))}
+        />
       </div>
     </RealtimeConnectionProvider>
   );

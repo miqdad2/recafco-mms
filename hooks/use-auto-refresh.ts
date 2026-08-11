@@ -3,6 +3,8 @@
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
+import { isSafeToRefresh } from "@/lib/realtime/refresh-guards";
+
 interface UseAutoRefreshOptions {
   intervalMs?: number;
   enabled?: boolean;
@@ -16,6 +18,7 @@ interface UseAutoRefreshOptions {
  * Pauses while:
  *   - the tab is hidden (document.visibilityState === "hidden")
  *   - an input, textarea, or select is focused (user is typing in a form)
+ *   - a modal/panel (role="dialog") is open
  *
  * Resumes and fires an immediate refresh when the tab becomes visible again.
  * Cleans up on unmount.
@@ -30,18 +33,8 @@ export function useAutoRefresh({
   useEffect(() => {
     if (!enabled) return;
 
-    function isUserTyping(): boolean {
-      const active = document.activeElement;
-      if (!active || active === document.body) return false;
-      const tag = active.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-      if (active instanceof HTMLElement && active.isContentEditable) return true;
-      return false;
-    }
-
     function tryRefresh() {
-      if (document.visibilityState === "hidden") return;
-      if (isUserTyping()) return;
+      if (!isSafeToRefresh()) return;
       router.refresh();
     }
 

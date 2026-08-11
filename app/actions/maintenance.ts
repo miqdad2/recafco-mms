@@ -122,6 +122,11 @@ const workOrderSchema = z.object({
   worker_type: z.string().trim().min(2),
   running_hours: optionalNumber,
   kilometers: optionalNumber,
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 1/14:
+  // optional, >= 0 (optionalNumber already enforces .nonnegative()), never
+  // required — an old Job Card or one Data Entry leaves blank saves and
+  // continues working exactly as before.
+  estimated_labor_hours: optionalNumber,
   operator_complaint: optionalString,
   description_of_work: optionalString,
   priority: z.string().trim().min(2),
@@ -230,9 +235,43 @@ async function parseRequiredPartRows(formData: FormData) {
 // required field was left blank (nothing to save) — the caller treats null
 // as "no assignment to create", the same as if the checkbox were never shown.
 type WizardAssignment =
-  | { kind: "INTERNAL_TEAM"; supervisorId?: string; technicianIds: string[]; helperIds: string[]; notes?: string }
+  | {
+      kind: "INTERNAL_TEAM";
+      supervisorId?: string;
+      technicianIds: string[];
+      helperIds: string[];
+      notes?: string;
+      // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task
+      // 2/4: keyed by worker_profiles.id, same convention
+      // internalTeamRosterSchema.estimatedHoursByWorkerId uses.
+      estimatedHoursByWorkerId: Record<string, number>;
+    }
   | { kind: "FREELANCER"; name: string; phone?: string; trade?: string; amount?: number; notes?: string }
   | { kind: "EXTERNAL_COMPANY"; company: string; contact?: string; phone?: string; trade?: string; amount?: number; notes?: string };
+
+// Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 2: the
+// wizard encodes the per-worker estimate map as one JSON hidden field
+// (`assign_worker_estimates`) rather than one input per worker id, since
+// worker ids aren't known ahead of render — simplest reliable way to carry
+// an arbitrary { workerId: hours } map through a plain FormData submission.
+// Malformed/missing JSON degrades to "no estimates" rather than failing the
+// whole Job Card save.
+function parseWorkerEstimates(formData: FormData): Record<string, number> {
+  const raw = String(formData.get("assign_worker_estimates") ?? "").trim();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const n = Number(value);
+      if (Number.isFinite(n) && n >= 0) out[key] = n;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
 
 function parseWizardAssignment(formData: FormData): WizardAssignment | null {
   if (String(formData.get("assign_now") ?? "") !== "on") return null;
@@ -244,7 +283,7 @@ function parseWizardAssignment(formData: FormData): WizardAssignment | null {
     const technicianIds = formData.getAll("assign_technician_ids").map(String).filter(Boolean);
     const helperIds = formData.getAll("assign_helper_ids").map(String).filter(Boolean);
     if (!supervisorId && technicianIds.length === 0 && helperIds.length === 0) return null;
-    return { kind: "INTERNAL_TEAM", supervisorId, technicianIds, helperIds, notes };
+    return { kind: "INTERNAL_TEAM", supervisorId, technicianIds, helperIds, notes, estimatedHoursByWorkerId: parseWorkerEstimates(formData) };
   }
 
   if (type === "FREELANCER") {
@@ -776,6 +815,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
           technicianIds: wizardAssignment.technicianIds,
           helperIds: wizardAssignment.helperIds,
           notes: wizardAssignment.notes,
+          estimatedHoursByWorkerId: wizardAssignment.estimatedHoursByWorkerId,
         });
       } else if (wizardAssignment.kind === "FREELANCER") {
         await assignTechnicians(context, {

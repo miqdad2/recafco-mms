@@ -158,6 +158,12 @@ type WizardAssignmentState = {
   companyPhone: string;
   companyTrade: string;
   companyAmount: string;
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 2:
+  // keyed by worker_profiles.id, string (raw input) values so an in-progress
+  // "1." or empty field doesn't get coerced away mid-typing — parsed to a
+  // number only at submit time (parseWorkerEstimates in app/actions/
+  // maintenance.ts) and for the live sum/warning below.
+  workerEstimates: Record<string, string>;
 };
 
 const EMPTY_ASSIGNMENT: WizardAssignmentState = {
@@ -176,6 +182,7 @@ const EMPTY_ASSIGNMENT: WizardAssignmentState = {
   companyPhone: "",
   companyTrade: "",
   companyAmount: "",
+  workerEstimates: {},
 };
 
 type AssetOption = AssetPickerOption;
@@ -281,6 +288,12 @@ export function WorkOrderWizard({
   function updateAssignment(patch: Partial<WizardAssignmentState>) {
     setAssignment((prev) => ({ ...prev, ...patch }));
   }
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 1: a
+  // Job Card-level field, not part of WizardAssignmentState — it's visible
+  // on the Work Team & Assignment step regardless of whether "Assign work
+  // now" is on, and submits as `estimated_labor_hours` (workOrderSchema),
+  // not through the assignment path at all.
+  const [estimatedTotalHours, setEstimatedTotalHours] = useState("");
   // Simplify Assignment Picker Unit 7D, Task 5: lifted from an uncontrolled
   // radio to state so the worker picker can sort matching skill_category
   // workers first — the field itself still submits identically via the same
@@ -717,6 +730,29 @@ export function WorkOrderWizard({
                 assignment still happens later from the Job Card detail page. */}
             <input type="hidden" name="assigned_supervisor_id" value="" />
 
+            {/* Estimated Work Hours for Job Cards and Workers Unit 10G.13,
+                Task 1/3: Job Card-level estimate, always visible on this
+                step regardless of "Assign work now" — Data Entry may want
+                to record an estimate even when deferring assignment to
+                later. Optional, decimal-friendly (step 0.25), never blocks
+                Job Card creation when left blank. Nothing about pay/rate is
+                shown or asked here (Task 3). */}
+            <div className="mt-5">
+              <FieldLabel label="Estimated total work hours" hint="Optional" />
+              <input
+                name="estimated_labor_hours"
+                type="number"
+                min="0"
+                step="0.25"
+                inputMode="decimal"
+                value={estimatedTotalHours}
+                onChange={(e) => setEstimatedTotalHours(e.target.value)}
+                placeholder="e.g. 4"
+                className={inp}
+              />
+              <p className="mt-1 text-xs text-[#9CA3AF]">Approximate total time expected for this Job Card.</p>
+            </div>
+
             {canAssignAtCreation && (
               <div className="mt-6 border-t border-[#F3F4F6] pt-5">
                 <label className="flex cursor-pointer items-center gap-2">
@@ -763,6 +799,7 @@ export function WorkOrderWizard({
                         updateAssignment={updateAssignment}
                         activeWorkers={activeWorkers}
                         workerTeam={workerTeam}
+                        estimatedTotalHours={estimatedTotalHours}
                       />
                     )}
 
@@ -1313,11 +1350,17 @@ function InternalTeamWizardFields({
   updateAssignment,
   activeWorkers,
   workerTeam,
+  estimatedTotalHours,
 }: {
   assignment: WizardAssignmentState;
   updateAssignment: (patch: Partial<WizardAssignmentState>) => void;
   activeWorkers: WorkerProfileRow[];
   workerTeam: string;
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 2: the
+  // Job Card-level estimate (Task 1's own field, lifted state), read-only
+  // here — only used to compute the "suggested equal split" placeholder
+  // below, never written back to.
+  estimatedTotalHours: string;
 }) {
   const supervisors = activeWorkers.filter((w) => w.worker_type === "Supervisor");
   const technicians = activeWorkers.filter((w) => w.worker_type === "Technician");
@@ -1331,6 +1374,19 @@ function InternalTeamWizardFields({
       </p>
     );
   }
+
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 2:
+  // every currently-selected worker across all three roles, in one combined
+  // list — matches the task's own "Selected workers: worker1 / ahmad"
+  // example, not three separate per-role lists.
+  const selectedIds = [
+    ...(assignment.supervisorId ? [assignment.supervisorId] : []),
+    ...assignment.technicianIds,
+    ...assignment.helperIds,
+  ];
+  const selectedWorkers = selectedIds
+    .map((id) => activeWorkers.find((w) => w.id === id))
+    .filter((w): w is WorkerProfileRow => Boolean(w));
 
   return (
     <div className="space-y-4">
@@ -1370,6 +1426,21 @@ function InternalTeamWizardFields({
         preferredSkillCategory={workerTeam}
       />
 
+      {selectedWorkers.length > 0 && (
+        <SelectedWorkersEstimateList
+          workers={selectedWorkers}
+          estimates={assignment.workerEstimates}
+          totalEstimateHours={estimatedTotalHours}
+          onChangeEstimate={(workerId, value) =>
+            updateAssignment({ workerEstimates: { ...assignment.workerEstimates, [workerId]: value } })
+          }
+        />
+      )}
+      {/* Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 2:
+          one JSON hidden field carries the whole { workerId: hours } map —
+          see parseWorkerEstimates in app/actions/maintenance.ts. */}
+      <input type="hidden" name="assign_worker_estimates" value={JSON.stringify(assignment.workerEstimates)} />
+
       <div>
         <FieldLabel label="Assignment notes" hint="Optional" />
         <textarea
@@ -1380,6 +1451,70 @@ function InternalTeamWizardFields({
           className={`${inp} resize-none`}
         />
       </div>
+    </div>
+  );
+}
+
+// Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 2: one
+// combined "Selected workers" list (not per role) with an optional per-
+// worker estimate input. The placeholder (not the value) shows an equal
+// split of the Job Card total across every currently-selected worker —
+// visible, editable, never written into state on its own, so it's a
+// suggestion Data Entry can accept by typing it or ignore entirely (Task
+// 2's "auto-suggest... do not force"). The soft warning below only appears
+// once at least one worker estimate has actually been typed AND it sums to
+// something other than the Job Card total — an all-placeholder, nothing
+// actually entered state never triggers it.
+function SelectedWorkersEstimateList({
+  workers,
+  estimates,
+  totalEstimateHours,
+  onChangeEstimate,
+}: {
+  workers: WorkerProfileRow[];
+  estimates: Record<string, string>;
+  totalEstimateHours: string;
+  onChangeEstimate: (workerId: string, value: string) => void;
+}) {
+  const totalNum = Number(totalEstimateHours);
+  const hasTotal = totalEstimateHours.trim() !== "" && Number.isFinite(totalNum) && totalNum > 0;
+  const suggestedSplit = hasTotal ? (totalNum / workers.length).toFixed(2) : undefined;
+
+  const enteredValues = workers
+    .map((w) => estimates[w.id])
+    .filter((v): v is string => Boolean(v && v.trim() !== ""));
+  const enteredSum = Math.round(enteredValues.reduce((sum, v) => sum + (Number(v) || 0), 0) * 100) / 100;
+  const showMismatchWarning = hasTotal && enteredValues.length > 0 && Math.abs(enteredSum - totalNum) > 0.01;
+
+  return (
+    <div className="border-t border-[#F3F4F6] pt-4">
+      <FieldLabel label="Estimated hours per selected worker" hint="Optional" />
+      <p className="mt-0.5 text-xs text-[#9CA3AF]">Used by Manager to compare planned vs actual hours.</p>
+      <div className="mt-2 space-y-1.5">
+        {workers.map((w) => (
+          <div key={w.id} className="flex items-center justify-between gap-2 rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1.5">
+            <span className="min-w-0 truncate text-sm text-[#111827]">{w.name}</span>
+            <label className="flex shrink-0 items-center gap-1.5 text-xs text-[#6B7280]">
+              Estimated hours
+              <input
+                type="number"
+                min="0"
+                step="0.25"
+                inputMode="decimal"
+                value={estimates[w.id] ?? ""}
+                onChange={(e) => onChangeEstimate(w.id, e.target.value)}
+                placeholder={suggestedSplit}
+                className="focus-ring w-20 rounded-md border border-[#E5E7EB] px-2 py-1 text-sm text-[#111827]"
+              />
+            </label>
+          </div>
+        ))}
+      </div>
+      {showMismatchWarning && (
+        <p className="mt-1.5 text-xs text-amber-700">
+          Worker estimates total {enteredSum} h, Job Card estimate is {totalNum} h.
+        </p>
+      )}
     </div>
   );
 }

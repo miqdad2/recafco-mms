@@ -15,6 +15,7 @@ import { ManualTimeEntryModal } from "@/components/work-orders/manual-time-entry
 import { SessionHistoryModal } from "@/components/work-orders/session-history-modal";
 import { dispatchActionToast } from "@/lib/action-messages";
 import type { WorkerLaborRow } from "@/lib/work-orders/work-session-totals";
+import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours-variance";
 
 function statusTone(status: WorkerLaborRow["status"]): "green" | "amber" | "blue" | "gray" {
   if (status === "Active") return "green";
@@ -152,6 +153,29 @@ export function WorkerSessionRow({
             <p className="text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">Total</p>
             <p className="text-sm font-bold text-[#111827]">{worker.total_hours} h</p>
           </div>
+          {/* Estimated Work Hours for Job Cards and Workers Unit 10G.13,
+              Task 6: per-worker Estimated/Variance/Status — hours only,
+              visible regardless of canViewCosts (never gated with Cost
+              below). Nothing shown at all when this worker has no
+              estimate, matching Task 5's "No estimate recorded" rule at the
+              row level (no clutter for the common no-estimate case). */}
+          {worker.estimated_hours !== null && (() => {
+            const variance = computeHoursVariance(worker.estimated_hours, worker.total_hours);
+            return (
+              <div>
+                <p className="text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">Estimated</p>
+                <p className="text-sm font-bold text-[#111827]">
+                  {worker.estimated_hours} h
+                  {variance.varianceHours !== null && (
+                    <span className="ml-1 font-normal text-[#6B7280]">
+                      ({variance.varianceHours >= 0 ? "+" : ""}{variance.varianceHours} h)
+                    </span>
+                  )}
+                </p>
+                <StatusBadge label={variance.label} tone={hoursVarianceTone(variance.status)} />
+              </div>
+            );
+          })()}
           {canViewCosts && (
             <div>
               <p className="text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">Cost</p>

@@ -494,6 +494,21 @@ export function WorkOrderForm({
         </Field>
         <Field label="Running hours" name="running_hours" type="number" defaultValue={workOrder?.running_hours} />
         <Field label="Kilometers" name="kilometers" type="number" defaultValue={workOrder?.kilometers} />
+        {/* Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task
+            1/4: editable here too (not just at wizard creation) so a later
+            edit never silently wipes a previously-entered estimate — same
+            optional numeric Field pattern as Running hours/Kilometers
+            above, same optionalNumber Zod validation. Helper text folded
+            into the label itself (Field has no separate hint slot) rather
+            than risk misplacing a standalone paragraph in this grid. */}
+        <Field
+          label="Estimated total work hours (approximate total time expected)"
+          name="estimated_labor_hours"
+          type="number"
+          min="0"
+          step="0.25"
+          defaultValue={workOrder?.estimated_labor_hours}
+        />
         <Field label="Priority" name="priority">
           <select className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="priority" defaultValue={workOrder?.priority ?? "Normal"}>
             {priorities.map((item) => (

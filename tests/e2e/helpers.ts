@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { PrismaClient } from "@prisma/client";
 
 /**
  * Shared constants and helpers for the RECAFCO MMS full workflow E2E test.
@@ -38,7 +39,12 @@ export async function login(page: Page, email: string, password: string) {
   await page.locator('input[name="password"]').fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
-  await expect(page.getByText(/Hello,/)).toBeVisible({ timeout: 15_000 });
+  // Not "Hello, {name}" — components/dashboard/live-dashboard-header.tsx
+  // (Unit 10G.18, unrelated to this suite) replaced that static greeting
+  // with a time-of-day one ("Good morning/afternoon/evening") that types
+  // itself out character-by-character, so matching its exact text is racy.
+  // The header's subtitle is static and never animates.
+  await expect(page.getByText("Here's what needs your attention today.")).toBeVisible({ timeout: 15_000 });
 }
 
 /** Extracts the Job Card number (e.g. "REC/MD/AUTO/JOB/0007") from free text. */
@@ -76,4 +82,55 @@ export async function installCriticalPopupHandler(page: Page) {
   await page.addLocatorHandler(dismissText, async () => {
     await dismissText.click();
   });
+}
+
+/**
+ * Unit 10G.14 — seeds a fresh, uniquely-named "existing stock" Offline
+ * Inventory material via a direct OPENING_STOCK movement (same shape
+ * scripts/e2e-unit10-run.mjs already uses for its own test fixtures),
+ * bypassing the UI so the mixed-material E2E scenario has a deterministic
+ * starting balance regardless of what other test runs have done to shared
+ * fixtures like "engine filter". Material names used here MUST start with
+ * "E2E-MMS-" — scripts/e2e-mms-cleanup.mjs only deletes movements matching
+ * that prefix.
+ */
+export async function seedOpeningStock(materialName: string, quantity: number, unit = "PCS") {
+  if (!materialName.startsWith("E2E-MMS-")) {
+    throw new Error(`seedOpeningStock: material name must start with "E2E-MMS-" so cleanup can find it (got "${materialName}")`);
+  }
+  const prisma = new PrismaClient();
+  try {
+    const dataEntryUser = await prisma.auth_users.findUnique({ where: { email: DATA_ENTRY.email }, select: { profile_id: true } });
+    if (!dataEntryUser) throw new Error(`seedOpeningStock: ${DATA_ENTRY.email} not found`);
+    await prisma.offline_inventory_movements.create({
+      data: {
+        movement_type: "OPENING_STOCK",
+        movement_date: new Date(),
+        manual_material_name: materialName,
+        category: "Other",
+        quantity,
+        unit,
+        created_by: dataEntryUser.profile_id,
+      },
+    });
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+/** Current Offline Inventory balance for a manual (non-catalog) material identity. */
+export async function getOfflineInventoryBalance(materialName: string, unit = "PCS"): Promise<number> {
+  const prisma = new PrismaClient();
+  try {
+    const movements = await prisma.offline_inventory_movements.findMany({
+      where: { manual_material_name: { equals: materialName, mode: "insensitive" }, unit: { equals: unit, mode: "insensitive" } },
+      select: { movement_type: true, quantity: true },
+    });
+    return movements.reduce(
+      (sum, m) => sum + (m.movement_type === "ISSUED" ? -Number(m.quantity) : Number(m.quantity)),
+      0
+    );
+  } finally {
+    await prisma.$disconnect();
+  }
 }

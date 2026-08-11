@@ -11,7 +11,7 @@ const inp =
   "w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#ED1C24] disabled:bg-gray-50 disabled:text-[#9CA3AF]";
 const lbl = "mb-1 block text-xs font-bold text-[#4B5563]";
 
-type CurrentRosterRow = { worker_id: string; worker_role: string };
+type CurrentRosterRow = { worker_id: string; worker_role: string; estimated_hours: number | null };
 
 export function InternalTeamRosterForm({
   workOrderId,
@@ -58,6 +58,18 @@ export function InternalTeamRosterForm({
   const currentTechnicianIds = currentRoster.filter((r) => r.worker_role === "Technician").map((r) => r.worker_id);
   const currentHelperIds = currentRoster.filter((r) => r.worker_role === "Helper/Labor").map((r) => r.worker_id);
 
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 4: this
+  // form doesn't offer per-worker estimate editing (that's the wizard's
+  // job, at creation time) — it resubmits every currently-known estimate
+  // unchanged, so using this form to add/remove workers can never silently
+  // wipe an estimate set earlier. A worker removed from the roster here
+  // simply has no estimate to carry forward (their assignment row is marked
+  // "removed", not deleted, but a fresh future re-assignment starts blank).
+  const estimatedHoursByWorkerId: Record<string, number> = {};
+  for (const r of currentRoster) {
+    if (r.estimated_hours !== null) estimatedHoursByWorkerId[r.worker_id] = r.estimated_hours;
+  }
+
   if (activeWorkers.length === 0) {
     return (
       <p className="text-sm text-[#6B7280]">
@@ -71,6 +83,7 @@ export function InternalTeamRosterForm({
     <form action={formAction} className="space-y-3">
       <input type="hidden" name="work_order_id" value={workOrderId} />
       <input type="hidden" name="roster_notes" value={notes} />
+      <input type="hidden" name="roster_worker_estimates" value={JSON.stringify(estimatedHoursByWorkerId)} />
 
       {state?.ok === false && (
         <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">

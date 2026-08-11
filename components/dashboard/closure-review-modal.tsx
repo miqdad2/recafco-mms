@@ -13,6 +13,7 @@ import { SessionHistoryModal } from "@/components/work-orders/session-history-mo
 import { StatusBadge } from "@/components/ui/status-badge";
 import { dispatchActionToast } from "@/lib/action-messages";
 import type { SessionRow } from "@/lib/work-orders/work-session-totals";
+import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours-variance";
 
 // Closure Requests Review Popup Unit 10G.2.
 //
@@ -154,16 +155,37 @@ function WorkerReviewCard({
         </p>
         <StatusBadge label={worker.status} tone={statusTone(worker.status)} />
       </div>
-      {/* Unit 10G.3, Task 2/6: Rate -> Total Hours -> Total Pay -> Sessions,
-          matching the task's own worker-card example order exactly. Rate/
-          Total Pay both from worker.hourlyRate/worker.totalPay, which
+      {/* Unit 10G.21, Task 6: Estimated/Actual/Variance/Status — always
+          shown (hours only, unconditional on canViewCosts), replacing Unit
+          10G.13's "hide entirely when no estimate" behavior — a worker with
+          no estimate now shows "Estimated: Not recorded" plus a gray "No
+          Estimate" badge (via computeHoursVariance's own no_estimate
+          status) rather than nothing at all, matching this unit's explicit
+          "If no worker estimate: Estimated: Not recorded / Actual: 2.50 h"
+          example. */}
+      {(() => {
+        const variance = computeHoursVariance(worker.estimatedHours, worker.hours);
+        return (
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[#6B7280]">
+            <span>Estimated: <strong className="text-[#111827]">{worker.estimatedHours !== null ? `${worker.estimatedHours} h` : "Not recorded"}</strong></span>
+            <span>Actual: <strong className="text-[#111827]">{worker.hours.toFixed(2)} h</strong></span>
+            {variance.varianceHours !== null && (
+              <span>Variance: <strong className="text-[#111827]">{variance.varianceHours >= 0 ? "+" : ""}{variance.varianceHours} h</strong></span>
+            )}
+            <StatusBadge label={variance.label} tone={hoursVarianceTone(variance.status)} />
+          </div>
+        );
+      })()}
+      {/* Unit 10G.3, Task 2/6: Rate -> Total Pay -> Sessions. Rate/Total Pay
+          both from worker.hourlyRate/worker.totalPay, which
           getClosureReviewDetailAction already resolves from the frozen
           hourly_rate_snapshot on this Job Card's assignment/sessions —
           never today's Worker Profile rate — and both are null (not just
-          hidden) whenever canViewCosts is false. */}
-      <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-[#6B7280] sm:grid-cols-4">
+          hidden) whenever canViewCosts is false. "Total Hours" moved into
+          the Estimated/Actual block above as "Actual" (Task 6) rather than
+          shown twice. */}
+      <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-[#6B7280] sm:grid-cols-3">
         {canViewCosts && worker.hourlyRate !== null ? <span>Hourly Rate: <strong className="text-[#111827]">{worker.hourlyRate.toFixed(3)} KWD/hr</strong></span> : null}
-        <span>Total Hours: <strong className="text-[#111827]">{worker.hours.toFixed(2)} h</strong></span>
         {canViewCosts && worker.totalPay !== null ? <span>Total Pay: <strong className="text-[#111827]">{worker.totalPay.toFixed(3)} KWD</strong></span> : null}
         <span>Sessions: <strong className="text-[#111827]">{worker.sessionsCount}</strong></span>
       </div>
@@ -352,22 +374,59 @@ export function ClosureReviewModal({
           </div>
         </div>
 
+        {/* Manager Closure Review Estimated vs Actual Labor Transparency
+            Unit 10G.21, Task 4: "Labor Estimate vs Actual" — a clear,
+            always-visible stat-tile section (Estimated Hours / Actual
+            Hours / Difference / Labor Cost if canViewCosts) plus an overall
+            status badge. Actual Hours now always renders even with no
+            estimate — Estimated/Difference fall back to "Not recorded"/
+            "Not available" instead of the old behavior of hiding the whole
+            block. Total workers/hours/pay moved out of the "Workers"
+            header line below (now just the count) since this section is
+            the single source for those figures — avoids showing the same
+            number twice. */}
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Labor Estimate vs Actual</p>
+          {(() => {
+            const variance = computeHoursVariance(detail.estimatedHours, detail.totalHours);
+            return (
+              <>
+                <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                  <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-2">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">Estimated Hours</p>
+                    <p className="text-sm font-black text-[#111827]">{detail.estimatedHours !== null ? `${detail.estimatedHours} h` : "Not recorded"}</p>
+                  </div>
+                  <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-2">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">Actual Hours</p>
+                    <p className="text-sm font-black text-[#111827]">{detail.totalHours.toFixed(2)} h</p>
+                  </div>
+                  <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-2">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">Difference</p>
+                    <p className="text-sm font-black text-[#111827]">
+                      {variance.varianceHours !== null ? `${variance.varianceHours >= 0 ? "+" : ""}${variance.varianceHours} h` : "Not available"}
+                    </p>
+                  </div>
+                  {detail.canViewCosts && detail.totalAmount !== null ? (
+                    <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-2">
+                      <p className="text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">Labor Cost</p>
+                      <p className="text-sm font-black text-[#111827]">{detail.totalAmount.toFixed(3)} KWD</p>
+                    </div>
+                  ) : null}
+                </div>
+                <div className="mt-1.5">
+                  <StatusBadge label={variance.label} tone={hoursVarianceTone(variance.status)} />
+                </div>
+              </>
+            );
+          })()}
+        </div>
+
         {/* Task 3/4 — worker summary + per-worker session breakdown */}
         <div>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Workers</p>
             <p className="text-[11px] text-[#6B7280]">
               Total workers: <strong className="text-[#111827]">{detail.workersCount}</strong>
-              {" · "}Total hours: <strong className="text-[#111827]">{detail.totalHours.toFixed(2)} h</strong>
-              {/* Unit 10G.3, Task 1: Job Card total labor cost — only when
-                  canViewCosts allows; Data Entry never reaches this popup at
-                  all (isManager-gated), so this is defense-in-depth, not the
-                  only guard. */}
-              {detail.canViewCosts && detail.totalAmount !== null ? (
-                <>
-                  {" · "}Total pay: <strong className="text-[#111827]">{detail.totalAmount.toFixed(3)} KWD</strong>
-                </>
-              ) : null}
             </p>
           </div>
           {detail.workers.length === 0 ? (
@@ -384,6 +443,48 @@ export function ClosureReviewModal({
                   onCorrect={(workerAssignmentId, sessionId) => setSessionsFor({ workerAssignmentId, workerName: w.name, sessionId })}
                 />
               ))}
+            </div>
+          )}
+          {/* Unit 10G.21, Task 7: compact worker comparison table — quick
+              scan of "who worked more / who worked less / who has no
+              estimate" across every worker at once, alongside (not instead
+              of) each worker's own card above. Only worth showing once
+              there's more than one worker to compare. */}
+          {detail.workers.length > 1 && (
+            <div className="mt-2 overflow-x-auto rounded-md border border-[#E5E7EB]">
+              <table className="w-full min-w-[520px] text-left text-[11px]">
+                <thead className="bg-[#F9FAFB] text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">
+                  <tr>
+                    <th className="px-2 py-1.5">Worker</th>
+                    <th className="px-2 py-1.5">Estimated</th>
+                    <th className="px-2 py-1.5">Actual</th>
+                    <th className="px-2 py-1.5">Difference</th>
+                    <th className="px-2 py-1.5">Status</th>
+                    {detail.canViewCosts ? <th className="px-2 py-1.5">Pay</th> : null}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#F3F4F6]">
+                  {detail.workers.map((w) => {
+                    const variance = computeHoursVariance(w.estimatedHours, w.hours);
+                    return (
+                      <tr key={w.workerAssignmentId}>
+                        <td className="px-2 py-1.5 font-semibold text-[#111827]">{w.name}</td>
+                        <td className="px-2 py-1.5 text-[#4B5563]">{w.estimatedHours !== null ? `${w.estimatedHours} h` : "—"}</td>
+                        <td className="px-2 py-1.5 text-[#4B5563]">{w.hours.toFixed(2)} h</td>
+                        <td className="px-2 py-1.5 text-[#4B5563]">
+                          {variance.varianceHours !== null ? `${variance.varianceHours >= 0 ? "+" : ""}${variance.varianceHours} h` : "—"}
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <StatusBadge label={variance.label} tone={hoursVarianceTone(variance.status)} />
+                        </td>
+                        {detail.canViewCosts ? (
+                          <td className="px-2 py-1.5 text-[#4B5563]">{w.totalPay !== null ? `${w.totalPay.toFixed(3)} KWD` : "—"}</td>
+                        ) : null}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </div>

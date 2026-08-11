@@ -8,7 +8,6 @@ import {
   Car,
   CheckCircle2,
   ClipboardList,
-  FileText,
   Gauge,
   Package,
   PauseCircle,
@@ -21,9 +20,10 @@ import {
   Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import type { Prisma } from "@prisma/client";
 
 import { StatCard } from "@/components/dashboard/stat-card";
-import { PageHeader } from "@/components/ui/page-header";
+import { LiveDashboardHeader } from "@/components/dashboard/live-dashboard-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requireUser } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
@@ -315,24 +315,53 @@ function TodaySummaryCard({ href, label, value, icon: Icon, tone, size = "sm", t
 // visibly consistent card system. `accent` still means a red left bar + red
 // icon tint + red hover ring, never a filled red tile — red stays a small
 // accent, not a dominant surface, even at this slightly larger size.
-function QuickActionTile({ href, title, helper, icon: Icon, iconBg, iconColor, accent = false }: {
-  href: string; title: string; helper: string; icon: LucideIcon; iconBg: string; iconColor: string; accent?: boolean;
+// Data Entry Dashboard Simplification Unit 10G.10, Task 2: added `primary`
+// — a solid-RECAFCO-red tile, one tier stronger than the existing `accent`
+// (white tile + red left bar), for the one action a dashboard section wants
+// to visually lead with. Purely additive (defaults to false, `accent` is
+// untouched), so every other existing caller of this shared tile — Manager's
+// own Quick Actions row included — renders exactly as before.
+//
+// Data Entry Quick Actions Size Polish Unit 10G.11, Task 1/6: added `size`
+// ("sm" default, "lg" opt-in) — "lg" is a taller, larger-icon/type hero tile
+// (~80px on desktop) for the two tiles Data Entry's dashboard now leads
+// with. Also purely additive/opt-in (default "sm" reproduces the exact prior
+// markup/classes), so Manager's own Quick Actions row — which never passes
+// `size` — is unaffected.
+function QuickActionTile({ href, title, helper, icon: Icon, iconBg, iconColor, accent = false, primary = false, size = "sm" }: {
+  href: string; title: string; helper: string; icon: LucideIcon; iconBg: string; iconColor: string; accent?: boolean; primary?: boolean; size?: "sm" | "lg";
 }) {
+  const isLg = size === "lg";
   return (
     <Link
       href={href}
-      className={`group flex items-center gap-2 rounded-md border-l-4 bg-white px-3 py-2.5 ring-1 transition hover:shadow-sm ${
-        accent ? "border-l-[#ED1C24] ring-[#E5E7EB] hover:ring-[#ED1C24]" : "border-l-transparent ring-[#E5E7EB] hover:ring-[#2563EB]"
+      className={`group flex items-center rounded-md border-l-4 ring-1 transition hover:shadow-sm ${
+        isLg ? "gap-3.5 px-5 py-5 sm:min-h-[80px]" : "gap-2 px-3 py-2.5"
+      } ${
+        primary
+          ? "border-l-[#ED1C24] bg-[#ED1C24] ring-[#ED1C24] hover:bg-[#c8181e]"
+          : accent
+            ? "border-l-[#ED1C24] bg-white ring-[#E5E7EB] hover:ring-[#ED1C24]"
+            : "border-l-transparent bg-white ring-[#E5E7EB] hover:ring-[#2563EB]"
       }`}
     >
-      <span className={`inline-flex shrink-0 rounded-md p-2 ${iconBg}`}>
-        <Icon className={`h-4 w-4 ${iconColor}`} aria-hidden="true" />
+      <span className={`inline-flex shrink-0 rounded-md ${isLg ? "p-3.5" : "p-2"} ${primary ? "bg-white/15" : iconBg}`}>
+        <Icon className={`${isLg ? "h-7 w-7" : "h-4 w-4"} ${primary ? "text-white" : iconColor}`} aria-hidden="true" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-black leading-tight text-[#111827]">{title}</span>
-        <span className="block truncate text-[11px] leading-tight text-[#9CA3AF]">{helper}</span>
+        <span className={`block truncate font-black leading-tight ${isLg ? "text-xl" : "text-sm"} ${primary ? "text-white" : "text-[#111827]"}`}>{title}</span>
+        <span
+          className={`block truncate leading-tight ${isLg ? "mt-1 text-sm" : "text-[11px]"} ${
+            primary ? "text-red-100" : isLg ? "text-[#6B7280]" : "text-[#9CA3AF]"
+          }`}
+        >
+          {helper}
+        </span>
       </span>
-      <ArrowRight className="h-4 w-4 shrink-0 text-[#D1D5DB] transition group-hover:translate-x-0.5 group-hover:text-[#6B7280]" aria-hidden="true" />
+      <ArrowRight
+        className={`${isLg ? "h-5 w-5" : "h-4 w-4"} shrink-0 transition group-hover:translate-x-0.5 ${primary ? "text-white/80 group-hover:text-white" : "text-[#D1D5DB] group-hover:text-[#6B7280]"}`}
+        aria-hidden="true"
+      />
     </Link>
   );
 }
@@ -899,7 +928,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   let nuMaterialsPendingCount = 0;
   let nuWorkingNowCount = 0;
   let nuPausedCount = 0;
-  let nuReadyForClosureCount = 0;
   if (isNormalUser && nuActiveSample.length) {
     const activeIds = nuActiveSample.map((w) => w.id);
     const [fulfillmentMap, laborMap] = await Promise.all([
@@ -932,7 +960,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       if (materialsBlocking) nuMaterialsPendingCount += 1;
       if (hasActiveSession) nuWorkingNowCount += 1;
       if (anyWorkerPaused && !hasActiveSession) nuPausedCount += 1;
-      if (closureReady) nuReadyForClosureCount += 1;
 
       const assetLabel = wo.assets ? `${wo.assets.asset_name}${wo.assets.plate_number ? ` (${wo.assets.plate_number})` : ""}` : null;
       const issue = wo.operator_complaint || wo.description_of_work || "No issue description";
@@ -1112,6 +1139,12 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             description_of_work: true,
             operator_complaint: true,
             created_by: true,
+            // Manager Closure Review Estimated vs Actual Labor Transparency
+            // Unit 10G.21, Task 3: Job-Card-level estimate for the Closure
+            // Requests LIST row's compact Estimated/Actual/Variance summary
+            // — same field, same read pattern already used by the Closure
+            // Review popup's own detail query (app/actions/closure-requests.ts).
+            estimated_labor_hours: true,
             assets: { select: { asset_name: true } },
             parts_requests: { select: { status: true }, orderBy: { created_at: "desc" }, take: 1 },
             _count: { select: { work_order_attachments: true } },
@@ -1128,6 +1161,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           description_of_work: string | null;
           operator_complaint: string | null;
           created_by: string | null;
+          estimated_labor_hours: Prisma.Decimal | null;
           assets: { asset_name: string } | null;
           parts_requests: { status: string }[];
           _count: { work_order_attachments: number };
@@ -1303,6 +1337,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       workersCount: laborSummary.workers.length,
       totalHours: laborSummary.total_hours,
       totalAmount: mgCanViewCosts ? laborSummary.total_amount : null,
+      // Unit 10G.21, Task 3 — hours-only, unconditional on canViewCosts
+      // (same rule as every other Estimated/Actual surface in this app).
+      estimatedHours: r.estimated_labor_hours !== null ? Number(r.estimated_labor_hours) : null,
       materialsLabel,
       attachmentsCount: r._count.work_order_attachments,
       detailHref: `/maintenance/work-orders/${r.id}`,
@@ -2031,9 +2068,15 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           reload — every other prefix already existed and is shared by every
           role's section on this page. */}
       <RealtimeRefresh watch={["job_card.", "work_order.", "materials_request.", "store_materials.", "offline_inventory.", "material_ledger.", "notification.", "asset.", "worker_profile."]} />
-      <PageHeader
-        title={`Hello, ${firstName}`}
-        description="Here's what needs your attention today."
+      {/* Dashboard Greeting and Live Clock UI Polish Unit 10G.18: replaces
+          the static "Hello, {name}" <PageHeader/> with a time-of-day
+          greeting, a one-time typing effect, and a live clock — this is the
+          dashboard's only header, shared by every role section rendered
+          below (Data Entry/Manager/etc.), so this one swap covers all of
+          them. */}
+      <LiveDashboardHeader
+        profileName={firstName}
+        subtitle="Here's what needs your attention today."
       />
       <div className="space-y-4 p-4 pb-8 sm:p-5">
 
@@ -2064,45 +2107,68 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               </div>
             )}
 
-            {/* Data Entry Dashboard Closure and Closed Jobs Clarity Unit
-                10G.9, Task 1/2/3/4/5: 8 clickable cards, in the task's own
-                exact order — Active Jobs, Materials Pending, Working Now,
-                Paused Workers, Ready to Request Closure, Waiting Manager
-                Approval, Closed Recently, Drafts Not Started. "Ready for
-                Closure" renamed to "Ready to Request Closure" (Task 1 — Data
-                Entry requests closure, Manager approves it, the old label
-                read like Data Entry does the closing). The two small
-                secondary text links this section used to end with
-                ("N awaiting Manager closure approval" / "N closed in the
-                last 14 days") are gone — Waiting Manager Approval and Closed
-                Recently are now full dedicated cards instead (Task 4), each
-                opening its own popup without leaving the dashboard (Task 9). */}
+            {/* Data Entry Dashboard Simplification Unit 10G.10, Task 1: cut
+                back to the 6 cards Data Entry actually needs day to day —
+                "Ready to Request Closure" and "Drafts Not Started" removed
+                (both still reachable — the former as a Needs Attention Today
+                row when applicable, the latter via the Job Cards list).
+                Waiting Manager Approval and Closed (Unit 10G.9) are
+                unchanged in behavior.
+                Data Entry Today Summary Label Clarity Unit 10G.12, Task 1/2:
+                relabeled "Active Worker" -> "Working Now" — "Active Worker"
+                read like a total headcount; this card is actually "workers
+                whose timer/session is currently running" (same href/value/
+                icon/tone as before, label + tooltip only). Optional
+                clarifying tooltip added via TodaySummaryCard's existing
+                `title` prop (same mechanism Manager's own KPI row already
+                uses for cards whose wording alone doesn't make the
+                distinction obvious). */}
             <section className="space-y-1.5">
               <SectionLabel>Today Summary</SectionLabel>
-              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 xl:grid-cols-8">
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
                 <TodaySummaryCard href="/maintenance/daily-activity" label="Active Job Cards" value={nuQueue.activeCount} icon={ClipboardList} tone="blue" />
                 <TodaySummaryCard href="/maintenance/daily-activity?status=materials-pending" label="Materials Pending" value={nuMaterialsPendingCount} icon={ShoppingCart} tone={nuMaterialsPendingCount > 0 ? "red" : "green"} />
-                <TodaySummaryCard href="/maintenance/daily-activity?status=working" label="Working Now" value={nuWorkingNowCount} icon={PlayCircle} tone="green" />
+                <TodaySummaryCard href="/maintenance/daily-activity?status=working" label="Working Now" title="Workers currently working" value={nuWorkingNowCount} icon={PlayCircle} tone="green" />
                 <TodaySummaryCard href="/maintenance/daily-activity?status=paused" label="Paused Workers" value={nuPausedCount} icon={PauseCircle} tone="amber" />
-                {/* Task 9 — preferred click behavior: Open Daily Activity
-                    filtered to Ready for Closure (the filter value itself is
-                    unchanged, only this card's own label changed). */}
-                <TodaySummaryCard href="/maintenance/daily-activity?status=ready-closure" label="Ready to Request Closure" value={nuReadyForClosureCount} icon={CheckCircle2} tone="blue" />
                 <WaitingManagerApprovalCard count={nuQueue.closureRequestedCount} jobCards={nuClosureRequestedForModal} />
                 <DataEntryClosedRecentlyCard count={nuQueue.closedRecentCount} />
-                <TodaySummaryCard href="/maintenance/work-orders?status=New" label="Drafts Not Started" value={nuQueue.draftCount} icon={FileText} tone="gray" />
               </div>
             </section>
 
-            {/* Task 2/3 — Quick Actions: same card system as Today Summary,
-                same grid density. Daily Activity is first and carries the
-                only accent (red left bar + red-tinted icon + red hover
-                border) — never a solid-red tile. */}
+            {/* Data Entry Dashboard Simplification Unit 10G.10, Task 2: cut
+                to the two actions Data Entry actually starts from here — New
+                Job Card (primary, solid RECAFCO red — the main thing this
+                dashboard exists for) first, Daily Activity (the previous
+                accent treatment: white tile, red left bar) second. Materials
+                Requests/Inventory Control/Assets & Equipment removed as
+                quick-action tiles — none of those routes were removed, they
+                just aren't one click from this dashboard's home screen any
+                more.
+                Data Entry Quick Actions Size Polish Unit 10G.11, Task 1/2/3/
+                4: both tiles now size="lg" — a taller ~80px hero tile with a
+                bigger icon/title/subtitle, so they read as "the two main
+                daily actions" rather than a plain link list (Task 1/2/3).
+                Grid switched from a flat grid-cols-2 to grid-cols-1
+                sm:grid-cols-2 — full-width stacked, touch-friendly rows on
+                phone width (Task 4's mobile requirement), side-by-side
+                50/50 from `sm:` up (tablet and desktop both satisfied by the
+                same breakpoint, since there are only ever these two tiles). */}
             <section className="space-y-1.5">
               <SectionLabel>Quick Actions</SectionLabel>
-              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 xl:grid-cols-5">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <QuickActionTile
+                  primary
+                  size="lg"
+                  title="New Job Card"
+                  helper="Create request"
+                  href="?new_job_card=1"
+                  icon={PlusCircle}
+                  iconBg="bg-red-50"
+                  iconColor="text-[#ED1C24]"
+                />
                 <QuickActionTile
                   accent
+                  size="lg"
                   title="Daily Activity"
                   helper="Monitor active work"
                   href="/maintenance/daily-activity"
@@ -2110,10 +2176,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                   iconBg="bg-red-50"
                   iconColor="text-[#ED1C24]"
                 />
-                <QuickActionTile title="New Job Card" helper="Create request" href="?new_job_card=1" icon={PlusCircle} iconBg="bg-red-50" iconColor="text-[#ED1C24]" />
-                <QuickActionTile title="Materials Requests" helper="Material requests" href="/store/parts-requests" icon={ShoppingCart} iconBg="bg-violet-50" iconColor="text-violet-600" />
-                <QuickActionTile title="Inventory Control" helper="Receive / issue" href="/store/offline-inventory" icon={Package} iconBg="bg-amber-50" iconColor="text-amber-600" />
-                <QuickActionTile title="Assets & Equipment" helper="Browse assets" href="/assets" icon={Gauge} iconBg="bg-blue-50" iconColor="text-blue-600" />
               </div>
             </section>
 

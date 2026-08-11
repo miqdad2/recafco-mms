@@ -1012,19 +1012,20 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
   // The previewed Job Card may not be one of the rows currently on this page
   // (e.g. opened via a direct/bookmarked ?preview= link), so its reviewed
   // status is looked up on its own rather than assumed to be in reviewedIds.
-  const previewReviewed =
+  // The two lookups below only depend on previewWO (not on each other), so
+  // they run concurrently rather than as sequential awaits.
+  const [previewReviewed, previewPendingClarification] = await Promise.all([
     previewWO && previewWO.status === "Under Review"
-      ? (await getReviewedWorkOrderIds([previewWO.id])).has(previewWO.id)
-      : false;
-  // Looked up independently (not reused from correctionIdSet above) so the
-  // popup is correct even for a directly-linked/bookmarked preview id that
-  // isn't part of this page's current tab/pagination scope. Uses the same
-  // single-record query as the Job Card detail page's correction banner
-  // (Data Entry Correction Note Visibility Cleanup Task 1) so the quick-view
-  // popup and the full detail page never disagree about the note's content.
-  const previewPendingClarification = previewWO
-    ? await getPendingClarificationForWorkOrder(previewWO.id)
-    : null;
+      ? getReviewedWorkOrderIds([previewWO.id]).then((ids) => ids.has(previewWO.id))
+      : Promise.resolve(false),
+    // Looked up independently (not reused from correctionIdSet above) so the
+    // popup is correct even for a directly-linked/bookmarked preview id that
+    // isn't part of this page's current tab/pagination scope. Uses the same
+    // single-record query as the Job Card detail page's correction banner
+    // (Data Entry Correction Note Visibility Cleanup Task 1) so the quick-view
+    // popup and the full detail page never disagree about the note's content.
+    previewWO ? getPendingClarificationForWorkOrder(previewWO.id) : Promise.resolve(null),
+  ]);
   const previewHasPendingCorrection = previewPendingClarification !== null;
   const previewCorrectionRequester = previewPendingClarification?.requested_by
     ? await prisma.profiles.findUnique({
@@ -1402,9 +1403,17 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             Requested" is no longer a headline KPI (a pending correction is a
             secondary "Needs Update" badge on the affected row instead, still
             reachable via the Correction Requested/Data Entry banners
-            elsewhere), and "Open" is split into "Approved"/"Active". */}
-        <section className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
-          <KpiCard
+            elsewhere), and "Open" is split into "Approved"/"Active".
+            Job Cards Summary Card Size Polish Unit 10G.17: was
+            lg:grid-cols-6 for exactly 5 cards, leaving an empty 6th slot and
+            each card narrower than it needed to be — now lg:grid-cols-5 so
+            all 5 share the row evenly, plus a wider gap (gap-3 → gap-4) for
+            "clean gap between cards" at every breakpoint. Mobile/tablet
+            wrapping (grid-cols-2 / sm:grid-cols-3) is unchanged — both
+            already matched this unit's "2-column mobile" / "2-3 column
+            tablet" targets. */}
+        <section className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+          <JobCardsSummaryCard
             title="All Job Cards"
             value={totalWOs}
             href="/maintenance/work-orders"
@@ -1412,7 +1421,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             icon={ClipboardList}
             detail={isNormalUser ? "All my job cards" : "All maintenance job cards"}
           />
-          <KpiCard
+          <JobCardsSummaryCard
             title="Draft"
             value={draftCount}
             href={buildHref({ status: "New" })}
@@ -1420,7 +1429,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             icon={FileText}
             detail="Not yet started"
           />
-          <KpiCard
+          <JobCardsSummaryCard
             title="Active"
             value={activeCount}
             href={buildHref({ status: "Active" })}
@@ -1428,7 +1437,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             icon={Wrench}
             detail="Started — work in progress"
           />
-          <KpiCard
+          <JobCardsSummaryCard
             title="Closure Requested"
             value={closureRequestedCount}
             href={buildHref({ status: "ClosureRequested" })}
@@ -1437,7 +1446,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             detail="Waiting on Manager to approve closing"
             urgent={closureRequestedCount > 0}
           />
-          <KpiCard
+          <JobCardsSummaryCard
             title="Closed"
             value={closed}
             href={buildHref({ status: "Closed" })}
@@ -1844,6 +1853,58 @@ function KpiCard({
       </div>
       <p className="mt-3 text-xs font-black uppercase text-[#4B5563]">{title}</p>
       <p className="mt-0.5 text-xs leading-5 text-[#4B5563]">{detail}</p>
+    </Link>
+  );
+}
+
+// Job Cards Summary Card Size Polish Unit 10G.17 — a page-scoped sibling of
+// KpiCard (which stays untouched above; it's also reused by the Executive/
+// CEO section further down this file, out of scope for this unit) used only
+// by the 5 Job Cards status cards. Same tone map, same href/click behavior,
+// same value — this is a sizing/hierarchy pass only. Icon and count both
+// grew (h-4 w-4 → h-5 w-5 icon, text-2xl → text-3xl count), the label
+// darkened + moved off the muted gray it shared with the subtitle so it
+// reads as its own tier ("Make the label readable"), and the subtitle
+// stayed small/muted underneath it ("keep subtitle smaller"). `min-h-[104px]`
+// plus `flex flex-col justify-between` gives every card the same floor
+// height (mid-point of the requested ~90–110px band) regardless of how long
+// a given subtitle is, so the row stays visually level.
+function JobCardsSummaryCard({
+  title, value, href, tone, icon: Icon, detail, urgent,
+}: {
+  title: string;
+  value: number;
+  href: string;
+  tone: "green" | "amber" | "red" | "blue" | "gray";
+  icon: LucideIcon;
+  detail: string;
+  urgent?: boolean;
+}) {
+  const iconBg = {
+    green: "bg-[#16A34A]",
+    amber: "bg-[#F59E0B]",
+    red:   "bg-[#ED1C24]",
+    blue:  "bg-[#2563EB]",
+    gray:  "bg-[#111827]",
+  }[tone];
+
+  return (
+    <Link
+      href={href}
+      className={`flex min-h-[104px] flex-col justify-between rounded-md border bg-white p-4 shadow-sm transition hover:border-[#ED1C24] hover:shadow-md ${urgent && value > 0 ? "border-amber-300" : "border-[#E5E7EB]"}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className={`rounded-md p-2.5 text-white ${iconBg}`}>
+          <Icon className="h-5 w-5" aria-hidden="true" />
+        </div>
+        <span className={`text-3xl font-black leading-none ${urgent && value > 0 ? "text-[#ED1C24]" : "text-[#111827]"}`}>
+          {value.toLocaleString("en-US")}
+        </span>
+      </div>
+      <div className="mt-3">
+        <p className="text-xs font-black uppercase tracking-wide text-[#111827]">{title}</p>
+        <p className="mt-0.5 text-xs leading-5 text-[#6B7280]">{detail}</p>
+      </div>
     </Link>
   );
 }

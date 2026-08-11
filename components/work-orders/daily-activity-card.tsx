@@ -4,6 +4,7 @@ import { AlertTriangle, PackageSearch, Printer, Users } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { WorkerSessionRow } from "@/components/work-orders/worker-session-row";
 import type { WorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
+import type { MaterialFulfillment } from "@/lib/work-orders/material-fulfillment";
 
 // Daily Activity Compact Control Board Unit 9C, polished in Final UI Polish
 // Unit 9D.
@@ -66,6 +67,11 @@ export type DailyActivityCardData = {
   // — the primary slot is "Issue Available" for this state).
   materialsSecondaryAction: { label: string; mode: "receive" } | null;
   materialsTotals: { required: number; issued: number; remaining: number };
+  // Unit 10G.14, Task 4 — per-line Required/Available/Issued/Status, shown
+  // under the totals line so each material's own state is clear (e.g. one
+  // line "Ready to Issue" and another "Needs Receiving" on the same Job
+  // Card) instead of only the summed totals across every line.
+  fulfillment: MaterialFulfillment[];
   priorityBucket: PriorityBucket;
   priorityLabel: string;
   nextAction: DailyActivityNextAction;
@@ -76,6 +82,8 @@ export type DailyActivityCardData = {
   isManager: boolean;
   canViewCosts: boolean;
   detailHref: string;
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 7.
+  estimatedHours: number | null;
 };
 
 // Anchor target inside the panel that the Next Action button scrolls to for
@@ -312,6 +320,17 @@ export function DailyActivitySelectedPanel({
         </div>
       </div>
 
+      {/* Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 7:
+          a brief one-line summary only — no variance/status badge here
+          (that's the fuller Job Card detail page's job); hidden entirely
+          when there's no estimate, per Task 7's "do not overcrowd". */}
+      {card.estimatedHours !== null && (
+        <p className="mt-3 text-xs text-[#6B7280]">
+          Estimated total: <strong className="text-[#111827]">{card.estimatedHours} h</strong>
+          {" · "}Actual total: <strong className="text-[#111827]">{card.laborSummary.total_hours} h</strong>
+        </p>
+      )}
+
       {/* Worker control section — full WorkerSessionRow controls, but only
           ever for THIS one selected Job Card (Task 8). */}
       <div id={WORKERS_SECTION_ID} className="mt-3 scroll-mt-3">
@@ -358,6 +377,41 @@ export function DailyActivitySelectedPanel({
           <p className="mt-1 text-xs text-[#4B5563]">
             Required {card.materialsTotals.required} · Issued {card.materialsTotals.issued} · Remaining {card.materialsTotals.remaining}
           </p>
+        ) : null}
+        {/* Unit 10G.14, Task 4 — per-line status, so a mixed Job Card (one
+            material already in stock, another new/unavailable) reads
+            clearly instead of only the summed totals above implying every
+            line is in the same state. */}
+        {card.fulfillment.length > 1 ? (
+          <ul className="mt-1.5 space-y-1 border-t border-[#F3F4F6] pt-1.5">
+            {card.fulfillment.map((f) => (
+              <li key={f.id} className="text-[11px] text-[#4B5563]">
+                <span className="font-semibold text-[#111827]">{f.description}</span>
+                <br />
+                Required {f.required_qty} {f.unit} · Available {f.available_now} {f.unit} · Issued {f.issued_qty} {f.unit}
+                {" · "}
+                <span
+                  className={
+                    f.status === "fulfilled"
+                      ? "font-semibold text-green-700"
+                      : f.status === "ready_to_issue"
+                        ? "font-semibold text-blue-700"
+                        : f.status === "partial_available"
+                          ? "font-semibold text-amber-700"
+                          : "font-semibold text-red-700"
+                  }
+                >
+                  {f.status === "fulfilled"
+                    ? "Fully Issued"
+                    : f.status === "ready_to_issue"
+                      ? "Ready to Issue"
+                      : f.status === "partial_available"
+                        ? "Partially Available"
+                        : "Needs Receiving"}
+                </span>
+              </li>
+            ))}
+          </ul>
         ) : null}
         {card.materialAlert ? <p className="mt-0.5 text-xs font-semibold text-[#B45309]">{card.materialAlert}</p> : null}
         {!materialsActionIsPrimary ? (

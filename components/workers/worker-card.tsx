@@ -88,6 +88,12 @@ export function WorkerCard({ worker, canViewCosts, canManageWorkerProfiles, isMa
               {jc.asset_label ? <span className="ml-1.5 font-normal text-[#6B7280]">· {jc.asset_label}</span> : null}
             </p>
             <p className="mt-0.5 truncate text-xs text-[#4B5563]">{jc.issue}</p>
+            {/* Estimated Work Hours for Job Cards and Workers Unit 10G.13,
+                Task 10: this worker's own estimate for the current Job
+                Card, if set — today/month totals below stay unchanged. */}
+            {jc.estimated_hours !== null ? (
+              <p className="mt-0.5 text-[11px] text-[#6B7280]">Estimated for this worker: <strong className="text-[#111827]">{jc.estimated_hours} h</strong></p>
+            ) : null}
             {jcDisplayStatus ? (
               <div className="mt-1">
                 <StatusBadge label={jcDisplayStatus} tone={simplifiedStatusTone(jcDisplayStatus)} />

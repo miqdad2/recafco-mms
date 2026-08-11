@@ -22,12 +22,36 @@ export async function saveInternalTeamRosterAction(
   const context = await requireUser();
 
   try {
+    // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 4:
+    // InternalTeamRosterForm doesn't offer per-worker estimate editing in
+    // this unit, but it DOES resubmit each currently-selected worker's
+    // already-known estimate as a hidden `roster_worker_estimates` JSON
+    // field (same shape as the wizard's own `assign_worker_estimates`) — so
+    // using this form to add/remove workers never silently wipes an
+    // estimate set earlier via the wizard. See InternalTeamRosterForm.
+    const rawEstimates = String(formData.get("roster_worker_estimates") ?? "").trim();
+    let estimatedHoursByWorkerId: Record<string, number> = {};
+    if (rawEstimates) {
+      try {
+        const obj = JSON.parse(rawEstimates);
+        if (obj && typeof obj === "object") {
+          for (const [key, value] of Object.entries(obj)) {
+            const n = Number(value);
+            if (Number.isFinite(n) && n >= 0) estimatedHoursByWorkerId[key] = n;
+          }
+        }
+      } catch {
+        estimatedHoursByWorkerId = {};
+      }
+    }
+
     const parsed = internalTeamRosterSchema.parse({
       workOrderId: formData.get("work_order_id"),
       supervisorId: formData.get("supervisor_id") || undefined,
       technicianIds: formData.getAll("technician_ids").map(String).filter(Boolean),
       helperIds: formData.getAll("helper_ids").map(String).filter(Boolean),
       notes: formData.get("roster_notes") || undefined,
+      estimatedHoursByWorkerId,
     });
     const result = await assignInternalTeamRoster(context, parsed);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);

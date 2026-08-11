@@ -7,6 +7,7 @@
 // Client-safe only (no "server-only" import) — this runs in the browser.
 
 export function isUserTyping(): boolean {
+  if (typeof document === "undefined") return false;
   const active = document.activeElement;
   if (!active || active === document.body) return false;
   const tag = active.tagName;
@@ -21,10 +22,12 @@ export function isUserTyping(): boolean {
 // user has an open form they might lose if the page refreshes underneath
 // them.
 export function isModalOpen(): boolean {
+  if (typeof document === "undefined") return false;
   return document.querySelector('[role="dialog"]') !== null;
 }
 
 export function isSafeToRefresh(): boolean {
+  if (typeof document === "undefined") return false;
   if (document.visibilityState === "hidden") return false;
   if (isUserTyping()) return false;
   if (isModalOpen()) return false;

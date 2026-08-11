@@ -53,18 +53,18 @@ export function AddNewMaterialForm({ modalMode = false }: { modalMode?: boolean 
             <div>
               <span>{state.error}</span>
               {state.existingMaterialKey && (
+                // Inventory Control Page Simplification Unit 10G.16, Task
+                // 2/4: the "Receive More" recovery link here was a direct
+                // manual receive entry point on the Inventory Control
+                // surface — removed for the same reason as the page's own
+                // Receive Material card/row actions. Receive still happens
+                // through Daily Activity for correct Job Card tracking.
                 <div className="mt-2 flex flex-wrap gap-2">
                   <Link
                     href="/store/offline-inventory"
                     className="rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-100"
                   >
                     View Existing
-                  </Link>
-                  <Link
-                    href={`/store/offline-inventory?receiveMaterial=${encodeURIComponent(state.existingMaterialKey)}`}
-                    className="rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-100"
-                  >
-                    Receive More
                   </Link>
                 </div>
               )}

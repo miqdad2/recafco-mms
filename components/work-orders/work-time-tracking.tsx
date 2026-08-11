@@ -2,7 +2,9 @@ import Link from "next/link";
 import { Clock, PauseCircle, PlayCircle, Users } from "lucide-react";
 
 import { WorkerSessionRow } from "@/components/work-orders/worker-session-row";
+import { StatusBadge } from "@/components/ui/status-badge";
 import type { WorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
+import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours-variance";
 
 // Work Session Time Tracking and Labor Cost Calculation Unit 8, Task 6/7/9.
 // Internal Team roster only (Unit 7) — Freelancer/External Company have no
@@ -26,6 +28,13 @@ export function WorkTimeTracking({
   isManager,
   canViewCosts,
   canAssign,
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 5:
+  // work_orders.estimated_labor_hours, already available on the page's own
+  // `wo` object (an `include`-based query, so every root scalar including
+  // this new column is already fetched — no new query). Visible to every
+  // role that reaches this section (Data Entry included) — hours are not a
+  // cost/pay field.
+  estimatedTotalHours,
 }: {
   workOrderId: string;
   summary: WorkOrderLaborSummary;
@@ -33,6 +42,7 @@ export function WorkTimeTracking({
   isManager: boolean;
   canViewCosts: boolean;
   canAssign: boolean;
+  estimatedTotalHours: number | null;
 }) {
   if (summary.workers.length === 0) {
     return (
@@ -45,6 +55,19 @@ export function WorkTimeTracking({
             <p className="text-xs font-black uppercase tracking-wide text-[#ED1C24]">Time &amp; Cost</p>
             <h2 className="mt-0.5 text-lg font-black text-[#111827]">Work Time Tracking</h2>
           </div>
+        </div>
+        {/* Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task
+            5: an estimate can be recorded before any worker is assigned —
+            shown here too. Unit 10G.21, Task 13: Actual (0 h — no workers
+            assigned yet) now always shows too, matching the assigned-worker
+            state's own "Actual always visible" behavior, instead of a bare
+            "No estimate recorded." when there's also no estimate. */}
+        <div className="mt-3 rounded-md border border-[#E5E7EB] bg-white p-3">
+          <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Estimated vs Actual</p>
+          <p className="mt-1 text-sm text-[#4B5563]">
+            Estimated: <strong className="text-[#111827]">{estimatedTotalHours !== null ? `${estimatedTotalHours} h` : "Not recorded"}</strong>
+            {" · "}Actual: <strong className="text-[#111827]">0 h</strong>
+          </p>
         </div>
         <div className="mt-4 flex flex-col items-center gap-3 rounded-md border border-dashed border-[#E5E7EB] bg-[#F9FAFB] py-8 text-center">
           <p className="text-sm text-[#6B7280]">No internal workers assigned yet.</p>
@@ -100,6 +123,34 @@ export function WorkTimeTracking({
             <p className="text-lg font-black text-[#111827]">{summary.total_amount.toFixed(3)} KWD</p>
           </div>
         )}
+      </div>
+
+      {/* Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task
+          5: Estimated / Actual / Variance, visible to every role (Data
+          Entry included — hours only, no pay).
+          Manager Closure Review Estimated vs Actual Labor Transparency
+          Unit 10G.21, Task 13: Actual now always renders even with no
+          estimate recorded ("Estimated: Not recorded" plus a gray "No
+          Estimate" badge), consistent with the same block reused in
+          Closure Review and Closed Jobs — was previously a bare "No
+          estimate recorded." paragraph that hid Actual/status entirely. */}
+      <div className="mt-3 rounded-md border border-[#E5E7EB] bg-white p-3">
+        <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Estimated vs Actual</p>
+        {(() => {
+          const variance = computeHoursVariance(estimatedTotalHours, summary.total_hours);
+          return (
+            <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span className="text-sm text-[#4B5563]">Estimated: <strong className="text-[#111827]">{estimatedTotalHours !== null ? `${estimatedTotalHours} h` : "Not recorded"}</strong></span>
+              <span className="text-sm text-[#4B5563]">Actual: <strong className="text-[#111827]">{summary.total_hours} h</strong></span>
+              {variance.varianceHours !== null && (
+                <span className="text-sm text-[#4B5563]">
+                  Variance: <strong className="text-[#111827]">{variance.varianceHours >= 0 ? "+" : ""}{variance.varianceHours} h</strong>
+                </span>
+              )}
+              <StatusBadge label={variance.label} tone={hoursVarianceTone(variance.status)} />
+            </div>
+          );
+        })()}
       </div>
 
       <div className="mt-4 space-y-3">

@@ -102,6 +102,10 @@ export async function assignInternalTeamRoster(context: CurrentUserContext, inpu
       data: { status: "removed", updated_at: new Date() },
     });
 
+    // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 2/4:
+    // per-worker estimate, keyed by worker_profiles.id in the input (the new
+    // assignment row's own id doesn't exist until this createMany runs). A
+    // key with no matching pick (stale/unrelated) is simply never read here.
     await tx.workOrderWorkerAssignment.createMany({
       data: picks.map(({ id, role }) => ({
         work_order_id: input.workOrderId,
@@ -110,6 +114,7 @@ export async function assignInternalTeamRoster(context: CurrentUserContext, inpu
         hourly_rate_snapshot: workerById.get(id)!.hourly_rate,
         assigned_by: context.userId,
         notes: input.notes?.trim() || null,
+        estimated_hours: input.estimatedHoursByWorkerId?.[id] ?? null,
       })),
     });
 

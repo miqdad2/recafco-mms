@@ -75,13 +75,17 @@ function getMonthStart(): Date {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 }
 
-function materialsStatusLabel(status: MaterialFulfillment["status"]): "Fully Issued" | "Partially Issued" | "Not Issued" {
-  if (status === "fulfilled") return "Fully Issued";
-  if (status === "partial_issued") return "Partially Issued";
-  // "shortage" and "ready" both mean nothing has been issued yet against
-  // this row (available or not) — Task 4's 3-state model doesn't distinguish
-  // them, matching the deliberate per-page wording simplification already
-  // established for Daily Activity's own materials chip (Unit 9B).
+// Unit 10G.14: computed directly from the raw required/issued/remaining
+// numbers rather than MaterialFulfillment["status"] — see the identical note
+// in app/actions/closure-requests.ts's own copy of this helper.
+function materialsStatusLabel(f: MaterialFulfillment): "Fully Issued" | "Partially Issued" | "Not Issued" {
+  if (f.remaining_qty <= 1e-9) return "Fully Issued";
+  // ready_to_issue/partial_available/needs_receiving all mean nothing has
+  // been issued yet against this row (available or not) — Task 4's 3-state
+  // model doesn't distinguish them, matching the deliberate per-page wording
+  // simplification already established for Daily Activity's own materials
+  // chip (Unit 9B).
+  if (f.issued_qty > 1e-9) return "Partially Issued";
   return "Not Issued";
 }
 
@@ -115,6 +119,9 @@ export type ClosedJobCardListRow = {
   closedByName: string | null;
   totalHours: number;
   totalAmount: number | null;
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 9:
+  // work_orders.estimated_labor_hours — visible regardless of canViewCosts.
+  estimatedHours: number | null;
   workersCount: number;
   materialsSummary: string;
 };
@@ -189,6 +196,7 @@ export async function getClosedJobCardsListAction(filter: ClosedJobCardsFilter):
       updated_at: true,
       operator_complaint: true,
       description_of_work: true,
+      estimated_labor_hours: true,
       assets: { select: { asset_name: true, plate_number: true } },
       approvals: {
         where: { status: "Closed" },
@@ -221,6 +229,7 @@ export async function getClosedJobCardsListAction(filter: ClosedJobCardsFilter):
       closedByName: approval?.decided_by ? closedByNameById.get(approval.decided_by) ?? null : null,
       totalHours: laborSummary?.total_hours ?? 0,
       totalAmount: canViewCosts ? laborSummary?.total_amount ?? 0 : null,
+      estimatedHours: r.estimated_labor_hours !== null ? Number(r.estimated_labor_hours) : null,
       workersCount: laborSummary?.workers.length ?? 0,
       materialsSummary: materialsSummaryLabel(fulfillment),
     };
@@ -233,6 +242,8 @@ export type ClosedJobCardDetailWorker = {
   hours: number;
   hourlyRate: number | null;
   totalPay: number | null;
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 9.
+  estimatedHours: number | null;
 };
 
 export type ClosedJobCardDetailMaterial = {
@@ -255,6 +266,8 @@ export type ClosedJobCardDetail = {
   workers: ClosedJobCardDetailWorker[];
   totalHours: number;
   totalAmount: number | null;
+  // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 9.
+  estimatedHours: number | null;
   materials: ClosedJobCardDetailMaterial[];
   canViewCosts: boolean;
 };
@@ -275,6 +288,7 @@ export async function getClosedJobCardDetailAction(workOrderId: string): Promise
       operator_complaint: true,
       description_of_work: true,
       created_by: true,
+      estimated_labor_hours: true,
       assets: { select: { asset_name: true, plate_number: true } },
       approvals: {
         where: { status: "Closed" },
@@ -314,15 +328,17 @@ export async function getClosedJobCardDetailAction(workOrderId: string): Promise
       hours: w.total_hours,
       hourlyRate: canViewCosts ? w.hourly_rate_snapshot : null,
       totalPay: canViewCosts ? w.total_amount : null,
+      estimatedHours: w.estimated_hours,
     })),
     totalHours: laborSummary.total_hours,
     totalAmount: canViewCosts ? laborSummary.total_amount : null,
+    estimatedHours: wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null,
     materials: fulfillment.map((f) => ({
       description: f.description,
       requiredQty: f.required_qty,
       issuedQty: f.issued_qty,
       unit: f.unit,
-      status: materialsStatusLabel(f.status),
+      status: materialsStatusLabel(f),
     })),
     canViewCosts,
   };

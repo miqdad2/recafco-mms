@@ -78,12 +78,32 @@ type NavLinkProps = {
   href: string;
   label: string;
   iconKey: NavIconKey;
+  // Data Entry Sidebar Reports/Notifications Disable Unit 10G.19: visible
+  // but non-interactive — renders a <span>, never a <Link>, so there is no
+  // href to navigate to and no click/keyboard-Enter activation at all.
+  disabled?: boolean;
+  disabledLabel?: string;
 };
 
-export function NavLink({ href, label, iconKey }: NavLinkProps) {
+export function NavLink({ href, label, iconKey, disabled = false, disabledLabel }: NavLinkProps) {
   const pathname = usePathname();
   const isActive = pathname === href || (href !== "/dashboard" && pathname.startsWith(`${href}/`));
   const Icon = navIcons[iconKey] ?? navIcons.LayoutDashboard;
+
+  if (disabled) {
+    return (
+      <span
+        className="flex cursor-not-allowed items-center gap-3 rounded-lg border-l-[3px] border-transparent px-3 py-2.5 text-[15px] font-medium text-[#5B677E] opacity-55"
+        aria-disabled="true"
+        title={disabledLabel}
+      >
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#5B677E]">
+          <Icon className="h-4 w-4" aria-hidden="true" />
+        </span>
+        <span className="truncate">{label}</span>
+      </span>
+    );
+  }
 
   return (
     <Link
