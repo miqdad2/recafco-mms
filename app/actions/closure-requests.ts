@@ -8,6 +8,7 @@ import { canViewEntityFile } from "@/lib/security/file-access";
 import { createSignedFileUrl } from "@/lib/files/signed-url";
 import { getMaterialFulfillmentForWorkOrder, type MaterialFulfillment } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummariesBulk } from "@/lib/work-orders/work-session-totals";
+import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
 
 // Closure Requests Review Popup Unit 10G.2, Task 10.
 //
@@ -231,7 +232,13 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
     workersCount: laborSummary.workers.length,
     totalHours: laborSummary.total_hours,
     totalAmount: canViewCosts ? laborSummary.total_amount : null,
-    estimatedHours: wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null,
+    // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 6: falls
+    // back to the sum of worker estimates only when the Job Card's own
+    // saved total is missing — see resolveEstimatedTotalHours.
+    estimatedHours: resolveEstimatedTotalHours(
+      wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null,
+      laborSummary.workers.map((w) => w.estimated_hours)
+    ),
     materials,
     materialsFullyIssued: materials.length > 0 && materials.every((m) => m.status === "Fully Issued"),
     attachments,

@@ -65,10 +65,13 @@ test.describe("RECAFCO MMS full workflow", () => {
     await test.step("Step 3 — Work Team & Assignment", async () => {
       await wizard.locator('input[name="worker_type"][value="Mechanical"]').check({ force: true });
 
-      // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task
-      // 1/15: Job Card total estimated hours, entered before "Assign work
-      // now" — the field is visible regardless of assignment state.
-      await wizard.locator('input[name="estimated_labor_hours"]').fill("2");
+      // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 1: the
+      // old top-level "Estimated total work hours" field (filled before any
+      // worker was picked) is gone — estimated_labor_hours is now a hidden
+      // field, computed from the per-worker "Estimated hours" input below
+      // and asserted via the Review & Save step's "Total estimated hours"
+      // figure further down instead.
+      await expect(wizard.getByText("Estimated total work hours")).toHaveCount(0);
 
       await wizard.getByLabel("Assign work now").check();
       await wizard.getByRole("button", { name: "Internal Team" }).click();
@@ -108,6 +111,11 @@ test.describe("RECAFCO MMS full workflow", () => {
     let openInDailyActivityHref = "";
 
     await test.step("Step 6 — Review & Save, submit", async () => {
+      // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 3/5:
+      // total is auto-calculated from the one worker estimate entered in
+      // Step 3 ("2") — never typed anywhere on this screen.
+      await expect(wizard.getByText("Total estimated hours: 2 h")).toBeVisible();
+
       const submitButton = wizard.getByRole("button", { name: "Create Job Card", exact: true });
       await expect(submitButton).toBeVisible();
       await submitButton.click();

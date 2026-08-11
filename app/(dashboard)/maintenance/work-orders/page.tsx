@@ -44,10 +44,13 @@ import {
 } from "@/lib/work-orders/simplified-status";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
-import {
-  RepairOrderQuickView,
-  type QuickViewData,
-} from "@/components/work-orders/repair-order-quick-view";
+// Job Cards Direct Detail Navigation Unit 10G.26: RepairOrderQuickView (the
+// quick-view popup previously opened by clicking a row here) is no longer
+// used on this page — only its QuickViewData type is still needed, since
+// JobCardOpenedModal/JobCardSubmittedModal below still take that same shape.
+// The component itself is untouched and still used by the Dashboard and
+// Materials Requests pages — do not remove it globally.
+import type { QuickViewData } from "@/components/work-orders/repair-order-quick-view";
 import { QuickViewRow } from "@/components/work-orders/quick-view-row";
 import { JobCardCreatedModal } from "@/components/work-orders/job-card-created-modal";
 import { JobCardOpenedModal } from "@/components/work-orders/job-card-opened-modal";
@@ -1374,9 +1377,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         <JobCardOpenedModal data={drawerData} dismissHref={openedDismissHref} />
       ) : showSubmittedModal && drawerData ? (
         <JobCardSubmittedModal data={drawerData} dismissHref={submittedDismissHref} />
-      ) : (
-        drawerData && <RepairOrderQuickView data={drawerData} />
-      )}
+      ) : null}
       <PageHeader
         title="Job Cards"
         description="Search, filter, and track Job Cards."
@@ -1576,15 +1577,21 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                       return "hover:bg-gray-50";
                     })();
 
-                    const previewHref = buildHref({ ...sp, preview: wo.id });
+                    // Job Cards Direct Detail Navigation Unit 10G.26: was
+                    // `?preview=<id>` (opened the quick-view popup on this
+                    // same page); now the real Job Card detail route —
+                    // clicking the Job Card number, anywhere else on the
+                    // row, or the row's own Action button all navigate
+                    // straight there, same as the existing Full Details
+                    // button already did.
+                    const detailHref = `/maintenance/work-orders/${wo.id}`;
 
                     return (
-                      <QuickViewRow key={wo.id} previewHref={previewHref} className={rowBg}>
+                      <QuickViewRow key={wo.id} href={detailHref} className={rowBg}>
                         {/* Repair order */}
                         <td className="px-4 py-3">
                           <Link
-                            href={previewHref}
-                            scroll={false}
+                            href={detailHref}
                             className="block truncate font-bold text-[#111827] hover:text-[#ED1C24]"
                           >
                             {wo.work_order_number ?? "Unnumbered"}
@@ -1676,10 +1683,17 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                             </Link>
                             {/* Job Card Action Clarity Fix Task 1: "Track
                                 Work" jumps straight to the Job Card detail
-                                page's Work Time Tracking section — a real
-                                navigation, not the same-page quick-view
-                                popup every other row action opens, so it
-                                gets its own Link (no scroll={false}). */}
+                                page's Work Time Tracking section. Job Cards
+                                Direct Detail Navigation Unit 10G.26: every
+                                other actLabel button (Review/Assign Workers/
+                                Mark Work Started/Close/Materials) used to
+                                open the same-page quick-view popup via
+                                `?preview=`; now it navigates straight to the
+                                Job Card detail page too — same target as
+                                Full Details above — whose own Next Action
+                                panel (Overview tab) already surfaces
+                                whichever of those actions applies, so
+                                nothing that popup offered is lost. */}
                             {actLabel === "Track Work" ? (
                               <Link
                                 href={`/maintenance/work-orders/${wo.id}#work-time-tracking`}
@@ -1689,8 +1703,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                               </Link>
                             ) : actLabel ? (
                               <Link
-                                href={previewHref}
-                                scroll={false}
+                                href={detailHref}
                                 className="inline-block rounded-md bg-[#ED1C24] px-3 py-2 text-center text-xs font-bold text-white transition hover:bg-[#c8181e]"
                               >
                                 {actLabel}

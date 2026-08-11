@@ -25,7 +25,25 @@ export function LiveTimer({ startedAt, className }: { startedAt: string; classNa
     const tick = () => setElapsedLabel(formatElapsed(Date.now() - start));
     tick();
     const interval = setInterval(tick, 1000);
-    return () => clearInterval(interval);
+    // Daily Activity Timer Reliability Unit 10G.24, Task 2/3: browsers
+    // throttle (or fully suspend) setInterval timers in hidden/inactive
+    // tabs, which can leave an Active worker's displayed elapsed time
+    // looking frozen even though nothing is wrong server-side and no data
+    // was lost — the true elapsed time is always re-derivable from
+    // `startedAt` (unchanged) plus the browser's own current clock. Forcing
+    // an immediate re-tick the moment the tab regains visibility (instead
+    // of waiting for the next scheduled 1s tick, itself possibly delayed)
+    // guarantees the display is never stale for more than an instant. Pure
+    // client-side display recompute from data already held — no new
+    // request, poll, or connection.
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") tick();
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [startedAt]);
 
   return (

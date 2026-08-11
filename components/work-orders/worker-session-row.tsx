@@ -140,7 +140,18 @@ export function WorkerSessionRow({
           {isWorking && worker.active_session_started_at ? (
             <div className="rounded-md bg-green-50 px-2 py-1">
               <p className="text-[9px] font-black uppercase tracking-wide text-[#16A34A]">Live</p>
-              <LiveTimer startedAt={worker.active_session_started_at} className="font-mono text-xl font-black tabular-nums text-[#16A34A]" />
+              {/* Daily Activity Timer Reliability Unit 10G.24, Task 3: keyed
+                  by the session's own stable id (falling back to
+                  startedAt if it's ever unavailable) — guarantees a
+                  genuinely new/resumed session is always a fresh,
+                  correctly-ticking instance, never one that could reuse
+                  stale internal state from a previous session occupying
+                  the same position in the tree. */}
+              <LiveTimer
+                key={worker.active_session_id ?? worker.active_session_started_at}
+                startedAt={worker.active_session_started_at}
+                className="font-mono text-xl font-black tabular-nums text-[#16A34A]"
+              />
             </div>
           ) : null}
           {todayHours !== undefined && (
@@ -249,9 +260,20 @@ export function WorkerSessionRow({
                 toastTitle="Work Session Started"
                 className={btnStart}
               />
-              <button type="button" onClick={() => setShowManualEntry(true)} className={btnSecondary}>
-                Add Manual Entry
-              </button>
+              {/* Daily Activity Timer Reliability and Remove Data Entry
+                  Manual Entry Unit 10G.24, Task 5/6: manual time entry can
+                  be used to fabricate hours never actually worked, so it's
+                  now Manager/Super Admin only — Data Entry's only path to
+                  recorded time is the real Start/Pause/Resume/Stop flow.
+                  isManager already means super_admin OR
+                  maintenance_manager (see page.tsx), so this doesn't
+                  narrow who could correct time versus before, only who
+                  reaches it from this button. */}
+              {isManager && (
+                <button type="button" onClick={() => setShowManualEntry(true)} className={btnSecondary}>
+                  Add Manual Entry
+                </button>
+              )}
               <button type="button" onClick={() => setShowHistory(true)} className={btnSecondary}>
                 View Sessions
               </button>

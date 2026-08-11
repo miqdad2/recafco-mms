@@ -65,8 +65,9 @@ test("Mixed materials: existing stock issues directly, new material requires rec
     await wizard.getByRole("button", { name: "Next" }).click();
 
     await wizard.locator('input[name="worker_type"][value="Mechanical"]').check({ force: true });
-    const jobCardEstHours = wizard.locator('input[name="estimated_labor_hours"]');
-    if (await jobCardEstHours.count()) await jobCardEstHours.fill("1");
+    // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 1:
+    // estimated_labor_hours is now a hidden field auto-computed from the
+    // per-worker "Estimated hours" input below — nothing to fill here.
     await wizard.getByLabel("Assign work now").check();
     await wizard.getByRole("button", { name: "Internal Team" }).click();
     const helperSearch = wizard.getByPlaceholder(/Search helpers \/ labor/i);

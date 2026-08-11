@@ -5,11 +5,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AlertCircle, CheckCircle2, FileText, Loader2, XCircle } from "lucide-react";
 
-import { getClosureReviewDetailAction, type ClosureReviewDetail, type ClosureReviewWorker } from "@/app/actions/closure-requests";
+import { getClosureReviewDetailAction, type ClosureReviewDetail, type ClosureReviewWorker, type ClosureReviewAttachment } from "@/app/actions/closure-requests";
 import { getSessionsForAssignmentAction } from "@/app/actions/work-sessions";
 import { approveJobCardClosureModalAction } from "@/app/actions/workflow";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { SessionHistoryModal } from "@/components/work-orders/session-history-modal";
+import { AttachmentPreviewModal } from "@/components/dashboard/attachment-preview-modal";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { dispatchActionToast } from "@/lib/action-messages";
 import type { SessionRow } from "@/lib/work-orders/work-session-totals";
@@ -77,32 +78,36 @@ function SessionTable({
   loading: boolean;
   onCorrect: (sessionId: string) => void;
 }) {
-  if (loading) return <p className="mt-1.5 text-[11px] text-[#9CA3AF]">Loading sessions…</p>;
-  if (!sessions || sessions.length === 0) return <p className="mt-1.5 text-[11px] text-[#9CA3AF]">No sessions recorded.</p>;
+  // Closure Review Cleanup Unit 10G.25, Task 5: session rows bumped from
+  // text-[11px]/text-[10px] to text-sm/text-xs with more padding/gap — same
+  // data (time range, duration, pay, status, correction reason), just easier
+  // to scan. Correct Session is still rendered under the exact same
+  // `canCorrect` condition as before — not removed or re-gated.
+  if (loading) return <p className="mt-2 text-sm text-[#9CA3AF]">Loading sessions…</p>;
+  if (!sessions || sessions.length === 0) return <p className="mt-2 text-sm text-[#9CA3AF]">No sessions recorded.</p>;
 
   return (
-    <div className="mt-1.5 space-y-1">
+    <div className="mt-2 space-y-1.5">
       {sessions.map((s) => {
         const canCorrect = s.status !== "Active" && s.status !== "Cancelled";
         return (
-          <div key={s.id} className="rounded border border-[#F3F4F6] bg-white px-2 py-1.5 text-[11px]">
-            <div className="flex flex-wrap items-center justify-between gap-1.5">
-              <span className="text-[#111827]">
+          <div key={s.id} className="rounded-md border border-[#F3F4F6] bg-white px-3 py-2 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-medium text-[#111827]">
                 {formatSessionTime(s.started_at)} → {s.stopped_at ? formatSessionTime(s.stopped_at) : s.paused_at ? formatSessionTime(s.paused_at) : "—"}
               </span>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
                 {s.correction_reason ? <StatusBadge label="Corrected" tone="amber" /> : null}
                 <StatusBadge label={s.status} tone={sessionStatusTone(s.status)} />
               </div>
             </div>
-            <div className="mt-0.5 flex flex-wrap items-center justify-between gap-1.5 text-[#6B7280]">
+            <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[#6B7280]">
               <span>
                 Duration: <strong className="text-[#111827]">{formatDuration(s.duration_minutes)}</strong>
-                {/* Unit 10G.3, Task 3/6: session-level pay, matching the
-                    task's own "Duration: 1m · Pay: 0.033 KWD" example — same
-                    calculated_amount SessionHistoryModal already shows,
-                    just relabeled here for at-a-glance consistency with the
-                    worker/Job-Card pay lines above it. */}
+                {/* Unit 10G.3, Task 3/6 (unchanged): session-level pay,
+                    matching the task's own "Duration: 1m · Pay: 0.033 KWD"
+                    example — same calculated_amount SessionHistoryModal
+                    already shows. */}
                 {canViewCosts ? (
                   <>
                     {" "}
@@ -114,14 +119,14 @@ function SessionTable({
                 <button
                   type="button"
                   onClick={() => onCorrect(s.id)}
-                  className="inline-flex min-h-6 items-center rounded border border-[#E5E7EB] bg-white px-1.5 py-0.5 text-[10px] font-bold text-[#111827] transition hover:bg-gray-50"
+                  className="inline-flex min-h-7 items-center rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1 text-xs font-bold text-[#111827] transition hover:bg-gray-50"
                 >
                   Correct Session
                 </button>
               ) : null}
             </div>
             {s.correction_reason ? (
-              <p className="mt-0.5 text-[#B45309]">
+              <p className="mt-1 text-xs text-[#B45309]">
                 Reason: {s.correction_reason}
                 {s.edited_by_name ? ` · Edited by: ${s.edited_by_name}` : ""}
               </p>
@@ -147,26 +152,30 @@ function WorkerReviewCard({
   onCorrect: (workerAssignmentId: string, sessionId: string) => void;
 }) {
   return (
-    <div className="rounded-md border border-[#E5E7EB] bg-white p-2.5">
+    <div className="rounded-md border border-[#E5E7EB] bg-white p-3.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-bold text-[#111827]">
-          {worker.name} <span className="font-normal text-[#6B7280]">— {worker.role}</span>
-          {worker.skillCategory ? <span className="ml-1 text-xs font-normal text-[#9CA3AF]">({worker.skillCategory})</span> : null}
+        {/* Closure Review Cleanup Unit 10G.25, Task 3: worker name bumped to
+            text-base/text-lg bold (was text-sm) — this and the readability
+            changes below are the main fix this unit asks for; nothing in
+            this card's DATA changed, only its type scale/spacing. */}
+        <p className="text-base font-bold text-[#111827] sm:text-lg">
+          {worker.name} <span className="font-normal text-[#4B5563]">— {worker.role}</span>
+          {worker.skillCategory ? <span className="ml-1 text-sm font-normal text-[#9CA3AF]">({worker.skillCategory})</span> : null}
         </p>
         <StatusBadge label={worker.status} tone={statusTone(worker.status)} />
       </div>
-      {/* Unit 10G.21, Task 6: Estimated/Actual/Variance/Status — always
-          shown (hours only, unconditional on canViewCosts), replacing Unit
-          10G.13's "hide entirely when no estimate" behavior — a worker with
-          no estimate now shows "Estimated: Not recorded" plus a gray "No
+      {/* Unit 10G.21, Task 6 (data/logic unchanged this unit — Task 4 of
+          10G.25 keeps this exact block): Estimated/Actual/Variance/Status —
+          always shown (hours only, unconditional on canViewCosts). A worker
+          with no estimate shows "Estimated: Not recorded" plus a gray "No
           Estimate" badge (via computeHoursVariance's own no_estimate
-          status) rather than nothing at all, matching this unit's explicit
-          "If no worker estimate: Estimated: Not recorded / Actual: 2.50 h"
-          example. */}
+          status) rather than nothing at all. Text bumped from text-xs to
+          text-sm/text-base (Task 3) — still the main place a Manager
+          compares planned vs actual per worker. */}
       {(() => {
         const variance = computeHoursVariance(worker.estimatedHours, worker.hours);
         return (
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[#6B7280]">
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[#4B5563] sm:text-base">
             <span>Estimated: <strong className="text-[#111827]">{worker.estimatedHours !== null ? `${worker.estimatedHours} h` : "Not recorded"}</strong></span>
             <span>Actual: <strong className="text-[#111827]">{worker.hours.toFixed(2)} h</strong></span>
             {variance.varianceHours !== null && (
@@ -176,15 +185,14 @@ function WorkerReviewCard({
           </div>
         );
       })()}
-      {/* Unit 10G.3, Task 2/6: Rate -> Total Pay -> Sessions. Rate/Total Pay
-          both from worker.hourlyRate/worker.totalPay, which
-          getClosureReviewDetailAction already resolves from the frozen
-          hourly_rate_snapshot on this Job Card's assignment/sessions —
-          never today's Worker Profile rate — and both are null (not just
-          hidden) whenever canViewCosts is false. "Total Hours" moved into
-          the Estimated/Actual block above as "Actual" (Task 6) rather than
-          shown twice. */}
-      <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-[#6B7280] sm:grid-cols-3">
+      {/* Unit 10G.3, Task 2/6 (data/logic unchanged this unit): Rate -> Total
+          Pay -> Sessions. Rate/Total Pay both from worker.hourlyRate/
+          worker.totalPay, which getClosureReviewDetailAction already
+          resolves from the frozen hourly_rate_snapshot on this Job Card's
+          assignment/sessions — never today's Worker Profile rate — and both
+          are null (not just hidden) whenever canViewCosts is false. Text
+          bumped from text-xs to text-sm (Task 3). */}
+      <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-[#4B5563] sm:grid-cols-3">
         {canViewCosts && worker.hourlyRate !== null ? <span>Hourly Rate: <strong className="text-[#111827]">{worker.hourlyRate.toFixed(3)} KWD/hr</strong></span> : null}
         {canViewCosts && worker.totalPay !== null ? <span>Total Pay: <strong className="text-[#111827]">{worker.totalPay.toFixed(3)} KWD</strong></span> : null}
         <span>Sessions: <strong className="text-[#111827]">{worker.sessionsCount}</strong></span>
@@ -226,6 +234,11 @@ export function ClosureReviewModal({
   const [sessionsByWorker, setSessionsByWorker] = useState<Map<string, SessionRow[]>>(new Map());
   const [sessionsFor, setSessionsFor] = useState<{ workerAssignmentId: string; workerName: string; sessionId: string } | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  // Closure Review Cleanup and Attachment Preview Unit 10G.25, Task 7: which
+  // attachment's preview modal is open, if any — stacks above this popup
+  // (see AttachmentPreviewModal's own z-[60]/z-[70]) rather than swapping it
+  // out, unlike sessionsFor above which replaces this popup's body entirely.
+  const [previewAttachment, setPreviewAttachment] = useState<ClosureReviewAttachment | null>(null);
 
   const [managerNote, setManagerNote] = useState("");
   const [reviewedHours, setReviewedHours] = useState(false);
@@ -356,7 +369,8 @@ export function ClosureReviewModal({
   ];
 
   return (
-    <LargeFormModal title="Closure Review" subtitle="Review work, materials, attachments, and labor before approving." onClose={onClose}>
+    <>
+      <LargeFormModal title="Closure Review" subtitle="Review work, materials, attachments, and labor before approving." onClose={onClose}>
       <div className="space-y-4">
         {/* Task 2 — Job Card summary */}
         <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3">
@@ -374,52 +388,22 @@ export function ClosureReviewModal({
           </div>
         </div>
 
-        {/* Manager Closure Review Estimated vs Actual Labor Transparency
-            Unit 10G.21, Task 4: "Labor Estimate vs Actual" — a clear,
-            always-visible stat-tile section (Estimated Hours / Actual
-            Hours / Difference / Labor Cost if canViewCosts) plus an overall
-            status badge. Actual Hours now always renders even with no
-            estimate — Estimated/Difference fall back to "Not recorded"/
-            "Not available" instead of the old behavior of hiding the whole
-            block. Total workers/hours/pay moved out of the "Workers"
-            header line below (now just the count) since this section is
-            the single source for those figures — avoids showing the same
-            number twice. */}
-        <div>
-          <p className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Labor Estimate vs Actual</p>
-          {(() => {
-            const variance = computeHoursVariance(detail.estimatedHours, detail.totalHours);
-            return (
-              <>
-                <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-                  <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-2">
-                    <p className="text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">Estimated Hours</p>
-                    <p className="text-sm font-black text-[#111827]">{detail.estimatedHours !== null ? `${detail.estimatedHours} h` : "Not recorded"}</p>
-                  </div>
-                  <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-2">
-                    <p className="text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">Actual Hours</p>
-                    <p className="text-sm font-black text-[#111827]">{detail.totalHours.toFixed(2)} h</p>
-                  </div>
-                  <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-2">
-                    <p className="text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">Difference</p>
-                    <p className="text-sm font-black text-[#111827]">
-                      {variance.varianceHours !== null ? `${variance.varianceHours >= 0 ? "+" : ""}${variance.varianceHours} h` : "Not available"}
-                    </p>
-                  </div>
-                  {detail.canViewCosts && detail.totalAmount !== null ? (
-                    <div className="rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-2">
-                      <p className="text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">Labor Cost</p>
-                      <p className="text-sm font-black text-[#111827]">{detail.totalAmount.toFixed(3)} KWD</p>
-                    </div>
-                  ) : null}
-                </div>
-                <div className="mt-1.5">
-                  <StatusBadge label={variance.label} tone={hoursVarianceTone(variance.status)} />
-                </div>
-              </>
-            );
-          })()}
-        </div>
+        {/* Closure Review Cleanup and Attachment Preview Unit 10G.25, Task
+            1/2: the old "Labor Estimate vs Actual" top section (Estimated
+            Hours / Actual Hours / Difference stat tiles + an overall
+            variance badge) is removed — that same estimate-vs-actual
+            comparison already lives on each worker's own card below (Task
+            4), and duplicating it as a Job-Card-wide rollup here was taking
+            space without adding information. Only the one figure that had
+            no other home, total labor cost, survives — as a small standalone
+            card, completely absent (not "0.000 KWD") for a Manager who
+            cannot view costs. */}
+        {detail.canViewCosts && detail.totalAmount !== null ? (
+          <div className="inline-flex w-fit flex-col rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-3.5 py-2">
+            <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Labor Cost</p>
+            <p className="text-lg font-black text-[#111827]">{detail.totalAmount.toFixed(3)} KWD</p>
+          </div>
+        ) : null}
 
         {/* Task 3/4 — worker summary + per-worker session breakdown */}
         <div>
@@ -518,36 +502,58 @@ export function ClosureReviewModal({
           )}
         </div>
 
-        {/* Task 6 — attachments review */}
+        {/* Closure Review Cleanup Unit 10G.25, Task 6/7/8: attachments now
+            sit inside one highlighted card (was a plain text list) so the
+            section reads as its own distinct block; each row keeps every
+            audit field the plain list already showed (type, file name,
+            uploaded by, uploaded date/time — Task 8), just laid out more
+            clearly. "Open" (a plain link that navigated away) is now
+            "Preview" (Task 7), which opens AttachmentPreviewModal in place
+            instead — the file itself is still never fetched until that
+            click. */}
         <div>
           <p className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Attachments</p>
-          {detail.attachments.length === 0 ? (
-            <p className="mt-1 text-xs text-[#9CA3AF]">No attachments uploaded.</p>
-          ) : (
-            <ul className="mt-1 space-y-1">
-              {detail.attachments.map((a) => (
-                <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="text-[#111827]">
-                    <FileText className="mr-1 inline h-3 w-3 text-[#9CA3AF]" aria-hidden="true" />
-                    {a.type} <span className="text-[#9CA3AF]">— {a.fileName} · {a.uploadedByName ?? "Unknown"} · {a.uploadedAtLabel}</span>
-                  </span>
-                  {a.viewUrl ? (
-                    <Link href={a.viewUrl} target="_blank" className="shrink-0 font-bold text-[#2563EB] hover:underline">
-                      Open
-                    </Link>
-                  ) : (
-                    <span className="shrink-0 text-[#9CA3AF]">Access restricted</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
+          <div className="mt-1.5 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3">
+            {detail.attachments.length === 0 ? (
+              <p className="text-sm text-[#9CA3AF]">No attachments uploaded.</p>
+            ) : (
+              <ul className="space-y-2">
+                {detail.attachments.map((a) => (
+                  <li key={a.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[#E5E7EB] bg-white px-3 py-2.5">
+                    <div className="flex min-w-0 items-start gap-2">
+                      <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[#9CA3AF]" aria-hidden="true" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-[#111827]">{a.type}</p>
+                        <p className="truncate text-sm text-[#4B5563]">{a.fileName}</p>
+                        <p className="mt-0.5 text-xs text-[#9CA3AF]">
+                          Uploaded by {a.uploadedByName ?? "Unknown"} · {a.uploadedAtLabel}
+                        </p>
+                      </div>
+                    </div>
+                    {a.viewUrl ? (
+                      <button
+                        type="button"
+                        onClick={() => setPreviewAttachment(a)}
+                        className="inline-flex min-h-8 shrink-0 items-center rounded-md border border-[#E5E7EB] bg-white px-3 py-1.5 text-xs font-bold text-[#2563EB] transition hover:bg-blue-50"
+                      >
+                        Preview
+                      </button>
+                    ) : (
+                      <span className="shrink-0 text-xs text-[#9CA3AF]">Access restricted</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
 
-        {/* Task 7 — closure note */}
+        {/* Task 7 — closure note. Unit 10G.25, Task 9: text bumped from
+            text-xs to text-sm/leading-relaxed for readability — position
+            (below Attachments, near the end) and content unchanged. */}
         <div>
           <p className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Closure Note</p>
-          <p className="mt-1 text-xs text-[#4B5563]">{detail.note ? detail.note : "No remarks added."}</p>
+          <p className="mt-1.5 text-sm leading-relaxed text-[#374151]">{detail.note ? detail.note : "No remarks added."}</p>
         </div>
 
         {/* Task 8 — review checklist + Approve Closure */}
@@ -616,6 +622,11 @@ export function ClosureReviewModal({
           </div>
         </div>
       </div>
-    </LargeFormModal>
+      </LargeFormModal>
+      {/* Task 7 — stacks above the still-open Closure Review popup; see
+          AttachmentPreviewModal's own doc comment for the z-index/stacking
+          rationale. */}
+      {previewAttachment ? <AttachmentPreviewModal attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} /> : null}
+    </>
   );
 }

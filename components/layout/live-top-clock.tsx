@@ -18,6 +18,15 @@ import { Clock as ClockIcon } from "lucide-react";
 // value derived from the visitor's local clock, which the server can't
 // know). Only after mount does the tick interval start setting real values,
 // which is a post-hydration DOM update, not a mismatch.
+//
+// Dashboard Header Clock Refinement Unit 10G.30: dropped the
+// rounded/bordered/shadowed "card" chrome (border, bg-white pill, shadow-sm,
+// colored icon badge) that made this read as a separate floating widget
+// competing with the top strip around it. It now renders as plain text
+// embedded directly in the shared header strip -- bigger, bolder time,
+// smaller secondary date, and a small unboxed icon -- with no new state, no
+// new timer, no logic change at all (still the same one-per-second
+// setInterval tick).
 
 function formatClock(now: Date): { time: string; date: string } {
   const time = now.toLocaleTimeString("en-US", {
@@ -48,21 +57,17 @@ export function LiveTopClock({ className = "" }: { className?: string }) {
   const clock = now ? formatClock(now) : null;
 
   return (
-    <div
-      className={`flex shrink-0 items-center gap-2 rounded-xl border border-[#E5E7EB] bg-white px-3 py-2 shadow-sm sm:gap-2.5 sm:px-4 sm:py-2.5 ${className}`}
-    >
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-red-50 text-[#ED1C24] sm:h-9 sm:w-9">
-        <ClockIcon className="h-4 w-4" aria-hidden="true" />
-      </span>
-      <div className="leading-tight">
-        <p className="font-mono text-sm font-black tabular-nums text-[#111827] sm:text-base">
+    <div className={`flex shrink-0 items-center gap-1.5 sm:gap-2 ${className}`}>
+      <ClockIcon className="h-4 w-4 shrink-0 text-[#ED1C24]/70 sm:h-5 sm:w-5" aria-hidden="true" />
+      <div className="leading-none">
+        <p className="font-mono text-lg font-black tracking-wide tabular-nums text-[#111827] sm:text-2xl">
           {clock ? clock.time : "--:--:--"}
         </p>
-        {/* Task 6 — mobile keeps only the time; the date is a nice-to-have
+        {/* Task 6 -- mobile keeps only the time; the date is a nice-to-have
             that has no room to sit next to the role badge/bell/user/logout
             controls at narrow widths. */}
-        <p className="hidden text-[10px] font-medium text-[#6B7280] sm:block">
-          {clock ? clock.date : " "}
+        <p className="mt-0.5 hidden text-xs font-medium text-[#6B7280] sm:block">
+          {clock ? clock.date : " "}
         </p>
       </div>
     </div>

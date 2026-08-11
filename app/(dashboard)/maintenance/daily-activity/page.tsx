@@ -336,63 +336,40 @@ export default async function DailyActivityPage({
     if (materialsIncomplete) closureReasons.push("Required materials not fully issued");
     if (laborSummary.has_active_session) closureReasons.push("Active work session running");
 
-    // Task 9 — one materials action per card. "Issue Material" (the one red
-    // call-to-action) only offered to whoever can actually issue stock (same
-    // gate the Job Card detail page's Materials section uses); never offers
-    // "Receive Materials" once stock is already available to issue.
-    const materialsActionHref =
-      materialsChip.label === "Ready to Issue" || materialsChip.label === "Partially Available"
-        ? `${detailHref}#parts`
-        : activeMaterialsRequest
-          ? `/store/parts-requests/${activeMaterialsRequest.id}`
-          : `${detailHref}#parts`;
-    // Unit 10D, Task 1/2/3/4 — the primary materials action now opens a
-    // modal instead of navigating, for exactly the same two cases the old
-    // href-based logic already recognized ("Issue Material"/"Receive
-    // Materials"); "View Materials"/"Materials Completed" are unchanged,
-    // plain navigation (nothing to action there — Task 7's "no open
-    // Materials Request"/"already complete" guards). Partially Available's
-    // primary is "Issue Available" (Task 4) rather than a plain "Issue
-    // Material", since only part of what's required can be issued right now.
-    const materialsModalAction: "issue" | "receive" | null =
-      materialsChip.label === "Ready to Issue" && canIssueMaterials
-        ? "issue"
-        : materialsChip.label === "Partially Available" && canIssueMaterials
-          ? "issue"
-          : materialsChip.label === "Materials Pending" && activeMaterialsRequest && canReceiveMaterials
-            ? "receive"
-            : null;
-    const materialsActionLabel =
-      materialsChip.label === "Partially Available" && materialsModalAction === "issue"
-        ? "Issue Available"
-        : materialsModalAction === "issue"
-          ? "Issue Material"
-          : materialsModalAction === "receive"
-            ? "Receive Materials"
-            : materialsChip.label === "Materials Completed"
-              ? "Materials Completed"
-              : "View Materials";
-    // Task 4 — Partially Available's second action, always offered
-    // alongside "Issue Available" when there's an open Materials Request to
-    // receive the shortage against (Task 7 — never otherwise).
-    const materialsSecondaryAction: { label: string; mode: "receive" } | null =
-      materialsChip.label === "Partially Available" && activeMaterialsRequest && canReceiveMaterials
-        ? { label: "Receive Shortage", mode: "receive" }
-        : null;
+    // Unified Material Processing Flow Unit 10G.23 — replaces the old
+    // three-way "Issue Material" / "Issue Available" / "Receive Materials"
+    // split (which forced Data Entry to click Issue Available, then Receive
+    // Materials, then Issue Available again for a mixed Job Card) with one
+    // "Process Materials" action whenever this Job Card has required-
+    // materials tracking that isn't fully issued yet. The modal itself
+    // (components/work-orders/daily-activity-materials-modal.tsx) does the
+    // receive-then-issue work in one confirmed step via
+    // processJobCardMaterialsAction. Requires both existing gates (not a new
+    // permission) since Process Materials can do both a receive and an
+    // issue in the same click.
+    const canProcessMaterials = canIssueMaterials && canReceiveMaterials;
+    const showProcessMaterials = fulfillment.length > 0 && materialsIncomplete && canProcessMaterials;
+    const materialsActionHref = activeMaterialsRequest ? `/store/parts-requests/${activeMaterialsRequest.id}` : `${detailHref}#parts`;
+    const materialsActionLabel = showProcessMaterials
+      ? "Process Materials"
+      : materialsChip.label === "Materials Completed"
+        ? "Materials Completed"
+        : "View Materials";
 
-    // Task 9 — the one-line material alert shown only when materials need
-    // attention (never for "No Materials"). Unit 10F.3, Task 3: also shows a
-    // calm confirmation line once fully issued, instead of no line at all —
-    // never "Materials are pending." for this state.
+    // Task 1's own three example messages, chosen by the same job-card-level
+    // availability rollup materialsChip is already built from: every
+    // remaining line already in stock (issuable), none in stock (shortage),
+    // or a genuine mix of both (partial) — Task 10's exact completed wording
+    // once nothing is left to do.
     const materialAlert =
-      materialsChip.label === "Materials Pending"
-        ? "Materials are pending."
-        : materialsChip.label === "Ready to Issue"
-          ? "Material is available to issue."
-          : materialsChip.label === "Partially Available"
-            ? "Some materials are available; shortage remains."
-            : materialsChip.label === "Materials Completed" && fulfillment.length > 0
-              ? "All required materials have been issued to this Job Card."
+      materialsChip.label === "Materials Completed" && fulfillment.length > 0
+        ? "All required materials have been issued for this Job Card."
+        : materialsAvailability === "issuable"
+          ? "All materials are available. Review and issue materials."
+          : materialsAvailability === "shortage"
+            ? "Some materials need receiving before issue. Review and process materials."
+            : materialsAvailability === "partial"
+              ? "Some materials are available and some need receiving. Review and process materials."
               : null;
 
     const isUnusualActiveSession = !ACTIVE_JOB_CARD_STATUSES.includes(wo.status) && laborSummary.has_active_session;
@@ -441,17 +418,19 @@ export default async function DailyActivityPage({
           ? closureReady
             ? { message: "Ready for closure.", buttonLabel: canRequestClosureRole ? "Request Closure" : null, href: canRequestClosureRole ? closureHref : null }
             : { message: "Materials are completed. Continue work tracking or request closure when ready.", buttonLabel: null, href: null }
-          : materialsChip.label === "Materials Pending"
-            ? {
-                message:
-                  materialsActionLabel === "Receive Materials"
-                    ? "Materials are pending. Receive materials when they arrive."
-                    : "Materials are pending. Review the request to resolve it.",
-                buttonLabel: materialsActionLabel,
-                href: materialsActionHref,
-              }
-            : materialsChip.label === "Ready to Issue" || materialsChip.label === "Partially Available"
-              ? { message: `${materialAlert ?? "Materials need action."} Issue material to the assigned workers.`, buttonLabel: materialsActionLabel, href: materialsActionHref }
+          : fulfillment.length > 0 && materialsIncomplete
+            // Unit 10G.23 — one unified "Process Materials" next action,
+            // replacing what used to be three separate chip-label branches
+            // (Materials Pending / Ready to Issue / Partially Available)
+            // each with their own button label ("Receive Materials" /
+            // "Issue Material" / "Issue Available").
+            ? { message: materialAlert ?? "Materials need action.", buttonLabel: showProcessMaterials ? "Process Materials" : null, href: materialsActionHref }
+            : materialsChip.label === "Materials Pending"
+              // No work_order_required_parts tracking on this Job Card at
+              // all (created before Required Materials existed, or has none)
+              // — Process Materials has nothing to act on; falls back to the
+              // pre-existing Materials-Request-based messaging, unchanged.
+              ? { message: "Materials are pending. Review the request to resolve it.", buttonLabel: materialsActionLabel, href: materialsActionHref }
               : !hasAssignment
                 ? { message: "No workers assigned yet.", buttonLabel: canEditAssignment ? "Assign Workers" : null, href: canEditAssignment ? assignHref : null }
                 : workTimeChip.label === "Not Started"
@@ -484,8 +463,7 @@ export default async function DailyActivityPage({
       hasAssignment,
       materialsActionHref,
       materialsActionLabel,
-      materialsModalAction,
-      materialsSecondaryAction,
+      showProcessMaterials,
       materialAlert,
       isUnusualActiveSession,
       issue,
@@ -571,8 +549,7 @@ export default async function DailyActivityPage({
       materialAlert: c.materialAlert,
       materialsActionLabel: c.materialsActionLabel,
       materialsActionHref: c.materialsActionHref,
-      materialsModalAction: c.materialsModalAction,
-      materialsSecondaryAction: c.materialsSecondaryAction,
+      showProcessMaterials: c.showProcessMaterials,
       materialsTotals: c.materialsTotals,
       // Unit 10G.14, Task 4 — per-line fulfillment rows, so the selected
       // Job Card panel can show each required material's own Required /

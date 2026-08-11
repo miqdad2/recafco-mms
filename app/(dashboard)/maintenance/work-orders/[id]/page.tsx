@@ -24,9 +24,9 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
-import { QrLinkCard } from "@/components/ui/qr-link-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { WorkflowActions } from "@/components/work-orders/workflow-actions";
+import { ReviewApproveClosureButton } from "@/components/work-orders/review-approve-closure-button";
 import { CorrectionRequestSentModal } from "@/components/work-orders/correction-request-sent-modal";
 import { JobCardClosedModal } from "@/components/work-orders/job-card-closed-modal";
 import { JobCardSubmittedModal } from "@/components/work-orders/job-card-submitted-modal";
@@ -42,6 +42,7 @@ import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete, summarizeMa
 import { buildBalanceKey, canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
 import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
+import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
 import { WorkTimeTracking } from "@/components/work-orders/work-time-tracking";
 import { JobCardTabHashRedirect } from "@/components/work-orders/job-card-tab-hash-redirect";
 import {
@@ -556,14 +557,15 @@ export default async function WorkOrderDetailPage({
       return { message: "This Job Card is closed.", buttons: [] as ActionButton[] };
     }
     if (wo.status === "Closure Requested") {
-      // Job Card Detail Tab-Based Layout Redesign Unit 10F, Task 3/10: every
-      // button below now switches tabs via `?tab=` instead of jumping to a
-      // page anchor — the target section only renders once its tab is
-      // active, so a hash-only link can no longer reliably reach it. Only
-      // this page's own internal links changed; JobCardTabHashRedirect
-      // (Task 10) handles old hash links arriving from other pages.
-      const buttons: ActionButton[] = isManagerRoleForSessions ? [{ label: "Approve Closure", href: "?tab=closure" }] : [];
-      return { message: "Waiting for Manager approval to close this Job Card.", buttons };
+      // Manager Closure Navigation and Detail Approval Flow Unit 10G.28,
+      // Task 3/5/6: no plain href-based button here any more for Manager —
+      // a blind "Approve Closure" link that just switched to the Closure
+      // tab (where a one-click form lived) is exactly what this unit
+      // removes. The Manager/Super Admin case is now rendered explicitly
+      // below as a "Review & Approve Closure" button that opens the Closure
+      // Review modal (ReviewApproveClosureButton); Data Entry (and every
+      // other role) sees this message with no button at all, per Task 6.
+      return { message: "Waiting for Manager approval to close this Job Card.", buttons: [] as ActionButton[] };
     }
     // Job Card Action Clarity Fix Task 5: same Issue/Receive/partial wording
     // and precedence as the quick-view popup (Task 4), driven by the same
@@ -832,7 +834,20 @@ export default async function WorkOrderDetailPage({
           {showNextActionLadder ? (
             <div className="mt-2">
               <p className="text-base font-bold leading-6 text-[#111827]">{nextActionLadder.message}</p>
-              {nextActionLadder.buttons.length > 0 ? (
+              {/* Manager Closure Navigation and Detail Approval Flow Unit
+                  10G.28, Task 3/5: Manager/Super Admin gets a "Review &
+                  Approve Closure" button that opens the Closure Review
+                  modal — never a plain link straight to a one-click approve
+                  form. Data Entry (and every other role) gets no button
+                  here at all, just the waiting message above (Task 6). */}
+              {wo.status === "Closure Requested" && isManagerRoleForSessions ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <ReviewApproveClosureButton
+                    workOrderId={wo.id}
+                    className="inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e] sm:w-auto"
+                  />
+                </div>
+              ) : nextActionLadder.buttons.length > 0 ? (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {nextActionLadder.buttons.map((btn, idx) => (
                     <Link
@@ -1048,7 +1063,7 @@ export default async function WorkOrderDetailPage({
         )}
 
         {/* ── Overview tab: two-column layout (Task 3/9) — main content +
-            the Quick Facts/QR sidebar, kept only here per Task 9 ("on other
+            the Quick Facts sidebar, kept only here per Task 9 ("on other
             tabs, avoid repeating the same sidebar"). ─────────────────────── */}
         {activeTab === "overview" && (
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_24rem]">
@@ -1220,8 +1235,6 @@ export default async function WorkOrderDetailPage({
                 ) : null}
               </dl>
             </section>
-
-            <QrLinkCard title="Job Card QR" href={`/maintenance/work-orders/${wo.id}`} />
           </aside>
         </div>
         )}
@@ -1350,7 +1363,14 @@ export default async function WorkOrderDetailPage({
               isManager={isManagerRoleForSessions}
               canViewCosts={canViewCosts}
               canAssign={hasPermission(context, "work_orders.assign") || context.role?.slug === "super_admin"}
-              estimatedTotalHours={wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null}
+              // Job Card Estimated Hours UX Simplification Unit 10G.22, Task
+              // 6: falls back to the sum of worker estimates only when the
+              // Job Card's own saved total is missing — see
+              // resolveEstimatedTotalHours.
+              estimatedTotalHours={resolveEstimatedTotalHours(
+                wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null,
+                laborSummary.workers.map((w) => w.estimated_hours)
+              )}
             />
         </div>
         )}
@@ -1803,20 +1823,37 @@ export default async function WorkOrderDetailPage({
               </div>
               <div className="mt-4 border-t border-[#E5E7EB] pt-4">
                 {closureReady || wo.status === "Closure Requested" ? (
-                  <WorkflowActions
-                    section="closure"
-                    workOrderId={wo.id}
-                    status={wo.status}
-                    context={context}
-                    technicians={technicians}
-                    currentAssignment={currentAssignment}
-                    activeMaterialsRequest={
-                      activeMaterialsRequest
-                        ? { id: activeMaterialsRequest.id, number: activeMaterialsRequest.parts_request_number, status: activeMaterialsRequest.status }
-                        : null
-                    }
-                    hasPendingCorrection={hasPendingCorrection}
-                  />
+                  <div className="space-y-4">
+                    {/* Manager Closure Navigation and Detail Approval Flow
+                        Unit 10G.28, Task 3/4/5: same "Review & Approve
+                        Closure" entry point as the Next Action panel above,
+                        also reachable directly from this tab. hideApproveClosureForm
+                        below suppresses WorkflowActions' own one-click
+                        Approve Closure form so there is exactly one way to
+                        approve a closure request on this page, and it
+                        always goes through the Closure Review modal. */}
+                    {wo.status === "Closure Requested" && isManagerRoleForSessions ? (
+                      <ReviewApproveClosureButton
+                        workOrderId={wo.id}
+                        className="inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e] sm:w-auto"
+                      />
+                    ) : null}
+                    <WorkflowActions
+                      section="closure"
+                      workOrderId={wo.id}
+                      status={wo.status}
+                      context={context}
+                      technicians={technicians}
+                      currentAssignment={currentAssignment}
+                      activeMaterialsRequest={
+                        activeMaterialsRequest
+                          ? { id: activeMaterialsRequest.id, number: activeMaterialsRequest.parts_request_number, status: activeMaterialsRequest.status }
+                          : null
+                      }
+                      hasPendingCorrection={hasPendingCorrection}
+                      hideApproveClosureForm={wo.status === "Closure Requested" && isManagerRoleForSessions}
+                    />
+                  </div>
                 ) : (
                   // Premium Job Card Detail Page Redesign Unit 8C.2, Task 9:
                   // a visibly disabled button (not just absent) so it's

@@ -57,6 +57,15 @@ type WorkflowActionsProps = {
   // check and form below is untouched from before Unit 8C — only which
   // group of blocks a given call renders has changed.
   section: "status" | "assignment" | "closure";
+  // Manager Closure Navigation and Detail Approval Flow Unit 10G.28: the
+  // page now offers its own "Review & Approve Closure" button (opens the
+  // Closure Review modal) next to this section's forms whenever a Manager
+  // could otherwise see the one-click Approve Closure form below — this flag
+  // suppresses that one form so the two never both appear for the same Job
+  // Card, without touching canApproveClosure's own permission gate or the
+  // approve action itself. Every other section/form here is unaffected;
+  // defaults to false (unchanged behavior) everywhere this isn't passed.
+  hideApproveClosureForm?: boolean;
 };
 
 function can(context: CurrentUserContext, permission: PermissionKey) {
@@ -144,6 +153,7 @@ export function WorkflowActions({
   internalTeamRoster = [],
   hasPendingCorrection = false,
   section,
+  hideApproveClosureForm = false,
 }: WorkflowActionsProps) {
   const canSubmit  = can(context, "work_orders.manage") && status === "Created";
   const canApprove = can(context, "work_orders.approve") && status === "Under Review" && !hasPendingCorrection;
@@ -273,8 +283,16 @@ export function WorkflowActions({
   // Card forms. Job Card Detail Simplification Unit 8C: relocated from the
   // sidebar into the new Closure Panel, which also shows a readiness summary
   // above these same forms. Same exact gates/forms as before.
+  //
+  // Manager Closure Navigation and Detail Approval Flow Unit 10G.28: the
+  // page now renders its own "Review & Approve Closure" button (opens the
+  // Closure Review modal) alongside this section whenever canApproveClosure
+  // is true, and passes hideApproveClosureForm so this one-click form never
+  // also appears next to it — the permission check itself (canApproveClosure)
+  // is untouched, only which form actually renders.
+  const showApproveClosureForm = canApproveClosure && !hideApproveClosureForm;
   if (section === "closure") {
-    if (!canRequestClosure && !canApproveClosure && !canClose) return null;
+    if (!canRequestClosure && !showApproveClosureForm && !canClose) return null;
     return (
       <div className="space-y-4">
         {/* Approval Workflow Unit 4, Task 4 — Data Entry (or Supervisor/
@@ -302,8 +320,10 @@ export function WorkflowActions({
         {/* Approval Workflow Unit 4, Task 5 — Manager (or super_admin)
             approves a pending closure request. No reject/return path in this
             unit (Task 7) — Data Entry fixes anything before requesting
-            closure, not after. */}
-        {canApproveClosure ? (
+            closure, not after. Unit 10G.28: suppressed via
+            hideApproveClosureForm whenever the page is showing its own
+            "Review & Approve Closure" button instead (see above). */}
+        {showApproveClosureForm ? (
           <form action={approveJobCardClosureAction} className="space-y-2">
             <input type="hidden" name="work_order_id" value={workOrderId} />
             <textarea

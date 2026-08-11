@@ -10,6 +10,7 @@ import {
   type MaterialFulfillment,
 } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummary, getWorkOrderLaborSummariesBulk } from "@/lib/work-orders/work-session-totals";
+import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
 
 // Manager Closed Job Cards Summary and Global Navigation Improvements Unit
 // 10E, Part A.
@@ -229,7 +230,13 @@ export async function getClosedJobCardsListAction(filter: ClosedJobCardsFilter):
       closedByName: approval?.decided_by ? closedByNameById.get(approval.decided_by) ?? null : null,
       totalHours: laborSummary?.total_hours ?? 0,
       totalAmount: canViewCosts ? laborSummary?.total_amount ?? 0 : null,
-      estimatedHours: r.estimated_labor_hours !== null ? Number(r.estimated_labor_hours) : null,
+      // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 6:
+      // falls back to the sum of worker estimates only when the Job Card's
+      // own saved total is missing — see resolveEstimatedTotalHours.
+      estimatedHours: resolveEstimatedTotalHours(
+        r.estimated_labor_hours !== null ? Number(r.estimated_labor_hours) : null,
+        (laborSummary?.workers ?? []).map((w) => w.estimated_hours)
+      ),
       workersCount: laborSummary?.workers.length ?? 0,
       materialsSummary: materialsSummaryLabel(fulfillment),
     };
@@ -332,7 +339,13 @@ export async function getClosedJobCardDetailAction(workOrderId: string): Promise
     })),
     totalHours: laborSummary.total_hours,
     totalAmount: canViewCosts ? laborSummary.total_amount : null,
-    estimatedHours: wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null,
+    // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 6: falls
+    // back to the sum of worker estimates only when the Job Card's own
+    // saved total is missing — see resolveEstimatedTotalHours.
+    estimatedHours: resolveEstimatedTotalHours(
+      wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null,
+      laborSummary.workers.map((w) => w.estimated_hours)
+    ),
     materials: fulfillment.map((f) => ({
       description: f.description,
       requiredQty: f.required_qty,

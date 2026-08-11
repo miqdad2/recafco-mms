@@ -58,6 +58,27 @@ export function computeHoursVariance(estimatedHours: number | null | undefined, 
   return { status: "over_estimate", varianceHours, label: "Over Estimate" };
 }
 
+// Job Card Estimated Hours UX Simplification Unit 10G.22, Task 6: the Job
+// Card-level total (work_orders.estimated_labor_hours) is now always
+// computed from the sum of per-worker estimates at save time (see
+// sumWorkerEstimates in app/actions/maintenance.ts), so for a Job Card
+// created after this unit the saved total and the sum of its workers'
+// estimates already agree. This fallback exists for the cases where they
+// can still legitimately diverge: a Job Card created before this unit, or
+// one whose workers were assigned/edited later from the roster form
+// (lib/backend/work-orders/worker-roster.ts never recomputes the Job Card
+// total) — every Manager-facing "Estimated" figure stays accurate without
+// requiring a separately re-typed total.
+export function resolveEstimatedTotalHours(
+  workOrderEstimatedHours: number | null,
+  workerEstimatedHours: Array<number | null>
+): number | null {
+  if (workOrderEstimatedHours !== null) return workOrderEstimatedHours;
+  const entered = workerEstimatedHours.filter((h): h is number => h !== null);
+  if (entered.length === 0) return null;
+  return Math.round(entered.reduce((sum, h) => sum + h, 0) * 100) / 100;
+}
+
 // Same status -> tone mapping every surface's own StatusBadge/badge-tone
 // helper can delegate to, instead of re-deriving it locally.
 export function hoursVarianceTone(status: HoursVarianceStatus): "green" | "amber" | "red" | "gray" {

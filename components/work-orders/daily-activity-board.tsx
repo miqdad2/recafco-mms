@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import { DailyActivityListRow, DailyActivitySelectedPanel, type DailyActivityCardData } from "@/components/work-orders/daily-activity-card";
-import { IssueMaterialModal, ReceiveMaterialsModal } from "@/components/work-orders/daily-activity-materials-modal";
+import { ProcessMaterialsModal } from "@/components/work-orders/daily-activity-materials-modal";
 import { DailyActivityClosureModal } from "@/components/work-orders/daily-activity-closure-modal";
 
 // Daily Activity Compact Control Board Unit 9C, Task 4/9.
@@ -26,12 +26,13 @@ const STACKED_LAYOUT_MAX_WIDTH = 1024;
 export function DailyActivityBoard({ cards, canPrint }: { cards: DailyActivityCardData[]; canPrint: boolean }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = (selectedId ? cards.find((c) => c.id === selectedId) : undefined) ?? cards[0] ?? null;
-  // Daily Activity Inline Materials Receive/Issue Modal Unit 10D, Task 2/3:
-  // which Job Card's materials modal is open, and in which mode — client
-  // state, same pattern as `selectedId` above. Always keyed off `selected`
-  // at open time so it can't drift if the user re-selects a different row
-  // while a modal is open (the modal itself is closed first either way).
-  const [materialsModal, setMaterialsModal] = useState<{ workOrderId: string; mode: "issue" | "receive" } | null>(null);
+  // Unified Material Processing Flow Unit 10G.23 (was two separate
+  // issue/receive modal states, Unit 10D): which Job Card's Process
+  // Materials modal is open, if any — client state, same pattern as
+  // `selectedId` above. Always keyed off `selected` at open time so it
+  // can't drift if the user re-selects a different row while the modal is
+  // open (the modal itself is closed first either way).
+  const [processMaterialsWorkOrderId, setProcessMaterialsWorkOrderId] = useState<string | null>(null);
   // Daily Activity Closure Request Modal with Attachments Unit 10F.6, Task
   // 1: same client-state pattern as materialsModal above — always keyed off
   // `selected` at open time, so it can't drift if the user re-selects a
@@ -74,17 +75,14 @@ export function DailyActivityBoard({ cards, canPrint }: { cards: DailyActivityCa
           <DailyActivitySelectedPanel
             card={selected}
             canPrint={canPrint}
-            onIssueMaterial={() => setMaterialsModal({ workOrderId: selected.id, mode: "issue" })}
-            onReceiveMaterial={() => setMaterialsModal({ workOrderId: selected.id, mode: "receive" })}
+            onProcessMaterials={() => setProcessMaterialsWorkOrderId(selected.id)}
             onRequestClosure={() => setClosureModalOpen(true)}
           />
         ) : null}
       </div>
 
-      {materialsModal?.mode === "issue" ? (
-        <IssueMaterialModal workOrderId={materialsModal.workOrderId} onClose={() => setMaterialsModal(null)} />
-      ) : materialsModal?.mode === "receive" ? (
-        <ReceiveMaterialsModal workOrderId={materialsModal.workOrderId} onClose={() => setMaterialsModal(null)} />
+      {processMaterialsWorkOrderId ? (
+        <ProcessMaterialsModal workOrderId={processMaterialsWorkOrderId} onClose={() => setProcessMaterialsWorkOrderId(null)} />
       ) : null}
 
       {closureModalOpen && selected ? (

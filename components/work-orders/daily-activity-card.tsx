@@ -54,18 +54,15 @@ export type DailyActivityCardData = {
   materialAlert: string | null;
   materialsActionLabel: string;
   materialsActionHref: string;
-  // Daily Activity Inline Materials Receive/Issue Modal Unit 10D, Task 2/3/4:
-  // when set, the primary materials action (both the Next Action button and
-  // the Materials mini-section button, whichever one shows it) opens the
-  // matching modal instead of navigating to materialsActionHref. null means
-  // the existing navigation behavior is unchanged (e.g. "View Materials"
-  // when there's no open Materials Request to receive against yet, or
+  // Unified Material Processing Flow Unit 10G.23 (replaces Unit 10D's
+  // separate issue/receive modal-action split): true when the primary
+  // materials action (both the Next Action button and the Materials
+  // mini-section button, whichever one shows it) should open the one
+  // Process Materials modal instead of navigating to materialsActionHref.
+  // false means the existing navigation behavior is unchanged (e.g. "View
+  // Materials" when there's no work_order_required_parts tracking yet, or
   // "Materials Completed").
-  materialsModalAction: "issue" | "receive" | null;
-  // Task 4 — Partially Available's second action ("Receive Shortage"),
-  // always shown in the mini-section (never suppressed as "already primary"
-  // — the primary slot is "Issue Available" for this state).
-  materialsSecondaryAction: { label: string; mode: "receive" } | null;
+  showProcessMaterials: boolean;
   materialsTotals: { required: number; issued: number; remaining: number };
   // Unit 10G.14, Task 4 — per-line Required/Available/Issued/Status, shown
   // under the totals line so each material's own state is clear (e.g. one
@@ -200,17 +197,15 @@ export function DailyActivityListRow({
 export function DailyActivitySelectedPanel({
   card,
   canPrint,
-  onIssueMaterial,
-  onReceiveMaterial,
+  onProcessMaterials,
   onRequestClosure,
 }: {
   card: DailyActivityCardData;
   canPrint: boolean;
-  // Daily Activity Inline Materials Receive/Issue Modal Unit 10D, Task 2/3:
-  // opens the matching modal for THIS card — only ever called when
-  // card.materialsModalAction says so (see the button rendering below).
-  onIssueMaterial: () => void;
-  onReceiveMaterial: () => void;
+  // Unified Material Processing Flow Unit 10G.23: opens the one Process
+  // Materials modal for THIS card — only ever called when
+  // card.showProcessMaterials says so (see the button rendering below).
+  onProcessMaterials: () => void;
   // Daily Activity Closure Request Modal with Attachments Unit 10F.6, Task
   // 1: opens the closure request modal for THIS card instead of navigating
   // to the Job Card detail page's Closure tab — only ever called when
@@ -222,7 +217,7 @@ export function DailyActivitySelectedPanel({
   // Next Action button AND a mini-section/empty-state secondary button
   // (same "one main action" rule Unit 9B's card established).
   const materialsActionIsPrimary = card.nextAction.buttonLabel === card.materialsActionLabel;
-  const materialsOnClick = card.materialsModalAction === "issue" ? onIssueMaterial : card.materialsModalAction === "receive" ? onReceiveMaterial : null;
+  const materialsOnClick = card.showProcessMaterials ? onProcessMaterials : null;
   const assignWorkersIsPrimary = card.nextAction.buttonLabel === "Assign Workers";
   const requestClosureIsPrimary = card.nextAction.buttonLabel === "Request Closure";
   // Task 7 — red is reserved for states that genuinely need attention now;
@@ -417,8 +412,9 @@ export function DailyActivitySelectedPanel({
         {!materialsActionIsPrimary ? (
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {materialsOnClick ? (
-              // Task 2/3 — Issue Material / Receive Materials opens the
-              // modal in place instead of navigating away.
+              // Unified Material Processing Flow Unit 10G.23 — Process
+              // Materials opens the one modal in place instead of
+              // navigating away.
               <button
                 type="button"
                 onClick={materialsOnClick}
@@ -434,32 +430,8 @@ export function DailyActivitySelectedPanel({
                 <PackageSearch className="h-3.5 w-3.5" aria-hidden="true" /> {card.materialsActionLabel}
               </Link>
             )}
-            {/* Task 4 — Partially Available's second action, always shown
-                (never suppressed as "already primary" — the primary slot
-                above is Issue Available for this state). */}
-            {card.materialsSecondaryAction ? (
-              <button
-                type="button"
-                onClick={onReceiveMaterial}
-                className="inline-flex min-h-7 items-center gap-1 rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1 text-xs font-bold text-[#111827] transition hover:bg-gray-50"
-              >
-                <PackageSearch className="h-3.5 w-3.5" aria-hidden="true" /> {card.materialsSecondaryAction.label}
-              </button>
-            ) : null}
           </div>
-        ) : (
-          card.materialsSecondaryAction ? (
-            <div className="mt-1.5">
-              <button
-                type="button"
-                onClick={onReceiveMaterial}
-                className="inline-flex min-h-7 items-center gap-1 rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1 text-xs font-bold text-[#111827] transition hover:bg-gray-50"
-              >
-                <PackageSearch className="h-3.5 w-3.5" aria-hidden="true" /> {card.materialsSecondaryAction.label}
-              </button>
-            </div>
-          ) : null
-        )}
+        ) : null}
       </div>
 
       {/* Closure mini-section (Task 9) — one compact card. */}

@@ -1,12 +1,16 @@
 "use server";
 
-import { requirePermission } from "@/lib/auth/context";
+import { requirePermission, requireUser } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { revalidatePath } from "next/cache";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { getMaterialFulfillmentForWorkOrder, type MaterialFulfillment } from "@/lib/work-orders/material-fulfillment";
 import { canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import type { StoreSendMaterialsData } from "@/components/store/store-send-materials-popup";
+import { processJobCardMaterials, type ProcessJobCardMaterialsResult } from "@/lib/backend/work-orders/material-processing";
+import { AppError } from "@/lib/errors/app-error";
+import { emitJobCardRealtimeEvent, emitOfflineInventoryRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 
 // Daily Activity Inline Materials Receive/Issue Modal Unit 10D.
 //
@@ -136,4 +140,34 @@ export async function getJobCardMaterialsModalDataAction(workOrderId: string): P
           }
         : null,
   };
+}
+
+// Unified Material Processing Flow Unit 10G.23.
+//
+// Thin "use server" wrapper (same convention as every other action in this
+// file/app/actions/offline-inventory.ts): resolves the real auth context and
+// calls the plain, independently-importable service function that does the
+// actual work (lib/backend/work-orders/material-processing.ts) — kept
+// separate so that function stays testable without a request context, the
+// same split issueMaterials()/storeIssueModalAction already use.
+export type ProcessMaterialsActionState = { ok: true; result: ProcessJobCardMaterialsResult } | { ok: false; error: string } | null;
+
+export async function processJobCardMaterialsAction(workOrderId: string): Promise<ProcessMaterialsActionState> {
+  const context = await requireUser();
+  try {
+    const result = await processJobCardMaterials(context, workOrderId);
+
+    await Promise.all([
+      emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_UPDATED, workOrderId, context.userId),
+      emitOfflineInventoryRealtimeEvent(REALTIME_EVENTS.OFFLINE_INVENTORY_USED, null, context.userId),
+    ]);
+    revalidatePath("/maintenance/daily-activity");
+    revalidatePath(`/maintenance/work-orders/${workOrderId}`);
+    revalidatePath("/store/offline-inventory");
+    revalidatePath("/store/offline-inventory/movements");
+
+    return { ok: true, result };
+  } catch (e) {
+    return { ok: false, error: e instanceof AppError ? e.message : "Failed to process materials for this Job Card." };
+  }
 }

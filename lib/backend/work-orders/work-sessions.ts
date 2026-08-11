@@ -19,10 +19,15 @@ import type {
 
 // Work Session Time Tracking and Labor Cost Calculation Unit 8.
 //
-// Start/Resume/Pause/Stop/manual-entry all reuse work_orders.assign (same
-// audience as Unit 7's Internal Team roster — Data Entry, Manager, Engineer,
-// super_admin). Editing/correcting an existing session or soft-cancelling
-// one is Manager-only, matching the isManagerRole() pattern already
+// Start/Resume/Pause/Stop reuse work_orders.assign (same audience as Unit
+// 7's Internal Team roster — Data Entry, Manager, Engineer, super_admin) —
+// the real timer flow, which stays open to whoever can assign/track work.
+// Manual time entry, editing/correcting an existing session, and
+// soft-cancelling one are all Manager-only (Daily Activity Timer
+// Reliability and Remove Data Entry Manual Entry Unit 10G.24, Task 5/6 —
+// manual entry moved here from the broader check above, since a typed
+// start/stop time is exactly the kind of correction the other two already
+// restrict this way), matching the isManagerRole() pattern already
 // established in lib/backend/work-orders/service.ts and
 // components/work-orders/workflow-actions.tsx (kept in sync manually here,
 // same as those — this is a role check, not a DB permission grant).
@@ -265,9 +270,20 @@ export function stopWorkSession(context: CurrentUserContext, input: PauseOrStopW
 }
 
 // ── Manual time entry (Task 5) ───────────────────────────────────────────────
+//
+// Daily Activity Timer Reliability and Remove Data Entry Manual Entry Unit
+// 10G.24, Task 5/6: manual entry moved from assertCanManageSessions (the
+// same broad work_orders.assign audience as Start/Pause/Stop — Data Entry
+// included) to assertIsManager, the same Manager/Super Admin-only check
+// editWorkSession/cancelWorkSession below already use. A typed start/stop
+// time is exactly the kind of correction those two already gate this way —
+// manual entry was the one path left ungated, which is what let Data Entry
+// fabricate hours never actually worked via the real timer. The UI button
+// (components/work-orders/worker-session-row.tsx) is hidden from Data Entry
+// too, but this is the enforcement that actually matters.
 
 export async function addManualTimeEntry(context: CurrentUserContext, input: ManualTimeEntryInput) {
-  assertCanManageSessions(context);
+  assertIsManager(context);
 
   const startedAt = new Date(input.startedAt);
   const stoppedAt = new Date(input.stoppedAt);

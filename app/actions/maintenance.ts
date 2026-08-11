@@ -273,6 +273,17 @@ function parseWorkerEstimates(formData: FormData): Record<string, number> {
   }
 }
 
+// Job Card Estimated Hours UX Simplification Unit 10G.22, Task 4: the Job
+// Card-level estimated_labor_hours total, wherever it's saved from the
+// wizard, is always this sum — never a separately-typed value. Returns
+// undefined (not 0) when nothing was entered, matching optionalNumber's own
+// "blank stays blank" convention elsewhere in this schema.
+function sumWorkerEstimates(estimatesByWorkerId: Record<string, number>): number | undefined {
+  const entered = Object.values(estimatesByWorkerId);
+  if (entered.length === 0) return undefined;
+  return Math.round(entered.reduce((sum, h) => sum + h, 0) * 100) / 100;
+}
+
 function parseWizardAssignment(formData: FormData): WizardAssignment | null {
   if (String(formData.get("assign_now") ?? "") !== "on") return null;
   const notes = String(formData.get("assign_notes") ?? "").trim() || undefined;
@@ -564,8 +575,24 @@ export async function upsertWorkOrderAction(formData: FormData) {
   const totalLabor = laborRows.reduce((sum, row) => sum + (row?.hours ?? 0) * (row?.rate ?? 0), 0);
   const totalMaterials = materialRows.reduce((sum, row) => sum + (row?.quantity ?? 0) * (row?.unit_price ?? 0), 0);
 
+  // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 4: on a
+  // brand-new Job Card created via the wizard's Internal Team assignment,
+  // the Job Card-level total is derived server-side from the same
+  // per-worker estimates parseWizardAssignment already parsed — the single
+  // source of truth (never re-trusts the wizard's own client-computed
+  // hidden field, which exists only so Review & Save can show a live total
+  // before submit). sumWorkerEstimates returns undefined (→ null via
+  // clean()) when no worker estimate was entered — this never blocks
+  // saving. The standalone edit form (work-order-form.tsx) has no worker
+  // picker and never submits assign_now/assign_worker_estimates, so this
+  // spread is always a no-op for it — its own manual estimated_labor_hours
+  // field (values.estimated_labor_hours, already parsed above) passes
+  // through untouched, on both create and edit.
   const basePayload = clean({
     ...values,
+    ...(!id && wizardAssignment?.kind === "INTERNAL_TEAM"
+      ? { estimated_labor_hours: sumWorkerEstimates(wizardAssignment.estimatedHoursByWorkerId) }
+      : {}),
     starting_datetime: values.starting_datetime || null,
     ending_datetime: values.ending_datetime || null,
     total_labor_cost: totalLabor,

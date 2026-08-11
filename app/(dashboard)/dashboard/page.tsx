@@ -62,6 +62,7 @@ import {
   summarizeMaterialAvailability,
 } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummariesBulk, getLaborPeriodTotals } from "@/lib/work-orders/work-session-totals";
+import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
 import { hasPermission, canViewCosts as canViewCostsForContext } from "@/lib/security/permissions";
 import { VEHICLE_CATEGORIES } from "@/lib/assets/categories";
@@ -1294,6 +1295,14 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const mgAttentionCandidates: MgAttentionCandidate[] = [];
 
   // Task 9 — Closure Requests, rank 0 (highest priority).
+  // Manager Closure Navigation and Detail Approval Flow Unit 10G.28, Task
+  // 1/2: was `?preview=${r.id}` (opened the old quick-view popup in place);
+  // clicking this row now navigates straight to the Job Card detail page,
+  // same route "Open Full Job Card" already used elsewhere — the detail
+  // page's own Next Action panel shows a "Review & Approve Closure" button
+  // there, which opens the exact same ClosureReviewModal this dashboard's
+  // separate Closure Requests modal already uses (see Task 8 — that modal
+  // and its own "Review Closure" flow are untouched).
   for (const r of mgClosureRequestedAll) {
     const requesterName = r.created_by ? mgClosureRequesterNameById.get(r.created_by) ?? null : null;
     mgAttentionCandidates.push({
@@ -1301,7 +1310,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       workOrderNumber: r.work_order_number, assetLabel: r.assets?.asset_name ?? null,
       issue: requesterName ? `Requested by ${requesterName} · ${ageLabel(r.created_at.toISOString())}` : `Requested ${ageLabel(r.created_at.toISOString())}`,
       badgeLabel: "Closure Request", badgeTone: "amber",
-      actionLabel: "Review", actionHref: `?preview=${r.id}`,
+      actionLabel: "Review", actionHref: `/maintenance/work-orders/${r.id}`,
     });
   }
 
@@ -1339,7 +1348,13 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       totalAmount: mgCanViewCosts ? laborSummary.total_amount : null,
       // Unit 10G.21, Task 3 — hours-only, unconditional on canViewCosts
       // (same rule as every other Estimated/Actual surface in this app).
-      estimatedHours: r.estimated_labor_hours !== null ? Number(r.estimated_labor_hours) : null,
+      // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 6:
+      // falls back to the sum of worker estimates only when the Job Card's
+      // own saved total is missing — see resolveEstimatedTotalHours.
+      estimatedHours: resolveEstimatedTotalHours(
+        r.estimated_labor_hours !== null ? Number(r.estimated_labor_hours) : null,
+        laborSummary.workers.map((w) => w.estimated_hours)
+      ),
       materialsLabel,
       attachmentsCount: r._count.work_order_attachments,
       detailHref: `/maintenance/work-orders/${r.id}`,

@@ -4,7 +4,6 @@ import { FormDocumentHeader } from "@/components/forms/form-document-header";
 import { writeAuditLog } from "@/lib/audit/log";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
-import { createQrSvg, internalQrTarget } from "@/lib/qr/svg";
 import { formatDateTime } from "@/lib/utils";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 
@@ -83,9 +82,6 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
   });
   const asset = Array.isArray(wo.assets) ? wo.assets[0] : wo.assets;
   const department = Array.isArray(wo.departments) ? wo.departments[0] : wo.departments;
-  const qrPath = `/maintenance/work-orders/${wo.id}`;
-  const qrTarget = internalQrTarget(qrPath);
-  const qrSvg = await createQrSvg(qrTarget);
 
   return (
     <div className="bg-white p-6 text-[#111827] print:p-0">
@@ -132,7 +128,7 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
         <PrintTable title="Labor" rows={labor ?? []} columns={["labor_name", "employee_number", "hours", "rate", "amount"]} />
         <PrintTable title="Material Used" rows={materials ?? []} columns={["material_name", "part_number", "ss_rec_code", "quantity", "unit_price", "amount"]} />
         <PrintTable title="Approval History" rows={approvals ?? []} columns={["approval_type", "status", "decided_at", "comments"]} />
-        <PrintTable title="Approval / Status History" rows={history ?? []} columns={["from_status", "to_status", "changed_at", "notes"]} />
+        <PrintTable title="History" rows={history ?? []} columns={["from_status", "to_status", "changed_at", "notes"]} />
 
         <PrintGrid
           title="Next Service and Signatures"
@@ -145,14 +141,6 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
             ["Maintenance manager closure", wo.maintenance_manager_closure]
           ]}
         />
-        <section className="mt-6 grid grid-cols-[140px_1fr] gap-4 border border-[#E5E7EB] p-4">
-          <div className="h-28 w-28 border border-[#E5E7EB] bg-white p-1 [&_svg]:h-full [&_svg]:w-full" dangerouslySetInnerHTML={{ __html: qrSvg }} />
-          <div>
-            <h2 className="text-lg font-black">Scannable Internal QR</h2>
-            <p className="mt-2 break-all text-sm">{qrPath}</p>
-            <p className="mt-6 break-all text-xs text-[#4B5563]">Target: {qrTarget}</p>
-          </div>
-        </section>
       </article>
     </div>
   );
