@@ -22,10 +22,24 @@ function parseWorkerProfileForm(formData: FormData) {
     employeeId: formData.get("employee_id") || undefined,
     name: formData.get("name"),
     workerType: formData.get("worker_type"),
-    hourlyRate: formData.get("hourly_rate"),
+    hourlyRate: formData.get("hourly_rate") || undefined,
     phone: formData.get("phone") || undefined,
     skillCategory: formData.get("skill_category") || undefined,
     notes: formData.get("notes") || undefined,
+    // Worker Salary Breakdown and Manager Labor Cost View Unit 10G.41B,
+    // Task 2/3: present on both forms.
+    jobTitle: formData.get("job_title") || undefined,
+    workLocation: formData.get("work_location") || undefined,
+    // Manager-only fields — only ever present in the form when the Manager
+    // Salary Details section rendered; parsed the same way either way, the
+    // service layer decides whether to trust them.
+    reportingManager: formData.get("reporting_manager") || undefined,
+    nationality: formData.get("nationality") || undefined,
+    basicSalary: formData.get("basic_salary") || undefined,
+    transportAllowance: formData.get("transport_allowance") || undefined,
+    accommodationAllowance: formData.get("accommodation_allowance") || undefined,
+    foodAllowance: formData.get("food_allowance") || undefined,
+    monthlyWorkingHours: formData.get("monthly_working_hours") || undefined,
   });
 }
 

@@ -17,10 +17,30 @@ export const workerProfileSchema = z.object({
   employeeId: z.string().trim().max(50).optional(),
   name: z.string().trim().min(2).max(150),
   workerType: z.enum(WORKER_TYPES),
-  hourlyRate: z.coerce.number().min(0).max(9999.999),
+  // Worker Salary Breakdown and Manager Labor Cost View Unit 10G.41B, Task
+  // 2: no longer required — Data Entry's Add Worker form doesn't submit
+  // this field at all any more (a Manager's own Salary Details section
+  // supplies it instead). The service layer, not this schema, is what
+  // actually decides whether a submitted value is trusted (Manager/Super
+  // Admin only) — see assertCanManageWorkers/computeSalary in service.ts.
+  hourlyRate: z.coerce.number().min(0).max(9999.999).optional(),
   phone: z.string().trim().max(50).optional(),
   skillCategory: z.string().trim().max(50).optional(),
   notes: z.string().trim().max(500).optional(),
+  // Task 2/3 — shown on both the Data Entry and Manager forms.
+  jobTitle: z.string().trim().max(150).optional(),
+  workLocation: z.string().trim().max(150).optional(),
+  // Task 3 — Manager/Super-Admin-only fields (enforced in service.ts).
+  reportingManager: z.string().trim().max(150).optional(),
+  nationality: z.string().trim().max(100).optional(),
+  // Task 1/3 — salary breakdown (Manager/Super-Admin-only to set; enforced
+  // in service.ts). total_salary is intentionally NOT accepted here — it is
+  // always server-recomputed from these four parts (lib/backend/workers/salary.ts).
+  basicSalary: z.coerce.number().min(0).max(999999.999).optional(),
+  transportAllowance: z.coerce.number().min(0).max(999999.999).optional(),
+  accommodationAllowance: z.coerce.number().min(0).max(999999.999).optional(),
+  foodAllowance: z.coerce.number().min(0).max(999999.999).optional(),
+  monthlyWorkingHours: z.coerce.number().min(1).max(999).optional(),
 });
 
 export type WorkerProfileInput = z.infer<typeof workerProfileSchema>;

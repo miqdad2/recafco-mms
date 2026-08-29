@@ -8,6 +8,7 @@ import { setWorkerProfileActiveAction } from "@/app/actions/workers";
 import { WorkerProfileFormModal } from "@/components/admin/worker-profile-form-modal";
 import type { WorkerProfileRow } from "@/lib/backend/workers/service";
 import { WORKER_TYPES } from "@/lib/backend/workers/constants";
+import { isSalaryPending } from "@/lib/backend/workers/salary";
 
 type TypeFilter = "all" | (typeof WORKER_TYPES)[number];
 type StatusFilter = "active" | "inactive" | "all";
@@ -31,6 +32,13 @@ export function WorkerProfilesView({
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [modalWorker, setModalWorker] = useState<WorkerProfileRow | "new" | null>(null);
+  // Worker Profile Data Entry Contact Fields and Manager Salary Only Unit
+  // 10G.41D, Task 3: Data Entry's read-only "View" action opens the same
+  // modal as Manager's "Edit" — this flag is what tells it to disable every
+  // field and hide the Save button instead of asserting who's allowed to
+  // submit (the server already does that; this is just which UI mode to
+  // show).
+  const [viewMode, setViewMode] = useState(false);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -83,7 +91,7 @@ export function WorkerProfilesView({
         </div>
         <button
           type="button"
-          onClick={() => setModalWorker("new")}
+          onClick={() => { setModalWorker("new"); setViewMode(false); }}
           className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white transition hover:bg-red-700"
         >
           <Plus className="h-4 w-4" aria-hidden />
@@ -92,30 +100,38 @@ export function WorkerProfilesView({
       </div>
 
       <div className="overflow-x-auto rounded-md border border-[#E5E7EB] bg-white shadow-sm">
-        <table className="w-full min-w-[760px] text-left text-sm">
+        <table className="w-full min-w-[880px] text-left text-sm">
           <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
-            {/* Worker Profile Form Simplification and Division Rename Unit
-                10G.6, Task 5: Employee ID column added; Phone/Notes dropped
-                from the list entirely for every role (Option A — still
-                available via the Manager-only Edit form); "Skill Category"
-                relabeled "Division"; the whole Actions column (Edit/
-                Deactivate) is now omitted for Data Entry rather than shown
-                with a placeholder dash. */}
+            {/* Worker Profile Data Entry Contact Fields and Manager Salary
+                Only Unit 10G.41D, Task 2: Job Title and Contact No. are now
+                common columns (both roles) — Nationality/Reporting Manager
+                stay out of this table entirely (kept in the View/Edit
+                popup only, per the task's own "if table width is tight"
+                guidance) to avoid crowding it. Salary Status and Hourly
+                Rate (the latter still gated by canViewCosts, unchanged
+                from Unit 10F.4) stay Manager/Super-Admin-only. Data Entry's
+                table therefore ends up as exactly Task 2's list: Employee
+                ID, Worker Name, Worker Type, Division, Job Title, Work
+                Location, Contact No., Status. */}
             <tr>
               <th className="px-4 py-3">Employee ID</th>
-              <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">Worker Name</th>
               <th className="px-4 py-3">Worker Type</th>
               <th className="px-4 py-3">Division</th>
-              {canViewCosts && <th className="px-4 py-3">Hourly Rate (KWD)</th>}
+              <th className="px-4 py-3">Job Title</th>
+              <th className="px-4 py-3">Work Location</th>
+              <th className="px-4 py-3">Contact No.</th>
               <th className="px-4 py-3">Status</th>
-              {canManageWorkerProfiles && <th className="px-4 py-3">Actions</th>}
+              {canManageWorkerProfiles && <th className="px-4 py-3">Salary Status</th>}
+              {canViewCosts && <th className="px-4 py-3">Hourly Rate (KWD)</th>}
+              <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#E5E7EB]">
             {filtered.length === 0 ? (
               <tr>
                 <td
-                  colSpan={4 + (canViewCosts ? 1 : 0) + 1 + (canManageWorkerProfiles ? 1 : 0)}
+                  colSpan={8 + (canManageWorkerProfiles ? 1 : 0) + (canViewCosts ? 1 : 0) + 1}
                   className="px-4 py-6 text-center text-[#9CA3AF]"
                 >
                   No workers match your search/filters.
@@ -128,16 +144,28 @@ export function WorkerProfilesView({
                   <td className="px-4 py-3 font-semibold text-[#111827]">{w.name}</td>
                   <td className="px-4 py-3">{w.worker_type}</td>
                   <td className="px-4 py-3">{w.skill_category ?? "-"}</td>
-                  {canViewCosts && <td className="px-4 py-3">{w.hourly_rate.toFixed(3)}</td>}
+                  <td className="px-4 py-3 text-[#4B5563]">{w.job_title ?? "—"}</td>
+                  <td className="px-4 py-3 text-[#4B5563]">{w.work_location ?? "—"}</td>
+                  <td className="px-4 py-3 text-[#4B5563]">{w.phone ?? "—"}</td>
                   <td className="px-4 py-3">
                     <StatusBadge label={w.is_active ? "Active" : "Inactive"} tone={w.is_active ? "green" : "gray"} />
                   </td>
                   {canManageWorkerProfiles && (
                     <td className="px-4 py-3">
+                      {isSalaryPending(w) ? (
+                        <StatusBadge label="Salary Pending" tone="amber" />
+                      ) : (
+                        <StatusBadge label="Set" tone="green" />
+                      )}
+                    </td>
+                  )}
+                  {canViewCosts && <td className="px-4 py-3">{w.hourly_rate.toFixed(3)}</td>}
+                  <td className="px-4 py-3">
+                    {canManageWorkerProfiles ? (
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => setModalWorker(w)}
+                          onClick={() => { setModalWorker(w); setViewMode(false); }}
                           className="rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1 text-xs font-bold text-[#4B5563] hover:bg-gray-50"
                         >
                           Edit
@@ -153,8 +181,21 @@ export function WorkerProfilesView({
                           </button>
                         </form>
                       </div>
-                    </td>
-                  )}
+                    ) : (
+                      // Task 3/4 — Data Entry can look at a worker's full
+                      // non-sensitive details (including Nationality/
+                      // Reporting Manager, not shown in this table) without
+                      // being able to change anything — "create but not
+                      // edit" stays true.
+                      <button
+                        type="button"
+                        onClick={() => { setModalWorker(w); setViewMode(true); }}
+                        className="rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1 text-xs font-bold text-[#4B5563] hover:bg-gray-50"
+                      >
+                        View
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))
             )}
@@ -165,8 +206,9 @@ export function WorkerProfilesView({
       {modalWorker && (
         <WorkerProfileFormModal
           worker={modalWorker === "new" ? null : modalWorker}
-          canViewCosts={canViewCosts}
-          onClose={() => setModalWorker(null)}
+          canManageWorkerProfiles={canManageWorkerProfiles}
+          readOnly={viewMode}
+          onClose={() => { setModalWorker(null); setViewMode(false); }}
         />
       )}
     </div>

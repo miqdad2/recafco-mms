@@ -13,6 +13,7 @@
     "auth:set-password": "node scripts/set-local-password.mjs",
     "db:check": "node --env-file=.env scripts/db-check.mjs",
     "seed:demo-users": "node scripts/seed-demo-users.mjs",
+    "assets:replace-local": "node --env-file=.env scripts/replace-assets-from-excel.mjs",
     "test:e2e": "playwright test",
     "test:e2e:cleanup": "node --env-file=.env scripts/e2e-mms-cleanup.mjs"
   },

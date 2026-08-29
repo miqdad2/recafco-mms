@@ -9,7 +9,7 @@ import { PageNavigationActions } from "@/components/layout/page-navigation-actio
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts as canViewCostsForContext, isManagerRole } from "@/lib/security/permissions";
-import { listWorkerProfiles } from "@/lib/backend/workers/service";
+import { listWorkerProfiles, stripSalaryForNonManager } from "@/lib/backend/workers/service";
 import { WORKER_TYPES, SKILL_CATEGORIES } from "@/lib/backend/workers/constants";
 import { getWorkerActivitySummaries, type WorkerActivityStatus } from "@/lib/work-orders/work-session-totals";
 import { WorkerCard } from "@/components/workers/worker-card";
@@ -106,7 +106,10 @@ export default async function AssignmentsPage({
   // controls whether the correction button renders inside it.
   const isManager = isManagerRole(context);
 
-  const workers = await listWorkerProfiles();
+  // Worker Salary Breakdown and Manager Labor Cost View Unit 10G.41B, Task
+  // 10: strip the salary breakdown out of the actual data sent to a Data
+  // Entry browser, not just out of what worker-card.tsx renders.
+  const workers = (await listWorkerProfiles()).map((w) => stripSalaryForNonManager(w, canManageWorkerProfiles));
   const activityMap = await getWorkerActivitySummaries(prisma, workers.map((w) => w.id));
 
   const emptySummary = {

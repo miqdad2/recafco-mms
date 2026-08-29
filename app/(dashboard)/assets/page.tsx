@@ -7,13 +7,16 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { AssetTypeCards, type AssetTypeCardRow } from "@/components/assets/asset-type-cards";
+import { SimpleAssetForm } from "@/components/assets/simple-asset-form";
+import { AssetImportForm } from "@/components/assets/asset-import-form";
+import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
-import { isVehicleCategory } from "@/lib/assets/categories";
 // Categories loaded from DB — see asset_categories table
 
 type AssetsPageProps = {
-  searchParams?: Promise<{ page?: string; search?: string; status?: string; category?: string; main_category?: string; location?: string; due_soon?: string }>;
+  searchParams?: Promise<{ page?: string; search?: string; status?: string; category?: string; due_soon?: string; new_asset?: string; import_assets?: string }>;
 };
 
 const pageSize = 25;
@@ -44,8 +47,9 @@ type AssetRow = {
   category: string;
   status: string;
   location: string | null;
-  serial_number: string | null;
-  model: string | null;
+  plate_number: string | null;
+  chassis_number: string | null;
+  assigned_operator_driver: string | null;
 };
 
 type CategoryChip = {
@@ -98,9 +102,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   const search = String(params?.search ?? "").replace(/[%,()]/g, " ").trim().slice(0, 80);
   const status = String(params?.status ?? "").trim();
   const category = String(params?.category ?? "").trim();
-  const location = String(params?.location ?? "").replace(/[%,()]/g, " ").trim().slice(0, 80);
   const dueSoonFilter = params?.due_soon === "1";
-  const mainCategory = String(params?.main_category ?? "").trim();
 
   const dueSoon = new Date();
   dueSoon.setDate(dueSoon.getDate() + 30);
@@ -351,43 +353,14 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   }
   // ── End CEO early-return ──────────────────────────────────────────────────
 
-  // ── Load active categories from DB ────────────────────────────────────────
-  const dbCategories = await prisma.asset_categories.findMany({
-    where: { is_active: true },
-    select: { id: true, name: true, parent_id: true, sort_order: true },
-    orderBy: [{ sort_order: "asc" }, { name: "asc" }],
-  });
-
-  const dbMainCats = dbCategories.filter((c) => c.parent_id === null);
-  const dbSubcats  = dbCategories.filter((c) => c.parent_id !== null);
-
-  // Map: subcategory name (lower) → main category name
-  const subcatToMain = new Map<string, string>();
-  for (const sub of dbSubcats) {
-    const parent = dbMainCats.find((m) => m.id === sub.parent_id);
-    if (parent) subcatToMain.set(sub.name.toLowerCase(), parent.name);
-  }
-  // Also map main category name → itself (handles legacy assets stored with main cat name)
-  for (const m of dbMainCats) subcatToMain.set(m.name.toLowerCase(), m.name);
-
-  function getMainCategoryName(catValue: string): string {
-    return subcatToMain.get(catValue.toLowerCase()) ?? "Other";
-  }
-
-  // All subcategory names that belong to a given main category (for WHERE filtering)
-  function subcatNamesForMain(mainName: string): string[] {
-    const main = dbMainCats.find((m) => m.name === mainName);
-    if (!main) return [];
-    // Include the main category name itself to catch legacy assets
-    return [mainName, ...dbSubcats.filter((s) => s.parent_id === main.id).map((s) => s.name)];
-  }
-
-  // All known category names (subcats + mains) — for "Other" filter
-  const allKnownNames = new Set([
-    ...dbMainCats.map((m) => m.name),
-    ...dbSubcats.map((s) => s.name),
-  ]);
-
+  // Asset Register Import Mapping and New Asset Form Update Unit 10G.34,
+  // Task 9/10: "Asset Type" is now a flat, real-data-driven list (no main/
+  // sub category split, no admin category tree query on this page at all —
+  // that hierarchy still exists for /admin/settings/asset-categories, just
+  // not consulted here). categoryChips (one row per Asset Type actually in
+  // use, with its count) IS the "Asset Types" section directly — the exact
+  // same query already ran on this page before this unit, so this removes
+  // work rather than adding it (Task's "keep the page fast" instruction).
   const statusFilter = status
     ? { status }
     : dueSoonFilter
@@ -397,39 +370,29 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   const where = {
     deleted_at: null,
     ...statusFilter,
-    ...(category
-      ? { category }
-      : mainCategory
-        ? mainCategory === "Other"
-          ? { category: { notIn: [...allKnownNames] } }
-          : { category: { in: subcatNamesForMain(mainCategory) } }
-        : {}),
-    ...(location ? { location: { contains: location, mode: "insensitive" as const } } : {}),
+    ...(category ? { category } : {}),
     ...(dueSoonFilter ? { next_service_date: { lte: dueSoon } } : {}),
+    // Task 9 — search covers asset code, asset type, make/name, model/year,
+    // plate number, chassis number, location, responsible person/driver,
+    // and remarks.
     ...(search
-      ? (() => {
-          // Expand search to include subcategories of any matching main category
-          const lc = search.toLowerCase();
-          const matchingSubcats = dbMainCats
-            .filter((mc) => mc.name.toLowerCase().includes(lc))
-            .flatMap((mc) => dbSubcats.filter((s) => s.parent_id === mc.id).map((s) => s.name));
-          return {
-            OR: [
-              { asset_code:    { contains: search, mode: "insensitive" as const } },
-              { asset_name:    { contains: search, mode: "insensitive" as const } },
-              { serial_number: { contains: search, mode: "insensitive" as const } },
-              { plate_number:  { contains: search, mode: "insensitive" as const } },
-              { model:         { contains: search, mode: "insensitive" as const } },
-              { category:      { contains: search, mode: "insensitive" as const } },
-              { location:      { contains: search, mode: "insensitive" as const } },
-              ...(matchingSubcats.length > 0 ? [{ category: { in: matchingSubcats } }] : []),
-            ],
-          };
-        })()
+      ? {
+          OR: [
+            { asset_code:              { contains: search, mode: "insensitive" as const } },
+            { category:                { contains: search, mode: "insensitive" as const } },
+            { asset_name:              { contains: search, mode: "insensitive" as const } },
+            { model:                   { contains: search, mode: "insensitive" as const } },
+            { plate_number:            { contains: search, mode: "insensitive" as const } },
+            { chassis_number:          { contains: search, mode: "insensitive" as const } },
+            { location:                { contains: search, mode: "insensitive" as const } },
+            { assigned_operator_driver:{ contains: search, mode: "insensitive" as const } },
+            { remarks:                 { contains: search, mode: "insensitive" as const } },
+          ],
+        }
       : {}),
   };
 
-  const [assets, count, categoryChips, needAttentionCount, activeMaintenanceCount] = await Promise.all([
+  const [assets, count, categoryChips, needAttentionCount, activeMaintenanceCount, assetsForTypeCards] = await Promise.all([
     prisma.assets.findMany({
       where,
       orderBy: dueSoonFilter ? { next_service_date: "asc" } : { asset_code: "asc" },
@@ -442,8 +405,9 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         category: true,
         status: true,
         location: true,
-        serial_number: true,
-        model: true,
+        plate_number: true,
+        chassis_number: true,
+        assigned_operator_driver: true,
       },
     }) as Promise<AssetRow[]>,
     prisma.assets.count({ where }),
@@ -477,55 +441,37 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         work_orders: { some: { deleted_at: null, status: { in: ACTIVE_MAINTENANCE_JOB_CARD_STATUSES } } },
       },
     }),
+    // Asset Types Card View and Popup Unit 10G.37: one lightweight query for
+    // every registered asset (171 rows currently — a handful of columns
+    // each), fetched once and handed to the client-side card grid so
+    // opening a type's popup and searching inside it never triggers another
+    // database call (Task's own "use already loaded asset list, avoid
+    // extra database calls" instruction) — independent of the paginated,
+    // filtered `assets` query above, which the main Asset Register still
+    // uses unchanged.
+    prisma.assets.findMany({
+      where: { deleted_at: null },
+      orderBy: { asset_code: "asc" },
+      select: {
+        id: true,
+        asset_code: true,
+        asset_name: true,
+        category: true,
+        status: true,
+        location: true,
+        plate_number: true,
+        chassis_number: true,
+        assigned_operator_driver: true,
+        model: true,
+        model_year: true,
+        remarks: true,
+      },
+    }) as Promise<AssetTypeCardRow[]>,
   ]);
-
-  // Last repair date per asset on this page (most recent closed work order)
-  const assetIds = (assets as AssetRow[]).map((a) => a.id);
-  const lastRepairData = assetIds.length > 0
-    ? await prisma.work_orders.groupBy({
-        by: ["asset_id"],
-        where: { asset_id: { in: assetIds }, deleted_at: null, status: "Closed" },
-        _max: { date_of_order: true },
-      })
-    : [];
-  const lastRepairMap = new Map<string, Date | null>();
-  for (const row of lastRepairData) {
-    if (row.asset_id) lastRepairMap.set(row.asset_id, row._max.date_of_order);
-  }
-
-  // Open (non-closed) work orders per asset on this page — for Last Repair column display
-  const openRepairData = assetIds.length > 0
-    ? await prisma.work_orders.findMany({
-        where: {
-          asset_id: { in: assetIds },
-          deleted_at: null,
-          status: { notIn: OPEN_JOB_CARD_STATUSES_EXCLUDED },
-        },
-        select: { asset_id: true },
-      })
-    : [];
-  const openRepairSet = new Set(
-    openRepairData.map((r) => r.asset_id).filter((id): id is string => id !== null)
-  );
 
   const totalAssets = categoryChips.reduce((sum, item) => sum + Number(item.count), 0);
   const totalPages = Math.max(1, Math.ceil(count / pageSize));
 
-  // Per-main-category total counts for the overview — derived from existing categoryChips, no extra query
-  const catOverviewMap = new Map<string, number>();
-  for (const chip of categoryChips) {
-    const mainName = getMainCategoryName(chip.category);
-    catOverviewMap.set(mainName, (catOverviewMap.get(mainName) ?? 0) + Number(chip.count));
-  }
-
-  // Fleet view total — the fixed VEHICLE_CATEGORIES list (Car/Pickup/Bus/Truck
-  // from the Vehicles main category, plus Loader/Forklift/Crane from Heavy
-  // Equipment), independent of and never merged into the main category cards
-  // above (Assets Category Count Clarity Unit 1, Task 3/5).
-  const fleetViewCount = categoryChips.reduce(
-    (sum, chip) => sum + (isVehicleCategory(chip.category) ? Number(chip.count) : 0),
-    0
-  );
   // Assets & Equipment Data Entry Access Alignment: this used to explicitly
   // exclude maintenance_data_entry even though the role already carries
   // assets.manage in the DB (route guards on /assets/new, /assets/import,
@@ -536,16 +482,28 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   // the app and Data Entry's real, already-granted assets.manage permission.
   const canManage =
     context.role?.slug === "super_admin" || context.permissions.includes("assets.manage");
-  // Normal users (maintenance_data_entry, viewer, etc.) get a simplified filter set.
-  const isFullFilterUser =
-    context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
-  const hasActiveFilters = !!(search || status || category || mainCategory || location || dueSoonFilter);
+  // Task 10 — one simple view for every role now; no separate manager-only
+  // columns/filters (there's nothing "technical" left to gate).
+  const hasActiveFilters = !!(search || status || category || dueSoonFilter);
 
-  // Subcategory filter options: if a main category is active, show its DB subcats; else show all DB subcats found in assets
-  const activeMainCat = dbMainCats.find((m) => m.name === mainCategory);
-  const subcategoryOptions: string[] = activeMainCat
-    ? dbSubcats.filter((s) => s.parent_id === activeMainCat.id).map((s) => s.name)
-    : categoryChips.map((c) => c.category);
+  // New Asset Popup and Add Asset Type Unit 10G.38, Task 1/2: "+ New Asset"
+  // now opens this page's own LargeFormModal via ?new_asset=1 instead of
+  // navigating to /assets/new (that route is untouched and still works
+  // directly — Task 2). Task 8: only Super Admin / Maintenance Manager may
+  // add new asset types from inside the popup's Asset Type field.
+  const showNewAssetModal = canManage && params?.new_asset === "1";
+  const canManageAssetTypes =
+    context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
+  // categoryChips already is the exact "one row per real, in-use asset
+  // type" list (Task's own "avoid extra database calls" instruction) — no
+  // separate query needed for the popup's dropdown.
+  const assetTypesForModal = categoryChips.map((c) => c.category);
+
+  // Import Excel Popup Flow Unit 10G.40, Task 1/2/11: "Import Excel" now
+  // opens this same LargeFormModal via ?import_assets=1 instead of
+  // navigating to /assets/import — that route is untouched and still works
+  // directly when opened on its own.
+  const showImportModal = canManage && params?.import_assets === "1";
 
   return (
     <>
@@ -557,13 +515,13 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             <PageNavigationActions />
             {canManage ? (
               <>
-                <Link href="/assets/import" title="Upload many assets or vehicles from Excel.">
+                <Link href="/assets?import_assets=1" title="Upload many assets or vehicles from Excel.">
                   <Button variant="secondary" className="gap-2">
                     <Upload className="h-4 w-4" aria-hidden="true" />
                     Import Excel
                   </Button>
                 </Link>
-                <Link href="/assets/new" title="Add one asset or vehicle manually.">
+                <Link href="/assets?new_asset=1" title="Add one asset or vehicle manually.">
                   <Button className="gap-2">
                     <Plus className="h-4 w-4" aria-hidden="true" />
                     New Asset
@@ -604,136 +562,50 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
           />
         </section>
 
-        {/* ── Category Overview — always visible ──────────────────────────── */}
-        <section>
-          <div className="mb-2 flex items-center justify-between">
-            <p className="text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Asset Categories</p>
-            {canManage && (
-              <Link
-                href="/admin/settings/asset-categories"
-                className="text-xs font-bold text-[#ED1C24] hover:underline"
-              >
-                Manage Categories
-              </Link>
-            )}
-          </div>
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            {dbMainCats.map((cat) => {
-              const catCount = catOverviewMap.get(cat.name) ?? 0;
-              const isSelected = mainCategory === cat.name;
-              const isVehiclesCard = cat.name === "Vehicles";
-              // The "Vehicles" card routes to the dedicated fleet view instead
-              // of filtering the general list — the other main category cards
-              // are unaffected (Vehicle Asset View Unit 1 Task 2). Its count
-              // here still reflects only the DB "Vehicles" main category
-              // (Car/Pickup/Bus/Truck/Trailer) — it is deliberately not
-              // inflated to match the fleet view's broader count, which also
-              // includes Loader/Forklift/Crane from Heavy Equipment (Vehicle
-              // View Category Cleanup Unit 1 Task 6; Assets Category Count
-              // Clarity Unit 1 Task 1/5 — this card must stay accurate to the
-              // DB main category, the broader fleet total lives in the
-              // separate shortcut card below instead).
-              const cardHref = isVehiclesCard ? "/assets/vehicles" : filterHref({ mainCategory: cat.name });
-              return (
+        {/* Asset Types Card View and Popup Unit 10G.37, Task 1/2/8: the
+            plain "Asset Types" table (from Unit 10G.34) replaced with a
+            compact card grid — one card per real, in-use asset type,
+            clicking one opens a search-and-browse popup instead of
+            filtering via a link. The main Asset Type dropdown further down
+            (Task 7) still does the classic same-page filter — the cards are
+            a faster, more visual alternative, not a replacement for it. */}
+        {totalAssets > 0 && (
+          <section>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Asset Types</p>
+              {canManage && (
                 <Link
-                  key={cat.id}
-                  href={cardHref}
-                  className={`group flex items-center justify-between rounded-md border px-4 py-3 shadow-sm transition hover:border-[#ED1C24] hover:shadow-md ${
-                    isSelected ? "border-[#ED1C24] bg-red-50" : "border-[#E5E7EB] bg-white"
-                  }`}
+                  href="/admin/settings/asset-categories"
+                  className="text-xs font-bold text-[#ED1C24] hover:underline"
                 >
-                  <div className="min-w-0">
-                    <p className={`text-sm font-bold truncate ${isSelected ? "text-[#ED1C24]" : "text-[#111827]"}`}>
-                      {cat.name}
-                    </p>
-                    <p className="mt-0.5 text-xs text-[#9CA3AF]">
-                      {isVehiclesCard
-                        ? "Cars, pickups, buses, trucks"
-                        : catCount === 0 ? "No assets yet" : `${catCount} asset${catCount !== 1 ? "s" : ""}`}
-                    </p>
-                  </div>
-                  <span className={`ml-3 shrink-0 text-xl font-black ${catCount > 0 ? "text-[#111827]" : "text-[#D1D5DB]"}`}>
-                    {catCount}
-                  </span>
+                  Manage Categories
                 </Link>
-              );
-            })}
-          </div>
-
-          {/* Fleet View shortcut — separate from the main category cards on
-              purpose (Task 3). Its count is the fixed VEHICLE_CATEGORIES
-              total (fleetViewCount), never folded into the Vehicles or Heavy
-              Equipment card counts above. */}
-          <Link
-            href="/assets/vehicles"
-            className="mt-2 flex items-center justify-between rounded-md border border-[#ED1C24]/30 bg-red-50 px-4 py-3 shadow-sm transition hover:border-[#ED1C24] hover:shadow-md"
-          >
-            <div className="min-w-0">
-              <p className="text-sm font-bold text-[#111827]">Fleet View</p>
-              <p className="mt-0.5 text-xs text-[#4B5563]">
-                Vehicles and mobile equipment combined view
-              </p>
+              )}
             </div>
-            <span className="ml-3 shrink-0 text-xl font-black text-[#111827]">{fleetViewCount}</span>
-          </Link>
+            <AssetTypeCards
+              types={categoryChips.map((c) => ({ category: c.category, count: Number(c.count) }))}
+              assets={assetsForTypeCards}
+            />
+            <p className="mt-2 text-xs text-[#9CA3AF]">
+              Only categories with registered assets are shown.
+            </p>
+          </section>
+        )}
 
-          <p className="mt-2 text-xs text-[#9CA3AF]">
-            Category cards show main asset categories. Fleet view includes cars, pickups, buses, trucks, loaders, forklifts, and cranes.
-          </p>
-        </section>
-
-        {totalAssets > 0 && (<>
-
-        {/* Main category pills */}
-        <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href={filterHref({ status, search, location })}
-            className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
-              !mainCategory && !category
-                ? "border-[#111827] bg-[#111827] text-white"
-                : "border-[#E5E7EB] bg-white text-[#111827] hover:border-[#111827]"
-            }`}
-          >
-            All
-          </Link>
-          {dbMainCats.map((topLevel) => {
-            // Sum counts for all subcategories + legacy assets stored under the main cat name itself
-            const names = new Set(subcatNamesForMain(topLevel.name).map((n) => n.toLowerCase()));
-            const subcats = categoryChips.filter((c) => names.has(c.category.toLowerCase()));
-            if (!subcats.length) return null;
-            const totalCount = subcats.reduce((s, c) => s + Number(c.count), 0);
-            const isActive = mainCategory === topLevel.name || subcats.some((c) => c.category === category);
-            return (
-              <Link
-                key={topLevel.id}
-                href={topLevelChipHref({ mainCategory: topLevel.name, status, search, location })}
-                className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${
-                  isActive
-                    ? "border-[#111827] bg-[#111827] text-white"
-                    : "border-[#E5E7EB] bg-white text-[#111827] hover:border-[#111827]"
-                }`}
-              >
-                {topLevel.name}
-                <span className={`ml-1.5 text-[10px] font-normal ${isActive ? "text-gray-300" : "text-[#9CA3AF]"}`}>
-                  {totalCount}
-                </span>
-              </Link>
-            );
-          })}
-        </div>
-
-        {/* Filter bar — simplified for normal users, full for managers and admins */}
+        {totalAssets > 0 && (
+        /* Task 9/10 — one simple filter bar for every role: search plus
+           Status and Asset Type. */
         <form className="flex flex-wrap items-center gap-2 rounded-md border border-[#E5E7EB] bg-white p-3 shadow-sm">
           <input
-            className="focus-ring h-9 min-w-[180px] flex-1 rounded-md border border-[#E5E7EB] px-3 text-sm"
+            className="focus-ring h-9 min-w-[220px] flex-1 rounded-md border border-[#E5E7EB] px-3 text-sm"
             name="search"
             defaultValue={params?.search ?? ""}
-            placeholder="Search asset code, name, model, or serial…"
+            placeholder="Search asset, plate number, chassis number, location, or driver…"
           />
-          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="main_category" defaultValue={mainCategory}>
-            <option value="">Main Category</option>
-            {dbMainCats.map((mc) => (
-              <option key={mc.id} value={mc.name}>{mc.name}</option>
+          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="category" defaultValue={category}>
+            <option value="">All asset types</option>
+            {categoryChips.map((c) => (
+              <option key={c.category} value={c.category}>{c.category}</option>
             ))}
           </select>
           <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="status" defaultValue={params?.status ?? ""}>
@@ -742,20 +614,6 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
               <option key={s} value={s}>{displayAssetStatus(s)}</option>
             ))}
           </select>
-          {isFullFilterUser && (<>
-            <input
-              className="focus-ring h-9 w-32 rounded-md border border-[#E5E7EB] px-3 text-sm"
-              name="location"
-              defaultValue={params?.location ?? ""}
-              placeholder="Location"
-            />
-            <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="category" defaultValue={params?.category ?? ""}>
-              <option value="">Subcategory</option>
-              {subcategoryOptions.map((sub) => (
-                <option key={sub} value={sub}>{sub}</option>
-              ))}
-            </select>
-          </>)}
           <Button type="submit" className="h-9 shrink-0">Apply</Button>
           {hasActiveFilters && (
             <Link
@@ -766,7 +624,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             </Link>
           )}
         </form>
-        </>)}
+        )}
 
         {/* Asset register table */}
         <section className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
@@ -791,13 +649,13 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                     Import assets from Excel or create the first asset.
                   </p>
                   <div className="mt-6 flex flex-wrap justify-center gap-3">
-                    <Link href="/assets/import" title="Upload many assets or vehicles from Excel.">
+                    <Link href="/assets?import_assets=1" title="Upload many assets or vehicles from Excel.">
                       <Button variant="secondary" className="gap-2">
                         <Upload className="h-4 w-4" aria-hidden="true" />
                         Import Excel
                       </Button>
                     </Link>
-                    <Link href="/assets/new" title="Add one asset or vehicle manually.">
+                    <Link href="/assets?new_asset=1" title="Add one asset or vehicle manually.">
                       <Button className="gap-2">
                         <Plus className="h-4 w-4" aria-hidden="true" />
                         New Asset
@@ -819,29 +677,33 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className={`w-full text-left text-sm ${isFullFilterUser ? "min-w-[900px]" : "min-w-[600px]"}`}>
+              {/* Asset Register Import Mapping and New Asset Form Update
+                  Unit 10G.34, Task 9: simple useful columns only — Asset /
+                  Equipment, Asset Type, Plate No., Chassis No., Location,
+                  Responsible Person / Driver, Status, Action — the same for
+                  every role now (no manager-only extra columns; a missing
+                  value always reads "—", never blank). */}
+              <table className="w-full min-w-[860px] text-left text-sm">
                 <thead className="bg-gray-50 text-xs font-black uppercase text-[#4B5563]">
                   <tr>
                     <th className="px-4 py-3">Asset / Equipment</th>
-                    {isFullFilterUser && <th className="px-4 py-3">Main Category</th>}
-                    {isFullFilterUser && <th className="px-4 py-3">Subcategory</th>}
+                    <th className="px-4 py-3">Asset Type</th>
+                    <th className="px-4 py-3">Plate No.</th>
+                    <th className="px-4 py-3">Chassis No.</th>
                     <th className="px-4 py-3">Location</th>
+                    <th className="px-4 py-3">Responsible Person / Driver</th>
                     <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3">Last Repair</th>
                     <th className="px-4 py-3 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#E5E7EB]">
                   {assets.map((asset) => {
                     const isCritical = asset.status === "Breakdown" || asset.status === "Out of Service";
-                    const lastRepair = lastRepairMap.get(asset.id) ?? null;
-                    const hasOpenRepair = openRepairSet.has(asset.id);
                     return (
                       <tr
                         key={asset.id}
                         className={`transition ${isCritical ? "bg-red-50" : "hover:bg-gray-50"}`}
                       >
-                        {/* First column: clickable identity block */}
                         <td className="px-4 py-2.5">
                           <Link href={`/assets/${asset.id}`} className="group/asset block">
                             <p className="font-bold text-[#111827] transition group-hover/asset:text-[#ED1C24]">
@@ -850,45 +712,23 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                             <p className="text-xs text-[#4B5563] transition group-hover/asset:text-[#ED1C24]">
                               {asset.asset_name}
                             </p>
-                            <p className="text-[10px] text-[#9CA3AF]">
-                              {getMainCategoryName(asset.category)} / {asset.category}
-                            </p>
-                            {(asset.model || asset.serial_number) && (
-                              <p className="text-[10px] text-[#9CA3AF]">
-                                {[
-                                  asset.model         ? `Model: ${asset.model}`          : null,
-                                  asset.serial_number ? `Serial: ${asset.serial_number}` : null,
-                                ].filter(Boolean).join(" · ")}
-                              </p>
-                            )}
                           </Link>
                         </td>
-                        {isFullFilterUser && (
-                          <td className="px-4 py-2.5 text-sm text-[#4B5563]">
-                            {getMainCategoryName(asset.category)}
-                          </td>
-                        )}
-                        {isFullFilterUser && (
-                          <td className="px-4 py-2.5 text-sm text-[#4B5563]">{asset.category}</td>
-                        )}
+                        <td className="px-4 py-2.5 text-sm text-[#4B5563]">{asset.category}</td>
                         <td className="px-4 py-2.5 text-sm text-[#4B5563]">
-                          {asset.location ?? <span className="text-[#9CA3AF]">—</span>}
+                          {asset.plate_number ?? "—"}
+                        </td>
+                        <td className="px-4 py-2.5 text-sm text-[#4B5563]">
+                          {asset.chassis_number ?? "—"}
+                        </td>
+                        <td className="px-4 py-2.5 text-sm text-[#4B5563]">
+                          {asset.location ?? "—"}
+                        </td>
+                        <td className="px-4 py-2.5 text-sm text-[#4B5563]">
+                          {asset.assigned_operator_driver ?? "—"}
                         </td>
                         <td className="px-4 py-2.5">
                           <StatusBadge label={displayAssetStatus(asset.status)} tone={assetStatusTone(asset.status)} />
-                        </td>
-                        <td className="px-4 py-2.5">
-                          {hasOpenRepair ? (
-                            <span className="inline-block rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">
-                              Open Job Card
-                            </span>
-                          ) : lastRepair ? (
-                            <span className="text-xs text-[#4B5563]">
-                              Last repaired: {formatDate(lastRepair)}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-[#9CA3AF]">No repairs yet</span>
-                          )}
                         </td>
                         <td className="whitespace-nowrap px-4 py-2.5 text-right">
                           <Link
@@ -903,7 +743,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                   })}
                   {!assets.length && (
                     <tr>
-                      <td className="px-4 py-10 text-center" colSpan={isFullFilterUser ? 7 : 5}>
+                      <td className="px-4 py-10 text-center" colSpan={8}>
                         <p className="text-sm font-semibold text-[#4B5563]">No assets match the current filters.</p>
                         <Link href="/assets" className="mt-2 inline-block text-xs text-[#ED1C24] hover:underline">
                           Clear filters
@@ -923,14 +763,37 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             totalPages={totalPages}
             search={params?.search}
             status={params?.status}
-            mainCategory={params?.main_category}
             category={params?.category}
-            location={params?.location}
             dueSoon={dueSoonFilter ? "1" : undefined}
           />
         )}
 
       </div>
+
+      {showNewAssetModal && (
+        <LargeFormModal
+          title="New Asset"
+          subtitle="Add a new asset to the maintenance register."
+          closeHref="/assets"
+        >
+          <SimpleAssetForm
+            assetTypes={assetTypesForModal}
+            modalMode
+            redirectTo="/assets"
+            canAddAssetType={canManageAssetTypes}
+          />
+        </LargeFormModal>
+      )}
+
+      {showImportModal && (
+        <LargeFormModal
+          title="Import Assets from Excel"
+          subtitle="Upload the maintenance asset Excel file and check the preview before saving."
+          closeHref="/assets"
+        >
+          <AssetImportForm modalMode canReplace={context.role?.slug === "super_admin"} />
+        </LargeFormModal>
+      )}
     </>
   );
 }
@@ -957,31 +820,6 @@ function CeoAssetKpi({
       <p className="mt-0.5 text-xs leading-5 text-[#4B5563]">{detail}</p>
     </Link>
   );
-}
-
-function filterHref({
-  category, mainCategory, status, search, location,
-}: {
-  category?: string; mainCategory?: string; status?: string; search?: string;
-  location?: string;
-}) {
-  const p = new URLSearchParams();
-  if (mainCategory) p.set("main_category", mainCategory);
-  if (category)     p.set("category", category);
-  if (status)       p.set("status", status);
-  if (search)       p.set("search", search);
-  if (location)     p.set("location", location);
-  const q = p.toString();
-  return q ? `/assets?${q}` : "/assets";
-}
-
-function topLevelChipHref({
-  mainCategory, status, search, location,
-}: {
-  mainCategory: string; status?: string; search?: string;
-  location?: string;
-}) {
-  return filterHref({ mainCategory, status, search, location });
 }
 
 function SummaryCard({
@@ -1020,34 +858,23 @@ function SummaryCard({
   return href ? <Link href={href}>{content}</Link> : content;
 }
 
-function formatDate(value: Date | string | null) {
-  if (!value) return "Not scheduled";
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-}
-
 function Pagination({
-  page, totalPages, search, status, mainCategory, category, location, dueSoon,
+  page, totalPages, search, status, category, dueSoon,
 }: {
   page: number;
   totalPages: number;
   search?: string;
   status?: string;
-  mainCategory?: string;
   category?: string;
-  location?: string;
   dueSoon?: string;
 }) {
   const hrefFor = (nextPage: number) => {
     const p = new URLSearchParams();
     p.set("page", String(nextPage));
-    if (search)        p.set("search", search);
-    if (status)        p.set("status", status);
-    if (mainCategory)  p.set("main_category", mainCategory);
-    if (category)      p.set("category", category);
-    if (location)      p.set("location", location);
-    if (dueSoon)       p.set("due_soon", dueSoon);
+    if (search)   p.set("search", search);
+    if (status)   p.set("status", status);
+    if (category) p.set("category", category);
+    if (dueSoon)  p.set("due_soon", dueSoon);
     return `/assets?${p.toString()}`;
   };
 

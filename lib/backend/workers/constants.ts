@@ -13,8 +13,16 @@ export type WorkerType = (typeof WORKER_TYPES)[number];
 // user-facing label is now "Division" everywhere (Worker Profiles form/list,
 // assignment picker, Worker Activity filter) — this array's own name and the
 // underlying skill_category DB column are unchanged (renaming the column
-// isn't required or done here; only the label users see changed). "Civil"
-// and "General" added to the suggested value set; existing stored values
-// (Auto/Mechanical/Electrical/Other) are untouched and remain valid.
-export const SKILL_CATEGORIES = ["Auto", "Mechanical", "Electrical", "Civil", "General", "Other"] as const;
+// isn't required or done here; only the label users see changed).
+//
+// Worker Division Dropdown Final Cleanup Unit 10G.41F, Task 1: final,
+// closed list. "Civil" removed — it was never a real Division for this
+// maintenance department. "Industrial" deliberately NOT added — Industrial
+// Mechanic/Industrial Electrician are Job Titles, not Divisions (adding it
+// here would make Data Entry confuse Industrial/Mechanical/Electrical).
+// "Not specified" is now a real, listed option (not just an implicit
+// blank/default) so Division can be a required field the user actively
+// answers — see components/admin/worker-profile-form-modal.tsx's "Select
+// division..." placeholder.
+export const SKILL_CATEGORIES = ["Mechanical", "Electrical", "Auto", "General", "Other", "Not specified"] as const;
 export type SkillCategory = (typeof SKILL_CATEGORIES)[number];

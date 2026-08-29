@@ -193,7 +193,19 @@ function WorkerReviewCard({
           are null (not just hidden) whenever canViewCosts is false. Text
           bumped from text-xs to text-sm (Task 3). */}
       <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-[#4B5563] sm:grid-cols-3">
-        {canViewCosts && worker.hourlyRate !== null ? <span>Hourly Rate: <strong className="text-[#111827]">{worker.hourlyRate.toFixed(3)} KWD/hr</strong></span> : null}
+        {/* Worker Salary Breakdown and Manager Labor Cost View Unit 10G.41B,
+            Task 9: this whole modal is already Manager/Super-Admin-only
+            (getClosureReviewDetailAction asserts isManagerRole before
+            returning anything — Data Entry can never open it), so "Rate not
+            set" only needs to be gated by canViewCosts, same as the numbers
+            around it. */}
+        {canViewCosts && worker.hourlyRate !== null ? (
+          worker.hourlyRate > 0 ? (
+            <span>Hourly Rate: <strong className="text-[#111827]">{worker.hourlyRate.toFixed(3)} KWD/hr</strong></span>
+          ) : (
+            <span className="font-semibold text-amber-700">Rate not set</span>
+          )
+        ) : null}
         {canViewCosts && worker.totalPay !== null ? <span>Total Pay: <strong className="text-[#111827]">{worker.totalPay.toFixed(3)} KWD</strong></span> : null}
         <span>Sessions: <strong className="text-[#111827]">{worker.sessionsCount}</strong></span>
       </div>

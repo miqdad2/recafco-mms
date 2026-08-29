@@ -1,4 +1,4 @@
-import { AssetWizard } from "@/components/assets/asset-wizard";
+import { SimpleAssetForm } from "@/components/assets/simple-asset-form";
 import { BackLink } from "@/components/ui/back-link";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
@@ -7,16 +7,21 @@ import { prisma } from "@/lib/db/prisma";
 
 export default async function EditAssetPage({ params }: { params: Promise<{ id: string }> }) {
   const context = await requirePermission("assets.manage");
-  const canManageCategories = context.role?.slug === "super_admin";
+  // New Asset Popup and Add Asset Type Unit 10G.38, Task 8: Super Admin and
+  // Maintenance Manager may add new asset types; every other role keeps
+  // dropdown-selection only.
+  const canAddAssetType = context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
   const { id } = await params;
-  const [rawAsset, categories] = await Promise.all([
+  const [rawAsset, assetTypeRows] = await Promise.all([
     prisma.assets.findUnique({ where: { id } }),
-    prisma.asset_categories.findMany({
-      where: { is_active: true },
-      select: { id: true, name: true, parent_id: true, is_active: true },
-      orderBy: [{ sort_order: "asc" }, { name: "asc" }],
+    prisma.assets.findMany({
+      where: { deleted_at: null },
+      select: { category: true },
+      distinct: ["category"],
+      orderBy: { category: "asc" },
     }),
   ]);
+  const assetTypes = assetTypeRows.map((r) => r.category);
   const asset = rawAsset ? {
     id: rawAsset.id,
     asset_code: rawAsset.asset_code,
@@ -25,7 +30,6 @@ export default async function EditAssetPage({ params }: { params: Promise<{ id: 
     department_id: rawAsset.department_id,
     location: rawAsset.location,
     assigned_operator_driver: rawAsset.assigned_operator_driver,
-    brand: rawAsset.brand,
     model: rawAsset.model,
     model_year: rawAsset.model_year,
     serial_number: rawAsset.serial_number,
@@ -52,18 +56,14 @@ export default async function EditAssetPage({ params }: { params: Promise<{ id: 
     <>
       <PageHeader
         title="Edit Asset"
-        description="Update asset master fields and next service details."
+        description="Update this asset's details."
         breadcrumb={
           <PageBreadcrumb items={[{ label: "Assets & Equipment", href: "/assets" }, { label: "Edit Asset" }]} />
         }
         actions={<BackLink href={`/assets/${id}`} label="Back to Asset Details" />}
       />
       <div className="p-4 lg:p-6">
-        <AssetWizard
-          asset={asset}
-          categories={categories}
-          canManageCategories={canManageCategories}
-        />
+        <SimpleAssetForm asset={asset} assetTypes={assetTypes} canAddAssetType={canAddAssetType} />
       </div>
     </>
   );

@@ -8,6 +8,7 @@ import { WorkerActivityDetailModal } from "@/components/workers/worker-activity-
 import { displaySimplifiedStatus, simplifiedStatusTone } from "@/lib/work-orders/simplified-status-display";
 import type { WorkerActivityStatus, WorkerCurrentJobCard } from "@/lib/work-orders/work-session-totals";
 import type { WorkerProfileRow } from "@/lib/backend/workers/service";
+import { isSalaryPending } from "@/lib/backend/workers/salary";
 
 // Worker Activity Manager Hours and Payment Detail Unit 10C.
 //
@@ -74,6 +75,12 @@ export function WorkerCard({ worker, canViewCosts, canManageWorkerProfiles, isMa
               <p className="truncate text-sm font-black text-[#111827]">{worker.name}</p>
               <MiniChip label={worker.worker_type} />
               {worker.skill_category ? <MiniChip label={worker.skill_category} /> : null}
+              {/* Worker Salary Breakdown and Manager Labor Cost View Unit
+                  10G.41B, Task 4: Manager/Super-Admin-only — Data Entry
+                  never sees this (canManageWorkerProfiles is false for
+                  them), matching "Data Entry just sees worker status
+                  Active." */}
+              {canManageWorkerProfiles && isSalaryPending(worker) ? <StatusBadge label="Salary Pending" tone="amber" /> : null}
             </div>
             {worker.phone ? <p className="mt-0.5 text-xs text-[#6B7280]">{worker.phone}</p> : null}
           </div>

@@ -2367,7 +2367,13 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 <QuickActionTile title="Closure Requests" helper="Review & approve" href="/maintenance/work-orders?status=ClosureRequested" icon={ClipboardList} iconBg="bg-amber-50" iconColor="text-amber-600" />
                 <QuickActionTile title="Worker Activity" helper="Hours & status" href="/maintenance/assignments" icon={Users} iconBg="bg-blue-50" iconColor="text-blue-600" />
                 <QuickActionTile title="Materials Pending" helper="View requests" href="/store/parts-requests" icon={ShoppingCart} iconBg="bg-violet-50" iconColor="text-violet-600" />
-                <QuickActionTile title="Vehicle Expiry" helper="Renewals due" href="/assets/vehicles?insurance=expiring_15&registration=expiring_15" icon={Car} iconBg="bg-amber-50" iconColor="text-amber-600" />
+                {/* Remove Vehicles Page From Normal Asset Flow Unit 10G.36,
+                    Task 2: was a direct link to /assets/vehicles — now opens
+                    the same in-page Vehicle Expiry Alerts modal the KPI card
+                    and "View Expiring Vehicles" link below already use, so
+                    every vehicle-expiry entry point on this dashboard stays
+                    on the page instead of navigating to the old view. */}
+                <QuickActionTile title="Vehicle Expiry" helper="Renewals due" href="/dashboard?vehicleExpiry=1" icon={Car} iconBg="bg-amber-50" iconColor="text-amber-600" />
                 <QuickActionTile title="Reports" helper="Full reports" href="/reports" icon={BarChart3} iconBg="bg-gray-100" iconColor="text-[#4B5563]" />
               </div>
             </section>
@@ -2505,11 +2511,13 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                   <div className="flex items-center justify-between gap-2">
                     <h3 className="text-sm font-black leading-tight text-[#111827]">Vehicle Expiry Alerts</h3>
                     {/* Vehicle Expiry Alerts Modal Unit 10B.1, Task 1/6: this
-                        specific button now opens the in-page modal (full
-                        list) instead of navigating away — the KPI card above
-                        and the "Vehicle Expiry" quick-action tile are
-                        untouched and still link straight to the filtered
-                        /assets/vehicles page. */}
+                        specific button opens the in-page modal (full list)
+                        instead of navigating away. Remove Vehicles Page From
+                        Normal Asset Flow Unit 10G.36: the KPI card above and
+                        the "Vehicle Expiry" Quick Action tile now do the
+                        same — every vehicle-expiry entry point on this
+                        dashboard stays on the page; none of them link
+                        straight to /assets/vehicles anymore. */}
                     <Link href="/dashboard?vehicleExpiry=1" scroll={false} className="shrink-0 text-xs font-bold text-[#ED1C24] hover:text-[#c9151c]">
                       View Expiring Vehicles
                     </Link>

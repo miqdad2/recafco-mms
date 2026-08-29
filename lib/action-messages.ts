@@ -48,6 +48,8 @@ const SUCCESS_MAP: Record<string, ToastMessage> = {
   // Job Cards / assets / parts / inventory
   "work-order-saved":       { tone: "success", title: "Job Card saved" },
   "asset-saved":            { tone: "success", title: "Asset saved" },
+  "asset-added":            { tone: "success", title: "Asset added successfully." },
+  "import-completed":      { tone: "success", title: "Import completed successfully." },
   "part-saved":             { tone: "success", title: "Part saved" },
   "opening-stock-saved":    { tone: "success", title: "Opening stock recorded", description: "Movement recorded in Offline Inventory Control." },
   "material-added":         { tone: "success", title: "Material Added", description: "Material has been added to Offline Inventory Control." },

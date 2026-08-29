@@ -16,7 +16,6 @@ import {
 import { uploadAssetFileAction } from "@/app/actions/files";
 import { PrivateFilePanel } from "@/components/files/private-file-panel";
 import { SignedFileList } from "@/components/files/signed-file-list";
-import { QrLinkCard } from "@/components/ui/qr-link-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { displayStatus } from "@/lib/display/work-order-labels";
@@ -26,8 +25,8 @@ import { canViewEntityFile } from "@/lib/security/file-access";
 import { prisma } from "@/lib/db/prisma";
 import { getAssetMaintenanceSummary } from "@/lib/backend/assets/service";
 import { computeContractStatus } from "@/lib/display/service-contract-status";
-import { isVehicleCategory } from "@/lib/assets/categories";
 import { getExpiryStatus } from "@/lib/assets/vehicle-status";
+import { extractNoteField } from "@/lib/assets/asset-excel-mapping";
 import { BackLink } from "@/components/ui/back-link";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
@@ -111,8 +110,6 @@ export default async function AssetDetailPage({
   const { id } = await params;
   const sp = (await searchParams) ?? {};
   const activeTab = ((sp.tab ?? "overview") as TabId);
-
-  const today = new Date();
 
   const [rawAsset, summary, rawDocuments, assetContracts] = await Promise.all([
     prisma.assets.findUnique({
@@ -252,27 +249,28 @@ export default async function AssetDetailPage({
     }))
   );
 
-  // Vehicle / machine detection — Vehicle Asset View Unit 1 Task 6: the
-  // Vehicle Information section is gated by category membership (Car,
-  // Pickup, Bus, Truck, Loader, Forklift, Crane), not merely by whether any
-  // vehicle-shaped field happens to be filled in on a non-vehicle asset.
-  const isVehicle = isVehicleCategory(asset.category);
-  const hasMachineHours = !!(asset.current_running_hours || rawAsset.next_service_running_hours);
-  const insuranceStatus = getExpiryStatus(rawAsset.insurance_expiry_date);
-  const registrationStatus = getExpiryStatus(rawAsset.registration_expiry_date);
+  // Asset Detail Page Simplification Unit 10G.35, Task 7: one simple expiry
+  // status ("Expires On" -> registration_expiry_date, the only expiry field
+  // the current Excel-based register actually populates) instead of the
+  // previous side-by-side Insurance/Registration renewal cards —
+  // insurance_expiry_date is never set by the current import, so showing it
+  // separately only ever read as "No expiry date on record" and added
+  // nothing but confusion.
+  const expiryStatus = getExpiryStatus(rawAsset.registration_expiry_date);
 
-  // PM status
-  const pmOverdue = rawAsset.next_service_date && rawAsset.next_service_date < today;
-  const hasPmSchedule = !!(
-    rawAsset.next_service_date ||
-    rawAsset.next_service_kilometer ||
-    rawAsset.next_service_running_hours
-  );
+  // Task 3 — "Model / Year": the DB keeps these as two separate optional
+  // columns (a manufacturing year for vehicles, or a free-text spec like
+  // "320KVA" for equipment — see resolveModelAndYear in
+  // lib/assets/asset-excel-mapping.ts, which the importer and the New/Edit
+  // Asset form both already use to fill them), shown here as the one
+  // combined field a normal user actually thinks of.
+  const modelOrYear = asset.model_year ? String(asset.model_year) : asset.model;
 
-  // Category
-  const categoryParts = (asset.category ?? "").split(" / ");
-  const mainCategory = categoryParts[0] ?? asset.category ?? "—";
-  const subCategory = categoryParts.length > 1 ? categoryParts.slice(1).join(" / ") : null;
+  // Task 3/11 — File No. and Colour have no dedicated columns; both the
+  // importer and the simple Edit form compose them into `notes` as
+  // "File #: X | Colour: Y" (see extractNoteField's own doc comment).
+  const fileNumber = extractNoteField(asset.notes, "File #");
+  const colour = extractNoteField(asset.notes, "Colour");
 
   return (
     <>
@@ -289,28 +287,23 @@ export default async function AssetDetailPage({
         />
       )}
       {/* ── Asset Identity Header ──────────────────────────────────────────── */}
+      {/* Asset Detail Page Simplification Unit 10G.35, Task 2/8: the
+          breadcrumb/Back link always go to Assets & Equipment now — the
+          previous "Vehicles" crumb and "Back to Vehicles" link (routing
+          into /assets/vehicles for vehicle-category assets) are gone, so
+          this page never pushes a normal user into the old Vehicles &
+          Mobile Equipment view. That route itself is untouched and still
+          reachable directly. */}
       <div className="border-b border-[#DDE2EA] bg-white px-4 pb-0 pt-4 sm:px-6 sm:pt-5">
         <PageBreadcrumb
-          items={
-            isVehicle
-              ? [
-                  { label: "Assets & Equipment", href: "/assets" },
-                  { label: "Vehicles", href: "/assets/vehicles" },
-                  { label: "Asset Details" },
-                ]
-              : [{ label: "Assets & Equipment", href: "/assets" }, { label: "Asset Details" }]
-          }
+          items={[{ label: "Assets & Equipment", href: "/assets" }, { label: "Asset Details" }]}
         />
         <div className="mb-3">
-          <BackLink
-            href={isVehicle ? "/assets/vehicles" : "/assets"}
-            label={isVehicle ? "Back to Vehicles" : "Back to Assets & Equipment"}
-            variant="text"
-          />
+          <BackLink href="/assets" label="Back to Assets & Equipment" variant="text" />
         </div>
 
         <div className="flex flex-col gap-4 border-l-4 border-[#ED1C24] pl-4 sm:flex-row sm:items-start sm:justify-between">
-          {/* Identity */}
+          {/* Identity — Task 2: Asset code, Make / Asset Name, Asset Type, Status. */}
           <div className="min-w-0">
             <p className="text-xs font-black uppercase tracking-widest text-[#ED1C24]">
               {asset.asset_code}
@@ -319,19 +312,7 @@ export default async function AssetDetailPage({
               {asset.asset_name}
             </h1>
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[#4B5563]">
-              <span className="font-medium">{mainCategory}</span>
-              {subCategory && (
-                <>
-                  <span className="text-[#D1D5DB]">/</span>
-                  <span>{subCategory}</span>
-                </>
-              )}
-              {asset.location && (
-                <>
-                  <span className="text-[#D1D5DB]">·</span>
-                  <span>{asset.location}</span>
-                </>
-              )}
+              <span>Asset Type: <span className="font-semibold text-[#111827]">{asset.category}</span></span>
             </div>
             <div className="mt-2.5 flex flex-wrap gap-2">
               <StatusBadge label={asset.status} tone={statusTone(asset.status)} />
@@ -467,191 +448,82 @@ export default async function AssetDetailPage({
         </div>
 
         {/* ── OVERVIEW ──────────────────────────────────────────────────────── */}
+        {/* Asset Detail Page Simplification Unit 10G.35, Task 3/4/7: the
+            previous Overview (Main/Subcategory split, Brand/Serial Number,
+            a Vehicle Information section gated to certain categories,
+            Running Hours, Next Service, a dual Insurance/Registration
+            Renewal Status, and a QR code card) is replaced by four simple
+            sections matching the current Excel-based register exactly —
+            Basic Details, Vehicle / Identification Details (shown for every
+            asset type, not just vehicles — missing values read "—"),
+            Location & Responsibility, and Remarks. No data was removed:
+            fields this view no longer shows (serial/engine number, running
+            hours, kilometer reading, purchase/warranty dates, next-service
+            fields) are still in the database and still editable elsewhere
+            if ever needed — they're just not part of the normal view. */}
         {activeTab === "overview" && (
-          <div className="grid gap-5 lg:grid-cols-[1fr_0.85fr]">
-            {/* Left — asset master data */}
-            <div className="space-y-5">
-              {/* Core identity */}
-              <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-                <p className="mb-4 text-[11px] font-black uppercase tracking-widest text-[#ED1C24]">
-                  Asset Details
-                </p>
-                <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-                  <InfoRow label="Asset Code" value={asset.asset_code} />
-                  <InfoRow label="Asset Name" value={asset.asset_name} />
-                  <InfoRow label="Main Category" value={mainCategory} />
-                  {subCategory && <InfoRow label="Subcategory" value={subCategory} />}
-                  <InfoRow label="Location" value={asset.location} />
-                  {asset.brand && <InfoRow label="Brand / Manufacturer" value={asset.brand} />}
-                  {asset.model && <InfoRow label="Model" value={asset.model} />}
-                  {asset.serial_number && (
-                    <InfoRow label="Serial Number" value={asset.serial_number} />
-                  )}
-                  {asset.assigned_operator_driver && (
-                    <InfoRow label="Operator / Driver" value={asset.assigned_operator_driver} />
-                  )}
-                </dl>
-              </section>
+          <div className="grid gap-5 lg:grid-cols-2">
+            {/* Section 1 — Basic Details */}
+            <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
+              <p className="mb-4 text-[11px] font-black uppercase tracking-widest text-[#ED1C24]">
+                Basic Details
+              </p>
+              <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+                <InfoRow label="Asset Type" value={asset.category} />
+                <InfoRow label="Make / Asset Name" value={asset.asset_name} />
+                <InfoRow label="Model / Year" value={modelOrYear} />
+                <InfoRow label="File No." value={fileNumber || null} />
+                <InfoRow label="Colour" value={colour || null} />
+                <InfoRow label="Status" value={asset.status} />
+              </dl>
+            </section>
 
-              {/* Vehicle Information — Vehicle Asset View Unit 1 Task 6 */}
-              {isVehicle && (
-                <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-                  <p className="mb-4 text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
-                    Vehicle Information
-                  </p>
-                  <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-                    <InfoRow label="Plate Number" value={asset.plate_number} />
-                    <InfoRow label="Chassis Number" value={asset.chassis_number} />
-                    <InfoRow label="Engine Number" value={asset.engine_number} />
-                    <InfoRow label="Brand" value={asset.brand} />
-                    <InfoRow label="Model" value={asset.model} />
-                    <InfoRow label="Model Year" value={asset.model_year ? String(asset.model_year) : null} />
-                    <InfoRow
-                      label="Insurance Expiry Date"
-                      value={rawAsset.insurance_expiry_date ? shortDate(rawAsset.insurance_expiry_date) : null}
-                    />
-                    <InfoRow
-                      label="Registration Expiry Date"
-                      value={rawAsset.registration_expiry_date ? shortDate(rawAsset.registration_expiry_date) : null}
-                    />
-                    <InfoRow
-                      label="Current Kilometer Reading"
-                      value={asset.current_kilometer_reading ? `${asset.current_kilometer_reading} km` : null}
-                    />
-                    <InfoRow label="Assigned Operator / Driver" value={asset.assigned_operator_driver} />
-                  </dl>
-                  {asset.remarks && (
-                    <div className="mt-4 border-t border-[#E5E7EB] pt-4">
-                      <InfoRow label="Remarks" value={asset.remarks} />
-                    </div>
-                  )}
-
-                  {/* Renewal Status */}
-                  <div className="mt-5 border-t border-[#E5E7EB] pt-4">
-                    <p className="mb-3 text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
-                      Renewal Status
-                    </p>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-md border border-[#E5E7EB] bg-gray-50 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-xs font-semibold text-[#4B5563]">Insurance</p>
-                          <StatusBadge label={insuranceStatus.status} tone={insuranceStatus.tone} />
-                        </div>
-                        <p className="mt-1.5 text-sm font-semibold text-[#111827]">
-                          {insuranceStatus.daysRemaining === null
-                            ? "No expiry date on record"
-                            : insuranceStatus.daysRemaining < 0
-                              ? `${Math.abs(insuranceStatus.daysRemaining)} days overdue`
-                              : `${insuranceStatus.daysRemaining} days remaining`}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-[#E5E7EB] bg-gray-50 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-xs font-semibold text-[#4B5563]">Registration</p>
-                          <StatusBadge label={registrationStatus.status} tone={registrationStatus.tone} />
-                        </div>
-                        <p className="mt-1.5 text-sm font-semibold text-[#111827]">
-                          {registrationStatus.daysRemaining === null
-                            ? "No expiry date on record"
-                            : registrationStatus.daysRemaining < 0
-                              ? `${Math.abs(registrationStatus.daysRemaining)} days overdue`
-                              : `${registrationStatus.daysRemaining} days remaining`}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              )}
-
-              {/* Machine hours */}
-              {hasMachineHours && (
-                <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-                  <p className="mb-4 text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
-                    Running Hours
-                  </p>
-                  <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-                    {asset.current_running_hours && (
-                      <InfoRow
-                        label="Current Running Hours"
-                        value={`${asset.current_running_hours} hrs`}
-                      />
+            {/* Section 2 — Vehicle / Identification Details. Shown for every
+                asset type (Task 3) — a generator or compressor simply shows
+                "—" for plate/chassis, which is expected, not an error. */}
+            <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
+              <p className="mb-4 text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
+                Vehicle / Identification Details
+              </p>
+              <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+                <InfoRow label="Plate No." value={asset.plate_number} />
+                <InfoRow label="Chassis No." value={asset.chassis_number} />
+                <div>
+                  <dt className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">Expires On</dt>
+                  <dd className="mt-1 flex items-center gap-2 text-sm font-semibold text-[#111827]">
+                    {rawAsset.registration_expiry_date ? (
+                      <>
+                        {shortDate(rawAsset.registration_expiry_date)}
+                        <StatusBadge label={expiryStatus.status} tone={expiryStatus.tone} />
+                      </>
+                    ) : (
+                      <span className="font-normal text-[#9CA3AF]">—</span>
                     )}
-                    {asset.next_service_running_hours && (
-                      <InfoRow
-                        label="Next Service at Hours"
-                        value={`${asset.next_service_running_hours} hrs`}
-                      />
-                    )}
-                  </dl>
-                </section>
-              )}
+                  </dd>
+                </div>
+              </dl>
+            </section>
 
-            </div>
+            {/* Section 3 — Location & Responsibility */}
+            <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
+              <p className="mb-4 text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
+                Location &amp; Responsibility
+              </p>
+              <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+                <InfoRow label="Department / Location" value={asset.location} />
+                <InfoRow label="Responsible Person / Driver" value={asset.assigned_operator_driver} />
+              </dl>
+            </section>
 
-            {/* Right column */}
-            <div className="space-y-5">
-              {/* Next service */}
-              {hasPmSchedule ? (
-                <section
-                  className={`rounded-md border p-5 shadow-sm ${
-                    pmOverdue
-                      ? "border-amber-200 bg-amber-50"
-                      : "border-[#E5E7EB] bg-white"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <p
-                      className={`text-[11px] font-black uppercase tracking-widest ${
-                        pmOverdue ? "text-amber-700" : "text-[#4B5563]"
-                      }`}
-                    >
-                      Next Service
-                    </p>
-                    {pmOverdue && <StatusBadge label="Overdue" tone="amber" />}
-                  </div>
-                  <dl className="mt-4 space-y-3 text-sm">
-                    {asset.next_service_date && (
-                      <div className="flex justify-between gap-3">
-                        <dt className="text-[#6B7280]">Service Date</dt>
-                        <dd
-                          className={`font-semibold ${
-                            pmOverdue ? "text-amber-700" : "text-[#111827]"
-                          }`}
-                        >
-                          {shortDate(asset.next_service_date)}
-                        </dd>
-                      </div>
-                    )}
-                    {asset.next_service_kilometer && (
-                      <div className="flex justify-between gap-3">
-                        <dt className="text-[#6B7280]">At KM</dt>
-                        <dd className="font-semibold text-[#111827]">
-                          {asset.next_service_kilometer} km
-                        </dd>
-                      </div>
-                    )}
-                    {asset.next_service_running_hours && (
-                      <div className="flex justify-between gap-3">
-                        <dt className="text-[#6B7280]">At Running Hours</dt>
-                        <dd className="font-semibold text-[#111827]">
-                          {asset.next_service_running_hours} hrs
-                        </dd>
-                      </div>
-                    )}
-                  </dl>
-                </section>
-              ) : (
-                <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-                  <p className="mb-3 text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
-                    Next Service
-                  </p>
-                  <p className="text-sm text-[#9CA3AF]">No service schedule set.</p>
-                </section>
-              )}
-
-              {/* QR code */}
-              <QrLinkCard title="Asset QR Code" href={`/assets/${asset.id}`} />
-            </div>
+            {/* Section 4 — Remarks */}
+            <section className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
+              <p className="mb-4 text-[11px] font-black uppercase tracking-widest text-[#4B5563]">
+                Remarks
+              </p>
+              <p className="text-sm text-[#111827]">
+                {asset.remarks || <span className="text-[#9CA3AF]">No remarks added.</span>}
+              </p>
+            </section>
           </div>
         )}
 

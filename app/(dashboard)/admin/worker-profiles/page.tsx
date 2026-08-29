@@ -5,7 +5,7 @@ import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { WorkerProfilesView } from "@/components/admin/worker-profiles-view";
 import { requirePermission } from "@/lib/auth/context";
 import { canViewCosts as canViewCostsForContext, isManagerRole } from "@/lib/security/permissions";
-import { listWorkerProfiles } from "@/lib/backend/workers/service";
+import { listWorkerProfiles, stripSalaryForNonManager } from "@/lib/backend/workers/service";
 
 // Work Assignment and Worker Profiles Foundation Unit 7, Task 3. Reuses
 // work_orders.assign (see lib/backend/workers/service.ts for why) — no new
@@ -21,9 +21,12 @@ import { listWorkerProfiles } from "@/lib/backend/workers/service";
 // lib/backend/workers/service.ts's assertCanEditWorkerProfile, not here.
 export default async function WorkerProfilesPage() {
   const context = await requirePermission("work_orders.assign");
-  const workers = await listWorkerProfiles();
   const canViewCosts = canViewCostsForContext(context);
   const canManageWorkerProfiles = isManagerRole(context);
+  // Worker Salary Breakdown and Manager Labor Cost View Unit 10G.41B, Task
+  // 10: strip the salary breakdown out of the actual data sent to a Data
+  // Entry browser, not just out of what worker-profiles-view.tsx renders.
+  const workers = (await listWorkerProfiles()).map((w) => stripSalaryForNonManager(w, canManageWorkerProfiles));
 
   return (
     <>

@@ -63,14 +63,20 @@ function AlertRow({ row }: { row: VehicleExpiryAlertRow }) {
   );
 }
 
-// Footer buttons ("Open Vehicles Page" / "Close", Task 5) live inside the
-// modal body (LargeFormModal has no separate footer slot) — the same
-// pattern every other form wrapped in this shell already uses via
-// useLargeFormModal() for its own Cancel/Close action.
-function ModalFooter({ vehiclesPageHref }: { vehiclesPageHref: string }) {
+// Footer button ("Close") lives inside the modal body (LargeFormModal has
+// no separate footer slot) — the same pattern every other form wrapped in
+// this shell already uses via useLargeFormModal() for its own Cancel/Close
+// action.
+//
+// Remove Vehicles Page From Normal Asset Flow Unit 10G.36, Task 2: this
+// footer used to also offer "Open Vehicles Page" (a direct link to
+// /assets/vehicles). Removed — every row already has its own "View Vehicle"
+// link straight to that asset's own (simplified) detail page, so the extra
+// path into the old page added nothing but another way to reach it.
+function ModalFooter() {
   const modal = useLargeFormModal();
   return (
-    <div className="mt-4 flex flex-col-reverse gap-2 border-t border-[#EEF2F6] pt-4 sm:flex-row sm:justify-end">
+    <div className="mt-4 flex justify-end border-t border-[#EEF2F6] pt-4">
       <button
         type="button"
         onClick={() => modal?.requestClose()}
@@ -78,17 +84,9 @@ function ModalFooter({ vehiclesPageHref }: { vehiclesPageHref: string }) {
       >
         Close
       </button>
-      <Link
-        href={vehiclesPageHref}
-        className="inline-flex min-h-10 items-center justify-center rounded-md bg-[#ED1C24] px-4 text-sm font-bold text-white transition hover:bg-[#c8181e]"
-      >
-        Open Vehicles Page
-      </Link>
     </div>
   );
 }
-
-const VEHICLES_PAGE_HREF = "/assets/vehicles?insurance=expiring_15&registration=expiring_15";
 
 export function VehicleExpiryModal({ alerts, closeHref }: { alerts: VehicleExpiryAlertRow[]; closeHref: string }) {
   return (
@@ -110,7 +108,7 @@ export function VehicleExpiryModal({ alerts, closeHref }: { alerts: VehicleExpir
           ))}
         </div>
       )}
-      <ModalFooter vehiclesPageHref={VEHICLES_PAGE_HREF} />
+      <ModalFooter />
     </LargeFormModal>
   );
 }

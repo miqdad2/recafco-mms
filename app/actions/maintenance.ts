@@ -19,6 +19,7 @@ import { ACTIVE_JOB_CARD_STATUSES } from "@/lib/work-orders/simplified-status-di
 import { resolveMaterialMatchByKey } from "@/lib/store/offline-inventory-data";
 import { assignTechnicians } from "@/lib/backend/work-orders/service";
 import { assignInternalTeamRoster } from "@/lib/backend/work-orders/worker-roster";
+import { extractBrand, resolveModelAndYear, CODE_TOKEN, NEEDS_REVIEW_LEAF } from "@/lib/assets/asset-excel-mapping";
 
 const optionalString = z.preprocess((value) => {
   if (typeof value !== "string") return value;
@@ -56,20 +57,38 @@ const optionalYear = z.preprocess((value) => {
   return Number.isFinite(n) ? Math.trunc(n) : undefined;
 }, z.number().int().min(1970).max(new Date().getFullYear() + 1).optional());
 
+// Asset Register Import Mapping and New Asset Form Update Unit 10G.34, Task
+// 11/12: the simple asset form only submits Asset Type, Make / Asset Name,
+// a single combined Model / Year field, File No., Colour, Plate No.,
+// Expires On, Chassis No., Department / Location, Responsible Person /
+// Driver, Remarks, and Status. `asset_code` is optional here and
+// auto-generated server-side on create (never required from the user).
+// `model_input` (the raw "Model / Year" text) and `file_number`/`colour`
+// (composed into `notes`) are resolved in upsertAssetAction, not written
+// directly — see lib/assets/asset-excel-mapping.ts's resolveModelAndYear,
+// the same logic the Excel importer uses, so manual entry and bulk import
+// agree on what counts as a year vs. a spec string. Every field this form
+// no longer shows (brand, serial/engine number, purchase/warranty dates,
+// kilometer/running-hour readings, next-service fields, condition,
+// criticality) is preserved via hidden inputs on edit rather than being
+// silently nulled out — `clean()` below turns any *missing* key into null.
 const assetSchema = z.object({
   id: optionalUuid,
-  asset_code: z.string().trim().min(2).max(60),
+  asset_code: optionalString,
   asset_name: z.string().trim().min(2).max(160),
   category: z.string().trim().min(2),
   department_id: optionalUuid,
   location: optionalString,
   brand: optionalString,
   model: optionalString,
+  model_input: optionalString,
   model_year: optionalYear,
   serial_number: optionalString,
   plate_number: optionalString,
   chassis_number: optionalString,
   engine_number: optionalString,
+  file_number: optionalString,
+  colour: optionalString,
   purchase_date: optionalDate,
   warranty_expiry_date: optionalDate,
   registration_expiry_date: optionalDate,
@@ -77,14 +96,22 @@ const assetSchema = z.object({
   current_kilometer_reading: optionalNumber,
   current_running_hours: optionalNumber,
   assigned_operator_driver: optionalString,
-  status: z.string().trim().min(2),
+  status: z.string().trim().min(2).default("Active"),
   next_service_date: optionalDate,
   next_service_kilometer: optionalNumber,
   next_service_running_hours: optionalNumber,
   notes: optionalString,
   condition: optionalString,
   criticality: optionalString,
-  remarks: optionalString
+  remarks: optionalString,
+  // New Asset Popup and Add Asset Type Unit 10G.38, Task 1/3: set only when
+  // this form is rendered inside the Assets & Equipment page's New Asset
+  // popup (never on the standalone /assets/new or /assets/[id]/edit pages,
+  // which keep their existing "go to the asset's own detail page" redirect
+  // unchanged) — on a successful CREATE, redirects back to this page
+  // instead, with `?success=asset-added`, so the popup's parent page closes
+  // the modal, refreshes its own data, and shows the toast in one step.
+  redirect_to: optionalString
 });
 
 const partSchema = z.object({
@@ -347,12 +374,39 @@ export async function upsertAssetAction(formData: FormData) {
 
   if (!parsed.success) redirect("/assets?error=invalid-input");
 
-  const { id, ...values } = parsed.data;
+  const { id, model_input, file_number, colour, redirect_to, ...values } = parsed.data;
+
+  // Task 12 — brand is always derived from Make / Asset Name, never a
+  // separately-entered field; Model / Year is one combined input, split the
+  // same way the Excel importer splits it (a 4-digit year -> model_year,
+  // anything else -> model text).
+  const brand = extractBrand(values.asset_name) ?? null;
+  const { model, modelYear } = resolveModelAndYear(model_input ?? "");
+
+  // File No. / Colour have no dedicated columns (Task 6/11) — composed into
+  // `notes` fresh on every save, matching the Excel importer's own
+  // "File #: X | Colour: Y" convention (see asset-excel-mapping.ts). Any
+  // other structured notes an import may have written (Excel Sr#, month/
+  // days-expired snapshot) are intentionally not preserved once a human
+  // edits these two fields through this form — that snapshot data was
+  // always non-authoritative reference-only text.
+  const noteParts: string[] = [];
+  if (file_number) noteParts.push(`File #: ${file_number}`);
+  if (colour) noteParts.push(`Colour: ${colour}`);
+  const composedNotes = noteParts.length > 0 ? noteParts.join(" | ") : values.notes;
+
+  let assetCode = values.asset_code;
+  if (!id && !assetCode) {
+    const token = CODE_TOKEN[values.category] ?? CODE_TOKEN[NEEDS_REVIEW_LEAF];
+    const existingCount = await prisma.assets.count({ where: { asset_code: { startsWith: `AST-${token}-` } } });
+    assetCode = `AST-${token}-${String(existingCount + 1).padStart(4, "0")}`;
+  }
+
   let data: { id: string; asset_code: string } | undefined;
   try {
     data = id
-      ? await prisma.assets.update({ where: { id }, data: clean({ ...values, updated_by: context.userId }), select: { id: true, asset_code: true } })
-      : await prisma.assets.create({ data: clean({ ...values, updated_by: context.userId, created_by: context.userId }), select: { id: true, asset_code: true } });
+      ? await prisma.assets.update({ where: { id }, data: clean({ ...values, asset_code: assetCode, brand, model, model_year: modelYear, notes: composedNotes, updated_by: context.userId }), select: { id: true, asset_code: true } })
+      : await prisma.assets.create({ data: clean({ ...values, asset_code: assetCode, brand, model, model_year: modelYear, notes: composedNotes, updated_by: context.userId, created_by: context.userId }), select: { id: true, asset_code: true } });
   } catch (saveError) {
     const rawMessage = saveError instanceof Error ? saveError.message : "save failed";
     console.error("[maintenance.upsertAssetAction] Save failed:", {
@@ -406,7 +460,74 @@ export async function upsertAssetAction(formData: FormData) {
   revalidatePath("/assets");
   revalidatePath("/dashboard");
   revalidatePath("/maintenance/work-orders");
-  redirect(`/assets/${data.id}?success=asset-saved`);
+  // New Asset Popup and Add Asset Type Unit 10G.38, Task 3: when the New
+  // Asset popup on the Assets & Equipment page submits this form, it sets
+  // `redirect_to` (see assetSchema comment above) so the popup closes and
+  // the Assets page itself refreshes with the success toast, instead of
+  // navigating to the new asset's own detail page. Only applies to CREATE —
+  // editing an existing asset always keeps the normal detail-page redirect.
+  if (!id && redirect_to) redirect(`${redirect_to}?success=asset-added`);
+  // Task 12 — "Asset added successfully." on create; edit keeps the
+  // existing, more general "Asset saved" message.
+  redirect(`/assets/${data.id}?success=${id ? "asset-saved" : "asset-added"}`);
+}
+
+// Title-case a free-typed name so casing/spacing variants ("water pump",
+// "WATER PUMP", "  Water   Pump ") collapse to one canonical form ("Water
+// Pump") before it is ever compared or stored — matches the naming style
+// every existing asset type in this app already uses.
+function titleCase(raw: string): string {
+  return raw
+    .trim()
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .map((word) => (word ? word[0].toUpperCase() + word.slice(1).toLowerCase() : word))
+    .join(" ");
+}
+
+export type AddAssetTypeResult =
+  | { ok: true; name: string; alreadyExisted: boolean }
+  | { ok: false; error: string };
+
+// New Asset Popup and Add Asset Type Unit 10G.38, Task 4/5/6/8: called
+// directly from the New Asset popup's "+ Add new asset type" inline panel
+// (not via a <form action>, since it needs a JSON-ish result back to update
+// the dropdown in place rather than a page redirect). Reuses the existing
+// `asset_categories` table — the same one the Excel importer already
+// auto-creates unknown types into under "Other" — so there is exactly one
+// place asset types live, per Task 8's "do not create a confusing new
+// permission/data system".
+export async function addAssetTypeAction(rawName: string): Promise<AddAssetTypeResult> {
+  const context = await requirePermission("assets.manage");
+  const canManageTypes = context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
+  if (!canManageTypes) {
+    return { ok: false, error: "You do not have permission to add asset types." };
+  }
+
+  const normalized = titleCase(typeof rawName === "string" ? rawName : "");
+  if (normalized.length < 2) {
+    return { ok: false, error: "Please enter an asset type name." };
+  }
+
+  const existing = await prisma.asset_categories.findFirst({
+    where: { name: { equals: normalized, mode: "insensitive" } },
+    select: { name: true }
+  });
+  if (existing) {
+    return { ok: true, name: existing.name, alreadyExisted: true };
+  }
+
+  const otherParent = await prisma.asset_categories.findFirst({
+    where: { parent_id: null, name: { equals: "Other", mode: "insensitive" } },
+    select: { id: true }
+  });
+
+  await prisma.asset_categories.create({
+    data: { name: normalized, parent_id: otherParent?.id ?? null, is_active: true }
+  });
+
+  revalidatePath("/assets");
+  return { ok: true, name: normalized, alreadyExisted: false };
 }
 
 export async function upsertPartAction(formData: FormData) {

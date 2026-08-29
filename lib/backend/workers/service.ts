@@ -8,7 +8,42 @@ import { isManagerRole } from "@/lib/security/permissions";
 import { writeAuditLog } from "@/lib/audit/log";
 import { emitWorkerProfileRealtimeEvent } from "@/lib/realtime/events";
 import { normalizeMaterialKey } from "@/lib/materials/normalize-material";
+import { computeSalary, noSalary, isSalaryPending } from "@/lib/backend/workers/salary";
 import type { WorkerProfileInput } from "@/lib/backend/workers/validators";
+
+export { isSalaryPending };
+
+// Worker Salary Breakdown and Manager Labor Cost View Unit 10G.41B, Task
+// 10: `WorkerProfileRow[]` is handed wholesale (as server-rendered props)
+// to client components that then decide what to render per role — the
+// existing, already-accepted pattern this codebase uses for hourly_rate
+// (Unit 10F.4's own column-hiding, not payload-stripping). A full salary
+// breakdown is materially more sensitive than one rate number, so pages
+// that hand a worker list straight to a Data-Entry-reachable client
+// component (Worker Profiles, Worker Activity) call this first — it zeroes
+// every salary field out of the actual payload for non-Managers, rather
+// than only hiding them client-side. hourly_rate itself is left untouched,
+// matching the existing canViewCosts convention ("cost visibility still
+// respects canViewCosts where the app already uses it").
+//
+// Worker Profile Data Entry Contact Fields and Manager Salary Only Unit
+// 10G.41D, Task 1/3: reporting_manager/nationality are no longer stripped
+// here — the business rule changed from "Manager-only to see" to "normal,
+// non-sensitive HR/contact fields Data Entry can enter and later view on
+// their own created worker" (see createWorkerProfile below). Only actual
+// pay-related fields stay stripped.
+export function stripSalaryForNonManager(w: WorkerProfileRow, canManage: boolean): WorkerProfileRow {
+  if (canManage) return w;
+  return {
+    ...w,
+    basic_salary: 0,
+    transport_allowance: 0,
+    accommodation_allowance: 0,
+    food_allowance: 0,
+    total_salary: 0,
+    monthly_working_hours: 0,
+  };
+}
 
 // Work Assignment and Worker Profiles Foundation Unit 7, Task 2/6.
 //
@@ -37,6 +72,16 @@ function assertCanManageWorkers(context: CurrentUserContext) {
 // pattern (the action layer is thin; the service layer is the real gate —
 // same shape as editWorkSession/cancelWorkSession's assertIsManager in
 // lib/backend/work-orders/work-sessions.ts).
+//
+// Worker Profile Data Entry Contact Fields and Manager Salary Only Unit
+// 10G.41D, Task 4: kept exactly as-is — the design remains "Data Entry can
+// create, but never edit an existing profile," including its own newly
+// non-sensitive fields (Nationality, Reporting Manager) and Status/
+// activation. If a Data Entry user needs a correction after creation, a
+// Manager makes it (worker-profiles-view.tsx's Edit button, still gated by
+// isManagerRole below); Data Entry instead gets a read-only "View" action
+// on their own created worker (see the `readOnly` prop on
+// WorkerProfileFormModal) so they can still see what they entered.
 function assertCanEditWorkerProfile(context: CurrentUserContext) {
   assertActiveUser(context);
   if (!isManagerRole(context)) {
@@ -54,6 +99,24 @@ export type WorkerProfileRow = {
   skill_category: string | null;
   is_active: boolean;
   notes: string | null;
+  // Worker Salary Breakdown and Manager Labor Cost View Unit 10G.41B, Task
+  // 1/3: job_title/work_location are shown to every role that can see a
+  // worker profile at all; reporting_manager/nationality and every salary
+  // field below are Manager/Super-Admin-only display fields — callers
+  // (worker-profiles-view.tsx, worker-profile-form-modal.tsx) still receive
+  // them on every row (this is a trusted, server-only module), but must
+  // gate rendering behind isManagerRole/canManageWorkerProfiles themselves,
+  // the same way canViewCosts already gates hourly_rate today.
+  job_title: string | null;
+  work_location: string | null;
+  reporting_manager: string | null;
+  nationality: string | null;
+  basic_salary: number;
+  transport_allowance: number;
+  accommodation_allowance: number;
+  food_allowance: number;
+  total_salary: number;
+  monthly_working_hours: number;
   created_at: string;
   updated_at: string;
 };
@@ -68,6 +131,16 @@ function toRow(w: {
   skill_category: string | null;
   is_active: boolean;
   notes: string | null;
+  job_title: string | null;
+  work_location: string | null;
+  reporting_manager: string | null;
+  nationality: string | null;
+  basic_salary: unknown;
+  transport_allowance: unknown;
+  accommodation_allowance: unknown;
+  food_allowance: unknown;
+  total_salary: unknown;
+  monthly_working_hours: unknown;
   created_at: Date;
   updated_at: Date;
 }): WorkerProfileRow {
@@ -81,6 +154,16 @@ function toRow(w: {
     skill_category: w.skill_category,
     is_active: w.is_active,
     notes: w.notes,
+    job_title: w.job_title,
+    work_location: w.work_location,
+    reporting_manager: w.reporting_manager,
+    nationality: w.nationality,
+    basic_salary: Number(w.basic_salary),
+    transport_allowance: Number(w.transport_allowance),
+    accommodation_allowance: Number(w.accommodation_allowance),
+    food_allowance: Number(w.food_allowance),
+    total_salary: Number(w.total_salary),
+    monthly_working_hours: Number(w.monthly_working_hours),
     created_at: w.created_at.toISOString(),
     updated_at: w.updated_at.toISOString(),
   };
@@ -183,15 +266,49 @@ export async function createWorkerProfile(context: CurrentUserContext, input: Wo
     );
   }
 
+  // Worker Salary Breakdown and Manager Labor Cost View Unit 10G.41B, Task
+  // 2/3/10 (business rule updated by Unit 10G.41D, Task 1/10): Data Entry
+  // can still create a worker profile (assertCanManageWorkers above,
+  // unchanged), and — as of 10G.41D — can enter every normal HR/contact
+  // field, including Nationality and Reporting Manager (no longer
+  // Manager-only; they're not pay-related). Only the actual salary fields
+  // remain Manager/Super-Admin-only to SET, checked here server-side so a
+  // hand-built form submission from a Data Entry session can never sneak a
+  // non-zero salary/hourly rate in, even though create itself stays open to
+  // them.
+  const canSetSalary = isManagerRole(context);
+  const salary = canSetSalary
+    ? computeSalary({
+        basicSalary: input.basicSalary,
+        transportAllowance: input.transportAllowance,
+        accommodationAllowance: input.accommodationAllowance,
+        foodAllowance: input.foodAllowance,
+        monthlyWorkingHours: input.monthlyWorkingHours,
+        hourlyRate: input.hourlyRate,
+      })
+    : noSalary();
+
   const created = await prisma.workerProfile.create({
     data: {
       employee_id: input.employeeId || null,
       name: input.name,
       worker_type: input.workerType,
-      hourly_rate: input.hourlyRate,
+      hourly_rate: salary.hourlyRate,
       phone: input.phone || null,
       skill_category: input.skillCategory || null,
       notes: input.notes || null,
+      job_title: input.jobTitle || null,
+      work_location: input.workLocation || null,
+      // Task 1/10 — normal, non-sensitive HR/contact fields; accepted from
+      // whoever is allowed to create at all (Data Entry included).
+      reporting_manager: input.reportingManager || null,
+      nationality: input.nationality || null,
+      basic_salary: salary.basicSalary,
+      transport_allowance: salary.transportAllowance,
+      accommodation_allowance: salary.accommodationAllowance,
+      food_allowance: salary.foodAllowance,
+      total_salary: salary.totalSalary,
+      monthly_working_hours: salary.monthlyWorkingHours,
       created_by: context.userId,
       updated_by: context.userId,
     },
@@ -204,7 +321,7 @@ export async function createWorkerProfile(context: CurrentUserContext, input: Wo
       entityType: "worker_profile",
       entityId: created.id,
       summary: `Created worker profile "${created.name}" (${created.worker_type})`,
-      metadata: { worker_type: created.worker_type, hourly_rate: input.hourlyRate },
+      metadata: { worker_type: created.worker_type, hourly_rate: salary.hourlyRate, salary_set: canSetSalary },
     }),
     emitWorkerProfileRealtimeEvent(created.id, context.userId),
   ]);
@@ -233,16 +350,39 @@ export async function updateWorkerProfile(context: CurrentUserContext, id: strin
     );
   }
 
+  // updateWorkerProfile is already Manager/Super-Admin-only end to end
+  // (assertCanEditWorkerProfile above throws otherwise), so salary/
+  // reporting_manager/nationality are always trusted here — unlike create,
+  // there is no Data-Entry-reachable path into this function at all.
+  const salary = computeSalary({
+    basicSalary: input.basicSalary,
+    transportAllowance: input.transportAllowance,
+    accommodationAllowance: input.accommodationAllowance,
+    foodAllowance: input.foodAllowance,
+    monthlyWorkingHours: input.monthlyWorkingHours,
+    hourlyRate: input.hourlyRate,
+  });
+
   const updated = await prisma.workerProfile.update({
     where: { id },
     data: {
       employee_id: input.employeeId || null,
       name: input.name,
       worker_type: input.workerType,
-      hourly_rate: input.hourlyRate,
+      hourly_rate: salary.hourlyRate,
       phone: input.phone || null,
       skill_category: input.skillCategory || null,
       notes: input.notes || null,
+      job_title: input.jobTitle || null,
+      work_location: input.workLocation || null,
+      reporting_manager: input.reportingManager || null,
+      nationality: input.nationality || null,
+      basic_salary: salary.basicSalary,
+      transport_allowance: salary.transportAllowance,
+      accommodation_allowance: salary.accommodationAllowance,
+      food_allowance: salary.foodAllowance,
+      total_salary: salary.totalSalary,
+      monthly_working_hours: salary.monthlyWorkingHours,
       updated_by: context.userId,
     },
   });
@@ -257,7 +397,7 @@ export async function updateWorkerProfile(context: CurrentUserContext, id: strin
       metadata: {
         worker_type: updated.worker_type,
         hourly_rate_before: Number(existing.hourly_rate),
-        hourly_rate_after: input.hourlyRate,
+        hourly_rate_after: salary.hourlyRate,
       },
     }),
     emitWorkerProfileRealtimeEvent(updated.id, context.userId),

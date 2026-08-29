@@ -1,92 +1,147 @@
 "use client";
-import { Fragment, useState, useRef } from "react";
+import { useState, useRef } from "react";
 import Link from "next/link";
-import { Upload, FileSpreadsheet, CheckCircle2, XCircle, AlertTriangle, History } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { parseAssetExcelAction, importAssetsAction } from "@/app/actions/asset-import";
-import type { ImportPreviewRow, ImportResult } from "@/app/actions/asset-import";
+import { useLargeFormModal } from "@/components/ui/large-form-modal";
+import {
+  parseAssetExcelForImportAction,
+  addAssetsFromExcelAction,
+  replaceAssetRegisterAction,
+} from "@/app/actions/asset-import";
+import type { AssetImportPreview, AssetImportPreviewRow, AssetImportResult } from "@/app/actions/asset-import";
+
+// Asset Register Import Mapping and New Asset Form Update Unit 10G.34, Task
+// 2/3/14. Two very different actions live behind this one screen:
+//   - "Add these assets" (addAssetsFromExcelAction) — never deletes
+//     anything, skips rows that already exist. This is what a plain upload
+//     click runs.
+//   - "Replace Asset Register" (replaceAssetRegisterAction) — removes the
+//     current asset list first. Only reachable by explicitly turning on the
+//     Replace toggle, reading the warning, and typing the confirmation
+//     phrase (Task 3 — "do not accidentally delete assets on normal upload
+//     click").
+// Every message on this screen is written for a normal maintenance user —
+// no column names, no "mapping", no "category" jargon.
+//
+// Import Excel Popup Flow Unit 10G.40: `modalMode` is set only when this
+// form renders inside the Assets & Equipment page's Import Excel popup
+// (LargeFormModal, via app/(dashboard)/assets/page.tsx) — the standalone
+// /assets/import page keeps rendering this exact same form with
+// modalMode left false, completely unchanged (Task 2/11). None of the
+// parse/add/replace server actions below were touched — only what this
+// component shows and where a successful import sends the user.
 
 type Step = "upload" | "preview" | "done";
 
-// ─── Error classification helpers ────────────────────────────────────────────
+const REPLACE_CONFIRM_PHRASE = "REPLACE";
 
-function isDupFile(row: ImportPreviewRow) {
-  return row.errors.some((e) => e.includes("Duplicate code in this file"));
-}
-function isDupDb(row: ImportPreviewRow) {
-  return !isDupFile(row) && row.errors.some((e) => e.includes("already exists in database"));
-}
-function rowTone(row: ImportPreviewRow): "valid" | "dup" | "invalid" {
-  if (row.valid) return "valid";
-  if (isDupFile(row) || isDupDb(row)) return "dup";
-  return "invalid";
-}
-function rowLabel(row: ImportPreviewRow): string {
-  if (row.valid) return "Ready";
-  if (isDupFile(row)) return "Dup (file)";
-  if (isDupDb(row)) return "Dup (DB)";
-  return row.errors[0] ?? "Invalid";
+// Import Assets Page UI Simplification Unit 10G.39, Task 5: the exact
+// simple field list shown to a normal maintenance user — matches the same
+// field names used on the New Asset / Edit Asset form (Unit 10G.34/10G.38),
+// not the underlying Excel header text or database column names.
+const EXCEL_COLUMNS = [
+  "Asset Type",
+  "Make / Asset Name",
+  "Model / Year",
+  "Plate No.",
+  "Chassis No.",
+  "Colour",
+  "File No.",
+  "Department / Location",
+  "Responsible Person / Driver",
+  "Expires On",
+  "Remarks",
+];
+
+// Unit 10G.40, Task 4: a compact, always-3-item step indicator shown only
+// inside the popup (the standalone page already has its own bigger step
+// cards from Unit 10G.39, so it isn't repeated there).
+const IMPORT_STEP_LABELS = ["Upload Excel", "Check Preview", "Add or Replace Assets"];
+
+function ImportStepper({ current }: { current: 1 | 2 | 3 }) {
+  return (
+    <div className="grid grid-cols-3 gap-2 rounded-md border border-[#E5E7EB] bg-gray-50 p-2.5">
+      {IMPORT_STEP_LABELS.map((label, i) => {
+        const n = i + 1;
+        const active = n === current;
+        const complete = n < current;
+        return (
+          <div key={label} className="flex min-w-0 items-center gap-1.5">
+            <span
+              className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-black ${
+                active ? "bg-[#ED1C24] text-white" : complete ? "bg-[#111827] text-white" : "border border-[#E5E7EB] bg-white text-[#9CA3AF]"
+              }`}
+            >
+              {n}
+            </span>
+            <span className={`truncate text-[11px] font-bold leading-tight ${active ? "text-[#111827]" : "text-[#9CA3AF]"}`}>
+              {label}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
-// Compact vehicle-field summary — only rendered when at least one of these
-// is present, so plain equipment rows never grow an extra line.
-function vehicleFieldParts(row: ImportPreviewRow): string[] {
-  const parts: string[] = [];
-  if (row.plate_number) parts.push(`Plate: ${row.plate_number}`);
-  if (row.chassisNumber) parts.push(`Chassis: ${row.chassisNumber}`);
-  if (row.engineNumber) parts.push(`Engine: ${row.engineNumber}`);
-  if (row.modelYear) parts.push(`Year: ${row.modelYear}`);
-  if (row.registrationExpiryDate) parts.push(`Reg. Expiry: ${row.registrationExpiryDate}`);
-  if (row.insuranceExpiryDate) parts.push(`Insurance Expiry: ${row.insuranceExpiryDate}`);
-  if (row.currentKilometerReading) parts.push(`KM: ${row.currentKilometerReading}`);
-  if (row.assignedOperatorDriver) parts.push(`Driver: ${row.assignedOperatorDriver}`);
-  return parts;
+function displayValue(v: string | number | null | undefined): string {
+  if (v === null || v === undefined || v === "") return "—";
+  return String(v);
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
-
-export function AssetImportForm() {
+export function AssetImportForm({ modalMode = false, canReplace = false }: { modalMode?: boolean; canReplace?: boolean } = {}) {
+  const router = useRouter();
+  const modal = useLargeFormModal();
   const [step, setStep] = useState<Step>("upload");
-  const [rows, setRows] = useState<ImportPreviewRow[]>([]);
-  const [result, setResult] = useState<ImportResult | null>(null);
+  const [preview, setPreview] = useState<AssetImportPreview | null>(null);
+  const [result, setResult] = useState<AssetImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [confirmed, setConfirmed] = useState(false);
+  const [replaceMode, setReplaceMode] = useState(false);
+  const [replaceTyped, setReplaceTyped] = useState("");
+  const [fileName, setFileName] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const validRows      = rows.filter((r) => r.valid);
-  const invalidRows    = rows.filter((r) => !r.valid);
-  const dupFileRows    = rows.filter(isDupFile);
-  const dupDbRows      = rows.filter(isDupDb);
-  const valErrorRows   = invalidRows.filter((r) => !isDupFile(r) && !isDupDb(r));
-  const newCategoryRows = validRows.filter((r) => r.category_status === "new");
-  const uniqueNewCategories = new Set(newCategoryRows.map((r) => r.category.toLowerCase())).size;
+  const rows: AssetImportPreviewRow[] = preview?.rows ?? [];
+  const readyRows = rows.filter((r) => !r.isDuplicatePlate && !r.isDuplicateChassis);
+  const canConfirmReplace = replaceTyped.trim().toUpperCase() === REPLACE_CONFIRM_PHRASE;
 
-  async function handleParse(e: React.FormEvent<HTMLFormElement>) {
+  async function handleUploadSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     setLoading(true);
     setError(null);
-    setConfirmed(false);
     try {
-      const res = await parseAssetExcelAction(formData);
+      const res = await parseAssetExcelForImportAction(formData);
       if (res.error) { setError(res.error); return; }
-      if (res.rows.length === 0) { setError("No data rows found in the file."); return; }
-      setRows(res.rows);
+      setPreview(res);
       setStep("preview");
     } catch {
-      setError("An unexpected error occurred. Please try again.");
+      setError("Something went wrong reading this file. Please try again.");
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleImport() {
-    if (validRows.length === 0 || !confirmed) return;
+  async function handleAdd() {
+    if (!preview || readyRows.length === 0) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await importAssetsAction(validRows);
+      const res = await addAssetsFromExcelAction(rows);
+      // Task 8 — in the popup, a successful import closes the popup,
+      // refreshes the Assets page's own data, and shows the success toast
+      // all in one step: navigating to a fresh /assets URL drops
+      // ?import_assets=1 (closing the modal), re-runs the Assets page's
+      // server-side data fetch (Total Assets / Asset Types / Asset
+      // Register all update), and the existing ?success= toast convention
+      // (lib/action-messages.ts) shows "Import completed successfully."
+      if (modalMode) {
+        router.push("/assets?success=import-completed");
+        return;
+      }
       setResult(res);
       setStep("done");
     } catch {
@@ -96,82 +151,76 @@ export function AssetImportForm() {
     }
   }
 
+  async function handleReplace() {
+    if (!preview || !canConfirmReplace) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await replaceAssetRegisterAction(rows);
+      if (modalMode) {
+        router.push("/assets?success=import-completed");
+        return;
+      }
+      setResult(res);
+      setStep("done");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Replace failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function reset() {
     setStep("upload");
-    setRows([]);
+    setPreview(null);
     setResult(null);
     setError(null);
-    setConfirmed(false);
+    setReplaceMode(false);
+    setReplaceTyped("");
+    setFileName(null);
     if (fileRef.current) fileRef.current.value = "";
   }
 
-  // ── Done step ──────────────────────────────────────────────────────────────
+  // ── Done step — unreachable in modalMode (handleAdd/handleReplace return
+  //     early via router.push above), still used as-is by the standalone
+  //     /assets/import page (Task 2/11). ─────────────────────────────────
   if (step === "done" && result) {
-    const dupFailures = result.failures.filter((f) =>
-      f.reason.includes("already exists") || f.reason.includes("Duplicate")
-    );
-    const otherFailures = result.failures.filter(
-      (f) => !f.reason.includes("already exists") && !f.reason.includes("Duplicate")
-    );
-
     return (
       <div className="space-y-4">
-        {/* Result header */}
-        <div className={`rounded-md border p-5 ${result.imported > 0 ? "border-green-200 bg-green-50" : "border-amber-200 bg-amber-50"}`}>
+        <div className="rounded-md border border-green-200 bg-green-50 p-5">
           <div className="flex items-center gap-3">
-            <CheckCircle2 className={`h-5 w-5 shrink-0 ${result.imported > 0 ? "text-green-600" : "text-amber-600"}`} aria-hidden="true" />
-            <p className="font-bold text-[#111827]">
-              {result.imported > 0 ? "Import complete" : "Import finished with no new assets"}
-            </p>
+            <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600" aria-hidden="true" />
+            <p className="font-bold text-[#111827]">Import completed successfully.</p>
           </div>
-          {/* Stats strip */}
-          <div className="mt-4 grid grid-cols-3 gap-3">
+          <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {result.replaced && (
+              <div className="rounded-md border border-[#E5E7EB] bg-white p-3 text-center">
+                <dt className="text-xs font-semibold text-[#4B5563]">Old assets removed</dt>
+                <dd className="text-2xl font-black text-[#111827]">{result.oldAssetsRemoved}</dd>
+              </div>
+            )}
+            <div className="rounded-md border border-[#E5E7EB] bg-white p-3 text-center">
+              <dt className="text-xs font-semibold text-[#4B5563]">Total rows found</dt>
+              <dd className="text-2xl font-black text-[#111827]">{result.totalRowsFound}</dd>
+            </div>
             <div className="rounded-md border border-green-200 bg-white p-3 text-center">
-              <p className="text-2xl font-black text-[#16A34A]">{result.imported}</p>
-              <p className="mt-0.5 text-xs font-semibold text-[#4B5563]">Imported</p>
+              <dt className="text-xs font-semibold text-[#4B5563]">Assets imported</dt>
+              <dd className="text-2xl font-black text-[#16A34A]">{result.imported}</dd>
             </div>
-            <div className="rounded-md border border-amber-200 bg-white p-3 text-center">
-              <p className="text-2xl font-black text-amber-700">{dupFailures.length}</p>
-              <p className="mt-0.5 text-xs font-semibold text-[#4B5563]">Skipped (duplicate)</p>
+            <div className="rounded-md border border-[#E5E7EB] bg-white p-3 text-center">
+              <dt className="text-xs font-semibold text-[#4B5563]">Skipped rows</dt>
+              <dd className="text-2xl font-black text-[#111827]">{result.skipped}</dd>
             </div>
-            <div className={`rounded-md border p-3 text-center ${otherFailures.length > 0 ? "border-red-200 bg-white" : "border-[#E5E7EB] bg-white"}`}>
-              <p className={`text-2xl font-black ${otherFailures.length > 0 ? "text-[#ED1C24]" : "text-[#111827]"}`}>{otherFailures.length}</p>
-              <p className="mt-0.5 text-xs font-semibold text-[#4B5563]">Failed (error)</p>
+            <div className={`rounded-md border p-3 text-center ${result.needsReview > 0 ? "border-amber-200 bg-white" : "border-[#E5E7EB] bg-white"}`}>
+              <dt className="text-xs font-semibold text-[#4B5563]">Needs Review</dt>
+              <dd className={`text-2xl font-black ${result.needsReview > 0 ? "text-amber-700" : "text-[#111827]"}`}>{result.needsReview}</dd>
             </div>
-          </div>
+            <div className={`rounded-md border p-3 text-center ${result.duplicateWarnings > 0 ? "border-amber-200 bg-white" : "border-[#E5E7EB] bg-white"}`}>
+              <dt className="text-xs font-semibold text-[#4B5563]">Duplicate warnings</dt>
+              <dd className={`text-2xl font-black ${result.duplicateWarnings > 0 ? "text-amber-700" : "text-[#111827]"}`}>{result.duplicateWarnings}</dd>
+            </div>
+          </dl>
         </div>
-
-        {/* Failures table */}
-        {result.failures.length > 0 && (
-          <div className="rounded-md border border-[#E5E7EB] bg-white shadow-sm">
-            <div className="border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
-              <p className="text-xs font-black uppercase text-[#4B5563]">Rows not imported ({result.failures.length})</p>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[520px] text-left text-sm">
-                <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
-                  <tr>
-                    <th className="px-3 py-2">Row</th>
-                    <th className="px-3 py-2">Asset Code</th>
-                    <th className="px-3 py-2">Reason</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E5E7EB]">
-                  {result.failures.map((f) => {
-                    const isDup = f.reason.includes("already exists") || f.reason.includes("Duplicate");
-                    return (
-                      <tr key={`${f.rowNumber}-${f.asset_code}`} className={isDup ? "bg-amber-50" : "bg-red-50"}>
-                        <td className="px-3 py-2 text-[#9CA3AF]">{f.rowNumber || "—"}</td>
-                        <td className="px-3 py-2 font-mono font-bold text-[#111827]">{f.asset_code || "—"}</td>
-                        <td className={`px-3 py-2 font-semibold ${isDup ? "text-amber-800" : "text-[#ED1C24]"}`}>{f.reason}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
 
         <div className="flex flex-wrap gap-3">
           <Link href="/assets" className="inline-flex items-center justify-center rounded-md border border-[#ED1C24] bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white hover:opacity-90">
@@ -188,116 +237,90 @@ export function AssetImportForm() {
   }
 
   // ── Preview step ───────────────────────────────────────────────────────────
-  if (step === "preview") {
-    const skippedTotal = invalidRows.length;
-
+  if (step === "preview" && preview) {
     return (
       <div className="space-y-4">
-        <p className="text-sm text-[#374151]">
-          Review the preview carefully. Rows with errors will not be imported until fixed.
-        </p>
+        {modalMode && <ImportStepper current={2} />}
 
-        {/* 5-stat summary strip */}
-        <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        {/* Task 6 — simple summary: total rows, ready, needs review,
+            duplicates. */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="rounded-md border border-[#E5E7EB] bg-white p-4 text-center shadow-sm">
-            <p className="text-2xl font-black text-[#111827]">{rows.length}</p>
-            <p className="mt-1 text-xs font-semibold text-[#4B5563]">Total rows</p>
+            <p className="text-2xl font-black text-[#111827]">{preview.totalRowsFound}</p>
+            <p className="mt-1 text-xs font-semibold text-[#4B5563]">Total rows found</p>
           </div>
-          <div className={`rounded-md border p-4 text-center shadow-sm ${validRows.length > 0 ? "border-green-200 bg-green-50" : "border-[#E5E7EB] bg-white"}`}>
-            <p className={`text-2xl font-black ${validRows.length > 0 ? "text-[#16A34A]" : "text-[#111827]"}`}>{validRows.length}</p>
-            <p className="mt-1 text-xs font-semibold text-[#4B5563]">Ready to import</p>
+          <div className="rounded-md border border-green-200 bg-white p-4 text-center shadow-sm">
+            <p className="text-2xl font-black text-[#16A34A]">{readyRows.length}</p>
+            <p className="mt-1 text-xs font-semibold text-[#4B5563]">Assets ready</p>
           </div>
-          <div className={`rounded-md border p-4 text-center shadow-sm ${dupFileRows.length > 0 ? "border-amber-200 bg-amber-50" : "border-[#E5E7EB] bg-white"}`}>
-            <p className={`text-2xl font-black ${dupFileRows.length > 0 ? "text-amber-700" : "text-[#111827]"}`}>{dupFileRows.length}</p>
-            <p className="mt-1 text-xs font-semibold text-[#4B5563]">Duplicate in file</p>
+          <div className={`rounded-md border p-4 text-center shadow-sm ${preview.needsReviewCount > 0 ? "border-amber-200 bg-amber-50" : "border-[#E5E7EB] bg-white"}`}>
+            <p className={`text-2xl font-black ${preview.needsReviewCount > 0 ? "text-amber-700" : "text-[#111827]"}`}>{preview.needsReviewCount}</p>
+            <p className="mt-1 text-xs font-semibold text-[#4B5563]">Needs Review</p>
           </div>
-          <div className={`rounded-md border p-4 text-center shadow-sm ${dupDbRows.length > 0 ? "border-amber-200 bg-amber-50" : "border-[#E5E7EB] bg-white"}`}>
-            <p className={`text-2xl font-black ${dupDbRows.length > 0 ? "text-amber-700" : "text-[#111827]"}`}>{dupDbRows.length}</p>
-            <p className="mt-1 text-xs font-semibold text-[#4B5563]">Duplicate in DB</p>
-          </div>
-          <div className={`rounded-md border p-4 text-center shadow-sm ${valErrorRows.length > 0 ? "border-red-200 bg-red-50" : "border-[#E5E7EB] bg-white"}`}>
-            <p className={`text-2xl font-black ${valErrorRows.length > 0 ? "text-[#ED1C24]" : "text-[#111827]"}`}>{valErrorRows.length}</p>
-            <p className="mt-1 text-xs font-semibold text-[#4B5563]">Validation errors</p>
+          <div className={`rounded-md border p-4 text-center shadow-sm ${preview.duplicateMessages.length > 0 ? "border-amber-200 bg-amber-50" : "border-[#E5E7EB] bg-white"}`}>
+            <p className={`text-2xl font-black ${preview.duplicateMessages.length > 0 ? "text-amber-700" : "text-[#111827]"}`}>{preview.duplicateMessages.length}</p>
+            <p className="mt-1 text-xs font-semibold text-[#4B5563]">Duplicate warnings</p>
           </div>
         </div>
 
-        {/* Preview table */}
+        {preview.duplicateMessages.length > 0 && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3">
+            <ul className="space-y-1 text-sm text-amber-900">
+              {preview.duplicateMessages.map((m) => <li key={m}>{m}</li>)}
+            </ul>
+          </div>
+        )}
+
+        {/* Preview table — Task 6's required columns plus Row/Status, kept
+            scrollable inside its own container so it never grows the
+            popup's own height. */}
         <div className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
           <div className="border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
-            <p className="text-xs font-black uppercase text-[#4B5563]">Row preview — up to 500 rows</p>
-            <p className="mt-0.5 text-xs text-[#9CA3AF]">
-              Rows highlighted in amber are duplicates (will be skipped). Rows in red have validation errors (will be skipped). White rows are ready.
-            </p>
+            <p className="text-xs font-black uppercase text-[#4B5563]">Preview</p>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] text-left text-sm">
-              <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
+          <div className="max-h-[420px] overflow-auto">
+            <table className="w-full min-w-[940px] text-left text-sm">
+              <thead className="sticky top-0 bg-gray-50 text-xs uppercase text-[#4B5563]">
                 <tr>
                   <th className="px-3 py-2">Row</th>
-                  <th className="px-3 py-2">Asset Code</th>
-                  <th className="px-3 py-2">Asset Name</th>
-                  <th className="px-3 py-2">Category</th>
-                  <th className="px-3 py-2">Department</th>
+                  <th className="px-3 py-2">Asset Type</th>
+                  <th className="px-3 py-2">Make / Asset Name</th>
+                  <th className="px-3 py-2">Plate No.</th>
+                  <th className="px-3 py-2">Chassis No.</th>
+                  <th className="px-3 py-2">Location</th>
+                  <th className="px-3 py-2">Responsible Person / Driver</th>
                   <th className="px-3 py-2">Status</th>
-                  <th className="px-3 py-2">Condition</th>
-                  <th className="px-3 py-2">Criticality</th>
-                  <th className="px-3 py-2">Result</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#E5E7EB]">
                 {rows.map((r) => {
-                  const tone = rowTone(r);
-                  const rowClass = tone === "valid" ? "hover:bg-gray-50" : tone === "dup" ? "bg-amber-50" : "bg-red-50";
-                  const vehicleParts = vehicleFieldParts(r);
+                  const isDup = r.isDuplicatePlate || r.isDuplicateChassis;
+                  const needsReview = r.categorySource === "needs_review";
                   return (
-                    <Fragment key={r.rowNumber}>
-                      <tr className={rowClass}>
-                        <td className="px-3 py-2 text-[#9CA3AF]">{r.rowNumber}</td>
-                        <td className="px-3 py-2 font-mono font-bold text-[#111827]">{r.asset_code || <span className="text-[#ED1C24]">—</span>}</td>
-                        <td className="px-3 py-2 max-w-[12rem] truncate">{r.asset_name || <span className="text-[#ED1C24]">—</span>}</td>
-                        <td className="px-3 py-2">
-                          <span>{r.category || <span className="text-[#ED1C24]">—</span>}</span>
-                          {r.category && r.category_status === "new" && (
-                            <span className="ml-1.5 inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">New</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-[#4B5563]">{r.department_name || <span className="text-[#9CA3AF]">—</span>}</td>
-                        <td className="px-3 py-2">{r.status || "Active"}</td>
-                        <td className="px-3 py-2 text-[#4B5563]">{r.condition || <span className="text-[#9CA3AF]">—</span>}</td>
-                        <td className="px-3 py-2 text-[#4B5563]">{r.criticality || <span className="text-[#9CA3AF]">—</span>}</td>
-                        <td className="px-3 py-2">
-                          {tone === "valid" && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-bold text-green-700">
-                              <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> Ready
-                            </span>
-                          )}
-                          {tone === "dup" && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800" title={r.errors.join("; ")}>
-                              <AlertTriangle className="h-3 w-3" aria-hidden="true" /> {rowLabel(r)}
-                            </span>
-                          )}
-                          {tone === "invalid" && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-bold text-[#ED1C24]" title={r.errors.join("; ")}>
-                              <XCircle className="h-3 w-3" aria-hidden="true" /> {r.errors[0]}
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                      {/* Compact vehicle-field secondary row — only rendered for rows
-                          that actually carry vehicle data, so equipment rows are unaffected. */}
-                      {vehicleParts.length > 0 && (
-                        <tr className={rowClass}>
-                          <td />
-                          <td colSpan={8} className="px-3 pb-2 pt-0">
-                            <p className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-[#6B7280]">
-                              {vehicleParts.map((part) => (
-                                <span key={part}>{part}</span>
-                              ))}
-                            </p>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
+                    <tr key={r.rowNum} className={isDup ? "bg-amber-50" : needsReview ? "bg-blue-50" : "hover:bg-gray-50"}>
+                      <td className="px-3 py-2 text-[#9CA3AF]">{r.rowNum}</td>
+                      <td className="px-3 py-2 font-semibold">{r.leaf}</td>
+                      <td className="px-3 py-2 max-w-[14rem] truncate">{displayValue(r.make)}</td>
+                      <td className="px-3 py-2">{displayValue(r.plateNumber)}</td>
+                      <td className="px-3 py-2">{displayValue(r.chassisNumber)}</td>
+                      <td className="px-3 py-2 text-[#4B5563]">{displayValue(r.location)}</td>
+                      <td className="px-3 py-2 text-[#4B5563]">{displayValue(r.driver)}</td>
+                      <td className="px-3 py-2">
+                        {isDup ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">
+                            <AlertTriangle className="h-3 w-3" aria-hidden="true" /> Duplicate
+                          </span>
+                        ) : needsReview ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-bold text-blue-700">
+                            Needs Review
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-bold text-green-700">
+                            <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> Ready
+                          </span>
+                        )}
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>
@@ -305,33 +328,83 @@ export function AssetImportForm() {
           </div>
         </div>
 
-        {/* Confirmation warning + checkbox */}
-        {validRows.length > 0 && (
-          <div className="rounded-md border border-amber-300 bg-amber-50 p-4">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
-              <div className="flex-1">
-                <p className="font-bold text-amber-900">Review before importing</p>
-                <ul className="mt-2 space-y-1 text-sm text-amber-800">
-                  <li>Only the <strong>{validRows.length} valid</strong> row{validRows.length !== 1 ? "s" : ""} will be imported.</li>
-                  {skippedTotal > 0 && <li>The <strong>{skippedTotal} row{skippedTotal !== 1 ? "s" : ""}</strong> marked as duplicate or invalid will be skipped.</li>}
-                  <li>Existing assets will <strong>not</strong> be overwritten. Duplicate asset codes are always skipped.</li>
-                  {uniqueNewCategories > 0 && (
-                    <li><strong>{uniqueNewCategories} new categor{uniqueNewCategories === 1 ? "y" : "ies"}</strong> will be auto-created under <em>Other</em> during import (shown with <span className="inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-700">New</span> badge in the table above).</li>
-                  )}
-                  <li>This action cannot be undone automatically. Review the list above before confirming.</li>
-                </ul>
-                <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm font-bold text-amber-900 select-none">
+        {/* Task 7 — Add/Replace explanation. The standalone page already
+            explains this on its own upload step (Unit 10G.39's "What
+            happens after preview?" card), so it's shown here only inside
+            the popup, right where the actual choice is made. */}
+        {modalMode && (
+          <div className="space-y-2">
+            <p className="text-[11px] font-black uppercase tracking-wide text-[#9CA3AF]">
+              Step 3 · Add or Replace Assets
+            </p>
+            <div className={`grid gap-2 ${canReplace ? "sm:grid-cols-2" : ""}`}>
+              <div className="rounded-md border border-[#E5E7EB] bg-white p-3">
+                <p className="text-xs font-bold text-[#111827]">Add to current list</p>
+                <p className="mt-1 text-xs leading-5 text-[#4B5563]">
+                  Adds assets from Excel without deleting the current list.
+                </p>
+              </div>
+              {canReplace && (
+                <div className="rounded-md border border-red-200 bg-red-50 p-3">
+                  <p className="text-xs font-bold text-[#111827]">Replace Asset Register</p>
+                  <p className="mt-1 text-xs leading-5 text-[#4B5563]">
+                    Removes the current asset list and uses only the uploaded Excel list.
+                  </p>
+                </div>
+              )}
+            </div>
+            {canReplace && (
+              <p className="flex items-start gap-2 text-xs font-semibold text-red-700">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                Use Replace only when this Excel is the latest full maintenance asset list.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Replace mode toggle + warning — Unit 10H.2 production-readiness
+            review: replaceAssetRegisterAction deletes work orders, purchase
+            requests, and notifications system-wide, not just old assets, so
+            this whole control is now Super Admin-only (canReplace), not
+            just gated by assets.manage. Non-Super-Admin users only ever see
+            "Add to current list" above — no toggle they can't actually use. */}
+        {canReplace && (
+          <div className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm">
+            <label className="flex cursor-pointer items-start gap-3">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 rounded border-[#E5E7EB] accent-[#ED1C24]"
+                checked={replaceMode}
+                onChange={(e) => { setReplaceMode(e.target.checked); setReplaceTyped(""); }}
+              />
+              <span>
+                <span className="block text-sm font-bold text-[#111827]">Replace Asset Register</span>
+                <span className="block text-xs text-[#4B5563]">
+                  Remove the current asset list and replace it with only the assets in this file, instead of adding to the current list.
+                </span>
+              </span>
+            </label>
+
+            {replaceMode && (
+              <div className="mt-4 rounded-md border border-red-300 bg-red-50 p-4">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#ED1C24]" aria-hidden="true" />
+                  <p className="text-sm font-semibold text-red-900">
+                    This will permanently delete the current asset list AND every Job Card, materials request, purchase request, and notification in the system, then replace the asset list with the uploaded Excel list. This cannot be undone. Continue?
+                  </p>
+                </div>
+                <label className="mt-3 block text-xs font-bold text-red-900">
+                  Type REPLACE to confirm
                   <input
-                    type="checkbox"
-                    className="h-4 w-4 rounded border-amber-400 accent-[#ED1C24]"
-                    checked={confirmed}
-                    onChange={(e) => setConfirmed(e.target.checked)}
+                    type="text"
+                    value={replaceTyped}
+                    onChange={(e) => setReplaceTyped(e.target.value)}
+                    className="focus-ring mt-1 block w-40 rounded-md border border-red-300 px-2 py-1.5 text-sm"
+                    placeholder="REPLACE"
                   />
-                  I have reviewed the rows above and confirm I want to import {validRows.length} asset{validRows.length !== 1 ? "s" : ""}.
                 </label>
               </div>
-            </div>
+            )}
           </div>
         )}
 
@@ -342,17 +415,26 @@ export function AssetImportForm() {
           </div>
         )}
 
-        <div className="flex flex-wrap gap-3">
-          {validRows.length > 0 ? (
-            <Button onClick={handleImport} disabled={loading || !confirmed}>
-              {loading ? "Importing…" : `Import ${validRows.length} asset${validRows.length !== 1 ? "s" : ""}`}
+        <div className="flex flex-wrap items-center gap-3">
+          {replaceMode ? (
+            <Button onClick={handleReplace} disabled={loading || !canConfirmReplace}>
+              {loading ? "Replacing…" : `Replace Asset Register (${rows.length})`}
+            </Button>
+          ) : readyRows.length > 0 ? (
+            <Button onClick={handleAdd} disabled={loading}>
+              {loading ? "Importing…" : `Add ${readyRows.length} asset${readyRows.length !== 1 ? "s" : ""}`}
             </Button>
           ) : (
-            <p className="text-sm font-semibold text-[#ED1C24]">No valid rows to import.</p>
+            <p className="text-sm font-semibold text-[#ED1C24]">No rows are ready to add — all are duplicates.</p>
           )}
           <Button variant="secondary" onClick={reset} disabled={loading}>
             Start over
           </Button>
+          {modalMode && (
+            <Button type="button" variant="ghost" onClick={() => modal?.requestClose()} disabled={loading}>
+              Cancel
+            </Button>
+          )}
         </div>
       </div>
     );
@@ -361,6 +443,8 @@ export function AssetImportForm() {
   // ── Upload step ────────────────────────────────────────────────────────────
   return (
     <div className="space-y-4">
+      {modalMode && <ImportStepper current={1} />}
+
       {error && (
         <div className="flex items-start gap-2.5 rounded-md border border-[#ED1C24] bg-red-50 px-4 py-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#ED1C24]" aria-hidden="true" />
@@ -368,118 +452,96 @@ export function AssetImportForm() {
         </div>
       )}
 
-      <form onSubmit={handleParse} className="rounded-md border border-[#E5E7EB] bg-white p-6 shadow-sm">
+      {/* Task 3/5 — upload area */}
+      <form onSubmit={handleUploadSubmit} className="rounded-md border border-[#E5E7EB] bg-white p-6 shadow-sm">
         <div className="flex flex-col items-center gap-4 rounded-md border-2 border-dashed border-[#E5E7EB] p-8 text-center">
-          <div className="rounded-md bg-[#111827] p-3">
-            <FileSpreadsheet className="h-6 w-6 text-white" aria-hidden="true" />
+          <div className="rounded-md bg-[#111827] p-4">
+            <FileSpreadsheet className="h-8 w-8 text-white" aria-hidden="true" />
           </div>
           <div>
-            <p className="font-bold text-[#111827]">Upload asset Excel file</p>
-            <p className="mt-1 text-sm text-[#4B5563]">Accepted format: .xlsx — maximum 10 MB — maximum 500 rows</p>
+            <p className="text-base font-bold text-[#111827]">Upload maintenance asset Excel</p>
+            <p className="mt-1 text-sm text-[#4B5563]">Choose the latest maintenance asset list in .xlsx format.</p>
+            <p className="mt-1 text-xs font-semibold text-[#9CA3AF]">Accepted file type: .xlsx only</p>
           </div>
           <input
             ref={fileRef}
             type="file"
             name="file"
             accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={(e) => setFileName(e.target.files?.[0]?.name ?? null)}
             className="block w-full max-w-xs rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
             required
           />
+          {fileName && (
+            <p className="text-sm font-semibold text-[#111827]">
+              Selected file: <span className="text-[#ED1C24]">{fileName}</span>
+            </p>
+          )}
         </div>
-        <div className="mt-4 flex justify-end">
+
+        {/* Task 4/5 — preview expectation, reduces fear of accidentally
+            replacing data before the user has even uploaded anything. */}
+        <p className="mt-3 text-center text-xs text-[#6B7280] sm:text-left">
+          After upload, you can check the assets before saving.
+        </p>
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          {modalMode && (
+            <Button type="button" variant="ghost" onClick={() => modal?.requestClose()} disabled={loading}>
+              Cancel
+            </Button>
+          )}
           <Button type="submit" disabled={loading} className="gap-2">
             <Upload className="h-4 w-4" aria-hidden="true" />
-            {loading ? "Parsing…" : "Parse file"}
+            {loading ? "Reading file…" : "Upload and Preview"}
           </Button>
         </div>
       </form>
 
-      {/* Column reference */}
-      <div className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-        <p className="mb-3 text-sm font-bold text-[#111827]">Supported Excel columns</p>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
-              <tr>
-                <th className="px-3 py-2">Accepted header names</th>
-                <th className="px-3 py-2">Maps to</th>
-                <th className="px-3 py-2">Required</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#E5E7EB]">
-              {[
-                ["Asset Code / Code / Asset No",              "Asset Code",    true ],
-                ["Asset Name / Name / Description",           "Asset Name",    true ],
-                ["Category / Type",                           "Category",      true ],
-                ["Location / Site",                           "Location",      false],
-                ["Department / Department Area / Area",       "Department",    false],
-                ["Manufacturer / Brand / Make",               "Brand",         false],
-                ["Model",                                     "Model",         false],
-                ["Serial Number / Serial No / SN",            "Serial Number", false],
-                ["Plate Number / Plate No / Registration",    "Plate Number",  false],
-                ["Status",                                    "Status",        false],
-                ["Condition / Physical Condition",            "Condition",     false],
-                ["Criticality / Criticality Level / Priority","Criticality",   false],
-                ["Remarks / Comments / Additional Remarks",   "Remarks",       false],
-              ].map(([header, field, req]) => (
-                <tr key={String(field)}>
-                  <td className="px-3 py-2 font-mono text-xs text-[#4B5563]">{header}</td>
-                  <td className="px-3 py-2 font-semibold">{field}</td>
-                  <td className="px-3 py-2">
-                    {req
-                      ? <span className="font-bold text-[#ED1C24]">Required</span>
-                      : <span className="text-[#9CA3AF]">Optional</span>}
-                  </td>
-                </tr>
+      {/* Task 5/6 (Unit 10G.39) — full explanatory cards. Left out of the
+          popup so it doesn't get too long (Task 4/9 of this unit); the
+          popup shows the Add/Replace explanation later, right at the
+          Add/Replace step instead (see the preview step above). */}
+      {!modalMode && (
+        <>
+          <div className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
+            <p className="text-sm font-bold text-[#111827]">Excel columns used</p>
+            <ul className="mt-3 grid gap-x-6 gap-y-1.5 text-sm text-[#374151] sm:grid-cols-2">
+              {EXCEL_COLUMNS.map((c) => (
+                <li key={c} className="flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#ED1C24]" aria-hidden="true" />
+                  {c}
+                </li>
               ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="mt-3 text-xs text-[#9CA3AF]">
-          Headers are matched case-insensitively. Only the first sheet is used.
-          Existing asset codes are never overwritten — duplicate codes are always skipped.
-        </p>
-      </div>
+            </ul>
+            <p className="mt-3 text-xs text-[#6B7280]">
+              Plate numbers and chassis numbers are kept exactly as written.
+            </p>
+          </div>
 
-      {/* Vehicle column reference — Vehicle Import Unit 1 */}
-      <div className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
-        <p className="mb-1 text-sm font-bold text-[#111827]">Vehicle columns (optional)</p>
-        <p className="mb-3 text-xs text-[#4B5563]">
-          Only needed when importing vehicles. Leave these columns blank for other equipment.
-        </p>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
-              <tr>
-                <th className="px-3 py-2">Accepted header names</th>
-                <th className="px-3 py-2">Maps to</th>
-                <th className="px-3 py-2">Format</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#E5E7EB]">
-              {[
-                ["Chassis Number / Chassis No / Chassis No. / Chassis / VIN",           "Chassis Number",           "Text"],
-                ["Engine Number / Engine No / Engine No. / Engine",                     "Engine Number",            "Text"],
-                ["Registration Expiry Date / Registration Expiry / Registration Expiry Dt / Istimara Expiry / Vehicle Registration Expiry", "Registration Expiry Date", "YYYY-MM-DD or Excel date"],
-                ["Insurance Expiry Date / Insurance Expiry / Insurance Expiry Dt / Insurance Valid Until", "Insurance Expiry Date", "YYYY-MM-DD or Excel date"],
-                ["Current Kilometer Reading / Current KM / Current Kilometers / KM Reading / Kilometer Reading / Odometer / Mileage", "Current Kilometer Reading", "Number"],
-                ["Assigned Driver / Assigned Operator / Assigned Operator / Driver / Driver / Operator Driver", "Assigned Driver", "Text"],
-                ["Model Year / Year / Vehicle Year / Manufacturing Year / Mfg Year",     "Model Year",               "4-digit year (1970–next year)"],
-              ].map(([header, field, format]) => (
-                <tr key={String(field)}>
-                  <td className="px-3 py-2 font-mono text-xs text-[#4B5563]">{header}</td>
-                  <td className="px-3 py-2 font-semibold">{field}</td>
-                  <td className="px-3 py-2 text-xs text-[#4B5563]">{format}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="mt-3 text-xs text-[#9CA3AF]">
-          Duplicate plate numbers (within the file or already in Assets &amp; Equipment) are blocked, not silently imported.
-          Invalid dates, model years, or kilometer readings are flagged as row errors and skipped rather than guessed.
-        </p>
-      </div>
+          <div className="rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
+            <p className="text-sm font-bold text-[#111827]">What happens after preview?</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-md border border-[#E5E7EB] p-3">
+                <p className="text-sm font-bold text-[#111827]">Add to current list</p>
+                <p className="mt-1 text-xs leading-5 text-[#4B5563]">
+                  Adds the assets from Excel without deleting the current list.
+                </p>
+              </div>
+              <div className="rounded-md border border-red-200 bg-red-50 p-3">
+                <p className="text-sm font-bold text-[#111827]">Replace Asset Register</p>
+                <p className="mt-1 text-xs leading-5 text-[#4B5563]">
+                  Removes the current asset list and uses only the uploaded Excel list.
+                </p>
+              </div>
+            </div>
+            <p className="mt-3 flex items-start gap-2 text-xs font-semibold text-red-700">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              Use Replace only when this Excel is the latest full maintenance asset list.
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -148,8 +148,18 @@ export function WorkerActivityDetailModal({
           <StatusBadge label={status} tone={statusTone} />
         </div>
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[#4B5563]">
+          {/* Worker Salary Breakdown and Manager Labor Cost View Unit
+              10G.41B, Task 4/9: "Rate not set" is a Manager/Super-Admin-only
+              warning (isManager), shown in place of a bare "0.000 KWD/hr"
+              that would otherwise read as a real, deliberately-zero rate. */}
           {canViewCosts ? (
-            <span>Current profile rate: <strong className="text-[#111827]">{currentProfileRate.toFixed(3)} KWD/hr</strong></span>
+            currentProfileRate > 0 ? (
+              <span>Current profile rate: <strong className="text-[#111827]">{currentProfileRate.toFixed(3)} KWD/hr</strong></span>
+            ) : isManager ? (
+              <span className="font-semibold text-amber-700">Rate not set</span>
+            ) : (
+              <span>Current profile rate: <strong className="text-[#111827]">0.000 KWD/hr</strong></span>
+            )
           ) : null}
           {canViewCosts && currentJobCard ? (
             <span>Assignment rate: <strong className="text-[#111827]">{currentJobCard.hourly_rate_snapshot.toFixed(3)} KWD/hr</strong></span>
