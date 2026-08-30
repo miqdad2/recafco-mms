@@ -26,14 +26,17 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const errorMessage = params?.error ? errorMessages[params.error] ?? "Sign in failed. Check your local account and active app profile." : null;
 
   return (
-    <div className="w-full max-w-[440px] rounded-md border border-[#D9DDE3] bg-white p-5 shadow-md shadow-black/5 sm:p-6">
-      <div className="recafco-brand-enter recafco-brand-scan relative mb-5 overflow-hidden rounded-md bg-[#111827] px-5 py-5 sm:mb-6 sm:py-6">
-        <div className="flex flex-col items-center gap-2.5 text-center sm:gap-3">
+    <div className="w-full max-w-[480px] rounded-xl border border-[#D9DDE3] bg-white p-6 shadow-lg shadow-black/5 sm:p-8">
+      {/* Left Header Logo Polish Unit 10G.46, Task 2: now that the hero
+          panel has its own large logo again (the official page brand mark),
+          this card logo steps down from "xl" to "lg" so the two don't read
+          as duplicated/equal-weight branding — this card keeps a smaller
+          confirming logo, not a second full-size one. Header padding
+          trimmed to match (py-6/py-7 -> py-5/py-6), same proportions used
+          the last time this card carried an "lg" logo. */}
+      <div className="recafco-brand-enter recafco-brand-scan relative mb-6 overflow-hidden rounded-lg bg-[#111827] px-6 py-5 sm:py-6">
+        <div className="flex items-center justify-center">
           <BrandLogo variant="dark" size="lg" showText={false} />
-          <div>
-            <p className="text-lg font-black tracking-wide text-white">RECAFCO</p>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-red-100 sm:text-xs">Maintenance & Asset Management</p>
-          </div>
         </div>
       </div>
       <div className="mb-5 flex items-start gap-3 sm:mb-6">
@@ -41,6 +44,10 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           <LockKeyhole className="h-5 w-5" aria-hidden="true" />
         </div>
         <div>
+          {/* Final Polish Unit 10G.45, Task 3 (Option B — the preferred,
+              cleaner option): "Welcome back" removed again — for an
+              internal system, "Sign in" alone reads calmer than a
+              lead-in line above it. */}
           <h1 className="text-2xl font-bold text-[#111827]">Sign in</h1>
           <p className="mt-1 text-sm leading-5 text-[#4B5563]">Use your RECAFCO account to continue.</p>
           <p className="mt-1 text-xs font-medium text-[#64748B]">Access is managed by the system administrator.</p>
@@ -51,7 +58,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           {errorMessage}
         </div>
       ) : null}
-      <form action={signInAction} className="space-y-4">
+      <form action={signInAction} className="space-y-5">
         <input type="hidden" name="next" value={params?.next ?? "/dashboard"} />
         <label className="block">
           <span className="text-sm font-semibold text-[#111827]">Email</span>
