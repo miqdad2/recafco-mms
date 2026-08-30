@@ -23,6 +23,7 @@ export async function getAssetPickerOptions(): Promise<AssetPickerOption[]> {
       brand: true,
       model: true,
       model_year: true,
+      assigned_operator_driver: true,
     },
     orderBy: { asset_code: "asc" },
   });

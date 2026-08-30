@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 
 import { StatusBadge } from "@/components/ui/status-badge";
-import { VEHICLE_CATEGORIES, isVehicleCategory } from "@/lib/assets/categories";
 import { cn } from "@/lib/utils";
 
 // Job Card Asset Picker UX Unit 1 — reusable searchable asset/vehicle/machine
@@ -28,17 +27,10 @@ export type AssetPickerOption = {
   model_year: number | null;
   plate_number: string | null;
   serial_number: string | null;
+  assigned_operator_driver: string | null;
 };
 
-type QuickFilterValue = "all" | "vehicles" | "machines" | string;
-
-const BASE_QUICK_FILTERS: { value: QuickFilterValue; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "vehicles", label: "Vehicles & Mobile Equipment" },
-  { value: "machines", label: "Machines / Equipment" },
-];
-const CATEGORY_QUICK_FILTERS = VEHICLE_CATEGORIES.map((c) => ({ value: c as QuickFilterValue, label: c }));
-const QUICK_FILTERS = [...BASE_QUICK_FILTERS, ...CATEGORY_QUICK_FILTERS];
+type QuickFilterValue = "all" | string;
 
 const INITIAL_SHOW_COUNT = 10;
 const MAX_SEARCH_RESULTS = 50;
@@ -50,24 +42,26 @@ function statusTone(status: string): "green" | "amber" | "red" | "gray" {
   return "gray";
 }
 
-// Line 2 of a result row — every present field as its own bullet segment
-// (Category • Plate • Brand • Model • Model Year • Location), never combined
-// pairs, matching the exact examples in the task spec.
+// Dynamic Job Card Asset Filters Unit 10G.50, Task 5: line 2 of a result row
+// — asset type, plate number, current location, and responsible person/
+// driver, each its own bullet segment, only when present. Brand/model/model
+// year were dropped from this line (kept only on the post-selection summary
+// card) so the row stays scannable rather than overloaded — asset type,
+// plate, location, and driver are what a Data Entry user actually needs to
+// tell two similar assets apart while picking one for a Job Card.
 function detailLine(a: AssetPickerOption): string {
   return [
     a.category,
     a.plate_number ? `Plate ${a.plate_number}` : null,
-    a.brand,
-    a.model,
-    a.model_year ? String(a.model_year) : null,
     a.location,
+    a.assigned_operator_driver ? `Driver: ${a.assigned_operator_driver}` : null,
   ]
     .filter((part): part is string => Boolean(part))
     .join(" • ");
 }
 
 function matchesQuery(a: AssetPickerOption, q: string): boolean {
-  return [a.asset_code, a.asset_name, a.plate_number, a.brand, a.model, a.category, a.location]
+  return [a.asset_code, a.asset_name, a.plate_number, a.brand, a.model, a.category, a.location, a.assigned_operator_driver]
     .filter((field): field is string => Boolean(field))
     .some((field) => field.toLowerCase().includes(q));
 }
@@ -97,21 +91,46 @@ export function AssetSearchPicker({
   const selected = assets.find((a) => a.id === value) ?? null;
   const showPicker = forceOpen || !selected;
 
+  // Dynamic Job Card Asset Filters Unit 10G.50, Task 2: quick filters are
+  // now built from the asset types actually present in `assets` (the same
+  // imported-from-Excel category values the Assets & Equipment page shows),
+  // not a fixed pre-import list — "Vehicles & Mobile Equipment" / "Machines
+  // / Equipment" / "Truck" only ever show up again if a real asset uses that
+  // exact category value. Sorted by count descending (most common asset
+  // type first), ties broken alphabetically for a stable, predictable order
+  // — matches how the Assets page's own type counts naturally read. A
+  // category with zero assets can never appear here since it's only ever
+  // discovered by counting the assets that actually have it.
+  const quickFilters = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const a of assets) {
+      const category = (a.category ?? "").trim();
+      if (!category) continue;
+      counts.set(category, (counts.get(category) ?? 0) + 1);
+    }
+    const sortedCategories = [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([category]) => category);
+    return [{ value: "all" as QuickFilterValue, label: "All" }, ...sortedCategories.map((category) => ({ value: category as QuickFilterValue, label: category }))];
+  }, [assets]);
+
   const filteredByCategory = useMemo(() => {
     if (filter === "all") return assets;
-    if (filter === "vehicles") return assets.filter((a) => isVehicleCategory(a.category ?? ""));
-    if (filter === "machines") return assets.filter((a) => !isVehicleCategory(a.category ?? ""));
     return assets.filter((a) => a.category === filter);
   }, [assets, filter]);
 
   const q = query.trim().toLowerCase();
   const searched = q ? filteredByCategory.filter((a) => matchesQuery(a, q)) : filteredByCategory;
-  const noSearchActive = !q && filter === "all";
+  const noQueryActive = !q;
+  const noSearchActive = noQueryActive && filter === "all";
 
   // Don't show hundreds of assets by default — only once the user searches
-  // or picks a quick filter does the list expand (capped for render
-  // performance; filtering itself still runs over the full in-memory list).
-  const displayList = noSearchActive ? searched.slice(0, INITIAL_SHOW_COUNT) : searched.slice(0, MAX_SEARCH_RESULTS);
+  // does the list expand past the initial cap (rendering-performance cap;
+  // filtering itself still runs over the full in-memory list). Picking a
+  // quick filter alone (no typed search yet) still caps at
+  // INITIAL_SHOW_COUNT — Task 4's "Showing first 10 Car assets" — the user
+  // types to search further within that type.
+  const displayList = noQueryActive ? searched.slice(0, INITIAL_SHOW_COUNT) : searched.slice(0, MAX_SEARCH_RESULTS);
 
   function handleSelect(id: string) {
     onChange(id);
@@ -138,7 +157,7 @@ export function AssetSearchPicker({
       </div>
 
       <div className="flex flex-wrap gap-1.5">
-        {QUICK_FILTERS.map((f) => (
+        {quickFilters.map((f) => (
           <button
             key={f.value}
             type="button"
@@ -156,9 +175,18 @@ export function AssetSearchPicker({
         ))}
       </div>
 
+      {/* Dynamic Job Card Asset Filters Unit 10G.50, Task 4: clearer,
+          filter-aware helper text — "all assets" when browsing everything,
+          the selected asset type's own name and count when a quick filter
+          is active. */}
       {noSearchActive && (
         <p className="text-xs text-[#9CA3AF]">
-          Showing the first {Math.min(INITIAL_SHOW_COUNT, assets.length)} of {assets.length} assets. Type to search all of them.
+          Showing the first {Math.min(INITIAL_SHOW_COUNT, assets.length)} of {assets.length} assets. Type to search all assets.
+        </p>
+      )}
+      {noQueryActive && filter !== "all" && (
+        <p className="text-xs text-[#9CA3AF]">
+          Showing first {Math.min(INITIAL_SHOW_COUNT, filteredByCategory.length)} {filter} assets. Type to search within this asset type.
         </p>
       )}
 
