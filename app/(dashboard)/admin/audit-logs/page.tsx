@@ -76,7 +76,7 @@ function metadataDetails(metadata: Json) {
 }
 
 function buildWhere(action: string, actor: string, entity: string, search: string) {
-  const filters: Prisma.Sql[] = [];
+  const filters: ReturnType<typeof Prisma.sql>[] = [];
   if (action) filters.push(Prisma.sql`al.action = ${action}`);
   if (entity) filters.push(Prisma.sql`al.entity_type = ${entity}`);
   if (actor) {
