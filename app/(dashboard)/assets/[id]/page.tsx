@@ -510,7 +510,16 @@ export default async function AssetDetailPage({
                 Location &amp; Responsibility
               </p>
               <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-                <InfoRow label="Department / Location" value={asset.location} />
+                {/* Current Location Mapping Bug Fix Unit 10G.48A, Task 4:
+                    same relation-name-first-then-imported-text fallback the
+                    CEO risk register already used (`a.departments?.name ??
+                    a.location`) — this asset's `department_id` is never set
+                    by the Excel importer (it only ever writes the plain
+                    `location` text column), so in practice this still shows
+                    the imported Current Location value; the relation is
+                    just there first for the (rare, non-import) case an
+                    asset does have a real department assigned. */}
+                <InfoRow label="Department / Location" value={asset.departments?.name ?? asset.location} />
                 <InfoRow label="Responsible Person / Driver" value={asset.assigned_operator_driver} />
               </dl>
             </section>

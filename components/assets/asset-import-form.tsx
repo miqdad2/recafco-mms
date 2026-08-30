@@ -49,7 +49,7 @@ const EXCEL_COLUMNS = [
   "Chassis No.",
   "Colour",
   "File No.",
-  "Department / Location",
+  "Current Location",
   "Responsible Person / Driver",
   "Expires On",
   "Remarks",
@@ -271,6 +271,27 @@ export function AssetImportForm({ modalMode = false, canReplace = false }: { mod
           </div>
         )}
 
+        {/* Current Location Mapping Bug Fix Unit 10G.48A, Task 5: a plain
+            count of how many parsed assets did/didn't come through with a
+            Current Location and a Responsible Person/Driver value, so a
+            mapping problem is visible on the preview screen itself rather
+            than only discoverable later on the Assets page. Purely
+            informational here — the hard "stop the import" case (a Current
+            Location column exists but zero rows have a value) is caught
+            server-side in parseAssetExcelForImportAction before the file
+            ever reaches this preview step. */}
+        <div className="rounded-md border border-[#E5E7EB] bg-white p-3 text-sm text-[#4B5563]">
+          <span className="font-semibold text-[#111827]">{preview.withLocationCount}</span> of {rows.length} assets have a Current Location
+          {preview.missingLocationCount > 0 && (
+            <span className="text-amber-700"> ({preview.missingLocationCount} missing)</span>
+          )}
+          {" · "}
+          <span className="font-semibold text-[#111827]">{preview.withDriverCount}</span> of {rows.length} have a Responsible Person / Driver
+          {preview.missingDriverCount > 0 && (
+            <span className="text-amber-700"> ({preview.missingDriverCount} missing)</span>
+          )}
+        </div>
+
         {/* Preview table — Task 6's required columns plus Row/Status, kept
             scrollable inside its own container so it never grows the
             popup's own height. */}
@@ -287,7 +308,7 @@ export function AssetImportForm({ modalMode = false, canReplace = false }: { mod
                   <th className="px-3 py-2">Make / Asset Name</th>
                   <th className="px-3 py-2">Plate No.</th>
                   <th className="px-3 py-2">Chassis No.</th>
-                  <th className="px-3 py-2">Location</th>
+                  <th className="px-3 py-2">Current Location</th>
                   <th className="px-3 py-2">Responsible Person / Driver</th>
                   <th className="px-3 py-2">Status</th>
                 </tr>

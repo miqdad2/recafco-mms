@@ -44,6 +44,18 @@ export function normalizeHeader(h: unknown): string {
 // Department / Location / Responsible Person / Driver / Remarks — plus a
 // few close spelling variants ("Asset Type", "Chassis No.") so a re-typed
 // header row still matches.
+//
+// Current Location Mapping Bug Fix Unit 10G.48A: the maintenance team's
+// latest sheet uses the header "Current Location" instead of "Department /
+// Location" — `normalizeHeader` already strips casing/spaces/slashes/
+// hyphens/underscores/newlines, so every casing/spacing variant of a given
+// phrase ("Current Location", "CURRENT LOCATION", "Current-Location",
+// "Current / Location", ...) collapses to the same key here; only one entry
+// per distinct phrase is needed. All of these map to the same "location"
+// field the importer already writes into `assets.location` (the plain
+// text column — never dropped just because it doesn't match an existing
+// department relation, since this importer never touches department_id at
+// all).
 export const HEADER_MAP: Record<string, RowField> = {
   srno: "srNo",
   no: "srNo",
@@ -65,6 +77,13 @@ export const HEADER_MAP: Record<string, RowField> = {
   chassino: "chassisNumber",
   chassisno: "chassisNumber",
   departmentlocation: "location",
+  currentlocation: "location",
+  presentlocation: "location",
+  existinglocation: "location",
+  location: "location",
+  worklocation: "location",
+  site: "location",
+  area: "location",
   responsiblepersondriver: "driver",
   remarks: "remarks",
 };
@@ -286,6 +305,14 @@ export type ParseSheetResult = {
   headerRowNum: number;
   rowsScanned: number;
   rows: ParsedAssetRow[];
+  // Current Location Mapping Bug Fix Unit 10G.48A, Task 5: whether a column
+  // in the header row matched to "location" at all (under any of the
+  // HEADER_MAP synonyms above) — independent of whether the matched
+  // column's cells actually had values. Lets the caller tell "this sheet
+  // has no location-ish column at all" (nothing to warn about) apart from
+  // "this sheet has a location column but every cell under it is blank"
+  // (worth a hard warning — see parseAssetExcelForImportAction).
+  hasLocationHeader: boolean;
 };
 
 // A jump of more than this many row numbers between two consecutive data
@@ -314,8 +341,9 @@ const END_OF_LIST_ROW_GAP = 5;
 export function parseAssetsSheet(ws: ExcelJS.Worksheet): ParseSheetResult {
   const header = findHeaderRow(ws);
   if (header.rowNum === -1) {
-    return { headerRowNum: -1, rowsScanned: 0, rows: [] };
+    return { headerRowNum: -1, rowsScanned: 0, rows: [], hasLocationHeader: false };
   }
+  const hasLocationHeader = Object.values(header.colMap).includes("location");
 
   const getField = (row: ExcelJS.Row, field: RowField): ExcelJS.Cell | null => {
     for (const [colStr, f] of Object.entries(header.colMap)) {
@@ -404,7 +432,7 @@ export function parseAssetsSheet(ws: ExcelJS.Worksheet): ParseSheetResult {
     });
   });
 
-  return { headerRowNum: header.rowNum, rowsScanned, rows };
+  return { headerRowNum: header.rowNum, rowsScanned, rows, hasLocationHeader };
 }
 
 // ─── Duplicate detection (Task 8) ───────────────────────────────────────────

@@ -50,6 +50,14 @@ export type AssetImportPreview = {
   rows: AssetImportPreviewRow[];
   needsReviewCount: number;
   duplicateMessages: string[];
+  // Current Location Mapping Bug Fix Unit 10G.48A, Task 5: parsed-column
+  // summary — lets the preview screen show how many assets actually came
+  // through with a Current Location / Responsible Person-Driver value vs.
+  // how many didn't, before anything is saved.
+  withLocationCount: number;
+  missingLocationCount: number;
+  withDriverCount: number;
+  missingDriverCount: number;
   error?: string;
 };
 
@@ -60,6 +68,10 @@ const EMPTY_PREVIEW: Omit<AssetImportPreview, "error"> = {
   rows: [],
   needsReviewCount: 0,
   duplicateMessages: [],
+  withLocationCount: 0,
+  missingLocationCount: 0,
+  withDriverCount: 0,
+  missingDriverCount: 0,
 };
 
 export async function parseAssetExcelForImportAction(formData: FormData): Promise<AssetImportPreview> {
@@ -89,7 +101,7 @@ export async function parseAssetExcelForImportAction(formData: FormData): Promis
     return { ...EMPTY_PREVIEW, error: "No sheet was found in this file." };
   }
 
-  const { headerRowNum, rowsScanned, rows } = parseAssetsSheet(ws);
+  const { headerRowNum, rowsScanned, rows, hasLocationHeader } = parseAssetsSheet(ws);
   if (headerRowNum === -1) {
     return {
       ...EMPTY_PREVIEW,
@@ -100,6 +112,27 @@ export async function parseAssetExcelForImportAction(formData: FormData): Promis
   }
   if (rows.length === 0) {
     return { ...EMPTY_PREVIEW, sheetUsed: ws.name, sheetsIgnored: ignored, error: "No assets were found in this file." };
+  }
+
+  const withLocationCount = rows.filter((r) => r.location).length;
+  const missingLocationCount = rows.length - withLocationCount;
+  const withDriverCount = rows.filter((r) => r.driver).length;
+  const missingDriverCount = rows.length - withDriverCount;
+
+  // Current Location Mapping Bug Fix Unit 10G.48A, Task 5: a Location-ish
+  // column was found in the header row, but not one single parsed asset
+  // ended up with a location value — almost certainly a mapping/parsing
+  // problem (e.g. the matched column's data cells are on a different row
+  // than expected), not "this file genuinely has no location data for any
+  // of its 100+ assets". Block here, before a preview is even shown, rather
+  // than let it silently re-happen the way the original bug did.
+  if (hasLocationHeader && withLocationCount === 0) {
+    return {
+      ...EMPTY_PREVIEW,
+      sheetUsed: ws.name,
+      sheetsIgnored: ignored,
+      error: `A Current Location column was found in "${ws.name}", but no asset rows have a location value. Import stopped — please check the Current Location column in the file before trying again.`,
+    };
   }
 
   const { plateDupes, chassisDupes } = findDuplicates(rows);
@@ -124,6 +157,10 @@ export async function parseAssetExcelForImportAction(formData: FormData): Promis
     rows: previewRows,
     needsReviewCount: rows.filter((r) => r.categorySource === "needs_review").length,
     duplicateMessages,
+    withLocationCount,
+    missingLocationCount,
+    withDriverCount,
+    missingDriverCount,
   };
 }
 
