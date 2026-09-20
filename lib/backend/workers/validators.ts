@@ -53,6 +53,13 @@ export const workerProfileSchema = z.object({
   monthlyCost: z.coerce.number().min(0).max(999999.999).optional(),
   monthlyWorkingDays: z.coerce.number().min(1).max(31).optional(),
   manualHourlyRateReason: z.string().trim().max(300).optional(),
+  // Closure Review Work and Material Cost Unit 10G.72, Task 1/2 —
+  // Manager/Super-Admin-only to set (enforced in service.ts, same as every
+  // other salary field above). Deliberately not part of computeSalary()'s
+  // SalaryInputs — this is a flat, one-time-per-Job-Card amount, never an
+  // hourly-rate input.
+  indirectCostPerJobCard: z.coerce.number().min(0).max(999999.999).optional(),
+  indirectCostNote: z.string().trim().max(300).optional(),
 });
 
 export type WorkerProfileInput = z.infer<typeof workerProfileSchema>;

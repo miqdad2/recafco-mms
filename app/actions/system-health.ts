@@ -114,6 +114,21 @@ export async function createManualSystemIssueAction(formData: FormData) {
   redirect(targetPath);
 }
 
+// Manager Job Card Creation and Page Crash Fix Unit 10G.74, Task 9 —
+// derives a plain "module" label (the route's first path segment, e.g.
+// "maintenance", "store", "reports") from the route the dashboard error
+// boundary already captures, so a triaging admin can filter/group crashes
+// by module without having to parse the full route string every time. The
+// route itself was already logged before this unit; this only adds one
+// more queryable field alongside it — no new capture point, no change to
+// what reaches the browser (the user-facing message stays the same fixed,
+// non-sensitive string in app/(dashboard)/error.tsx).
+function deriveModuleFromRoute(route: string | null | undefined): string | null {
+  if (!route) return null;
+  const segment = route.split("/").filter(Boolean)[0];
+  return segment || null;
+}
+
 export async function logClientModuleErrorAction(input: { message: string; digest?: string; route?: string }) {
   const context = await getCurrentUserContext();
 
@@ -125,7 +140,8 @@ export async function logClientModuleErrorAction(input: { message: string; diges
     route: input.route ?? null,
     metadata: {
       digest: input.digest ?? null,
-      captured_by: "dashboard_error_boundary"
+      captured_by: "dashboard_error_boundary",
+      module: deriveModuleFromRoute(input.route)
     }
   });
 }

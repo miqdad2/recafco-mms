@@ -62,6 +62,20 @@ function formatDuration(minutes: number): string {
   return `${h}h ${m}m`;
 }
 
+// Closure Review Work and Material Cost Unit 10G.72, Task 4/6 — one tile in
+// the Job Card Cost Summary grid. `value` is only ever null when the whole
+// summary block itself isn't rendered (canViewCosts false), so this never
+// needs its own "hidden for your role" branch — it always receives a real
+// number when actually mounted.
+function CostTile({ label, value, emphasize }: { label: string; value: number | null; emphasize?: boolean }) {
+  return (
+    <div className={`rounded-md border p-2 text-center ${emphasize ? "border-[#ED1C24] bg-red-50" : "border-[#E5E7EB] bg-white"}`}>
+      <p className={`font-black ${emphasize ? "text-lg text-[#ED1C24]" : "text-base text-[#111827]"}`}>{(value ?? 0).toFixed(3)} KWD</p>
+      <p className="mt-0.5 text-[9px] font-bold uppercase tracking-wide text-[#6B7280]">{label}</p>
+    </div>
+  );
+}
+
 function SessionTable({
   sessions,
   canViewCosts,
@@ -208,7 +222,21 @@ function WorkerReviewCard({
             <span className="font-semibold text-amber-700">Rate not set</span>
           )
         ) : null}
-        {canViewCosts && worker.totalPay !== null ? <span>Total Pay: <strong className="text-[#111827]">{worker.totalPay.toFixed(3)} KWD</strong></span> : null}
+        {/* Closure Review Work and Material Cost Unit 10G.72, Task 3 —
+            Direct Labor Cost / Indirect Cost / Total Worker Cost, replacing
+            the old single "Total Pay" line. indirectCost is never null
+            whenever canViewCosts is true (worker_profiles.indirect_cost_per_job_card
+            defaults to 0), so an unconfigured worker naturally shows
+            "0.000 KWD" here rather than needing a separate dash case. */}
+        {canViewCosts && worker.directLaborCost !== null ? (
+          <span>Direct Labor Cost: <strong className="text-[#111827]">{worker.directLaborCost.toFixed(3)} KWD</strong></span>
+        ) : null}
+        {canViewCosts && worker.indirectCost !== null ? (
+          <span>Indirect Cost: <strong className="text-[#111827]">{worker.indirectCost.toFixed(3)} KWD</strong></span>
+        ) : null}
+        {canViewCosts && worker.totalWorkerCost !== null ? (
+          <span>Total Worker Cost: <strong className="text-[#111827]">{worker.totalWorkerCost.toFixed(3)} KWD</strong></span>
+        ) : null}
         <span>Sessions: <strong className="text-[#111827]">{worker.sessionsCount}</strong></span>
       </div>
       {/* Task 4 — session-level breakdown, inline under the worker (not
@@ -414,23 +442,6 @@ export function ClosureReviewModal({
           </div>
         </div>
 
-        {/* Closure Review Cleanup and Attachment Preview Unit 10G.25, Task
-            1/2: the old "Labor Estimate vs Actual" top section (Estimated
-            Hours / Actual Hours / Difference stat tiles + an overall
-            variance badge) is removed — that same estimate-vs-actual
-            comparison already lives on each worker's own card below (Task
-            4), and duplicating it as a Job-Card-wide rollup here was taking
-            space without adding information. Only the one figure that had
-            no other home, total labor cost, survives — as a small standalone
-            card, completely absent (not "0.000 KWD") for a Manager who
-            cannot view costs. */}
-        {detail.canViewCosts && detail.totalAmount !== null ? (
-          <div className="inline-flex w-fit flex-col rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-3.5 py-2">
-            <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Labor Cost</p>
-            <p className="text-lg font-black text-[#111827]">{detail.totalAmount.toFixed(3)} KWD</p>
-          </div>
-        ) : null}
-
         {/* Task 3/4 — worker summary + per-worker session breakdown */}
         <div>
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -455,22 +466,33 @@ export function ClosureReviewModal({
               ))}
             </div>
           )}
-          {/* Unit 10G.21, Task 7: compact worker comparison table — quick
-              scan of "who worked more / who worked less / who has no
-              estimate" across every worker at once, alongside (not instead
-              of) each worker's own card above. Only worth showing once
-              there's more than one worker to compare. */}
-          {detail.workers.length > 1 && (
+          {/* Unit 10G.21, Task 7, extended by Closure Review Work and
+              Material Cost Unit 10G.72, Task 3, repositioned/footed by
+              Closure Review Cost Placement Polish Unit 10G.72A, Task 1/2:
+              compact worker cost table — Worker/Estimated Hours/Actual
+              Hours/Direct Labor Cost/Indirect Cost/Total Worker Cost/Status
+              — alongside (not instead of) each worker's own card above.
+              Unit 10G.72A widens this from "only when >1 worker" to always
+              shown whenever at least one worker exists, so its own totals
+              footer (Task 2's own explicit requirement) is always the place
+              a Manager sees the worker cost totals, not just a duplicate of
+              a single worker's own card. */}
+          {detail.workers.length > 0 && (
             <div className="mt-2 overflow-x-auto rounded-md border border-[#E5E7EB]">
-              <table className="w-full min-w-[520px] text-left text-[11px]">
+              <table className="w-full min-w-[640px] text-left text-[11px]">
                 <thead className="bg-[#F9FAFB] text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">
                   <tr>
                     <th className="px-2 py-1.5">Worker</th>
-                    <th className="px-2 py-1.5">Estimated</th>
-                    <th className="px-2 py-1.5">Actual</th>
-                    <th className="px-2 py-1.5">Difference</th>
+                    <th className="px-2 py-1.5">Estimated Hours</th>
+                    <th className="px-2 py-1.5">Actual Hours</th>
+                    {detail.canViewCosts ? (
+                      <>
+                        <th className="px-2 py-1.5">Direct Labor Cost</th>
+                        <th className="px-2 py-1.5">Indirect Cost</th>
+                        <th className="px-2 py-1.5">Total Worker Cost</th>
+                      </>
+                    ) : null}
                     <th className="px-2 py-1.5">Status</th>
-                    {detail.canViewCosts ? <th className="px-2 py-1.5">Pay</th> : null}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#F3F4F6]">
@@ -481,19 +503,55 @@ export function ClosureReviewModal({
                         <td className="px-2 py-1.5 font-semibold text-[#111827]">{w.name}</td>
                         <td className="px-2 py-1.5 text-[#4B5563]">{w.estimatedHours !== null ? `${w.estimatedHours} h` : "—"}</td>
                         <td className="px-2 py-1.5 text-[#4B5563]">{w.hours.toFixed(2)} h</td>
-                        <td className="px-2 py-1.5 text-[#4B5563]">
-                          {variance.varianceHours !== null ? `${variance.varianceHours >= 0 ? "+" : ""}${variance.varianceHours} h` : "—"}
-                        </td>
+                        {detail.canViewCosts ? (
+                          <>
+                            <td className="px-2 py-1.5 text-[#4B5563]">{w.directLaborCost !== null ? `${w.directLaborCost.toFixed(3)} KWD` : "—"}</td>
+                            {/* Task 3 — "If worker indirect cost is empty or
+                                0: Show 0.000 KWD or dash, but do not break
+                                layout." indirectCost is never null here
+                                (defaults to 0), so this naturally reads
+                                "0.000 KWD" for an unconfigured worker. */}
+                            <td className="px-2 py-1.5 text-[#4B5563]">{w.indirectCost !== null ? `${w.indirectCost.toFixed(3)} KWD` : "—"}</td>
+                            <td className="px-2 py-1.5 font-semibold text-[#111827]">{w.totalWorkerCost !== null ? `${w.totalWorkerCost.toFixed(3)} KWD` : "—"}</td>
+                          </>
+                        ) : null}
                         <td className="px-2 py-1.5">
                           <StatusBadge label={variance.label} tone={hoursVarianceTone(variance.status)} />
                         </td>
-                        {detail.canViewCosts ? (
-                          <td className="px-2 py-1.5 text-[#4B5563]">{w.totalPay !== null ? `${w.totalPay.toFixed(3)} KWD` : "—"}</td>
-                        ) : null}
                       </tr>
                     );
                   })}
                 </tbody>
+                {/* Unit 10G.72A, Task 2/7 — the worker table's own totals
+                    footer: Total Actual Hours / Direct Labor Cost total /
+                    Indirect Cost total / labeled "Total Labor Cost". Slightly
+                    shaded background + bold values, per the task's own exact
+                    styling requirement. Uses the SAME already-computed
+                    directLaborCostTotal/indirectCostTotal/totalLaborCost
+                    figures from getClosureReviewDetailAction — no new
+                    calculation here, purely a placement change. The ENTIRE
+                    row (not just its cost cells) is gated on canViewCosts —
+                    this footer's own label is "Total Labor Cost", so
+                    rendering it at all without the cost permission would
+                    itself be a cost-summary leak, even with the cost cells
+                    individually blanked out (Task 7's "do not show cost
+                    totals"). Non-cost users keep exactly what the table
+                    already had (no footer). */}
+                {detail.canViewCosts && (
+                  <tfoot>
+                    <tr className="border-t-2 border-[#E5E7EB] bg-[#F3F4F6] font-bold">
+                      <td className="px-2 py-1.5 text-[#111827]">Total Labor Cost</td>
+                      <td className="px-2 py-1.5 text-[#4B5563]">—</td>
+                      <td className="px-2 py-1.5 text-[#111827]">
+                        {detail.workers.reduce((sum, w) => sum + w.hours, 0).toFixed(2)} h
+                      </td>
+                      <td className="px-2 py-1.5 text-[#111827]">{detail.directLaborCostTotal !== null ? `${detail.directLaborCostTotal.toFixed(3)} KWD` : "—"}</td>
+                      <td className="px-2 py-1.5 text-[#111827]">{detail.indirectCostTotal !== null ? `${detail.indirectCostTotal.toFixed(3)} KWD` : "—"}</td>
+                      <td className="px-2 py-1.5 text-[#111827]">{detail.totalLaborCost !== null ? `${detail.totalLaborCost.toFixed(3)} KWD` : "—"}</td>
+                      <td className="px-2 py-1.5"></td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
           )}
@@ -513,7 +571,69 @@ export function ClosureReviewModal({
           </div>
           {detail.materials.length === 0 ? (
             <p className="mt-1 text-xs text-[#9CA3AF]">No required materials on this Job Card.</p>
+          ) : detail.canViewCosts ? (
+            // Closure Review Work and Material Cost Unit 10G.72, Task 5/7 —
+            // cost-permitted view: adds Unit/Unit Cost/Total Cost columns.
+            // "Unpriced" (never "0.000 KWD") for a material with no recorded
+            // unit cost, matching Task 5's own "do not invent costs" rule.
+            <div className="mt-1.5 overflow-x-auto rounded-md border border-[#E5E7EB]">
+              <table className="w-full min-w-[640px] text-left text-[11px]">
+                <thead className="bg-[#F9FAFB] text-[9px] font-black uppercase tracking-wide text-[#9CA3AF]">
+                  <tr>
+                    <th className="px-2 py-1.5">Material</th>
+                    <th className="px-2 py-1.5">Required</th>
+                    <th className="px-2 py-1.5">Issued</th>
+                    <th className="px-2 py-1.5">Remaining</th>
+                    <th className="px-2 py-1.5">Unit</th>
+                    <th className="px-2 py-1.5">Unit Cost</th>
+                    <th className="px-2 py-1.5">Total Cost</th>
+                    <th className="px-2 py-1.5">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#F3F4F6]">
+                  {detail.materials.map((m, i) => (
+                    <tr key={i}>
+                      <td className="px-2 py-1.5 font-semibold text-[#111827]">{m.description}</td>
+                      <td className="px-2 py-1.5 text-[#4B5563]">{m.requiredQty}</td>
+                      <td className="px-2 py-1.5 text-[#4B5563]">{m.issuedQty}</td>
+                      <td className="px-2 py-1.5 text-[#4B5563]">{m.remainingQty}</td>
+                      <td className="px-2 py-1.5 text-[#4B5563]">{m.unit}</td>
+                      <td className="px-2 py-1.5 text-[#4B5563]">
+                        {m.isUnpriced ? <span className="font-semibold text-amber-700">Unpriced</span> : m.unitCost !== null ? `${m.unitCost.toFixed(3)} KWD` : "—"}
+                      </td>
+                      <td className="px-2 py-1.5 text-[#4B5563]">
+                        {m.isUnpriced ? <span className="font-semibold text-amber-700">Unpriced</span> : m.totalCost !== null ? `${m.totalCost.toFixed(3)} KWD` : "—"}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <StatusBadge label={m.status} tone={materialsBadgeTone(m.status)} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                {/* Unit 10G.72A, Task 4 — the material table's own Total
+                    Material Cost footer row, directly under the table (not
+                    only in a separate top summary). Same already-computed
+                    materialCostTotal from getClosureReviewDetailAction — no
+                    new calculation here. */}
+                <tfoot>
+                  <tr className="border-t-2 border-[#E5E7EB] bg-[#F3F4F6] font-bold">
+                    <td colSpan={6} className="px-2 py-1.5 text-right text-[#111827]">Total Material Cost</td>
+                    <td className="px-2 py-1.5 text-[#111827]">{detail.materialCostTotal !== null ? `${detail.materialCostTotal.toFixed(3)} KWD` : "—"}</td>
+                    <td className="px-2 py-1.5"></td>
+                  </tr>
+                </tfoot>
+              </table>
+              {/* Task 4 — the exact required combined wording, shown only
+                  when at least one line has no recorded unit cost. */}
+              {detail.hasUnpricedMaterial ? (
+                <p className="border-t border-[#E5E7EB] bg-amber-50 px-2 py-1.5 text-[11px] font-semibold text-amber-800">
+                  Some materials do not have unit cost recorded. Material total excludes unpriced lines.
+                </p>
+              ) : null}
+            </div>
           ) : (
+            // Task 7 — non-cost users keep the existing status/quantity-only
+            // view, unchanged.
             <ul className="mt-1 space-y-1">
               {detail.materials.map((m, i) => (
                 <li key={i} className="flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -527,6 +647,31 @@ export function ClosureReviewModal({
             </ul>
           )}
         </div>
+
+        {/* Closure Review Cost Placement Polish Unit 10G.72A, Task 1/5/6 —
+            the FINAL Job Card cost summary, moved from the very top (before
+            Task 1's own "manager should first review workers, then
+            materials, then final total") to here — after Workers and
+            Materials, before Attachments/Closure Note/Review Checklist.
+            Deliberately only 3 tiles (not a repeat of Direct/Indirect Labor
+            Cost, already shown in the worker table's own footer above):
+            Total Labor Cost, Total Material Cost, Grand Total Job Cost —
+            avoiding the "same totals in too many places" Task 6 warns
+            against. Same already-computed totalLaborCost/materialCostTotal/
+            grandTotalJobCost figures — no new calculation here. */}
+        {detail.canViewCosts && detail.grandTotalJobCost !== null ? (
+          <div className="rounded-md border border-[#ED1C24]/30 bg-[#F9FAFB] p-3">
+            <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Final Job Card Cost</p>
+            <div className="mt-2 grid grid-cols-3 gap-2">
+              <CostTile label="Total Labor Cost" value={detail.totalLaborCost} />
+              <CostTile label="Total Material Cost" value={detail.materialCostTotal} />
+              <CostTile label="Grand Total Job Cost" value={detail.grandTotalJobCost} emphasize />
+            </div>
+            {detail.hasUnpricedMaterial ? (
+              <p className="mt-2 text-xs font-semibold text-amber-700">Grand total excludes unpriced material lines.</p>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* Closure Review Cleanup Unit 10G.25, Task 6/7/8: attachments now
             sit inside one highlighted card (was a plain text list) so the

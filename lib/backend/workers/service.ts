@@ -50,6 +50,11 @@ export function stripSalaryForNonManager(w: WorkerProfileRow, canManage: boolean
     monthly_cost: null,
     monthly_working_days: 0,
     manual_hourly_rate_reason: null,
+    // Closure Review Work and Material Cost Unit 10G.72, Task 2/9 — same
+    // zero-out treatment: indirect cost is a cost-sensitive field, so it
+    // never reaches a non-Manager's raw page payload either.
+    indirect_cost_per_job_card: 0,
+    indirect_cost_note: null,
   };
 }
 
@@ -133,6 +138,11 @@ export type WorkerProfileRow = {
   monthly_cost: number | null;
   monthly_working_days: number;
   manual_hourly_rate_reason: string | null;
+  // Closure Review Work and Material Cost Unit 10G.72, Task 1 — additive;
+  // same Manager/Super-Admin-only display rule as every other salary field
+  // above (stripped for non-Managers by stripSalaryForNonManager).
+  indirect_cost_per_job_card: number;
+  indirect_cost_note: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -162,6 +172,8 @@ function toRow(w: {
   monthly_cost: unknown;
   monthly_working_days: unknown;
   manual_hourly_rate_reason: string | null;
+  indirect_cost_per_job_card: unknown;
+  indirect_cost_note: string | null;
   created_at: Date;
   updated_at: Date;
 }): WorkerProfileRow {
@@ -190,6 +202,8 @@ function toRow(w: {
     monthly_cost: w.monthly_cost === null || w.monthly_cost === undefined ? null : Number(w.monthly_cost),
     monthly_working_days: w.monthly_working_days ? Number(w.monthly_working_days) : DEFAULT_MONTHLY_WORKING_DAYS,
     manual_hourly_rate_reason: w.manual_hourly_rate_reason,
+    indirect_cost_per_job_card: w.indirect_cost_per_job_card === null || w.indirect_cost_per_job_card === undefined ? 0 : Number(w.indirect_cost_per_job_card),
+    indirect_cost_note: w.indirect_cost_note,
     created_at: w.created_at.toISOString(),
     updated_at: w.updated_at.toISOString(),
   };
@@ -319,6 +333,13 @@ export async function createWorkerProfile(context: CurrentUserContext, input: Wo
       })
     : noSalary();
 
+  // Closure Review Work and Material Cost Unit 10G.72, Task 1/2 — same
+  // canSetSalary boundary as every other salary field above: Data Entry's
+  // create path always gets the defaults (0 / null), regardless of what a
+  // hand-built form submission tries to send.
+  const indirectCostPerJobCard = canSetSalary ? (input.indirectCostPerJobCard ?? 0) : 0;
+  const indirectCostNote = canSetSalary ? (input.indirectCostNote || null) : null;
+
   const created = await prisma.workerProfile.create({
     data: {
       employee_id: input.employeeId || null,
@@ -345,6 +366,8 @@ export async function createWorkerProfile(context: CurrentUserContext, input: Wo
       monthly_cost: salary.monthlyCost,
       monthly_working_days: salary.monthlyWorkingDays,
       manual_hourly_rate_reason: salary.manualHourlyRateReason,
+      indirect_cost_per_job_card: indirectCostPerJobCard,
+      indirect_cost_note: indirectCostNote,
       created_by: context.userId,
       updated_by: context.userId,
     },
@@ -429,6 +452,11 @@ export async function updateWorkerProfile(context: CurrentUserContext, id: strin
       monthly_cost: salary.monthlyCost,
       monthly_working_days: salary.monthlyWorkingDays,
       manual_hourly_rate_reason: salary.manualHourlyRateReason,
+      // updateWorkerProfile is already Manager/Super-Admin-only end to end
+      // (assertCanEditWorkerProfile above), so this is always trusted here,
+      // same as every other salary field in this call.
+      indirect_cost_per_job_card: input.indirectCostPerJobCard ?? 0,
+      indirect_cost_note: input.indirectCostNote || null,
       updated_by: context.userId,
     },
   });

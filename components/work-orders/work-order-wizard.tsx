@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Check, ChevronLeft, ChevronRight, Loader2, Plus, Search, X } from "lucide-react";
 
 import { upsertWorkOrderAction } from "@/app/actions/maintenance";
-import { searchOfflineInventoryMaterialsAction } from "@/app/actions/offline-inventory";
+import { searchOfflineInventoryMaterialsAction, getCostViewPermissionAction } from "@/app/actions/offline-inventory";
 import type { OfflineInventorySearchMatch } from "@/lib/store/offline-inventory-data";
 import { AttachmentUploadFields } from "@/components/files/attachment-upload-fields";
 import { AssetSearchPicker, type AssetPickerOption } from "@/components/assets/asset-search-picker";
@@ -46,6 +46,20 @@ type RequiredMaterialRowState = {
   showSuggestions: boolean;
   loading: boolean;
   searched: boolean;
+  // Job Card Required Materials Estimated Cost Visibility Unit 10G.73
+  // (second unit of this name), Task 1/8 — inventoryUnit is the matched
+  // suggestion's OWN unit (frozen at selection time), kept separate from
+  // the row's own, possibly-edited `unit` so a later mismatch can be
+  // detected and warned about without silently overwriting what the user
+  // chose. lastUnitCost is the matched material's own last known unit cost
+  // (Unit 10G.61's method) — read-only here, never editable (Task 1's own
+  // "do not update inventory cost from this step"). estimatedUnitCost is
+  // the user's own optional planning figure, only meaningful/editable for a
+  // material with no inventory match (Task 2) — never sent anywhere beyond
+  // this wizard's own live preview (Task 6's "UI-only planning estimate").
+  inventoryUnit: string | null;
+  lastUnitCost: number | null;
+  estimatedUnitCost: string;
 };
 
 function emptyMaterialRow(): RequiredMaterialRowState {
@@ -65,6 +79,9 @@ function emptyMaterialRow(): RequiredMaterialRowState {
     showSuggestions: false,
     loading: false,
     searched: false,
+    inventoryUnit: null,
+    lastUnitCost: null,
+    estimatedUnitCost: "",
   };
 }
 
@@ -93,6 +110,44 @@ function computeRowAvailability(row: RequiredMaterialRowState): RowAvailability 
   if (row.balance <= 0) return { kind: "unavailable" };
   if (qty <= row.balance) return { kind: "available" };
   return { kind: "partial", shortage: qty - row.balance };
+}
+
+// Job Card Required Materials Estimated Cost Visibility Unit 10G.73 (second
+// unit of this name), Task 1/2 — the ONE unit cost this row's estimate is
+// based on: the matched material's own lastUnitCost for an existing-inventory
+// row, or the user's own typed estimatedUnitCost for a brand-new/unmatched
+// row. null means "unpriced" (existing material with no recorded cost) or
+// "not entered yet" (new material) — the two cases this form always shows
+// as "Unpriced" per Task 1's own "do not invent cost, show Unpriced" rule.
+// Never invents a number for either case.
+function rowUnitCost(row: RequiredMaterialRowState): number | null {
+  if (row.materialKey !== null) return row.lastUnitCost;
+  const typed = row.estimatedUnitCost.trim();
+  if (typed === "") return null;
+  const n = Number(typed);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+// Task 1/2 — "Estimated Total Cost = requested qty × latest/estimated unit
+// cost"; null (never 0) whenever the unit cost itself is unknown, so an
+// unpriced line is never silently treated as free in the Job-Card-wide sum
+// below.
+function rowEstimatedTotal(row: RequiredMaterialRowState): number | null {
+  if (!row.description.trim()) return null;
+  const unitCost = rowUnitCost(row);
+  if (unitCost === null) return null;
+  const qty = Number(row.qty) || 0;
+  return Math.round(qty * unitCost * 1000) / 1000;
+}
+
+// Task 8 — "if inventory unit differs from selected required unit... do not
+// silently convert, show warning." Only meaningful once a real Offline
+// Inventory match exists (inventoryUnit is only ever set by
+// handleSelectSuggestion); comparison is case-sensitive on the exact unit
+// strings, matching how `unit` is stored/compared everywhere else in this
+// form (no normalization invented here).
+function hasUnitMismatch(row: RequiredMaterialRowState): boolean {
+  return row.materialKey !== null && row.inventoryUnit !== null && row.unit !== row.inventoryUnit;
 }
 
 function AvailabilityBadge({ row }: { row: RequiredMaterialRowState }) {
@@ -356,6 +411,23 @@ export function WorkOrderWizard({
   const searchTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
   const searchSeq = useRef<Record<number, number>>({});
 
+  // Job Card Required Materials Estimated Cost Visibility Unit 10G.73
+  // (second unit of this name), Task 5 — fetched once on mount; defaults to
+  // false (no cost UI) until resolved, so a non-cost-permitted viewer never
+  // sees so much as a flash of cost fields.
+  const [canViewCosts, setCanViewCosts] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    getCostViewPermissionAction()
+      .then((v) => {
+        if (!cancelled) setCanViewCosts(v);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     const timers = searchTimers.current;
     return () => {
@@ -375,11 +447,16 @@ export function WorkOrderWizard({
     const currentQty = partRows[index]?.qty ?? "";
     const shouldDefaultQty = value.trim() !== "" && currentQty.trim() === "";
     // Task 5: editing the name after a suggestion was selected clears the
-    // link — the row goes back to "New Material" until re-matched.
+    // link — the row goes back to "New Material" until re-matched. Unit
+    // 10G.73 (second unit of this name): inventoryUnit/lastUnitCost are
+    // cleared alongside materialKey/balance — they describe THAT match, not
+    // whatever gets typed next.
     updateRow(index, {
       description: value,
       materialKey: null,
       balance: null,
+      inventoryUnit: null,
+      lastUnitCost: null,
       showSuggestions: true,
       ...(shouldDefaultQty ? { qty: "1" } : {}),
     });
@@ -420,6 +497,13 @@ export function WorkOrderWizard({
       unit: match.unit,
       materialKey: match.key,
       balance: match.balance,
+      // Job Card Required Materials Estimated Cost Visibility Unit 10G.73
+      // (second unit of this name), Task 1/8 — inventoryUnit records this
+      // match's own unit (for the Task 8 mismatch check if the user later
+      // edits Unit away from it); lastUnitCost is this match's own last
+      // known cost, read-only display only, never editable from this step.
+      inventoryUnit: match.unit,
+      lastUnitCost: match.last_unit_cost,
       suggestions: [],
       showSuggestions: false,
       searched: false,
@@ -1060,10 +1144,15 @@ export function WorkOrderWizard({
             <p className="mb-1 text-xs text-[#6B7280]">
               Type a material name to check Offline Inventory availability.
             </p>
-            {/* Task 4 — kept short: no price/cost wording is added anywhere
-                else in this step, only this one clarifying line. */}
+            {/* Job Card Required Materials Estimated Cost Visibility Unit
+                10G.73 (second unit of this name), Task 2/7 — replaces the
+                old "prices are handled elsewhere" line now that this step
+                genuinely shows cost estimates; the "not a purchase order"
+                framing is kept (still true — this is a planning estimate,
+                not an actual/posted cost). */}
             <p className="mb-3 text-xs text-[#6B7280]">
-              Prices are handled during inventory receiving or purchase, not during Job Card creation.
+              This is not a purchase order or inventory receiving screen. Estimated cost is for Job Card planning
+              only — final cost is recorded when material is received or issued from inventory.
             </p>
             <div>
               <table className="w-full min-w-[560px] border-collapse text-sm">
@@ -1074,6 +1163,13 @@ export function WorkOrderWizard({
                     <th className="w-28 border border-[#E5E7EB] px-3 py-2">Part No. / Code</th>
                     <th className="w-16 border border-[#E5E7EB] px-3 py-2">Qty</th>
                     <th className="w-20 border border-[#E5E7EB] px-3 py-2">Unit</th>
+                    <th className="w-24 border border-[#E5E7EB] px-3 py-2">Available Stock</th>
+                    {canViewCosts && (
+                      <>
+                        <th className="w-28 border border-[#E5E7EB] px-3 py-2">Unit Cost / Estimated Unit Cost</th>
+                        <th className="w-24 border border-[#E5E7EB] px-3 py-2">Estimated Total</th>
+                      </>
+                    )}
                     <th className="border border-[#E5E7EB] px-3 py-2">Notes</th>
                   </tr>
                 </thead>
@@ -1185,7 +1281,64 @@ export function WorkOrderWizard({
                           />
                         )}
                         <input type="hidden" name={`req_part_uom_${i}`} value={row.unit} />
+                        {/* Task 8 — "do not silently convert, show
+                            warning" — only once a real Offline Inventory
+                            match exists and the user has since changed Unit
+                            away from that match's own unit. */}
+                        {hasUnitMismatch(row) && (
+                          <p className="mt-1 text-[10px] font-semibold text-amber-700">
+                            Selected unit differs from inventory unit. Please confirm unit before saving.
+                          </p>
+                        )}
                       </td>
+                      <td className="border border-[#E5E7EB] p-0.5 align-top text-xs text-[#4B5563]">
+                        {/* Task 1/3 — plain read display; the color-coded
+                            Available/Partially Available/Not Available/New
+                            Material badge already lives under the
+                            description cell above (unchanged) — this column
+                            is the plain "quantity available" figure Task 3
+                            explicitly asks for as its own column. */}
+                        {row.materialKey !== null && row.balance !== null
+                          ? `${row.balance} ${row.inventoryUnit ?? row.unit}`
+                          : row.description.trim()
+                            ? "New Material"
+                            : "—"}
+                      </td>
+                      {canViewCosts && (
+                        <>
+                          <td className="border border-[#E5E7EB] p-0.5 align-top">
+                            {row.materialKey !== null ? (
+                              // Task 1 — read-only: "do not update inventory
+                              // cost from this step." Never invents a cost;
+                              // "Unpriced" (not 0.000) when none is recorded.
+                              <p className="px-2.5 py-1.5 text-xs text-[#4B5563]">
+                                {row.lastUnitCost !== null ? `${row.lastUnitCost.toFixed(3)} KWD` : "Unpriced"}
+                              </p>
+                            ) : (
+                              // Task 2 — editable only for a material with no
+                              // inventory match; purely a planning figure,
+                              // never submitted to the server (Task 6).
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.001"
+                                placeholder="Optional"
+                                value={row.estimatedUnitCost}
+                                onChange={(e) => updateRow(i, { estimatedUnitCost: e.target.value })}
+                                className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
+                                disabled={!row.description.trim()}
+                              />
+                            )}
+                          </td>
+                          <td className="border border-[#E5E7EB] px-2.5 py-1.5 align-top text-xs text-[#4B5563]">
+                            {(() => {
+                              if (!row.description.trim()) return "—";
+                              const total = rowEstimatedTotal(row);
+                              return total !== null ? `${total.toFixed(3)} KWD` : "Unpriced";
+                            })()}
+                          </td>
+                        </>
+                      )}
                       <td className="border border-[#E5E7EB] p-0.5 align-top">
                         <input
                           name={`req_part_notes_${i}`}
@@ -1199,6 +1352,32 @@ export function WorkOrderWizard({
                 </tbody>
               </table>
             </div>
+
+            {/* Task 4 — Estimated Material Cost, summed only over rows that
+                actually have a description AND a known unit cost; a fully
+                unpriced set of lines reads "Not available" rather than a
+                misleading "0.000 KWD". */}
+            {canViewCosts && (() => {
+              const describedRows = partRows.slice(0, numPartRows).filter((r) => r.description.trim());
+              if (describedRows.length === 0) return null;
+              const lineTotals = describedRows.map(rowEstimatedTotal);
+              const pricedTotals = lineTotals.filter((t): t is number => t !== null);
+              const hasUnpriced = lineTotals.some((t) => t === null);
+              const estimatedMaterialCost = pricedTotals.reduce((sum, t) => sum + t, 0);
+              return (
+                <div className="mt-3 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3">
+                  <p className="text-sm font-bold text-[#111827]">
+                    Estimated Material Cost:{" "}
+                    {pricedTotals.length > 0 ? `${estimatedMaterialCost.toFixed(3)} KWD` : "Not available"}
+                  </p>
+                  {hasUnpriced && pricedTotals.length > 0 && (
+                    <p className="mt-1 text-xs text-amber-700">
+                      Some material lines do not have cost. Estimated total excludes unpriced lines.
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
 
             {errors.required_parts && (
               <p className="mt-2 text-xs text-[#DC2626]">{errors.required_parts}</p>

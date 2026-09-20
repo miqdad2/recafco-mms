@@ -1295,6 +1295,15 @@ model WorkerProfile {
   monthly_cost             Decimal? @db.Decimal(14, 3)
   monthly_working_days     Decimal? @default(26) @db.Decimal(6, 2)
   manual_hourly_rate_reason String?
+  // Closure Review Work and Material Cost Unit 10G.72, Task 1 — additive,
+  // NOT NULL DEFAULT 0 so every existing worker's total cost is unchanged
+  // until a Manager explicitly sets a non-zero value. Deliberately separate
+  // from computeSalary()/hourly_rate above: this is a one-time, per-Job-Card
+  // amount (never per hour), added once per worker when Closure Review
+  // computes that worker's total cost — not part of the hourly-rate salary
+  // method from Unit 10G.68.
+  indirect_cost_per_job_card Decimal @default(0) @db.Decimal(12, 3)
+  indirect_cost_note        String?
   created_at              DateTime @default(now()) @db.Timestamptz(6)
   updated_at              DateTime @default(now()) @db.Timestamptz(6)
   created_by              String?  @db.Uuid

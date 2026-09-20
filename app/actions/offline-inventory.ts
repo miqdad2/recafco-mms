@@ -6,6 +6,7 @@ import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts } from "@/lib/security/permissions";
 import { normalizeCategory, ADD_NEW_CATEGORY_VALUE } from "@/components/store/offline-inventory-types";
+import { CUSTOM_UNIT_VALUE, DEFAULT_UNIT } from "@/components/store/general-inventory-units";
 import { pickUploadedFile, validatePrivateFileWithOptions } from "@/lib/files/validation";
 import { getFileSecuritySettings } from "@/lib/files/settings";
 import { savePrivateFile } from "@/lib/files/local-storage";
@@ -247,12 +248,20 @@ export async function addOpeningStockAction(
 // with Receive Material", so a 0-quantity movement just establishes the
 // material's identity (name/category/unit/part no.) without affecting balance.
 
-function parseNonNegativeQty(raw: string): number {
+// Inventory Add New Material Cost and Unit Conversion UI Unit 10G.73, Task
+// 7 — Purchase Quantity itself may legitimately be fractional (e.g. "2.5
+// DRUM"), and a bulk conversion (Purchase Quantity × Conversion Quantity)
+// can produce a fractional Opening Inventory Quantity even from a whole
+// Purchase Quantity (e.g. a conversion factor of 158.99). Replaces the
+// former parseNonNegativeQty (which required a whole number) — only a
+// finite, non-negative value, matching the offline_inventory_movements.
+// quantity column's own Decimal(12,3) precision.
+function parseNonNegativeDecimal(raw: string, label: string): number {
   const trimmed = raw.trim();
   if (trimmed === "") return 0;
   const n = Number(trimmed);
-  if (!Number.isInteger(n) || n < 0) {
-    throw new Error("Initial quantity must be a whole number of 0 or more.");
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`${label} must be 0 or greater.`);
   }
   return n;
 }
@@ -269,23 +278,93 @@ export async function addNewMaterialAction(
     const newCategoryRaw = String(formData.get("new_category_name") ?? "");
     const manualPartNum  = toNullable(String(formData.get("manual_part_number") ?? ""));
     const ssRecCode      = toNullable(String(formData.get("ss_rec_code") ?? ""));
-    const qty            = parseNonNegativeQty(String(formData.get("opening_balance") ?? ""));
-    const unit           = toNullable(String(formData.get("unit") ?? "")) ?? "PCS";
     const location       = toNullable(String(formData.get("location") ?? ""));
-    const remarks        = toNullable(String(formData.get("remarks") ?? ""));
+    const userRemarks    = toNullable(String(formData.get("remarks") ?? ""));
 
-    // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 3 —
-    // optional; only rendered on the form for a viewer with cost
-    // permission, but re-validated here regardless of who submits it.
-    // Opening Stock Value = Initial Quantity * Opening Unit Cost — 0 when
-    // quantity is 0, even if a unit cost was still entered "as a default
-    // for later" (Task 3's explicit Case B behavior).
-    const openingUnitCostRaw = toNullable(String(formData.get("opening_unit_cost") ?? ""));
-    const openingUnitCost = openingUnitCostRaw !== null ? Number(openingUnitCostRaw) : null;
-    if (openingUnitCost !== null && (!Number.isFinite(openingUnitCost) || openingUnitCost < 0)) {
-      return { ok: false, error: "Opening unit cost must be 0 or greater." };
+    // Inventory Add New Material Cost and Unit Conversion UI Unit 10G.73,
+    // Task 1/4 — Purchase Unit/Purchase Quantity/Purchase Unit Cost are the
+    // "how it was bought" side; Inventory Unit is the "how it is tracked/
+    // issued" side. Resolves each unit's own OTHER/CUSTOM sentinel to the
+    // typed custom text, same convention as the General Inventory Request
+    // form's existing GENERAL_INVENTORY_UNIT_OPTIONS/CUSTOM_UNIT_VALUE
+    // pattern (reused here, not duplicated).
+    const purchaseUnitField = toNullable(String(formData.get("purchase_unit") ?? "")) ?? DEFAULT_UNIT;
+    const purchaseUnit =
+      purchaseUnitField === CUSTOM_UNIT_VALUE
+        ? toNullable(String(formData.get("custom_purchase_unit") ?? ""))
+        : purchaseUnitField;
+    if (!purchaseUnit) {
+      return { ok: false, error: "Purchase unit is required." };
     }
-    const openingStockValue = openingUnitCost !== null ? qty * openingUnitCost : null;
+
+    const useConversion = String(formData.get("use_conversion") ?? "") === "on";
+
+    // Task 3/4 — when NOT using a different inventory unit, Inventory Unit
+    // is simply the (already custom-resolved) Purchase Unit — the "normal
+    // item" case, no separate inventory-unit input is even submitted then.
+    let inventoryUnit: string | null;
+    if (!useConversion) {
+      inventoryUnit = purchaseUnit;
+    } else {
+      const inventoryUnitField = toNullable(String(formData.get("inventory_unit") ?? ""));
+      inventoryUnit =
+        inventoryUnitField === CUSTOM_UNIT_VALUE
+          ? toNullable(String(formData.get("custom_inventory_unit") ?? ""))
+          : (inventoryUnitField ?? DEFAULT_UNIT);
+    }
+    if (!inventoryUnit) {
+      return { ok: false, error: "Inventory unit is required." };
+    }
+
+    // Task 7 — Purchase Quantity >= 0, no whole-number requirement (a
+    // fractional purchase quantity, e.g. 2.5 DRUM, is legitimate).
+    const purchaseQty = parseNonNegativeDecimal(String(formData.get("purchase_quantity") ?? ""), "Purchase quantity");
+
+    // Task 7 — Conversion Quantity > 0 only required when units genuinely
+    // differ AND a quantity is actually being added; a conversion factor
+    // has no meaning to validate for a quantity-less "register the material
+    // now" save (Task 6).
+    let conversionQty = 1;
+    if (useConversion) {
+      const conversionRaw = toNullable(String(formData.get("conversion_quantity") ?? ""));
+      conversionQty = conversionRaw !== null ? Number(conversionRaw) : NaN;
+      if (purchaseQty > 0 && (!Number.isFinite(conversionQty) || conversionQty <= 0)) {
+        return { ok: false, error: "Conversion quantity must be greater than 0 when using a different inventory unit." };
+      }
+      if (!(conversionQty > 0)) conversionQty = 1;
+    }
+
+    // Task 4 — the three formulas this whole unit is about: Opening
+    // Inventory Quantity = Purchase Quantity × Conversion Quantity (Task 3's
+    // "same unit" case is simply conversionQty === 1, so this one formula
+    // covers both cases without a separate code path).
+    const qty = Math.round(purchaseQty * conversionQty * 1000) / 1000;
+
+    // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 3,
+    // extended by Unit 10G.73, Task 4/6 — optional; only rendered on the
+    // form for a viewer with cost permission, but re-validated here
+    // regardless of who submits it. Opening Stock Value = Purchase Quantity
+    // × Purchase Unit Cost (Task 4's own formula) — 0 when purchase
+    // quantity is 0, even if a unit cost was still entered "as a default
+    // for later" (Task 6's explicit "allow cost to be saved" behavior).
+    const purchaseUnitCostRaw = toNullable(String(formData.get("purchase_unit_cost") ?? ""));
+    const purchaseUnitCost = purchaseUnitCostRaw !== null ? Number(purchaseUnitCostRaw) : null;
+    if (purchaseUnitCost !== null && (!Number.isFinite(purchaseUnitCost) || purchaseUnitCost < 0)) {
+      return { ok: false, error: "Purchase unit cost must be 0 or greater." };
+    }
+    const inventoryUnitCost = purchaseUnitCost !== null ? Math.round((purchaseUnitCost / conversionQty) * 1000000) / 1000000 : null;
+    const openingStockValue = purchaseUnitCost !== null ? Math.round(purchaseQty * purchaseUnitCost * 1000) / 1000 : null;
+
+    // Task 4 — a clear, human-readable audit note on the movement itself
+    // ("Opening stock — 1 BARREL converted to 200 LITER"), only when a real
+    // conversion actually applies (different units AND an actual quantity
+    // was converted) — a plain same-unit save gets no such note, matching
+    // this form's existing plain-remarks behavior.
+    const conversionNote =
+      useConversion && purchaseQty > 0 && conversionQty !== 1
+        ? `Opening stock — ${purchaseQty} ${purchaseUnit} converted to ${qty} ${inventoryUnit}`
+        : null;
+    const remarks = conversionNote ? (userRemarks ? `${conversionNote} · ${userRemarks}` : conversionNote) : userRemarks;
 
     // Inventory Clarity, Low Stock, and Bulk Unit Balance Unit 10G.62, Task
     // 3 — optional, visible to every role (not gated on cost permission —
@@ -322,25 +401,30 @@ export async function addNewMaterialAction(
       resolvedCategory = normalizeCategory(categoryField);
     }
 
+    // Task 8/9 — a material's real identity (for duplicate-checking, the
+    // saved movement, and Inventory Material Settings) is always its
+    // INVENTORY unit, never the purchase unit — the purchase side is only a
+    // costing input, exactly as it already was before this unit when
+    // Purchase Unit didn't exist as a separate concept from Unit.
     const isSuperAdmin = context.role?.slug === "super_admin";
     if (!isSuperAdmin) {
       const dupe = await findDuplicateOpeningStock({
         manualName,
         manualPartNumber: manualPartNum,
         ssRecCode,
-        unit,
+        unit: inventoryUnit,
       });
       if (dupe) {
         return {
           ok: false,
           error: "This material already exists in Offline Inventory.",
-          existingMaterialKey: buildBalanceKey({ part_id: null, manual_material_name: manualName, unit }),
+          existingMaterialKey: buildBalanceKey({ part_id: null, manual_material_name: manualName, unit: inventoryUnit }),
         };
       }
       // Task 8 — space/case-collapsing fallback: catches "OIL FILTER" / " oil
       // filter " typed against an existing "Oil Filter" that the exact check
       // above (different spacing) would miss.
-      const normalizedDupe = await findExistingMaterialByNormalizedName({ manualName, unit });
+      const normalizedDupe = await findExistingMaterialByNormalizedName({ manualName, unit: inventoryUnit });
       if (normalizedDupe) {
         return {
           ok: false,
@@ -360,10 +444,10 @@ export async function addNewMaterialAction(
         ss_rec_code:           ssRecCode,
         category:              resolvedCategory,
         quantity:              qty,
-        unit,
+        unit:                  inventoryUnit,
         counterparty:          location,
         remarks,
-        unit_cost:             openingUnitCost,
+        unit_cost:             inventoryUnitCost,
         total_cost:            openingStockValue,
         created_by:            context.userId,
       },
@@ -378,7 +462,7 @@ export async function addNewMaterialAction(
       await upsertInventoryMaterialSettings({
         partId: null,
         manualMaterialName: manualName,
-        unit,
+        unit: inventoryUnit,
         minimumStockQuantity: minimumStock,
         reorderQuantity: reorderQty,
         createdBy: context.userId,
@@ -788,15 +872,34 @@ export async function searchOfflineInventoryMaterialsAction(
   query: string,
   opts?: { unit?: string; partNumber?: string }
 ): Promise<OfflineInventorySearchMatch[]> {
-  await requirePermission("work_orders.manage");
+  const context = await requirePermission("work_orders.manage");
   try {
     return await searchOfflineInventoryMaterials({
       query,
       unit: opts?.unit ?? null,
       partNumber: opts?.partNumber ?? null,
       limit: 10,
+      // Job Card Required Materials Estimated Cost Visibility Unit 10G.73
+      // (second unit of this name), Task 1/5 — last_unit_cost is computed
+      // (and only computed) for a cost-permitted caller; the New Job Card
+      // wizard's own autocomplete never receives it otherwise.
+      canViewCosts: canViewCosts(context),
     });
   } catch {
     return [];
   }
+}
+
+// Job Card Required Materials Estimated Cost Visibility Unit 10G.73 (second
+// unit of this name), Task 5 — the New Job Card wizard needs to know its own
+// viewer's cost-view permission BEFORE any material search happens (e.g. to
+// decide whether a brand-new, unmatched material row should even show an
+// "Estimated Unit Cost" input), so this is fetched once on the wizard's own
+// mount rather than piggy-backing on a per-row search result. Same
+// `work_orders.manage` gate as the search action above (this wizard step
+// can't be reached without it) and the same `canViewCosts()` function every
+// other cost-gated surface in this app already uses.
+export async function getCostViewPermissionAction(): Promise<boolean> {
+  const context = await requirePermission("work_orders.manage");
+  return canViewCosts(context);
 }

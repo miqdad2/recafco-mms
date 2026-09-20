@@ -394,6 +394,49 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
   };
 }
 
+// Closure Review Work and Material Cost Unit 10G.72, Task 5 — the exact same
+// "last unit cost" method Unit 10G.61 established (getOfflineInventoryBalance's
+// own latestCostPerMaterial query above: the single most recent movement,
+// of any type, AMONG THOSE THAT RECORDED a unit_cost, per material
+// identity), scoped to only the identities the caller needs rather than a
+// full store-wide balance sweep. Returns null (never 0) for any identity
+// with no priced movement recorded at all — callers must show "Unpriced"
+// for those, never invent a cost.
+export async function getLastUnitCostsForIdentities(
+  identities: { part_id: string | null; manual_material_name: string | null; unit: string }[]
+): Promise<Map<string, number | null>> {
+  const result = new Map<string, number | null>();
+  for (const id of identities) result.set(buildBalanceKey(id), null);
+  if (identities.length === 0) return result;
+
+  const identityOr: Prisma.offline_inventory_movementsWhereInput[] = identities.map((id) =>
+    id.part_id
+      ? { part_id: id.part_id, deleted_at: null }
+      : {
+          part_id: null,
+          manual_material_name: { equals: id.manual_material_name ?? "", mode: "insensitive" as const },
+          unit: { equals: id.unit, mode: "insensitive" as const },
+          deleted_at: null,
+        }
+  );
+
+  const rows = await prisma.offline_inventory_movements.findMany({
+    where: { OR: identityOr, unit_cost: { not: null } },
+    distinct: ["part_id", "manual_material_name", "unit"],
+    orderBy: [
+      { part_id: "asc" as const },
+      { manual_material_name: "asc" as const },
+      { unit: "asc" as const },
+      { movement_date: "desc" as const },
+      { created_at: "desc" as const },
+    ],
+    select: { part_id: true, manual_material_name: true, unit: true, unit_cost: true },
+  });
+
+  for (const r of rows) result.set(buildBalanceKey(r), r.unit_cost !== null ? Number(r.unit_cost) : null);
+  return result;
+}
+
 // Inventory Clarity, Low Stock, and Bulk Unit Balance Unit 10G.62, Task 2/3
 // — called only from addNewMaterialAction, and only when the user actually
 // entered a minimum stock and/or reorder quantity (never creates an empty
@@ -574,6 +617,13 @@ export type OfflineInventorySearchMatch = {
   location: string | null;
   balance: number;
   last_movement_date: string;
+  // Job Card Required Materials Estimated Cost Visibility Unit 10G.73
+  // (second unit of this name), Task 1/5 — the same Unit 10G.61 "last unit
+  // cost" method (getLastUnitCostsForIdentities), null when the caller
+  // lacks cost permission (never computed/queried at all in that case — see
+  // searchOfflineInventoryMaterials's own canViewCosts parameter) or when
+  // the material genuinely has no priced movement recorded.
+  last_unit_cost: number | null;
 };
 
 // Required Materials Inventory Matching Unit 5, Task 2: Required Materials
@@ -588,6 +638,11 @@ export async function searchOfflineInventoryMaterials(opts: {
   unit?: string | null;
   partNumber?: string | null;
   limit?: number;
+  // Job Card Required Materials Estimated Cost Visibility Unit 10G.73
+  // (second unit of this name), Task 1/5 — defaults to false so every other
+  // existing caller of this function keeps its current behavior (no cost
+  // query run, last_unit_cost always null) unless it explicitly opts in.
+  canViewCosts?: boolean;
 }): Promise<OfflineInventorySearchMatch[]> {
   const trimmed = opts.query.trim();
   if (trimmed.length < 2) return [];
@@ -656,7 +711,7 @@ export async function searchOfflineInventoryMaterials(opts: {
         }
   );
 
-  const [grouped, locationRows] = await Promise.all([
+  const [grouped, locationRows, lastUnitCostByKey] = await Promise.all([
     prisma.offline_inventory_movements.groupBy({
       by: ["part_id", "manual_material_name", "unit", "movement_type"],
       where: { OR: identityOr },
@@ -668,6 +723,11 @@ export async function searchOfflineInventoryMaterials(opts: {
       orderBy: distinctOrderBy,
       select: { part_id: true, manual_material_name: true, unit: true, counterparty: true },
     }),
+    // Job Card Required Materials Estimated Cost Visibility Unit 10G.73
+    // (second unit of this name), Task 1/5 — skipped entirely (never even
+    // queried) for a caller without cost permission, same "no leak by
+    // design" pattern this codebase already uses for every other cost read.
+    opts.canViewCosts ? getLastUnitCostsForIdentities(candidates) : Promise.resolve(new Map<string, number | null>()),
   ]);
 
   const balanceByKey = new Map<string, number>();
@@ -695,6 +755,7 @@ export async function searchOfflineInventoryMaterials(opts: {
         location: locationByKey.get(key) ?? null,
         balance: balanceByKey.get(key) ?? 0,
         last_movement_date: c.movement_date.toISOString(),
+        last_unit_cost: opts.canViewCosts ? lastUnitCostByKey.get(key) ?? null : null,
       };
     })
     .sort((a, b) => a.display_name.localeCompare(b.display_name));
