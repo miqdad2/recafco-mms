@@ -17,6 +17,13 @@ import {
 } from "@/lib/files/attachment-constants";
 import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/maintenance-types";
 import type { WorkerProfileRow } from "@/lib/backend/workers/service";
+// Job Card Required Materials Unit Dropdown Polish Unit 10G.59, Task 1 —
+// reads the same static unit list General Inventory / Stock Request
+// already uses (no price/conversion concept here, just the plain option
+// list + the "OTHER / CUSTOM" sentinel), so the two flows never drift onto
+// different vocabularies. Read-only import — that flow's own files are not
+// touched by this unit.
+import { GENERAL_INVENTORY_UNIT_OPTIONS, CUSTOM_UNIT_VALUE } from "@/components/store/general-inventory-units";
 
 // Required Materials Inventory Matching Unit 5 — Required Materials row
 // state. Description/Part No./Qty/Unit were previously plain uncontrolled
@@ -59,6 +66,18 @@ function emptyMaterialRow(): RequiredMaterialRowState {
     loading: false,
     searched: false,
   };
+}
+
+// Task 1/2 — `row.unit` is always the final, authoritative unit string
+// (unchanged in meaning from before this unit); the dropdown just needs to
+// know whether that string is one of the fixed options or something else
+// (a hand-typed custom unit, or a raw unit string carried over from a
+// matched Offline Inventory suggestion, e.g. handleSelectSuggestion below,
+// which may not exactly match one of the fixed options) — in which case it
+// shows CUSTOM_UNIT_VALUE selected with that exact string still visible and
+// editable in the custom-unit input, never silently lost or coerced.
+function unitSelectValue(unit: string): string {
+  return (GENERAL_INVENTORY_UNIT_OPTIONS as readonly string[]).includes(unit) ? unit : CUSTOM_UNIT_VALUE;
 }
 
 type RowAvailability =
@@ -187,6 +206,35 @@ const EMPTY_ASSIGNMENT: WizardAssignmentState = {
 
 type AssetOption = AssetPickerOption;
 
+// Smart Meter Field Unit 10G.60, Task 2/3/4 — the exact leaf asset-type
+// strings assets actually carry today (lib/assets/asset-excel-mapping.ts's
+// ASSET_TYPE_DISPLAY_ORDER, the same list driving the New/Edit Asset Type
+// dropdown and the Excel importer's TYPE_MAP) split into vehicle-like
+// (Kilometers) and equipment-like (Running Hours). assets.category is free
+// text with no DB CHECK constraint — a type outside both lists (a custom
+// type, "Needs Review", null/blank) falls back to the Meter Reading Type
+// dropdown below rather than guessing.
+const VEHICLE_ASSET_TYPES = ["Car", "Pickup", "Bus", "Half Lorry", "Tanker", "Trailer"];
+const EQUIPMENT_ASSET_TYPES = [
+  "Generator",
+  "Bobcat",
+  "Crane",
+  "Forklift",
+  "Compressor",
+  "Tower Light",
+  "Welding Machine",
+  "Manlift",
+  "Loader",
+];
+
+type MeterKind = "km" | "hours" | "unknown";
+
+function meterKindForAsset(category: string | null | undefined): MeterKind {
+  if (category && VEHICLE_ASSET_TYPES.includes(category)) return "km";
+  if (category && EQUIPMENT_ASSET_TYPES.includes(category)) return "hours";
+  return "unknown";
+}
+
 // ── Step indicator ────────────────────────────────────────────────────────────
 
 function StepIndicator({ current }: { current: number }) {
@@ -267,6 +315,18 @@ export function WorkOrderWizard({
   const formRef = useRef<HTMLFormElement>(null);
   const [step, setStep] = useState(1);
   const [selectedAssetId, setSelectedAssetId] = useState(preselectedAssetId ?? "");
+  // Smart Meter Field Unit 10G.60, Task 4/6 — meterReadingType only matters
+  // for an "unknown" asset type (Task 4's fallback dropdown), defaulting to
+  // "Not Applicable" so nothing is guessed; reset whenever the selected
+  // asset changes so a stale choice from a previous unknown asset never
+  // carries over. jobLocationTouched flips true only from the field's own
+  // onChange (a real keystroke) — the asset-driven autofill below sets the
+  // state directly, which never fires onChange, so it can never mark the
+  // field "touched" itself (Task 6: never overwrite something the user
+  // typed).
+  const [meterReadingType, setMeterReadingType] = useState<"none" | "km" | "hours">("none");
+  const [jobLocation, setJobLocation] = useState("");
+  const [jobLocationTouched, setJobLocationTouched] = useState(false);
   // Unit 10F.5, Task 3 (Recommended): one empty row by default + Add Row,
   // instead of 3 always-visible rows that looked like real material lines.
   const [numPartRows, setNumPartRows] = useState(1);
@@ -390,6 +450,24 @@ export function WorkOrderWizard({
   }, [showCancelConfirm, dirty]);
 
   const selectedAsset = assets.find((a) => a.id === selectedAssetId) ?? null;
+  const meterKind = meterKindForAsset(selectedAsset?.category);
+
+  // Smart Meter Field Unit 10G.60, Task 4/6 — "adjusting state when a prop
+  // changes" during render (React's recommended alternative to an effect
+  // for this exact case: https://react.dev/learn/you-might-not-need-an-effect)
+  // rather than a useEffect, so there's no extra render pass. Whenever the
+  // selected asset changes: reset the unknown-type fallback dropdown back
+  // to "Not Applicable" (never carries a previous asset's choice), and
+  // auto-fill Job location from the asset's own Current Location, but only
+  // while the user hasn't typed one themselves (jobLocationTouched).
+  const [lastSyncedAssetId, setLastSyncedAssetId] = useState(selectedAssetId);
+  if (selectedAssetId !== lastSyncedAssetId) {
+    setLastSyncedAssetId(selectedAssetId);
+    setMeterReadingType("none");
+    if (!jobLocationTouched && selectedAsset?.location) {
+      setJobLocation(selectedAsset.location);
+    }
+  }
 
   function validate(): boolean {
     const errs: Record<string, string> = {};
@@ -451,6 +529,14 @@ export function WorkOrderWizard({
         const qty = Number(qtyRaw);
         if (!Number.isInteger(qty) || qty <= 0) {
           errs.required_parts = "Quantity must be greater than 0.";
+          break;
+        }
+        // Task 2 — only reachable when OTHER / CUSTOM is selected and left
+        // blank: the hidden req_part_uom_${i} input carries "" in that case
+        // (see unitSelectValue/the select's onChange above), every other
+        // choice always has a real, non-empty value.
+        if (!fd.get(`req_part_uom_${i}`)?.toString().trim()) {
+          errs.required_parts = "Enter a unit, or choose a value from the Unit list.";
           break;
         }
       }
@@ -627,38 +713,84 @@ export function WorkOrderWizard({
               <div>
                 <label className="block">
                   <FieldLabel label="Job location" hint="optional" />
-                  <input name="job_location" className={inp} placeholder="Site, building, or area" />
+                  <input
+                    name="job_location"
+                    value={jobLocation}
+                    onChange={(e) => {
+                      setJobLocation(e.target.value);
+                      setJobLocationTouched(true);
+                    }}
+                    className={inp}
+                    placeholder="Auto-filled from asset location, or enter site/building/area"
+                  />
                 </label>
               </div>
 
               {/* priority defaulted to Normal — not shown to user */}
               <input type="hidden" name="priority" value="Normal" />
 
-              <div>
-                <label className="block">
-                  <FieldLabel label="Running hours" hint="optional" />
-                  <input
-                    name="running_hours"
-                    type="number"
-                    step="0.01"
-                    className={inp}
-                    placeholder="e.g. 1250"
-                  />
-                </label>
-              </div>
+              {/* Smart Meter Field Unit 10G.60, Task 1/2/3/4 — only ONE
+                  meter field ever shows at once (or none), driven by the
+                  selected asset's type; both fields stay entirely optional
+                  and, since whichever isn't rendered is never present in
+                  the submitted form data at all, the unused one is simply
+                  never set (Task 5's "keep the other field empty/null"). */}
+              {meterKind === "km" && (
+                <div>
+                  <label className="block">
+                    <FieldLabel label="Current Kilometer Reading" hint="optional" />
+                    <input name="kilometers" type="number" step="0.01" className={inp} placeholder="e.g. 45000" />
+                  </label>
+                  <p className="mt-1 text-xs text-[#6B7280]">Enter the current kilometer reading, if available.</p>
+                </div>
+              )}
 
-              <div>
-                <label className="block">
-                  <FieldLabel label="Kilometers" hint="optional" />
-                  <input
-                    name="kilometers"
-                    type="number"
-                    step="0.01"
-                    className={inp}
-                    placeholder="e.g. 45000"
-                  />
-                </label>
-              </div>
+              {meterKind === "hours" && (
+                <div>
+                  <label className="block">
+                    <FieldLabel label="Current Running Hours" hint="optional" />
+                    <input name="running_hours" type="number" step="0.01" className={inp} placeholder="e.g. 1250" />
+                  </label>
+                  <p className="mt-1 text-xs text-[#6B7280]">Enter the current running hour reading, if available.</p>
+                </div>
+              )}
+
+              {meterKind === "unknown" && (
+                <div className="sm:col-span-2 space-y-3">
+                  <label className="block">
+                    <FieldLabel label="Meter Reading Type" hint="optional" />
+                    <select
+                      value={meterReadingType}
+                      onChange={(e) => setMeterReadingType(e.target.value as "none" | "km" | "hours")}
+                      className={inp}
+                    >
+                      <option value="none">Not Applicable</option>
+                      <option value="km">Kilometers</option>
+                      <option value="hours">Running Hours</option>
+                    </select>
+                  </label>
+
+                  {meterReadingType === "km" && (
+                    <div>
+                      <label className="block">
+                        <FieldLabel label="Current Kilometer Reading" hint="optional" />
+                        <input name="kilometers" type="number" step="0.01" className={inp} placeholder="e.g. 45000" />
+                      </label>
+                      <p className="mt-1 text-xs text-[#6B7280]">Enter the current kilometer reading, if available.</p>
+                    </div>
+                  )}
+
+                  {meterReadingType === "hours" && (
+                    <div>
+                      <label className="block">
+                        <FieldLabel label="Current Running Hours" hint="optional" />
+                        <input name="running_hours" type="number" step="0.01" className={inp} placeholder="e.g. 1250" />
+                      </label>
+                      <p className="mt-1 text-xs text-[#6B7280]">Enter the current running hour reading, if available.</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="mt-5">
@@ -925,8 +1057,13 @@ export function WorkOrderWizard({
             title="Required Materials"
             description="List materials required for this Job Card. This is not a purchase order."
           >
-            <p className="mb-3 text-xs text-[#6B7280]">
+            <p className="mb-1 text-xs text-[#6B7280]">
               Type a material name to check Offline Inventory availability.
+            </p>
+            {/* Task 4 — kept short: no price/cost wording is added anywhere
+                else in this step, only this one clarifying line. */}
+            <p className="mb-3 text-xs text-[#6B7280]">
+              Prices are handled during inventory receiving or purchase, not during Job Card creation.
             </p>
             <div>
               <table className="w-full min-w-[560px] border-collapse text-sm">
@@ -1019,12 +1156,35 @@ export function WorkOrderWizard({
                         />
                       </td>
                       <td className="border border-[#E5E7EB] p-0.5 align-top">
-                        <input
-                          name={`req_part_uom_${i}`}
-                          value={row.unit}
-                          onChange={(e) => updateRow(i, { unit: e.target.value })}
-                          className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                        />
+                        {/* Task 1/2 — the visible select/custom input are
+                            pure UI controls (no name attribute); the hidden
+                            input below always carries the one final,
+                            resolved unit string that actually gets
+                            submitted, so the server never has to resolve a
+                            sentinel value itself. */}
+                        <select
+                          value={unitSelectValue(row.unit)}
+                          onChange={(e) =>
+                            updateRow(i, { unit: e.target.value === CUSTOM_UNIT_VALUE ? "" : e.target.value })
+                          }
+                          className="w-full rounded bg-transparent px-1.5 py-1.5 text-sm outline-none focus:bg-red-50"
+                        >
+                          {GENERAL_INVENTORY_UNIT_OPTIONS.map((u) => (
+                            <option key={u} value={u}>
+                              {u}
+                            </option>
+                          ))}
+                          <option value={CUSTOM_UNIT_VALUE}>OTHER / CUSTOM</option>
+                        </select>
+                        {unitSelectValue(row.unit) === CUSTOM_UNIT_VALUE && (
+                          <input
+                            value={row.unit}
+                            onChange={(e) => updateRow(i, { unit: e.target.value })}
+                            placeholder="e.g. Bundle"
+                            className="mt-1 w-full rounded border border-[#E5E7EB] bg-white px-2 py-1 text-xs outline-none focus:bg-red-50"
+                          />
+                        )}
+                        <input type="hidden" name={`req_part_uom_${i}`} value={row.unit} />
                       </td>
                       <td className="border border-[#E5E7EB] p-0.5 align-top">
                         <input
@@ -1142,6 +1302,20 @@ export function WorkOrderWizard({
                       <p className="mt-0.5 text-[15px] font-semibold text-[#111827]">{reviewData.job_location}</p>
                     </div>
                   )}
+                  {/* Smart Meter Field Unit 10G.60, Task 8 — only whichever
+                      one was actually entered shows; never both, never an
+                      empty placeholder row when neither was entered. */}
+                  {reviewData.kilometers ? (
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">Current Kilometer Reading</p>
+                      <p className="mt-0.5 text-[15px] font-semibold text-[#111827]">{reviewData.kilometers}</p>
+                    </div>
+                  ) : reviewData.running_hours ? (
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">Current Running Hours</p>
+                      <p className="mt-0.5 text-[15px] font-semibold text-[#111827]">{reviewData.running_hours}</p>
+                    </div>
+                  ) : null}
                 </div>
                 {reviewData.operator_complaint && (
                   <div className="mt-5 border-t border-[#F3F4F6] pt-4">

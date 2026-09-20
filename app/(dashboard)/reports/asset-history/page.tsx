@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Printer } from "lucide-react";
 
 import { ReportSummaryGrid } from "@/components/reports/report-summary-card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -48,6 +49,16 @@ export default async function AssetRepairHistoryPage({
       <PageHeader
         title="Asset Repair History"
         description="View complete repair history by asset or machine."
+        actions={
+          // Printable Division-Based Reports Foundation Unit 10G.69, Task 3/9.
+          <Link
+            href="/reports/asset-history/print"
+            className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
+          >
+            <Printer className="h-4 w-4" aria-hidden="true" />
+            Print Report
+          </Link>
+        }
       />
 
       <div className="space-y-5 p-4 lg:p-6">

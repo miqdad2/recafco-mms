@@ -8,7 +8,7 @@ import { isManagerRole } from "@/lib/security/permissions";
 import { writeAuditLog } from "@/lib/audit/log";
 import { emitWorkerProfileRealtimeEvent } from "@/lib/realtime/events";
 import { normalizeMaterialKey } from "@/lib/materials/normalize-material";
-import { computeSalary, noSalary, isSalaryPending } from "@/lib/backend/workers/salary";
+import { computeSalary, noSalary, isSalaryPending, DEFAULT_MONTHLY_WORKING_DAYS } from "@/lib/backend/workers/salary";
 import type { WorkerProfileInput } from "@/lib/backend/workers/validators";
 
 export { isSalaryPending };
@@ -42,6 +42,14 @@ export function stripSalaryForNonManager(w: WorkerProfileRow, canManage: boolean
     food_allowance: 0,
     total_salary: 0,
     monthly_working_hours: 0,
+    // Worker Salary Cost Method and Rate Calculation Unit 10G.68, Task 10 —
+    // the same zero-out treatment for the new cost-method fields; none of
+    // these ever reach a non-Manager's raw page payload.
+    salary_input_method: null,
+    yearly_cost: null,
+    monthly_cost: null,
+    monthly_working_days: 0,
+    manual_hourly_rate_reason: null,
   };
 }
 
@@ -117,6 +125,14 @@ export type WorkerProfileRow = {
   food_allowance: number;
   total_salary: number;
   monthly_working_hours: number;
+  // Worker Salary Cost Method and Rate Calculation Unit 10G.68, Task 7 —
+  // additive; same Manager/Super-Admin-only display rule as every other
+  // salary field above (stripped for non-Managers by stripSalaryForNonManager).
+  salary_input_method: string | null;
+  yearly_cost: number | null;
+  monthly_cost: number | null;
+  monthly_working_days: number;
+  manual_hourly_rate_reason: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -141,6 +157,11 @@ function toRow(w: {
   food_allowance: unknown;
   total_salary: unknown;
   monthly_working_hours: unknown;
+  salary_input_method: string | null;
+  yearly_cost: unknown;
+  monthly_cost: unknown;
+  monthly_working_days: unknown;
+  manual_hourly_rate_reason: string | null;
   created_at: Date;
   updated_at: Date;
 }): WorkerProfileRow {
@@ -164,6 +185,11 @@ function toRow(w: {
     food_allowance: Number(w.food_allowance),
     total_salary: Number(w.total_salary),
     monthly_working_hours: Number(w.monthly_working_hours),
+    salary_input_method: w.salary_input_method,
+    yearly_cost: w.yearly_cost === null || w.yearly_cost === undefined ? null : Number(w.yearly_cost),
+    monthly_cost: w.monthly_cost === null || w.monthly_cost === undefined ? null : Number(w.monthly_cost),
+    monthly_working_days: w.monthly_working_days ? Number(w.monthly_working_days) : DEFAULT_MONTHLY_WORKING_DAYS,
+    manual_hourly_rate_reason: w.manual_hourly_rate_reason,
     created_at: w.created_at.toISOString(),
     updated_at: w.updated_at.toISOString(),
   };
@@ -279,12 +305,17 @@ export async function createWorkerProfile(context: CurrentUserContext, input: Wo
   const canSetSalary = isManagerRole(context);
   const salary = canSetSalary
     ? computeSalary({
+        salaryInputMethod: input.salaryInputMethod,
+        yearlyCost: input.yearlyCost,
+        monthlyCost: input.monthlyCost,
         basicSalary: input.basicSalary,
         transportAllowance: input.transportAllowance,
         accommodationAllowance: input.accommodationAllowance,
         foodAllowance: input.foodAllowance,
+        monthlyWorkingDays: input.monthlyWorkingDays,
         monthlyWorkingHours: input.monthlyWorkingHours,
         hourlyRate: input.hourlyRate,
+        manualHourlyRateReason: input.manualHourlyRateReason,
       })
     : noSalary();
 
@@ -309,6 +340,11 @@ export async function createWorkerProfile(context: CurrentUserContext, input: Wo
       food_allowance: salary.foodAllowance,
       total_salary: salary.totalSalary,
       monthly_working_hours: salary.monthlyWorkingHours,
+      salary_input_method: salary.salaryInputMethod,
+      yearly_cost: salary.yearlyCost,
+      monthly_cost: salary.monthlyCost,
+      monthly_working_days: salary.monthlyWorkingDays,
+      manual_hourly_rate_reason: salary.manualHourlyRateReason,
       created_by: context.userId,
       updated_by: context.userId,
     },
@@ -355,12 +391,17 @@ export async function updateWorkerProfile(context: CurrentUserContext, id: strin
   // reporting_manager/nationality are always trusted here — unlike create,
   // there is no Data-Entry-reachable path into this function at all.
   const salary = computeSalary({
+    salaryInputMethod: input.salaryInputMethod,
+    yearlyCost: input.yearlyCost,
+    monthlyCost: input.monthlyCost,
     basicSalary: input.basicSalary,
     transportAllowance: input.transportAllowance,
     accommodationAllowance: input.accommodationAllowance,
     foodAllowance: input.foodAllowance,
+    monthlyWorkingDays: input.monthlyWorkingDays,
     monthlyWorkingHours: input.monthlyWorkingHours,
     hourlyRate: input.hourlyRate,
+    manualHourlyRateReason: input.manualHourlyRateReason,
   });
 
   const updated = await prisma.workerProfile.update({
@@ -383,6 +424,11 @@ export async function updateWorkerProfile(context: CurrentUserContext, id: strin
       food_allowance: salary.foodAllowance,
       total_salary: salary.totalSalary,
       monthly_working_hours: salary.monthlyWorkingHours,
+      salary_input_method: salary.salaryInputMethod,
+      yearly_cost: salary.yearlyCost,
+      monthly_cost: salary.monthlyCost,
+      monthly_working_days: salary.monthlyWorkingDays,
+      manual_hourly_rate_reason: salary.manualHourlyRateReason,
       updated_by: context.userId,
     },
   });

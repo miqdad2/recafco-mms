@@ -8,7 +8,7 @@ import { setWorkerProfileActiveAction } from "@/app/actions/workers";
 import { WorkerProfileFormModal } from "@/components/admin/worker-profile-form-modal";
 import type { WorkerProfileRow } from "@/lib/backend/workers/service";
 import { WORKER_TYPES } from "@/lib/backend/workers/constants";
-import { isSalaryPending } from "@/lib/backend/workers/salary";
+import { isSalaryPending, salaryMethodLabel } from "@/lib/backend/workers/salary";
 
 type TypeFilter = "all" | (typeof WORKER_TYPES)[number];
 type StatusFilter = "active" | "inactive" | "all";
@@ -155,7 +155,14 @@ export function WorkerProfilesView({
                       {isSalaryPending(w) ? (
                         <StatusBadge label="Salary Pending" tone="amber" />
                       ) : (
-                        <StatusBadge label="Set" tone="green" />
+                        <StatusBadge label={w.salary_input_method === "manual_hourly_rate" ? "Manual Rate" : "Set"} tone="green" />
+                      )}
+                      {/* Worker Salary Cost Method and Rate Calculation Unit
+                          10G.68, Task 11 — the method as a small muted line
+                          under the status badge rather than its own column,
+                          so the table doesn't get any wider than before. */}
+                      {!isSalaryPending(w) && salaryMethodLabel(w.salary_input_method) && (
+                        <p className="mt-0.5 text-[10px] text-[#9CA3AF]">{salaryMethodLabel(w.salary_input_method)}</p>
                       )}
                     </td>
                   )}

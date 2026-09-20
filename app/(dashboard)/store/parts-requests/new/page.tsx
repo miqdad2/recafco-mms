@@ -1,11 +1,14 @@
 import { PartsRequestWizard } from "@/components/store/parts-request-wizard";
 import type { WorkOrderOption } from "@/components/store/parts-request-wizard";
+import { MaterialsRequestTypeSelector } from "@/components/store/materials-request-type-selector";
+import { GeneralInventoryRequestForm } from "@/components/store/general-inventory-request-form";
 import { BackLink } from "@/components/ui/back-link";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
 import { requireUser } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import { formatDate } from "@/lib/utils";
 
 export default async function NewPartsRequestPage({
   searchParams,
@@ -37,6 +40,65 @@ export default async function NewPartsRequestPage({
   const sp = (await searchParams) ?? {};
   // repair_order_id in the URL maps to the work_orders.id (same entity)
   const preselectedId = sp.repair_order_id?.trim() ?? "";
+
+  // Materials Request Type Selection Flow Unit 10G.58, Task 1/2/3 — same
+  // &type= gate as the modal entry point on the list page. A
+  // repair_order_id deep link already implies "For Job Card" and skips the
+  // selector, matching the modal's ?jobCardId= behavior.
+  const requestedType = sp.type?.trim() ?? "";
+  const effectiveType: "" | "job_card" | "general" =
+    requestedType === "job_card" || requestedType === "general"
+      ? requestedType
+      : preselectedId
+        ? "job_card"
+        : "";
+  const formError = sp.error?.trim() ?? null;
+
+  if (!effectiveType) {
+    return (
+      <>
+        <PageHeader
+          title="New Materials Request"
+          description="Choose how this material request will be used."
+          breadcrumb={
+            <PageBreadcrumb items={[{ label: "Materials Requests", href: "/store/parts-requests" }, { label: "New Materials Request" }]} />
+          }
+          actions={<BackLink href="/store/parts-requests" label="Back to Materials Requests" />}
+        />
+        <div className="p-4 lg:p-6">
+          <div className="mx-auto max-w-2xl rounded-lg border border-[#E5E7EB] bg-white p-5 shadow-sm">
+            <MaterialsRequestTypeSelector
+              baseHref="/store/parts-requests/new"
+              cancelHref="/store/parts-requests"
+            />
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  if (effectiveType === "general") {
+    const requester = await prisma.profiles.findUnique({ where: { id: context.userId }, select: { full_name: true } });
+    return (
+      <>
+        <PageHeader
+          title="New Materials Request"
+          description="Request materials for store stock or general inventory. No Job Card required."
+          breadcrumb={
+            <PageBreadcrumb items={[{ label: "Materials Requests", href: "/store/parts-requests" }, { label: "New Materials Request" }]} />
+          }
+          actions={<BackLink href="/store/parts-requests" label="Back to Materials Requests" />}
+        />
+        <div className="p-4 lg:p-6">
+          <GeneralInventoryRequestForm
+            requesterName={requester?.full_name ?? null}
+            requestedDateLabel={formatDate(new Date())}
+            errorMessage={formError}
+          />
+        </div>
+      </>
+    );
+  }
 
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
 

@@ -33,6 +33,13 @@ interface FormDocumentHeaderProps {
   variant?: "form" | "print";
   /** Logo asset path (default: /recafco-logo.png) */
   logoSrc?: string;
+  /**
+   * "print" variant only — shrinks logo/type sizing and padding for a
+   * one-A4-page layout. Opt-in and defaults to false so every existing
+   * print page (parts requests, purchase requests, asset history) keeps its
+   * current header size unchanged.
+   */
+  compact?: boolean;
 }
 
 export function FormDocumentHeader({
@@ -44,13 +51,18 @@ export function FormDocumentHeader({
   status,
   variant = "form",
   logoSrc = "/recafco-logo.png",
+  compact = false,
 }: FormDocumentHeaderProps) {
   if (variant === "print") {
     return (
-      <div className="flex items-start justify-between border-b-4 border-[#ED1C24] pb-5">
+      <div className={`flex items-start justify-between border-[#ED1C24] ${compact ? "border-b-2 pb-2" : "border-b-4 pb-5"}`}>
         {/* Left — logo + title */}
-        <div className="flex items-center gap-4">
-          <div className="relative h-20 w-24 flex-shrink-0 rounded-md border border-[#E5E7EB] bg-white">
+        <div className={`flex items-center ${compact ? "gap-3" : "gap-4"}`}>
+          <div
+            className={`relative flex-shrink-0 rounded-md border border-[#E5E7EB] bg-white ${
+              compact ? "h-12 w-14" : "h-20 w-24"
+            }`}
+          >
             <Image
               src={logoSrc}
               alt="RECAFCO logo"
@@ -61,13 +73,13 @@ export function FormDocumentHeader({
           </div>
           <div>
             {departmentName && (
-              <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">
+              <p className={`font-black uppercase tracking-wide text-[#4B5563] ${compact ? "text-[9px]" : "text-xs"}`}>
                 {departmentName}
               </p>
             )}
-            <h1 className="text-2xl font-black">{title}</h1>
+            <h1 className={compact ? "text-base font-black" : "text-2xl font-black"}>{title}</h1>
             {subtitle && (
-              <p className="text-sm text-[#4B5563]">{subtitle}</p>
+              <p className={compact ? "text-[10px] text-[#4B5563]" : "text-sm text-[#4B5563]"}>{subtitle}</p>
             )}
           </div>
         </div>
@@ -75,12 +87,12 @@ export function FormDocumentHeader({
         {/* Right — reference number + status */}
         {referenceNumber !== undefined && (
           <div className="text-right">
-            <p className="text-sm text-[#4B5563]">{referenceLabel}</p>
-            <p className="text-xl font-black text-[#ED1C24]">
+            <p className={compact ? "text-[10px] text-[#4B5563]" : "text-sm text-[#4B5563]"}>{referenceLabel}</p>
+            <p className={compact ? "text-sm font-black text-[#ED1C24]" : "text-xl font-black text-[#ED1C24]"}>
               {referenceNumber ?? "Not assigned"}
             </p>
             {status && (
-              <p className="mt-2 text-sm font-bold">{status}</p>
+              <p className={compact ? "mt-1 text-[10px] font-bold" : "mt-2 text-sm font-bold"}>{status}</p>
             )}
           </div>
         )}

@@ -24,7 +24,10 @@ import { cn } from "@/lib/utils";
 // link. Success handling is unchanged either way: the server action still
 // redirects to /store/offline-inventory, which naturally drops the
 // ?addMaterial= query param and closes the modal on success.
-export function AddNewMaterialForm({ modalMode = false }: { modalMode?: boolean } = {}) {
+export function AddNewMaterialForm({
+  modalMode = false,
+  canViewCosts = false,
+}: { modalMode?: boolean; canViewCosts?: boolean } = {}) {
   const router = useRouter();
   const modal = useLargeFormModal();
   const [state, formAction, isPending] = useActionState<OfflineMovementState, FormData>(
@@ -35,6 +38,15 @@ export function AddNewMaterialForm({ modalMode = false }: { modalMode?: boolean 
   const [category, setCategory] = useState("Other");
   const [newCategoryName, setNewCategoryName] = useState("");
   const isAddingCategory = category === ADD_NEW_CATEGORY_VALUE;
+  // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 3 — both
+  // optional and only rendered at all when canViewCosts (mirrors
+  // components/store/new-part-wizard.tsx's own established Unit Price
+  // pattern). Opening Stock Value is a live, client-side preview only —
+  // the real, authoritative total is computed server-side in
+  // addNewMaterialAction from these same two raw values.
+  const [openingQty, setOpeningQty] = useState("0");
+  const [openingUnitCost, setOpeningUnitCost] = useState("");
+  const openingStockValue = openingUnitCost ? (Number(openingQty) || 0) * Number(openingUnitCost) : 0;
 
   useEffect(() => {
     if (state?.ok) {
@@ -180,7 +192,8 @@ export function AddNewMaterialForm({ modalMode = false }: { modalMode?: boolean 
               min="0"
               step="1"
               inputMode="numeric"
-              defaultValue="0"
+              value={openingQty}
+              onChange={(e) => setOpeningQty(e.target.value)}
               placeholder="0"
               className={inp}
               disabled={isPending}
@@ -190,6 +203,80 @@ export function AddNewMaterialForm({ modalMode = false }: { modalMode?: boolean 
             </p>
           </div>
         </div>
+
+        {/* Inventory Clarity, Low Stock, and Bulk Unit Balance Unit 10G.62,
+            Task 3 — visible to every role (quantity/planning fields, not
+            cost), unlike the Opening Unit Cost section below. Both optional. */}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="nm-min-stock" className={lbl}>
+              Minimum Stock Level <span className="font-normal text-[#9CA3AF]">Optional</span>
+            </label>
+            <input
+              id="nm-min-stock"
+              type="number"
+              name="minimum_stock_quantity"
+              min="0"
+              step="0.001"
+              placeholder="e.g. 50"
+              className={inp}
+              disabled={isPending}
+            />
+            <p className="mt-1 text-xs text-[#9CA3AF]">
+              Below this balance, the material shows as Low Stock in Inventory Control.
+            </p>
+          </div>
+          <div>
+            <label htmlFor="nm-reorder-qty" className={lbl}>
+              Reorder Quantity <span className="font-normal text-[#9CA3AF]">Optional</span>
+            </label>
+            <input
+              id="nm-reorder-qty"
+              type="number"
+              name="reorder_quantity"
+              min="0.001"
+              step="0.001"
+              placeholder="e.g. 200"
+              className={inp}
+              disabled={isPending}
+            />
+            <p className="mt-1 text-xs text-[#9CA3AF]">How much to reorder when stock is low.</p>
+          </div>
+        </div>
+
+        {/* Inventory Cost and Stock Value Foundation Unit 10G.61, Task 3 —
+            cost fields only shown to a viewer with cost permission. */}
+        {canViewCosts && (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label htmlFor="nm-unit-cost" className={lbl}>
+                Opening Unit Cost (KWD) <span className="font-normal text-[#9CA3AF]">Optional</span>
+              </label>
+              <input
+                id="nm-unit-cost"
+                type="number"
+                name="opening_unit_cost"
+                min="0"
+                step="0.001"
+                placeholder="0.000"
+                value={openingUnitCost}
+                onChange={(e) => setOpeningUnitCost(e.target.value)}
+                className={inp}
+                disabled={isPending}
+              />
+              <p className="mt-1 text-xs text-[#9CA3AF]">
+                Price for one {unit}. Can still be saved even if Initial Quantity is 0, as the latest cost for this material.
+              </p>
+            </div>
+            <div>
+              <label className={lbl}>Opening Stock Value (KWD)</label>
+              <p className={cn(inp, "flex items-center bg-gray-50 font-semibold text-[#111827]")}>
+                {openingStockValue.toFixed(3)}
+              </p>
+              <p className="mt-1 text-xs text-[#9CA3AF]">Initial Quantity × Opening Unit Cost, calculated automatically.</p>
+            </div>
+          </div>
+        )}
 
         {/* Location / Bin */}
         <div>

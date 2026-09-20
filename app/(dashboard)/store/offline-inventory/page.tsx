@@ -3,9 +3,11 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { StoreBalanceView } from "@/components/store/store-balance-view";
 import { prisma } from "@/lib/db/prisma";
+import { canViewCosts as canViewCostsPermission } from "@/lib/security/permissions";
 import {
   canManageOfflineInventory,
   getOfflineInventoryBalance,
+  getInventorySpendingSummary,
   getWorkOrderOptions,
 } from "@/lib/store/offline-inventory-data";
 
@@ -16,6 +18,7 @@ export default async function StoreBalancePage({
 }) {
   const context = await requirePermission("parts.view");
   const canManage = canManageOfflineInventory(context);
+  const canViewCosts = canViewCostsPermission(context);
   // Simplification Task 2: Super Admin alone gets the one-time setup actions
   // (Add Opening Stock / Import Opening Stock) surfaced on this page — Data
   // Entry/Manager only see the daily Material Actions.
@@ -41,7 +44,7 @@ export default async function StoreBalancePage({
   // directly and prepended below rather than silently dropped from the list.
   const issueWorkOrderId = sp.workOrder || null;
 
-  const [{ balanceItems, totalReceived, totalIssued, balance }, workOrdersRaw, presetWorkOrder] =
+  const [{ balanceItems, totalReceived, totalIssued, balance, totalStockValue, lowStockCount }, workOrdersRaw, presetWorkOrder] =
     await Promise.all([
       getOfflineInventoryBalance(),
       showReceiveMaterial || showIssueMaterial ? getWorkOrderOptions() : Promise.resolve([]),
@@ -53,6 +56,48 @@ export default async function StoreBalancePage({
     presetWorkOrder && !workOrdersRaw.some((wo) => wo.id === presetWorkOrder.id)
       ? [presetWorkOrder, ...workOrdersRaw]
       : workOrdersRaw;
+
+  // Inventory Dashboard Spending and Simple Low Stock Rules Unit 10G.63,
+  // Task 4/5/6/7 — depends on balanceItems (for the category stock-value
+  // roll-up), so it runs after the Promise.all above rather than inside it.
+  const spendingSummary = await getInventorySpendingSummary(balanceItems);
+
+  // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 5 — strip
+  // cost fields from the data itself for a viewer without cost permission,
+  // not just from what the UI renders. Next.js sends every prop passed to
+  // a client component down in the page's own payload regardless of what
+  // that component chooses to display, so hiding the columns in
+  // StoreBalanceView alone would still leak the real numbers to the
+  // browser. balanceItemsForClient is the exact BalanceItem[] shape
+  // StoreBalanceView expects either way — just with the four cost fields
+  // zeroed out when they must not leave the server.
+  const balanceItemsForClient = canViewCosts
+    ? balanceItems
+    : balanceItems.map((item) => ({
+        ...item,
+        last_unit_cost: null,
+        stock_value: 0,
+        received_value: 0,
+        issued_value: 0,
+      }));
+
+  // Task 11 — same stripping principle as balanceItemsForClient: every
+  // field in spendingSummary is cost data (the category cost table and top
+  // issued materials' values included), so a non-cost viewer gets a fully
+  // zeroed-out summary rather than the UI merely choosing not to render
+  // it. topIssuedMaterialsForClient keeps quantity/unit/date (Task 7's
+  // "quantity-only version" for Data Entry) with only issuedValue zeroed.
+  const spendingSummaryForClient = canViewCosts
+    ? spendingSummary
+    : {
+        issuedValueThisWeek: 0,
+        issuedValueThisMonth: 0,
+        issuedValueThisYear: 0,
+        receivedValueThisMonth: 0,
+        unpricedIssuedCount: 0,
+        categoryCostSummary: [],
+        topIssuedMaterials: spendingSummary.topIssuedMaterials.map((m) => ({ ...m, issuedValue: 0 })),
+      };
 
   return (
     <>
@@ -73,12 +118,16 @@ export default async function StoreBalancePage({
       <AutoRefresh intervalMs={15000} />
       <RealtimeRefresh watch={["offline_inventory.", "material_ledger.", "store_materials.", "materials_request.", "job_card."]} />
       <StoreBalanceView
-        balanceItems={balanceItems}
+        balanceItems={balanceItemsForClient}
         totalReceived={totalReceived}
         totalIssued={totalIssued}
         balance={balance}
         canManage={canManage}
         isSuperAdmin={isSuperAdmin}
+        canViewCosts={canViewCosts}
+        totalStockValue={canViewCosts ? totalStockValue : 0}
+        lowStockCount={lowStockCount}
+        spendingSummary={spendingSummaryForClient}
         workOrders={workOrders}
         showAddMaterial={showAddMaterial}
         showReceiveMaterial={showReceiveMaterial}

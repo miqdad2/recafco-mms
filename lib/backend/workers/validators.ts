@@ -3,6 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import { WORKER_TYPES, SKILL_CATEGORIES } from "@/lib/backend/workers/constants";
+import { SALARY_INPUT_METHODS } from "@/lib/backend/workers/salary";
 
 export { WORKER_TYPES, SKILL_CATEGORIES };
 
@@ -41,6 +42,17 @@ export const workerProfileSchema = z.object({
   accommodationAllowance: z.coerce.number().min(0).max(999999.999).optional(),
   foodAllowance: z.coerce.number().min(0).max(999999.999).optional(),
   monthlyWorkingHours: z.coerce.number().min(1).max(999).optional(),
+  // Worker Salary Cost Method and Rate Calculation Unit 10G.68, Task 1/7 —
+  // Manager/Super-Admin-only to set (enforced in service.ts, same as every
+  // other salary field above). yearlyCost/monthlyCost are each only
+  // meaningful for their own method, but both stay simply optional here —
+  // computeSalary (lib/backend/workers/salary.ts) is what decides which one
+  // actually matters based on salaryInputMethod.
+  salaryInputMethod: z.enum(SALARY_INPUT_METHODS).optional(),
+  yearlyCost: z.coerce.number().min(0).max(9999999.999).optional(),
+  monthlyCost: z.coerce.number().min(0).max(999999.999).optional(),
+  monthlyWorkingDays: z.coerce.number().min(1).max(31).optional(),
+  manualHourlyRateReason: z.string().trim().max(300).optional(),
 });
 
 export type WorkerProfileInput = z.infer<typeof workerProfileSchema>;

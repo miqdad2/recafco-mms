@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { canViewCosts } from "@/lib/security/permissions";
 import { normalizeCategory, ADD_NEW_CATEGORY_VALUE } from "@/components/store/offline-inventory-types";
 import { pickUploadedFile, validatePrivateFileWithOptions } from "@/lib/files/validation";
 import { getFileSecuritySettings } from "@/lib/files/settings";
@@ -15,6 +16,7 @@ import {
   findExistingMaterialByNormalizedName,
   buildBalanceKey,
   searchOfflineInventoryMaterials,
+  upsertInventoryMaterialSettings,
   type OfflineInventorySearchMatch,
 } from "@/lib/store/offline-inventory-data";
 import { emitOfflineInventoryRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
@@ -272,6 +274,34 @@ export async function addNewMaterialAction(
     const location       = toNullable(String(formData.get("location") ?? ""));
     const remarks        = toNullable(String(formData.get("remarks") ?? ""));
 
+    // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 3 —
+    // optional; only rendered on the form for a viewer with cost
+    // permission, but re-validated here regardless of who submits it.
+    // Opening Stock Value = Initial Quantity * Opening Unit Cost — 0 when
+    // quantity is 0, even if a unit cost was still entered "as a default
+    // for later" (Task 3's explicit Case B behavior).
+    const openingUnitCostRaw = toNullable(String(formData.get("opening_unit_cost") ?? ""));
+    const openingUnitCost = openingUnitCostRaw !== null ? Number(openingUnitCostRaw) : null;
+    if (openingUnitCost !== null && (!Number.isFinite(openingUnitCost) || openingUnitCost < 0)) {
+      return { ok: false, error: "Opening unit cost must be 0 or greater." };
+    }
+    const openingStockValue = openingUnitCost !== null ? qty * openingUnitCost : null;
+
+    // Inventory Clarity, Low Stock, and Bulk Unit Balance Unit 10G.62, Task
+    // 3 — optional, visible to every role (not gated on cost permission —
+    // these are quantity/planning fields, not cost). Neither is required;
+    // an empty field simply means "no minimum/reorder configured."
+    const minimumStockRaw = toNullable(String(formData.get("minimum_stock_quantity") ?? ""));
+    const minimumStock = minimumStockRaw !== null ? Number(minimumStockRaw) : null;
+    if (minimumStock !== null && (!Number.isFinite(minimumStock) || minimumStock < 0)) {
+      return { ok: false, error: "Minimum stock level must be 0 or greater." };
+    }
+    const reorderQtyRaw = toNullable(String(formData.get("reorder_quantity") ?? ""));
+    const reorderQty = reorderQtyRaw !== null ? Number(reorderQtyRaw) : null;
+    if (reorderQty !== null && (!Number.isFinite(reorderQty) || reorderQty <= 0)) {
+      return { ok: false, error: "Reorder quantity must be greater than 0." };
+    }
+
     if (!manualName) {
       return { ok: false, error: "Material name is required." };
     }
@@ -333,11 +363,27 @@ export async function addNewMaterialAction(
         unit,
         counterparty:          location,
         remarks,
+        unit_cost:             openingUnitCost,
+        total_cost:            openingStockValue,
         created_by:            context.userId,
       },
     });
 
     await emitOfflineInventoryRealtimeEvent(REALTIME_EVENTS.OFFLINE_INVENTORY_OPENING_STOCK_ADDED, created.id, context.userId);
+
+    // Task 2/3 — only ever writes a settings row when the user actually
+    // configured one of the two fields; never creates an empty row just
+    // because a material was added.
+    if (minimumStock !== null || reorderQty !== null) {
+      await upsertInventoryMaterialSettings({
+        partId: null,
+        manualMaterialName: manualName,
+        unit,
+        minimumStockQuantity: minimumStock,
+        reorderQuantity: reorderQty,
+        createdBy: context.userId,
+      });
+    }
 
     revalidatePath("/store/offline-inventory");
     revalidatePath("/store/offline-inventory/movements");
@@ -614,14 +660,20 @@ export type MaterialMovementRow = {
   reference_number: string | null;
   work_order_number: string | null;
   created_by_name: string;
+  // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 7/8 — both
+  // always null for a viewer without cost permission (stripped below
+  // before this ever reaches the client), not just hidden in the UI.
+  unit_cost: number | null;
+  total_cost: number | null;
 };
 
 // `key` is the same BalanceItem.key produced by buildBalanceKey() in
 // lib/store/offline-inventory-data.ts — "part:<id>" or "manual:<name>|<unit>".
-export async function getMaterialRecentMovementsAction(key: string): Promise<MaterialMovementRow[]> {
-  await requirePermission("parts.view");
-
-  const where = key.startsWith("part:")
+// Shared by both the recent-movements action and (Inventory Dashboard
+// Spending and Simple Low Stock Rules Unit 10G.63, Task 10) the per-
+// material cost summary action below — same identity parsing, one place.
+function buildMovementIdentityWhere(key: string) {
+  return key.startsWith("part:")
     ? { part_id: key.slice("part:".length), deleted_at: null }
     : (() => {
         const rest = key.slice("manual:".length);
@@ -635,6 +687,13 @@ export async function getMaterialRecentMovementsAction(key: string): Promise<Mat
           deleted_at: null,
         };
       })();
+}
+
+export async function getMaterialRecentMovementsAction(key: string): Promise<MaterialMovementRow[]> {
+  const context = await requirePermission("parts.view");
+  const showCosts = canViewCosts(context);
+
+  const where = buildMovementIdentityWhere(key);
 
   const rows = await prisma.offline_inventory_movements.findMany({
     where,
@@ -656,7 +715,64 @@ export async function getMaterialRecentMovementsAction(key: string): Promise<Mat
     reference_number: r.reference_number,
     work_order_number: r.work_orders?.work_order_number ?? null,
     created_by_name: r.profiles.full_name,
+    unit_cost: showCosts && r.unit_cost !== null ? Number(r.unit_cost) : null,
+    total_cost: showCosts && r.total_cost !== null ? Number(r.total_cost) : null,
   }));
+}
+
+// ── Material detail — per-material cost summary for the View modal ──────────
+// Inventory Dashboard Spending and Simple Low Stock Rules Unit 10G.63, Task
+// 10 — the page-level spendingSummary (lib/store/offline-inventory-data.ts's
+// getInventorySpendingSummary) aggregates by category and by top material,
+// not by this ONE material's own week/month/year issued totals, so the
+// Material Details modal needs its own small, identity-scoped query. Same
+// "This Week = rolling last 7 days, This Month/Year = calendar to date"
+// definitions as the page-level summary, same total_cost-or-quantity*
+// unit_cost fallback.
+export type MaterialCostSummary = {
+  issuedValueThisWeek: number;
+  issuedValueThisMonth: number;
+  issuedValueThisYear: number;
+  receivedValueThisMonth: number;
+};
+
+const ZERO_MATERIAL_COST_SUMMARY: MaterialCostSummary = {
+  issuedValueThisWeek: 0,
+  issuedValueThisMonth: 0,
+  issuedValueThisYear: 0,
+  receivedValueThisMonth: 0,
+};
+
+export async function getMaterialCostSummaryAction(key: string): Promise<MaterialCostSummary> {
+  const context = await requirePermission("parts.view");
+  // Task 11 — a non-cost viewer gets an already-zeroed summary, not just a
+  // UI that chooses not to render it.
+  if (!canViewCosts(context)) return ZERO_MATERIAL_COST_SUMMARY;
+
+  const now = new Date();
+  const startOfYear = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const startOfWeek = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6));
+
+  const where = buildMovementIdentityWhere(key);
+  const rows = await prisma.offline_inventory_movements.findMany({
+    where: { ...where, movement_type: { in: ["ISSUED", "RECEIVED"] }, movement_date: { gte: startOfYear } },
+    select: { movement_type: true, movement_date: true, quantity: true, unit_cost: true, total_cost: true },
+  });
+
+  const summary = { ...ZERO_MATERIAL_COST_SUMMARY };
+  for (const r of rows) {
+    const qty = Number(r.quantity);
+    const cost = r.total_cost !== null ? Number(r.total_cost) : r.unit_cost !== null ? qty * Number(r.unit_cost) : 0;
+    if (r.movement_type === "ISSUED") {
+      summary.issuedValueThisYear += cost;
+      if (r.movement_date >= startOfMonth) summary.issuedValueThisMonth += cost;
+      if (r.movement_date >= startOfWeek) summary.issuedValueThisWeek += cost;
+    } else if (r.movement_type === "RECEIVED" && r.movement_date >= startOfMonth) {
+      summary.receivedValueThisMonth += cost;
+    }
+  }
+  return summary;
 }
 
 // ── Required Materials autocomplete search ─────────────────────────────────

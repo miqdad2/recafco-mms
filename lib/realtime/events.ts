@@ -75,6 +75,11 @@ export const REALTIME_EVENTS = {
   JOB_CARD_WORK_PAUSED:       "job_card.work_paused",
   JOB_CARD_WORK_STOPPED:      "job_card.work_stopped",
   JOB_CARD_WORK_TIME_UPDATED: "job_card.work_time_updated",
+  // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 3: Finish
+  // Work is distinct from a plain Stop — it also marks the worker
+  // assignment "finished" (done for good on this Job Card, not just paused
+  // between sessions). Still "job_card." prefixed, so no watch list changes.
+  JOB_CARD_WORK_FINISHED:     "job_card.work_finished",
   MATERIALS_REQUEST_CREATED:   "materials_request.created",
   MATERIALS_REQUEST_UPDATED:   "materials_request.updated",
   MATERIALS_REQUEST_APPROVED:  "materials_request.approved",

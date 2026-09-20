@@ -23,6 +23,7 @@ import { approvePartsRequest } from "@/lib/backend/parts-requests/service";
 import { CLOSURE_REQUESTED_STATUS } from "@/lib/work-orders/simplified-status-display";
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
+import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
 
 type WorkflowResult = {
   workOrderId: string;
@@ -1000,14 +1001,31 @@ async function assertRequiredMaterialsFulfilled(tx: BackendTransaction, workOrde
   }
 }
 
-// Work Session Time Tracking and Labor Cost Calculation Unit 8, Task 10:
-// completed/paused historical sessions never block closure — only a
-// currently-running ("Active") session does, since it represents work
-// physically in progress right now.
-async function assertNoActiveWorkSessions(tx: BackendTransaction, workOrderId: string, errorMessage: string) {
+// Worker Timer and Closure Logic Hardening Unit 10G.53, Task 4 — replaces
+// the old assertNoActiveWorkSessions (which only checked for a currently-
+// running session and let Paused/Not-Started workers through, the exact bug
+// this unit fixes). The real, server-side enforcement of the main business
+// rule: every assigned worker must be Finished before closure can be
+// requested — Working and Paused both block (paused work is not completed
+// work), and so does an assigned-but-Not-Started worker (finish it or
+// remove the assignment). A Job Card with no assigned workers at all is
+// unaffected, same as before. Uses the exact same checkWorkersReadyForClosure()
+// the Daily Activity board, Job Card detail page, and Request Closure modal
+// all mirror read-only — this is the one place it's actually enforced, so a
+// user who bypasses every UI guard and calls the action directly still gets
+// rejected identically to what the UI already told them.
+async function assertWorkersReadyForClosure(tx: BackendTransaction, workOrderId: string) {
   const summary = await getWorkOrderLaborSummary(tx, workOrderId);
-  if (summary.has_active_session) {
-    throw new AppError(errorMessage, { code: "WORKFLOW_ERROR" });
+  const check = checkWorkersReadyForClosure(
+    summary.workers.map((w) => ({
+      workerAssignmentId: w.worker_assignment_id,
+      workerName: w.worker_name,
+      assignmentStatus: w.assignment_status,
+      sessionStatus: w.status,
+    }))
+  );
+  if (!check.ready) {
+    throw new AppError(`This Job Card is not ready for closure. ${check.reasons.join(" ")}`, { code: "WORKFLOW_ERROR" });
   }
 }
 
@@ -1054,11 +1072,7 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
       "This Job Card has pending Materials Requests. Complete materials before requesting closure."
     );
 
-    await assertNoActiveWorkSessions(
-      tx,
-      workOrderId,
-      "This Job Card has active work sessions. Stop all work sessions before requesting closure."
-    );
+    await assertWorkersReadyForClosure(tx, workOrderId);
 
     const row = await updateWorkOrderStatus(tx, workOrderId, CLOSURE_REQUESTED_STATUS, context.userId);
     await tx.approvals.create({
@@ -1110,6 +1124,14 @@ export async function approveJobCardClosure(context: CurrentUserContext, workOrd
         { code: "WORKFLOW_ERROR" }
       );
     }
+
+    // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 4: a worker
+    // can still be started/resumed while a closure request sits pending
+    // Manager review (Closure Requested is not one of the statuses that
+    // blocks startWorkSession) — re-checked here too, not just at request
+    // time, so an Approve click can never close a Job Card a worker has
+    // since gone back to working on.
+    await assertWorkersReadyForClosure(tx, workOrderId);
 
     const row = await updateWorkOrderStatus(tx, workOrderId, "Closed", context.userId);
     await tx.approvals.create({
@@ -1175,11 +1197,7 @@ export async function closeWorkOrder(context: CurrentUserContext, workOrderId: s
       "This Job Card has pending Materials Requests. Complete materials before closing."
     );
 
-    await assertNoActiveWorkSessions(
-      tx,
-      workOrderId,
-      "This Job Card has active work sessions. Stop all work sessions before closing."
-    );
+    await assertWorkersReadyForClosure(tx, workOrderId);
 
     return transitionWorkOrderInTransaction(tx, context, workOrderId, "Closed");
   });

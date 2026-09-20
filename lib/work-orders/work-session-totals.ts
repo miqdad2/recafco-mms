@@ -22,12 +22,31 @@ type DbClient = typeof prisma | BackendTransaction;
 // directly — importing anything from THIS file (server-only) would break
 // their build. Re-exported here too so server-side callers of this file can
 // still import both from one place if convenient.
-export { computeHoursVariance, hoursVarianceTone, type HoursVariance, type HoursVarianceStatus } from "@/lib/work-orders/hours-variance";
+export {
+  computeHoursVariance,
+  hoursVarianceTone,
+  type HoursVariance,
+  type HoursVarianceStatus,
+  // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 2: same
+  // re-export-for-convenience convention as computeHoursVariance above —
+  // the real client-safe implementation lives in hours-variance.ts.
+  deriveSimpleWorkerState,
+  simpleWorkerStateTone,
+  type SimpleWorkerState,
+} from "@/lib/work-orders/hours-variance";
 
 export type WorkerSessionStatus = "Not Started" | "Active" | "Paused" | "Completed";
 
 export type WorkerLaborRow = {
   worker_assignment_id: string;
+  // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 2/4: the
+  // roster row's own WorkOrderWorkerAssignment.status ("active" | "finished"
+  // | "removed" — removed rows are never fetched here in the first place).
+  // Combined with `status` below via deriveSimpleWorkerState() to get the
+  // 4 simple UI states (Not Started/Working/Paused/Finished) and to power
+  // the closure-readiness guard — a zero-cost passthrough of a column
+  // already in memory, same convention as estimated_hours below.
+  assignment_status: string;
   worker_id: string;
   worker_name: string;
   worker_role: string;
@@ -97,8 +116,14 @@ export type WorkOrderLaborSummary = {
 // and (Task 10) the closure-blocking guard's "any active session" check.
 export async function getWorkOrderLaborSummary(db: DbClient, workOrderId: string): Promise<WorkOrderLaborSummary> {
   const [assignments, sessions] = await Promise.all([
+    // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 3: widened
+    // from "active"-only to also include "finished" — a worker who has
+    // completed their work on this Job Card must keep showing here (with
+    // their real accumulated hours/cost), not disappear from the roster the
+    // moment Finish Work is clicked. "removed" rows stay excluded, same as
+    // before — that value alone means "taken off this roster entirely."
     db.workOrderWorkerAssignment.findMany({
-      where: { work_order_id: workOrderId, status: "active" },
+      where: { work_order_id: workOrderId, status: { in: ["active", "finished"] } },
       include: { worker_profiles: { select: { id: true, name: true } } },
       orderBy: [{ worker_role: "asc" }, { assigned_at: "asc" }],
     }),
@@ -140,6 +165,7 @@ export async function getWorkOrderLaborSummary(db: DbClient, workOrderId: string
       worker_name: a.worker_profiles.name,
       worker_role: a.worker_role,
       hourly_rate_snapshot: Number(a.hourly_rate_snapshot),
+      assignment_status: a.status,
       status,
       total_minutes: minutes,
       total_hours: Math.round((minutes / 60) * 100) / 100,
@@ -199,8 +225,11 @@ export async function getWorkOrderLaborSummariesBulk(
   const monthStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), 1);
 
   const [assignments, sessions] = await Promise.all([
+    // Unit 10G.53, Task 3: same "active" + "finished" widen as
+    // getWorkOrderLaborSummary above — this bulk variant feeds the Daily
+    // Activity board, so a finished worker must keep showing there too.
     db.workOrderWorkerAssignment.findMany({
-      where: { work_order_id: { in: workOrderIds }, status: "active" },
+      where: { work_order_id: { in: workOrderIds }, status: { in: ["active", "finished"] } },
       include: { worker_profiles: { select: { id: true, name: true, skill_category: true } } },
       orderBy: [{ worker_role: "asc" }, { assigned_at: "asc" }],
     }),
@@ -299,6 +328,7 @@ export async function getWorkOrderLaborSummariesBulk(
         worker_name: a.worker_profiles.name,
         worker_role: a.worker_role,
         hourly_rate_snapshot: Number(a.hourly_rate_snapshot),
+        assignment_status: a.status,
         status,
         total_minutes: minutes,
         total_hours: Math.round((minutes / 60) * 100) / 100,

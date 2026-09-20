@@ -10,6 +10,7 @@ import {
   FileText,
   Loader2,
   Plus,
+  Printer,
   X,
   XCircle,
 } from "lucide-react";
@@ -433,6 +434,15 @@ export function ServiceContractsShell({
           <>
             {/* Missing Page Navigation Buttons Fix Unit 10E.3, Task 3. */}
             <PageNavigationActions secondaryLinks={[{ label: "Assets & Equipment", href: "/assets" }]} />
+            {/* Printable Asset Register, Materials Requests, and Service
+                Contracts Reports Unit 10G.71, Task 5. */}
+            <Link
+              href="/reports/service-contracts-expiry/print"
+              className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
+            >
+              <Printer className="h-4 w-4" aria-hidden />
+              Print Report
+            </Link>
             <button
               type="button"
               onClick={() => setOpenModal(true)}

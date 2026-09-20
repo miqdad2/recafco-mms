@@ -17,8 +17,41 @@ function formatElapsed(ms: number): string {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
 }
 
+// Worker Timer and Closure Logic Hardening Unit 10G.53, Task 6/7 — production
+// hydration-safety fix.
+//
+// The previous version computed its initial state as
+// `useState(() => formatElapsed(Date.now() - new Date(startedAt).getTime()))`.
+// That initializer runs during BOTH the server render (using the server's
+// clock) and React's first client render before hydration commits (using the
+// browser's clock) — two different instants, so the very first paint's text
+// content almost never matches between server and client. On localhost this
+// gap is a few milliseconds and self-corrects too fast to ever notice; on a
+// real deployed server under real network latency (and with several rows
+// hydrating on one Daily Activity page) the gap is large enough to be a
+// genuine hydration mismatch, which is the most likely explanation for "the
+// live counter sometimes does not update after deployment" — a component
+// that failed to hydrate cleanly can end up with its effects never
+// attaching, leaving the displayed number frozen at whatever the server
+// rendered until a full reload.
+//
+// Fixed with the exact same pattern this codebase already established for
+// this exact class of bug (components/layout/live-top-clock.tsx): start from
+// a fixed, time-independent placeholder ("00:00") that renders identically
+// on the server and on the client's pre-hydration pass — never computed from
+// `Date.now()` — then only ever set a real, clock-derived value from inside
+// useEffect, a post-hydration DOM update, never a mismatch. That first real
+// tick fires synchronously on mount (before the 1s interval's first delay),
+// so the placeholder is on screen for at most one paint. The elapsed time
+// itself is still always recomputed from `startedAt` (the DB's own
+// started_at, round-tripped as a full ISO-8601 UTC string) plus the
+// browser's current clock on every tick, exactly as before — correct after
+// a hard refresh, and correct from any other browser, since neither depends
+// on anything but that one persisted timestamp.
+const PLACEHOLDER = "00:00";
+
 export function LiveTimer({ startedAt, className }: { startedAt: string; className?: string }) {
-  const [elapsedLabel, setElapsedLabel] = useState(() => formatElapsed(Date.now() - new Date(startedAt).getTime()));
+  const [elapsedLabel, setElapsedLabel] = useState<string | null>(null);
 
   useEffect(() => {
     const start = new Date(startedAt).getTime();
@@ -48,7 +81,7 @@ export function LiveTimer({ startedAt, className }: { startedAt: string; classNa
 
   return (
     <span className={className ?? "font-mono text-sm font-black tabular-nums text-[#16A34A]"} aria-live="off">
-      {elapsedLabel}
+      {elapsedLabel ?? PLACEHOLDER}
     </span>
   );
 }

@@ -13,6 +13,10 @@ import {
   type BalanceItem,
   type RecentMovementRow,
   type WorkOrderOption,
+  type StockStatus,
+  type CategoryCostSummary,
+  type TopIssuedMaterial,
+  type InventorySpendingSummary,
 } from "@/components/store/offline-inventory-types";
 
 // Offline Inventory Control's own "can manage" gate — deliberately separate
@@ -132,6 +136,20 @@ export type OfflineInventoryBalance = {
   totalReceived: number;
   totalIssued: number;
   balance: number;
+  // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 6 — sums of
+  // the per-item values below, for the page's cost summary card(s). Callers
+  // without cost permission simply never read these (the UI gates on
+  // canViewCosts before rendering anything cost-related), so there's no
+  // separate "stripped" variant of this function.
+  totalStockValue: number;
+  totalReceivedValue: number;
+  totalIssuedValue: number;
+  // Inventory Dashboard Spending and Simple Low Stock Rules Unit 10G.63,
+  // Task 2 — "Low Stock / Needs Attention": count of items whose
+  // stock_status is Low Stock, Out of Stock, Negative Stock, OR Review
+  // Required (Unit 10G.62 excluded Review Required here; this unit
+  // explicitly folds it back in, per the task's own redefinition).
+  lowStockCount: number;
 };
 
 // Performance Optimization Unit 3, Task 1: previously loaded every non-deleted
@@ -166,12 +184,16 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
     { created_at: "desc" as const },
   ];
 
-  const [grouped, latestPerMaterial, latestOpeningStock] = await Promise.all([
+  const [grouped, latestPerMaterial, latestOpeningStock, latestCostPerMaterial, settingsRows] = await Promise.all([
     // One row per (material identity, movement_type) — summed in SQL.
+    // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 2: also
+    // sums total_cost per (identity, movement_type) — null-safe (Prisma/SQL
+    // SUM ignores nulls), so a mix of priced and unpriced movements for the
+    // same material still yields a meaningful partial total rather than null.
     prisma.offline_inventory_movements.groupBy({
       by: ["part_id", "manual_material_name", "unit", "movement_type"],
       where: { deleted_at: null },
-      _sum: { quantity: true },
+      _sum: { quantity: true, total_cost: true },
     }),
     // One row per material identity — its single most recent movement, for
     // display_name/part_number/ss_rec_code/category/last_movement_date.
@@ -198,24 +220,50 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
       orderBy: distinctOrderBy,
       select: { part_id: true, manual_material_name: true, unit: true, counterparty: true },
     }),
+    // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 9 — the
+    // "simple last unit cost method": one row per material identity, its
+    // single most recent movement AMONG THOSE THAT RECORDED A unit_cost
+    // (any movement type — Received, Opening Stock, or a future priced
+    // Adjustment). A material with no priced movement at all simply isn't
+    // in this list, so last_unit_cost stays null for it below.
+    prisma.offline_inventory_movements.findMany({
+      where: { deleted_at: null, unit_cost: { not: null } },
+      distinct: ["part_id", "manual_material_name", "unit"],
+      orderBy: distinctOrderBy,
+      select: { part_id: true, manual_material_name: true, unit: true, unit_cost: true },
+    }),
+    // Inventory Clarity, Low Stock, and Bulk Unit Balance Unit 10G.62, Task
+    // 2 — every configured minimum-stock/reorder-quantity row; the table is
+    // one row per material identity (no distinct/orderBy needed).
+    prisma.inventory_material_settings.findMany({
+      select: { part_id: true, manual_material_name: true, unit: true, minimum_stock_quantity: true, reorder_quantity: true },
+    }),
   ]);
 
   const metaByKey = new Map(latestPerMaterial.map((m) => [buildBalanceKey(m), m]));
   const locationByKey = new Map(latestOpeningStock.map((m) => [buildBalanceKey(m), m.counterparty]));
+  const lastUnitCostByKey = new Map(
+    latestCostPerMaterial.map((m) => [buildBalanceKey(m), m.unit_cost !== null ? Number(m.unit_cost) : null])
+  );
+  const settingsByKey = new Map(settingsRows.map((s) => [buildBalanceKey(s), s]));
 
   let totalOpeningStock = 0;
   let totalReceived     = 0;
   let totalIssued       = 0;
+  let totalReceivedValue = 0;
+  let totalIssuedValue   = 0;
 
   const balanceAccum = new Map<string, BalanceItem>();
 
   for (const g of grouped) {
     const key = buildBalanceKey(g);
     const qty = Number(g._sum.quantity ?? 0);
+    const costSum = g._sum.total_cost !== null ? Number(g._sum.total_cost) : 0;
 
     if (!balanceAccum.has(key)) {
       const meta = metaByKey.get(key);
       if (!meta) continue; // every grouped key has at least one movement, so a meta row must exist
+      const settings = settingsByKey.get(key);
       balanceAccum.set(key, {
         key,
         part_id:              meta.part_id,
@@ -231,6 +279,13 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
         total_issued:         0,
         balance:              0,
         last_movement_date:   meta.movement_date.toISOString(),
+        last_unit_cost:       lastUnitCostByKey.get(key) ?? null,
+        stock_value:          0,
+        received_value:       0,
+        issued_value:         0,
+        minimum_stock_quantity: settings?.minimum_stock_quantity !== undefined && settings?.minimum_stock_quantity !== null ? Number(settings.minimum_stock_quantity) : null,
+        reorder_quantity:       settings?.reorder_quantity !== undefined && settings?.reorder_quantity !== null ? Number(settings.reorder_quantity) : null,
+        stock_status:           "ok", // finalized below, once every movement has been summed
       });
     }
 
@@ -239,14 +294,86 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
       totalOpeningStock  += qty;
       item.total_opening_stock += qty;
       item.balance        += qty;
+      // Opening Stock's own cost counts toward stock value via
+      // last_unit_cost below, not as a separate "received value" bucket —
+      // it isn't a receipt from a supplier, it's the starting balance.
     } else if (g.movement_type === "RECEIVED") {
       totalReceived       += qty;
       item.total_received += qty;
       item.balance        += qty;
+      item.received_value += costSum;
+      totalReceivedValue  += costSum;
     } else if (g.movement_type === "ISSUED") {
       totalIssued          += qty;
       item.total_issued    += qty;
       item.balance         -= qty;
+      item.issued_value    += costSum;
+      totalIssuedValue     += costSum;
+    }
+  }
+
+  // Inventory Clarity, Low Stock, and Bulk Unit Balance Unit 10G.62, Task 4
+  // — a manual (non-catalog) material identity is flagged for review when
+  // the SAME material name (case-insensitive) also appears under a
+  // DIFFERENT unit elsewhere in Offline Inventory — a real, computable
+  // "unit mismatch detected" signal (e.g. "Engine Oil" once entered as
+  // LITER and once as LTR would otherwise silently sit as two unrelated
+  // balances with no indication anything is off).
+  const unitsByManualNameLower = new Map<string, Set<string>>();
+  for (const item of balanceAccum.values()) {
+    if (item.part_id) continue;
+    const nameKey = (item.manual_material_name ?? "").toLowerCase().trim();
+    if (!nameKey) continue;
+    if (!unitsByManualNameLower.has(nameKey)) unitsByManualNameLower.set(nameKey, new Set());
+    unitsByManualNameLower.get(nameKey)!.add(item.unit.toLowerCase().trim());
+  }
+
+  // Task 9/10 — stock value = balance * last unit cost, except a negative
+  // (or zero-with-unknown-cost) balance always shows as 0 rather than a
+  // negative or fabricated amount; the UI shows a "Review required" note
+  // for the negative case instead of hiding it.
+  let totalStockValue = 0;
+  let lowStockCount = 0;
+  for (const item of balanceAccum.values()) {
+    item.stock_value = item.balance > 0 && item.last_unit_cost !== null ? item.balance * item.last_unit_cost : 0;
+    totalStockValue += item.stock_value;
+
+    // Inventory Dashboard Spending and Simple Low Stock Rules Unit 10G.63,
+    // Task 1 — priority: Negative Stock, then Out of Stock, then Low Stock,
+    // THEN Review Required, then OK. Unit 10G.62 had Review Required
+    // ahead of Out of Stock/Low Stock, which could silently replace a more
+    // basic, actionable "this is low/out" reading with a vaguer "review
+    // this" one — moving it to just above OK means a genuinely low/out/
+    // negative item always shows that plain meaning first, and Review
+    // Required only ever shows for an item that would otherwise look "OK"
+    // but has a real, separate data-quality concern (a unit mismatch)
+    // worth a second look.
+    //
+    // Low Stock itself: a configured minimum_stock_quantity always wins
+    // when present (balance <= minimum). With NO minimum configured, Task
+    // 1's simple default rule applies instead of the old "any balance > 0
+    // is fine" behavior — balance === 1 is Low Stock, balance >= 2 is OK.
+    const nameKey = (item.manual_material_name ?? "").toLowerCase().trim();
+    const hasUnitMismatch = !item.part_id && (unitsByManualNameLower.get(nameKey)?.size ?? 0) > 1;
+    const isLowStock =
+      item.minimum_stock_quantity !== null ? item.balance <= item.minimum_stock_quantity : item.balance === 1;
+    const status: StockStatus =
+      item.balance < 0
+        ? "negative"
+        : item.balance === 0
+          ? "out_of_stock"
+          : isLowStock
+            ? "low_stock"
+            : hasUnitMismatch
+              ? "review_required"
+              : "ok";
+    item.stock_status = status;
+    // Task 2 — "Low Stock Items" (Needs Attention) now also counts Review
+    // Required, matching the task's explicit redefinition of that card/
+    // filter (Unit 10G.62 deliberately excluded it; this unit reverses
+    // that call at the task's own request).
+    if (status === "low_stock" || status === "out_of_stock" || status === "negative" || status === "review_required") {
+      lowStockCount += 1;
     }
   }
 
@@ -254,7 +381,185 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
   const balanceItems = Array.from(balanceAccum.values())
     .sort((a, b) => a.display_name.localeCompare(b.display_name));
 
-  return { balanceItems, totalOpeningStock, totalReceived, totalIssued, balance };
+  return {
+    balanceItems,
+    totalOpeningStock,
+    totalReceived,
+    totalIssued,
+    balance,
+    totalStockValue,
+    totalReceivedValue,
+    totalIssuedValue,
+    lowStockCount,
+  };
+}
+
+// Inventory Clarity, Low Stock, and Bulk Unit Balance Unit 10G.62, Task 2/3
+// — called only from addNewMaterialAction, and only when the user actually
+// entered a minimum stock and/or reorder quantity (never creates an empty
+// settings row just because a material was added). find-then-create/update
+// rather than a DB-level upsert — this table has no single Prisma-visible
+// unique constraint to upsert against (its real uniqueness is two partial,
+// case-insensitive indexes the migration created directly in SQL), and
+// Add New Material's own pre-existing duplicate-material guard already
+// prevents two rows from ever being created for the same identity through
+// this one call site.
+export async function upsertInventoryMaterialSettings(opts: {
+  partId: string | null;
+  manualMaterialName: string | null;
+  unit: string;
+  minimumStockQuantity: number | null;
+  reorderQuantity: number | null;
+  createdBy: string;
+}): Promise<void> {
+  const where = opts.partId
+    ? { part_id: opts.partId }
+    : {
+        part_id: null,
+        manual_material_name: { equals: opts.manualMaterialName ?? "", mode: "insensitive" as const },
+        unit: { equals: opts.unit, mode: "insensitive" as const },
+      };
+
+  const existing = await prisma.inventory_material_settings.findFirst({ where });
+  if (existing) {
+    await prisma.inventory_material_settings.update({
+      where: { id: existing.id },
+      data: {
+        minimum_stock_quantity: opts.minimumStockQuantity,
+        reorder_quantity: opts.reorderQuantity,
+        updated_at: new Date(),
+      },
+    });
+  } else {
+    await prisma.inventory_material_settings.create({
+      data: {
+        part_id: opts.partId,
+        manual_material_name: opts.manualMaterialName,
+        unit: opts.unit,
+        minimum_stock_quantity: opts.minimumStockQuantity,
+        reorder_quantity: opts.reorderQuantity,
+        created_by: opts.createdBy,
+      },
+    });
+  }
+}
+
+// Inventory Dashboard Spending and Simple Low Stock Rules Unit 10G.63,
+// Task 4/5/6/7 — one bounded query (every RECEIVED/ISSUED movement in the
+// current calendar year — a reasonable bound for a first version, same
+// "good enough for now" scope as the rest of this ledger's dashboard-style
+// reads) does all the bucketing in JS: issued value this week/month/year,
+// received value this month, cost-by-category (month/year issued, month
+// received, plus current stock value folded in from the already-computed
+// balanceItems so this needs no second stock-value calculation), and top
+// issued materials this month. "This Week" = the rolling last 7 days
+// (today back 6 days); "This Month"/"This Year" = calendar month/year to
+// date — simple, predictable definitions for a first version.
+//
+// Every value here is cost data — the caller (the page) is responsible
+// for stripping/zeroing this entire summary for a viewer without cost
+// permission before it reaches a client component, exactly like
+// balanceItemsForClient does for BalanceItem's cost fields.
+export async function getInventorySpendingSummary(balanceItems: BalanceItem[]): Promise<InventorySpendingSummary> {
+  const now = new Date();
+  const startOfYear = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const startOfWeek = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6));
+
+  const currentStockValueByCategory = new Map<string, number>();
+  for (const item of balanceItems) {
+    currentStockValueByCategory.set(item.category, (currentStockValueByCategory.get(item.category) ?? 0) + item.stock_value);
+  }
+
+  const rows = await prisma.offline_inventory_movements.findMany({
+    where: { deleted_at: null, movement_type: { in: ["ISSUED", "RECEIVED"] }, movement_date: { gte: startOfYear } },
+    select: {
+      part_id: true,
+      manual_material_name: true,
+      unit: true,
+      category: true,
+      movement_type: true,
+      movement_date: true,
+      quantity: true,
+      unit_cost: true,
+      total_cost: true,
+      parts: { select: { part_name: true } },
+    },
+  });
+
+  let issuedValueThisWeek = 0;
+  let issuedValueThisMonth = 0;
+  let issuedValueThisYear = 0;
+  let receivedValueThisMonth = 0;
+  let unpricedIssuedCount = 0;
+  const categoryMap = new Map<string, { issuedThisMonth: number; issuedThisYear: number; receivedThisMonth: number }>();
+  const materialMap = new Map<string, TopIssuedMaterial>();
+
+  for (const r of rows) {
+    const qty = Number(r.quantity);
+    // Task 4 — total_cost where available; quantity * unit_cost when only
+    // that's present; excluded from every value sum when neither exists.
+    const effectiveCost =
+      r.total_cost !== null ? Number(r.total_cost) : r.unit_cost !== null ? qty * Number(r.unit_cost) : null;
+    const category = normalizeCategory(r.category);
+    const cat = categoryMap.get(category) ?? { issuedThisMonth: 0, issuedThisYear: 0, receivedThisMonth: 0 };
+    categoryMap.set(category, cat);
+
+    if (r.movement_type === "ISSUED") {
+      if (effectiveCost === null) unpricedIssuedCount += 1;
+      const cost = effectiveCost ?? 0;
+      if (r.movement_date >= startOfYear) {
+        issuedValueThisYear += cost;
+        cat.issuedThisYear += cost;
+      }
+      if (r.movement_date >= startOfMonth) {
+        issuedValueThisMonth += cost;
+        cat.issuedThisMonth += cost;
+
+        const key = buildBalanceKey(r);
+        const existing = materialMap.get(key);
+        if (existing) {
+          existing.issuedQuantity += qty;
+          existing.issuedValue += cost;
+          if (r.movement_date.toISOString() > existing.lastIssuedDate) existing.lastIssuedDate = r.movement_date.toISOString();
+        } else {
+          materialMap.set(key, {
+            key,
+            display_name: r.parts?.part_name ?? r.manual_material_name ?? "Unknown",
+            unit: r.unit,
+            issuedQuantity: qty,
+            issuedValue: cost,
+            lastIssuedDate: r.movement_date.toISOString(),
+          });
+        }
+      }
+      if (r.movement_date >= startOfWeek) issuedValueThisWeek += cost;
+    } else if (r.movement_type === "RECEIVED") {
+      const cost = effectiveCost ?? 0;
+      if (r.movement_date >= startOfMonth) {
+        receivedValueThisMonth += cost;
+        cat.receivedThisMonth += cost;
+      }
+    }
+  }
+
+  const categoryCostSummary: CategoryCostSummary[] = Array.from(categoryMap.entries())
+    .map(([category, v]) => ({ category, ...v, currentStockValue: currentStockValueByCategory.get(category) ?? 0 }))
+    .sort((a, b) => b.issuedThisMonth - a.issuedThisMonth);
+
+  const topIssuedMaterials = Array.from(materialMap.values())
+    .sort((a, b) => b.issuedValue - a.issuedValue)
+    .slice(0, 10);
+
+  return {
+    issuedValueThisWeek,
+    issuedValueThisMonth,
+    issuedValueThisYear,
+    receivedValueThisMonth,
+    unpricedIssuedCount,
+    categoryCostSummary,
+    topIssuedMaterials,
+  };
 }
 
 export type OfflineInventorySearchMatch = {
@@ -426,6 +731,8 @@ export async function getRecentOfflineInventoryMovements(limit = 15): Promise<Re
     reference_number: m.reference_number,
     created_by_name: m.profiles.full_name,
     remarks: m.remarks,
+    unit_cost: m.unit_cost !== null ? Number(m.unit_cost) : null,
+    total_cost: m.total_cost !== null ? Number(m.total_cost) : null,
   }));
 }
 

@@ -40,6 +40,16 @@ function parseWorkerProfileForm(formData: FormData) {
     accommodationAllowance: formData.get("accommodation_allowance") || undefined,
     foodAllowance: formData.get("food_allowance") || undefined,
     monthlyWorkingHours: formData.get("monthly_working_hours") || undefined,
+    // Worker Salary Cost Method and Rate Calculation Unit 10G.68, Task 1/7 —
+    // present only when the Salary Details section rendered (Manager/Super
+    // Admin); parsed the same way either way, the service layer decides
+    // whether to trust them (assertCanManageWorkers vs. isManagerRole,
+    // unchanged from every other salary field above).
+    salaryInputMethod: formData.get("salary_input_method") || undefined,
+    yearlyCost: formData.get("yearly_cost") || undefined,
+    monthlyCost: formData.get("monthly_cost") || undefined,
+    monthlyWorkingDays: formData.get("monthly_working_days") || undefined,
+    manualHourlyRateReason: formData.get("manual_hourly_rate_reason") || undefined,
   });
 }
 

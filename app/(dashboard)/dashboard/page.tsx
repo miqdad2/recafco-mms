@@ -63,6 +63,7 @@ import {
 } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummariesBulk, getLaborPeriodTotals } from "@/lib/work-orders/work-session-totals";
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
+import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
 import { hasPermission, canViewCosts as canViewCostsForContext } from "@/lib/security/permissions";
 import { VEHICLE_CATEGORIES } from "@/lib/assets/categories";
@@ -956,7 +957,23 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       const hasActiveSession = laborSummary?.has_active_session ?? false;
       const anyWorkerPaused = laborSummary?.workers.some((w) => w.status === "Paused") ?? false;
       const materialsBlocking = pendingMaterialsRequestsCount > 0 || materialsIncomplete;
-      const closureReady = pendingMaterialsRequestsCount === 0 && !materialsIncomplete && !hasActiveSession;
+      // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 4: this
+      // bucket used to read "Ready to Request Closure" for a Job Card with
+      // an assigned-but-Not-Started worker (only active-session/paused were
+      // excluded by the branches above it) — now uses the same shared check
+      // as every other closure surface, so a Not-Started worker keeps this
+      // Job Card out of the "ready" bucket too.
+      const closureReady =
+        pendingMaterialsRequestsCount === 0 &&
+        !materialsIncomplete &&
+        checkWorkersReadyForClosure(
+          (laborSummary?.workers ?? []).map((w) => ({
+            workerAssignmentId: w.worker_assignment_id,
+            workerName: w.worker_name,
+            assignmentStatus: w.assignment_status,
+            sessionStatus: w.status,
+          }))
+        ).ready;
 
       if (materialsBlocking) nuMaterialsPendingCount += 1;
       if (hasActiveSession) nuWorkingNowCount += 1;

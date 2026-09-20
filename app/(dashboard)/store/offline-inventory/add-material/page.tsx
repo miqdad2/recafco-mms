@@ -4,9 +4,10 @@ import { ArrowLeft } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { AddNewMaterialForm } from "@/components/store/add-new-material-form";
 import { requireOfflineInventoryManage } from "@/lib/store/offline-inventory-data";
+import { canViewCosts } from "@/lib/security/permissions";
 
 export default async function AddNewMaterialPage() {
-  await requireOfflineInventoryManage();
+  const context = await requireOfflineInventoryManage();
 
   return (
     <>
@@ -24,7 +25,7 @@ export default async function AddNewMaterialPage() {
         }
       />
       <div className="p-4 lg:p-6">
-        <AddNewMaterialForm />
+        <AddNewMaterialForm canViewCosts={canViewCosts(context)} />
       </div>
     </>
   );

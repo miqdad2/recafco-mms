@@ -87,3 +87,47 @@ export function hoursVarianceTone(status: HoursVarianceStatus): "green" | "amber
   if (status === "over_estimate") return "red";
   return "gray";
 }
+
+// Worker Timer and Closure Logic Hardening Unit 10G.53, Task 2.
+//
+// Client-safe (no "server-only"/prisma import, plain strings in/out — same
+// convention as computeHoursVariance above) so every surface that shows a
+// worker's state (Daily Activity board, Job Card detail Work Time Tracking,
+// Request Closure modal, the print page, and the closure-readiness guard
+// itself) derives the exact same 4 states from the exact same two inputs,
+// instead of five slightly different re-derivations.
+//
+// Deliberately takes the two raw status strings already in memory —
+// WorkOrderWorkerAssignment.status ("active" | "finished" | "removed") and
+// the worker's session-derived WorkerSessionStatus ("Not Started" | "Active"
+// | "Paused" | "Completed", itself already derived once in
+// work-session-totals.ts) — rather than re-deriving from raw session rows,
+// so this can never disagree with the labor-summary numbers it sits next to.
+//
+// "finished" always wins regardless of session status: once a worker is
+// marked done via Finish Work, they read as Finished even though their last
+// session's own status is merely "Completed" (a Completed session on its own
+// only means "not currently running," not "this worker is done for good" —
+// that distinction is exactly what "finished" was introduced to capture).
+// A session status of "Completed" with an "active" assignment (the pre-Unit
+// 10G.53 shape for every existing historical row, and still reachable today
+// if a worker is resumed after a Completed session but hasn't been Finished
+// yet) reads as "Not Started" here — not a separate 5th bucket — since the
+// only action available to that worker going forward is exactly the same
+// "Start" (== Resume) button a truly-never-started worker sees.
+export type SimpleWorkerState = "Not Started" | "Working" | "Paused" | "Finished";
+
+export function deriveSimpleWorkerState(assignmentStatus: string, sessionStatus: string): SimpleWorkerState {
+  if (assignmentStatus === "finished") return "Finished";
+  if (sessionStatus === "Active") return "Working";
+  if (sessionStatus === "Paused") return "Paused";
+  return "Not Started";
+}
+
+// Same state -> tone mapping convention as hoursVarianceTone above.
+export function simpleWorkerStateTone(state: SimpleWorkerState): "green" | "amber" | "blue" | "gray" {
+  if (state === "Working") return "blue";
+  if (state === "Paused") return "amber";
+  if (state === "Finished") return "green";
+  return "gray";
+}

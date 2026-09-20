@@ -162,6 +162,27 @@ export async function startWorkSession(context: CurrentUserContext, input: Start
       throw new AppError("This worker already has an active work session. Pause or stop it first.", { code: "WORKFLOW_ERROR" });
     }
 
+    // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 5: one
+    // worker, one running timer at a time, across every Job Card — checked
+    // by worker_id (not worker_assignment_id), since the same worker_profiles
+    // row can have a separate WorkOrderWorkerAssignment per Job Card. Applies
+    // to both Start (Not Started -> Working) and Resume (Paused -> Working),
+    // since Resume calls this exact same function. Deliberately does NOT
+    // block a worker who is merely Paused on another Job Card — the task's
+    // own "preferred" rule only blocks a genuinely-running (Active) session
+    // elsewhere; paused work on another card is left for the user to resume/
+    // finish later, on their own schedule.
+    const activeElsewhere = await tx.workOrderWorkSession.findFirst({
+      where: { worker_id: assignment.worker_id, status: "Active", work_order_id: { not: input.workOrderId } },
+      include: { work_orders: { select: { work_order_number: true } } },
+    });
+    if (activeElsewhere) {
+      throw new AppError(
+        `This worker is already working on Job Card ${activeElsewhere.work_orders.work_order_number ?? "another Job Card"}. Pause or finish that work before starting another Job Card.`,
+        { code: "WORKFLOW_ERROR" }
+      );
+    }
+
     const session = await tx.workOrderWorkSession.create({
       data: {
         work_order_id: input.workOrderId,
@@ -267,6 +288,85 @@ export function pauseWorkSession(context: CurrentUserContext, input: PauseOrStop
 
 export function stopWorkSession(context: CurrentUserContext, input: PauseOrStopWorkSessionInput) {
   return endActiveSession(context, input, "Completed");
+}
+
+// ── Finish Work (Worker Timer and Closure Logic Hardening Unit 10G.53,
+//    Task 3) ───────────────────────────────────────────────────────────────
+//
+// Finish Work replaces plain Stop in the UI (components/work-orders/
+// worker-session-row.tsx no longer renders a bare "Stop" button) — it does
+// everything Stop used to do (end a currently-running session, exactly the
+// same duration/amount math as endActiveSession above) AND marks the worker
+// assignment itself "finished," which is the one thing plain Stop never did.
+// That distinction is the whole point of this unit: a "Completed" session on
+// its own never meant "this worker is done for good" (Resume Work could
+// always start a fresh session afterward) — "finished" is a new, separate,
+// explicit assignment-level state the closure-readiness guard (Task 4) can
+// actually rely on.
+//
+// Reachable from both simple UI states that offer a "Finish Work" button:
+// Working (an Active session exists — end it, then finish) and Paused (no
+// Active session — nothing to end, just finish). Never reachable from
+// Not Started (no button offered there — see worker-session-row.tsx) or an
+// already-Finished worker (loadActiveAssignment's status === "active" gate
+// already rejects a "finished" assignment, exactly like it already rejects
+// "removed").
+export async function finishWorkSession(context: CurrentUserContext, input: PauseOrStopWorkSessionInput) {
+  assertCanManageSessions(context);
+
+  const result = await withBackendTransaction(context.userId, async (tx) => {
+    const wo = await loadOpenWorkOrder(tx, input.workOrderId);
+    const assignment = await loadActiveAssignment(tx, input.workOrderId, input.workerAssignmentId);
+
+    const active = await tx.workOrderWorkSession.findFirst({
+      where: { worker_assignment_id: input.workerAssignmentId, status: "Active" },
+    });
+
+    let durationMinutes = 0;
+    let calculatedAmount = 0;
+    let sessionId = "";
+
+    if (active) {
+      const now = new Date();
+      durationMinutes = diffMinutes(active.started_at, now);
+      calculatedAmount = computeAmount(durationMinutes, Number(active.hourly_rate_snapshot));
+      const updated = await tx.workOrderWorkSession.update({
+        where: { id: active.id },
+        data: { status: "Completed", stopped_at: now, duration_minutes: durationMinutes, calculated_amount: calculatedAmount },
+      });
+      sessionId = updated.id;
+    }
+
+    // The one new write this action adds beyond plain Stop — see the
+    // module-level comment on this function.
+    await tx.workOrderWorkerAssignment.update({
+      where: { id: input.workerAssignmentId },
+      data: { status: "finished" },
+    });
+
+    return {
+      workOrderId: wo.id,
+      workOrderNumber: wo.work_order_number,
+      createdBy: wo.created_by,
+      workerName: assignment.worker_profiles.name,
+      sessionId,
+      durationMinutes,
+      calculatedAmount,
+    } satisfies SessionMutationResult;
+  });
+
+  await notifyAndAudit(
+    context,
+    REALTIME_EVENTS.JOB_CARD_WORK_FINISHED,
+    "job_card.work_finished",
+    "work_order.work_assignment_finished",
+    "Worker finished work",
+    `${result.workerName} finished work on ${result.workOrderNumber ?? "a Job Card"}${result.durationMinutes > 0 ? ` — ${result.durationMinutes} min this session.` : "."}`,
+    result,
+    { workerAssignmentId: input.workerAssignmentId }
+  );
+
+  return result;
 }
 
 // ── Manual time entry (Task 5) ───────────────────────────────────────────────

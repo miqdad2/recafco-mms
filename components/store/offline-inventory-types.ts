@@ -3,6 +3,37 @@ export type WorkOrderOption = {
   work_order_number: string | null;
 };
 
+// Inventory Dashboard Spending and Simple Low Stock Rules Unit 10G.63, Task
+// 4/5/6/7 — defined here (a plain module, not "server-only" like
+// lib/store/offline-inventory-data.ts) so client components can import
+// these types directly, same as every other shape on this page.
+export type CategoryCostSummary = {
+  category: string;
+  issuedThisMonth: number;
+  issuedThisYear: number;
+  receivedThisMonth: number;
+  currentStockValue: number;
+};
+
+export type TopIssuedMaterial = {
+  key: string;
+  display_name: string;
+  unit: string;
+  issuedQuantity: number;
+  issuedValue: number;
+  lastIssuedDate: string;
+};
+
+export type InventorySpendingSummary = {
+  issuedValueThisWeek: number;
+  issuedValueThisMonth: number;
+  issuedValueThisYear: number;
+  receivedValueThisMonth: number;
+  unpricedIssuedCount: number;
+  categoryCostSummary: CategoryCostSummary[];
+  topIssuedMaterials: TopIssuedMaterial[];
+};
+
 export type MovementRow = {
   id: string;
   movement_type: string;
@@ -28,6 +59,12 @@ export type MovementRow = {
   parts_request_number: string | null;
   asset_name: string | null;
   plate_number: string | null;
+  // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 8 — null on
+  // any movement with no known price (issues, and receives/opening-stock
+  // entries where cost wasn't provided); the caller strips these two fields
+  // entirely for a viewer without cost permission (see canViewCosts).
+  unit_cost: number | null;
+  total_cost: number | null;
 };
 
 export type RecentMovementRow = {
@@ -43,6 +80,8 @@ export type RecentMovementRow = {
   reference_number: string | null;
   created_by_name: string;
   remarks: string | null;
+  unit_cost: number | null;
+  total_cost: number | null;
 };
 
 export type BalanceItem = {
@@ -60,7 +99,62 @@ export type BalanceItem = {
   total_issued: number;
   balance: number;
   last_movement_date: string;
+  // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 2/9 — the
+  // "simple last unit cost method": last_unit_cost is the unit_cost of the
+  // most recent movement (by movement_date, then created_at) for this
+  // material that actually recorded one; null if no movement ever did.
+  // stock_value = balance * last_unit_cost, except a negative balance is
+  // always shown as 0 (Task 10 — "Review required" is shown by the UI
+  // instead of a negative/nonsensical value). received_value/issued_value
+  // are the sums of total_cost across this material's RECEIVED/ISSUED
+  // movements (only those that recorded a cost).
+  last_unit_cost: number | null;
+  stock_value: number;
+  received_value: number;
+  issued_value: number;
+  // Inventory Clarity, Low Stock, and Bulk Unit Balance Unit 10G.62, Task
+  // 2/4 — minimum_stock_quantity/reorder_quantity come from an optional
+  // inventory_material_settings row for this identity (null when never
+  // configured, meaning "no minimum set" per Task 4's OK-status rule).
+  // stock_status is always one of the 5 values Task 5's badge list names;
+  // visible to every role (it's a quantity signal, not a cost figure), so
+  // it is never stripped for a non-cost viewer.
+  minimum_stock_quantity: number | null;
+  reorder_quantity: number | null;
+  stock_status: StockStatus;
 };
+
+// Inventory Clarity, Low Stock, and Bulk Unit Balance Unit 10G.62, Task 4/5
+// — priority order (computed in getOfflineInventoryBalance()): negative
+// balance always wins ("Negative Stock"); otherwise a detected unit
+// mismatch for the same manual material name wins ("Review Required");
+// otherwise balance = 0 is "Out of Stock"; otherwise a configured minimum
+// that the balance has reached or fallen under is "Low Stock"; otherwise
+// "OK". Never relies on color alone — every badge always shows its text
+// label (Task 5).
+export type StockStatus = "ok" | "low_stock" | "out_of_stock" | "negative" | "review_required";
+
+export function stockStatusLabel(status: StockStatus): string {
+  const labels: Record<StockStatus, string> = {
+    ok: "OK",
+    low_stock: "Low Stock",
+    out_of_stock: "Out of Stock",
+    negative: "Negative Stock",
+    review_required: "Review Required",
+  };
+  return labels[status];
+}
+
+export function stockStatusTone(status: StockStatus): MovementBadgeTone {
+  const tones: Record<StockStatus, MovementBadgeTone> = {
+    ok: "green",
+    low_stock: "amber",
+    out_of_stock: "gray",
+    negative: "red",
+    review_required: "red",
+  };
+  return tones[status];
+}
 
 export const UNITS = ["PCS", "SET", "BOX", "PACK", "MTR", "ROLL", "KG", "LTR", "DRUM", "BAG", "PAIR", "NOS"] as const;
 

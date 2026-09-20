@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { Prisma } from "@prisma/client";
-import { Activity, Briefcase, CheckCircle2, PauseCircle, PlayCircle, Search } from "lucide-react";
+import { Activity, Briefcase, CheckCircle2, Hourglass, PauseCircle, PlayCircle, Search } from "lucide-react";
 
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
@@ -15,7 +15,7 @@ import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/sec
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
-import { ACTIVE_JOB_CARD_STATUSES, displaySimplifiedStatus, simplifiedStatusTone } from "@/lib/work-orders/simplified-status";
+import { ACTIVE_JOB_CARD_STATUSES, CLOSURE_REQUESTED_STATUS, displaySimplifiedStatus, simplifiedStatusTone } from "@/lib/work-orders/simplified-status";
 import {
   getMaterialFulfillmentForWorkOrders,
   anyMaterialsIncomplete,
@@ -23,6 +23,7 @@ import {
   type MaterialFulfillment,
 } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummariesBulk, type DailyActivityLaborSummary } from "@/lib/work-orders/work-session-totals";
+import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
 
 // Daily Activity / Active Job Cards Work Tracking Unit 9.
 //
@@ -50,7 +51,9 @@ type SearchParamsShape = {
   materials?: string;
 };
 
-const STATUS_FILTERS = ["all", "working", "paused", "not-started", "materials-pending", "ready-closure"] as const;
+// Unit 10G.54, Task 4: "waiting-approval" added alongside the existing
+// filters, none of which change meaning or behavior.
+const STATUS_FILTERS = ["all", "working", "paused", "not-started", "materials-pending", "ready-closure", "waiting-approval"] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number];
 
 const TEAM_FILTERS = ["Auto", "Mechanical", "Electrical", "Other"] as const;
@@ -122,8 +125,8 @@ function materialsChipFor(
 
 // Task 10 — Closure chip: matches the Job Card detail page's own 4 states
 // (Not Ready/Ready/Requested/Closed); this page only ever loads non-Closed
-// Job Cards, but Closure Requested can appear via the Task 1 "active
-// session" exception, so it's handled for real, not just defensively.
+// Job Cards. Unit 10G.54: Closure Requested is now always included (Task
+// 1/2), not just reachable via the old "active session" exception.
 function closureChipFor(status: string, closureReady: boolean): DailyActivityChip {
   if (status === "Closed") return { label: "Closed", tone: "green" };
   if (status === "Closure Requested") return { label: "Requested", tone: "amber" };
@@ -133,22 +136,36 @@ function closureChipFor(status: string, closureReady: boolean): DailyActivityChi
 // Task 3 — one priority bucket per card, used both to sort the list (most
 // important first) and to print a single small priority label on the card.
 // Order matches the task's own numbered list exactly.
-type PriorityBucket = "working" | "paused" | "materials" | "closure" | "assigned-idle" | "unassigned";
+//
+// Unit 10G.54, Task 2/5: "waiting-approval" added — a Closure Requested Job
+// Card is deliberately its own bucket, checked before every other bucket
+// (see priorityBucket below), since its materials/worker state will always
+// otherwise evaluate as "closure" (ready) once a request has actually been
+// submitted, and it is no longer something Data Entry can act on.
+type PriorityBucket = "working" | "paused" | "materials" | "closure" | "waiting-approval" | "assigned-idle" | "unassigned";
 const PRIORITY_RANK: Record<PriorityBucket, number> = {
   working: 0,
   paused: 1,
   materials: 2,
   closure: 3,
-  "assigned-idle": 4,
-  unassigned: 5,
+  "waiting-approval": 4,
+  "assigned-idle": 5,
+  unassigned: 6,
 };
+// Daily Activity Status Color Cards Unit 10G.55, Task 2: this map now also
+// doubles as the list row's one clear action/status line (card.priorityLabel
+// — see components/work-orders/daily-activity-card.tsx's DailyActivityListRow),
+// so these are full action-oriented sentences (the task's own exact
+// wording), not the short noun-phrases this field held before this unit
+// (it was computed but never actually rendered anywhere until now).
 const PRIORITY_LABEL: Record<PriorityBucket, string> = {
-  working: "Working Now",
-  paused: "Paused",
-  materials: "Materials Pending",
-  closure: "Ready for Closure",
-  "assigned-idle": "Not Started",
-  unassigned: "Needs Assignment",
+  working: "Worker currently working",
+  paused: "Worker paused - resume or finish work",
+  materials: "Materials pending",
+  closure: "Ready to request closure",
+  "waiting-approval": "Waiting for Manager approval",
+  "assigned-idle": "Work not started",
+  unassigned: "No workers assigned yet",
 };
 
 export default async function DailyActivityPage({
@@ -216,6 +233,15 @@ export default async function DailyActivityPage({
     : [];
   const teamConditions: Prisma.work_ordersWhereInput[] = teamFilter ? [{ worker_type: teamFilter }] : [];
 
+  // Daily Activity Closure Requested Visibility Unit 10G.54, Task 1/2: a
+  // Closure Requested Job Card was silently dropping off this page the
+  // moment Data Entry submitted it — "Closure Requested" was never in
+  // ACTIVE_JOB_CARD_STATUSES, and the only other way onto this page (an
+  // Active work session) is now impossible to hold at the same time, since
+  // Worker Timer and Closure Logic Hardening Unit 10G.53 made "every worker
+  // Finished" a precondition for requesting closure in the first place.
+  // Explicitly included here so it keeps showing (Task 5/6 below display it
+  // differently, read-only, once selected).
   const where: Prisma.work_ordersWhereInput = {
     AND: [
       visibilityFilter,
@@ -224,6 +250,7 @@ export default async function DailyActivityPage({
       {
         OR: [
           { status: { in: ACTIVE_JOB_CARD_STATUSES } },
+          { status: CLOSURE_REQUESTED_STATUS },
           ...(activeSessionWorkOrderIds.length ? [{ id: { in: activeSessionWorkOrderIds } }] : []),
         ],
       },
@@ -302,7 +329,17 @@ export default async function DailyActivityPage({
 
     const hasInternalTeam = laborSummary.workers.length > 0;
     const hasAssignment = hasInternalTeam || wo.work_order_assignments.length > 0;
-    const anyWorkerPaused = laborSummary.workers.some((w) => w.status === "Paused");
+    // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 4/8: the
+    // one shared per-worker state check every closure surface in this app
+    // uses — see lib/work-orders/closure-readiness.ts.
+    const workersClosureCheck = checkWorkersReadyForClosure(
+      laborSummary.workers.map((w) => ({
+        workerAssignmentId: w.worker_assignment_id,
+        workerName: w.worker_name,
+        assignmentStatus: w.assignment_status,
+        sessionStatus: w.status,
+      }))
+    );
 
     const materialsChip = materialsChipFor(
       fulfillment.length > 0,
@@ -311,30 +348,41 @@ export default async function DailyActivityPage({
       openPartsRequests,
       materialsIncomplete
     );
+    // Task 8 — Working/Paused/Finished read off workersClosureCheck instead
+    // of has_active_session/anyWorkerPaused; "Sessions Recorded" retired in
+    // favor of "Finished" once every worker is actually done.
     const workTimeChip: DailyActivityChip = !hasInternalTeam
       ? { label: "Not Started", tone: "gray" }
-      : laborSummary.has_active_session
+      : workersClosureCheck.workingWorkers.length > 0
         ? { label: "Working", tone: "blue" }
-        : anyWorkerPaused
+        : workersClosureCheck.pausedWorkers.length > 0
           ? { label: "Paused", tone: "amber" }
-          : laborSummary.total_minutes > 0
-            ? { label: "Sessions Recorded", tone: "green" }
+          : workersClosureCheck.notStartedWorkers.length === 0
+            ? { label: "Finished", tone: "green" }
             : { label: "Not Started", tone: "gray" };
     const assignmentChip: DailyActivityChip = hasAssignment ? { label: "Assigned", tone: "green" } : { label: "Not assigned", tone: "gray" };
 
-    // Task 10 — mirrors (read-only, never calls) the same three backend
-    // closure guards the Job Card detail page's Closure panel already
-    // mirrors: no pending Materials Request, required materials fully
-    // issued, no active work session. Completion-note requirement is
-    // handled at request time on the Job Card itself (Task 9's own note,
-    // Unit 9). Brief reasons (not full sentences) for the card's small
-    // "why not ready" line.
-    const closureReady = pendingMaterialsRequestsCount === 0 && !materialsIncomplete && !laborSummary.has_active_session;
+    // Task 10 — mirrors (read-only, never calls) the same backend closure
+    // guards the Job Card detail page's Closure panel already mirrors: no
+    // pending Materials Request, required materials fully issued, and every
+    // assigned worker Finished (Task 4 — Working/Paused/Not-Started all
+    // block, not just an actively-running session). Completion-note
+    // requirement is handled at request time on the Job Card itself (Task
+    // 9's own note, Unit 9).
+    const closureReady = pendingMaterialsRequestsCount === 0 && !materialsIncomplete && workersClosureCheck.ready;
     const closureChip = closureChipFor(wo.status, closureReady);
     const closureReasons: string[] = [];
     if (pendingMaterialsRequestsCount > 0) closureReasons.push("Materials pending");
     if (materialsIncomplete) closureReasons.push("Required materials not fully issued");
-    if (laborSummary.has_active_session) closureReasons.push("Active work session running");
+    closureReasons.push(...workersClosureCheck.reasons);
+
+    // Daily Activity Closure Requested Visibility Unit 10G.54, Task 6: once
+    // a closure request is pending, Data Entry should not keep changing
+    // work activity on this Job Card — every mutating action below (Process
+    // Materials, Request Closure again, Assign Workers, worker session
+    // controls) is gated on this being false, until a Manager either closes
+    // it or workflow later adds a send-back/correction path.
+    const isClosureRequested = wo.status === CLOSURE_REQUESTED_STATUS;
 
     // Unified Material Processing Flow Unit 10G.23 — replaces the old
     // three-way "Issue Material" / "Issue Available" / "Receive Materials"
@@ -348,7 +396,7 @@ export default async function DailyActivityPage({
     // permission) since Process Materials can do both a receive and an
     // issue in the same click.
     const canProcessMaterials = canIssueMaterials && canReceiveMaterials;
-    const showProcessMaterials = fulfillment.length > 0 && materialsIncomplete && canProcessMaterials;
+    const showProcessMaterials = fulfillment.length > 0 && materialsIncomplete && canProcessMaterials && !isClosureRequested;
     const materialsActionHref = activeMaterialsRequest ? `/store/parts-requests/${activeMaterialsRequest.id}` : `${detailHref}#parts`;
     const materialsActionLabel = showProcessMaterials
       ? "Process Materials"
@@ -380,8 +428,14 @@ export default async function DailyActivityPage({
 
     // Task 3 — one priority bucket, doubling as the sort key and the card's
     // small priority label. Order matches the task's numbered list exactly.
-    const priorityBucket: PriorityBucket =
-      workTimeChip.label === "Working"
+    //
+    // Unit 10G.54, Task 2/5: Closure Requested is checked first and wins
+    // outright — its materials/worker state will otherwise always evaluate
+    // as "closure" (ready), which is exactly the stale "Ready for Closure"
+    // read this unit fixes.
+    const priorityBucket: PriorityBucket = isClosureRequested
+      ? "waiting-approval"
+      : workTimeChip.label === "Working"
         ? "working"
         : workTimeChip.label === "Paused"
           ? "paused"
@@ -411,9 +465,17 @@ export default async function DailyActivityPage({
     // through to the assignment/work-time ladder with no acknowledgement
     // that materials are done. Never "Materials are pending..." for this
     // Job Card once materialsChip reads "Materials Completed" (Task 1 fix).
+    // Unit 10G.54, Task 6: exact wording — a short "next action" clause
+    // plus the fuller explanatory sentence, no button (there is nothing
+    // left for Data Entry to do until a Manager acts).
     const nextAction: { message: string; buttonLabel: string | null; href: string | null } =
-      wo.status === "Closure Requested"
-        ? { message: "Waiting for Manager approval to close this Job Card.", buttonLabel: null, href: null }
+      isClosureRequested
+        ? {
+            message:
+              "Waiting for Manager approval. This Job Card has been submitted for closure approval. The Maintenance Manager will review and close it.",
+            buttonLabel: null,
+            href: null,
+          }
         : materialsChip.label === "Materials Completed" && fulfillment.length > 0
           ? closureReady
             ? { message: "Ready for closure.", buttonLabel: canRequestClosureRole ? "Request Closure" : null, href: canRequestClosureRole ? closureHref : null }
@@ -466,6 +528,7 @@ export default async function DailyActivityPage({
       showProcessMaterials,
       materialAlert,
       isUnusualActiveSession,
+      isClosureRequested,
       issue,
       assetLabel,
       workTeam,
@@ -478,12 +541,19 @@ export default async function DailyActivityPage({
   // ── Task 4 — quick filters (status-derived/materials-derived signals
   // aren't stored columns, so these apply after the bulk compute above;
   // search/team filters above are already real DB WHERE clauses). ─────────
+  //
+  // Unit 10G.54, Task 4/5: "ready-closure" now explicitly excludes a Job
+  // Card that has already moved to Closure Requested — its materials/worker
+  // state still reads "ready" (that's exactly why it could be requested),
+  // but it must no longer show under "Ready for Closure" once actually
+  // requested (its own "waiting-approval" filter below is where it belongs).
   const filtered = computed.filter((c) => {
     if (statusFilter === "working" && c.workTimeChip.label !== "Working") return false;
     if (statusFilter === "paused" && c.workTimeChip.label !== "Paused") return false;
     if (statusFilter === "not-started" && c.workTimeChip.label !== "Not Started") return false;
     if (statusFilter === "materials-pending" && c.materialsChip.label !== "Materials Pending") return false;
-    if (statusFilter === "ready-closure" && !c.closureReady) return false;
+    if (statusFilter === "ready-closure" && (!c.closureReady || c.isClosureRequested)) return false;
+    if (statusFilter === "waiting-approval" && !c.isClosureRequested) return false;
     if (materialsFilter !== "all" && c.materialsChip.label !== materialsFilter) return false;
     return true;
   });
@@ -501,7 +571,10 @@ export default async function DailyActivityPage({
   const workersWorkingNow = computed.reduce((n, c) => n + c.laborSummary.workers.filter((w) => w.status === "Active").length, 0);
   const pausedWorkers = computed.reduce((n, c) => n + c.laborSummary.workers.filter((w) => w.status === "Paused").length, 0);
   const totalLaborAmountToday = computed.reduce((n, c) => n + c.laborSummary.today_amount, 0);
-  const readyForClosureCount = computed.filter((c) => c.closureReady).length;
+  // Unit 10G.54, Task 3/5: excludes an already-Closure-Requested Job Card —
+  // same reasoning as the "ready-closure" filter fix above.
+  const readyForClosureCount = computed.filter((c) => c.closureReady && !c.isClosureRequested).length;
+  const waitingApprovalCount = computed.filter((c) => c.isClosureRequested).length;
   const hasAnyFilter = Boolean(search || statusFilter !== "all" || teamFilter || materialsFilter !== "all");
 
   // Task 2 — summary cards double as filter shortcuts. Preserves the
@@ -558,10 +631,16 @@ export default async function DailyActivityPage({
       priorityBucket: c.priorityBucket,
       priorityLabel: PRIORITY_LABEL[c.priorityBucket],
       nextAction: c.nextAction,
-      showAssignWorkers: !c.hasAssignment && canEditAssignment,
-      showRequestClosure: c.closureReady && canRequestClosureRole,
+      // Unit 10G.54, Task 6: once closure is requested, Data Entry can no
+      // longer assign workers, manage worker sessions, or request closure
+      // again on this Job Card — every one of these was previously gated
+      // only on the underlying materials/worker/assignment state, which
+      // still reads "ready"/"assignable" even after the request is already
+      // in, since none of that state itself changes at request time.
+      showAssignWorkers: !c.hasAssignment && canEditAssignment && !c.isClosureRequested,
+      showRequestClosure: c.closureReady && canRequestClosureRole && !c.isClosureRequested,
       laborSummary: c.laborSummary,
-      canManageSessions: canManageSessions && c.wo.status !== "Closed",
+      canManageSessions: canManageSessions && c.wo.status !== "Closed" && !c.isClosureRequested,
       isManager: isManagerRole,
       canViewCosts,
       detailHref: c.detailHref,
@@ -606,11 +685,14 @@ export default async function DailyActivityPage({
             Reports). The remaining 4 cards now get 2x2 on mobile/tablet and
             one full-width row on desktop, with roomier spacing/sizing at
             lg to fill the space the removed card left behind. */}
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 lg:gap-3">
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-5 lg:gap-3">
           <SummaryCardLink href={statusHref("all")} label="Active Job Cards" value={totalActiveCount} icon={Briefcase} tone="blue" active={statusFilter === "all"} />
           <SummaryCardLink href={statusHref("working")} label="Working Now" value={workersWorkingNow} icon={PlayCircle} tone="green" active={statusFilter === "working"} />
           <SummaryCardLink href={statusHref("paused")} label="Paused" value={pausedWorkers} icon={PauseCircle} tone="amber" active={statusFilter === "paused"} />
           <SummaryCardLink href={statusHref("ready-closure")} label="Ready for Closure" value={readyForClosureCount} icon={CheckCircle2} tone="green" active={statusFilter === "ready-closure"} />
+          {/* Unit 10G.54, Task 3: amber (not green) — a submitted-but-not-yet-
+              decided request, distinct from "Ready for Closure"'s green. */}
+          <SummaryCardLink href={statusHref("waiting-approval")} label="Waiting Manager Approval" value={waitingApprovalCount} icon={Hourglass} tone="amber" active={statusFilter === "waiting-approval"} />
           {canViewCosts ? (
             <SummaryCard label="Labor Cost Today" value={`${totalLaborAmountToday.toFixed(3)} KWD`} icon={Activity} tone="gray" />
           ) : null}
@@ -625,6 +707,7 @@ export default async function DailyActivityPage({
           <FilterChip href={statusHref("paused")} label="Paused" active={statusFilter === "paused"} />
           <FilterChip href={statusHref("materials-pending")} label="Materials Pending" active={statusFilter === "materials-pending"} urgent />
           <FilterChip href={statusHref("ready-closure")} label="Ready for Closure" active={statusFilter === "ready-closure"} />
+          <FilterChip href={statusHref("waiting-approval")} label="Waiting Manager Approval" active={statusFilter === "waiting-approval"} />
           <FilterChip href={statusHref("not-started")} label="Not Started" active={statusFilter === "not-started"} />
 
           <form className="flex flex-1 flex-wrap items-center gap-1.5">

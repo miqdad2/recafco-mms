@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { dispatchActionToast } from "@/lib/action-messages";
 import { createClientId } from "@/lib/client/safe-id";
 import type { DailyActivityCardData } from "@/components/work-orders/daily-activity-card";
+import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
 
 // Daily Activity Closure Request Modal with Attachments Unit 10F.6, extended
 // by Closure Request Modal Optional Note and Multiple Custom Attachments
@@ -82,11 +83,27 @@ export function DailyActivityClosureModal({
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   // Unit 10F.6B, Task 3 — readiness checklist no longer includes the note
-  // (it's not a blocker); only the two real closure guards this page mirrors
-  // remain. Materials/session data is the same read-only mirror of the real
+  // (it's not a blocker); only the real closure guards this page mirrors
+  // remain. Materials/worker data is the same read-only mirror of the real
   // backend guards used everywhere else on this page — never re-derived.
+  //
+  // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 9: "No active
+  // worker session" only ever checked for a currently-running session and
+  // let a Paused or Not Started worker straight through — replaced with
+  // "All workers finished", backed by the same checkWorkersReadyForClosure()
+  // the server guard/Daily Activity board/Job Card detail page all use, so
+  // this modal can never show "ready" when the real backend guard would
+  // still reject the request.
   const materialsReady = card.materialsChip.label === "Materials Completed";
-  const noActiveSession = !card.laborSummary.has_active_session;
+  const workersCheck = checkWorkersReadyForClosure(
+    card.laborSummary.workers.map((w) => ({
+      workerAssignmentId: w.worker_assignment_id,
+      workerName: w.worker_name,
+      assignmentStatus: w.assignment_status,
+      sessionStatus: w.status,
+    }))
+  );
+  const allWorkersFinished = workersCheck.ready;
   const isReady = card.closureChip.label === "Ready";
   const blockers = card.closureReasons;
 
@@ -148,17 +165,25 @@ export function DailyActivityClosureModal({
       // Task 7 — do not create a partial confusing state: closure success
       // is always reported, with a clear separate warning if any (optional)
       // attachment did not make it.
+      //
+      // Daily Activity Closure Requested Visibility Unit 10G.54, Task 7:
+      // exact wording — "Closure request submitted. Waiting for Manager
+      // approval." Data Entry needs to know both that the click actually
+      // worked AND what happens next (the Job Card now stays visible on
+      // this same page, read-only, per Task 2/5/6 above — this toast is the
+      // one moment that confirms the click succeeded, since the page itself
+      // just quietly re-renders the same Job Card in its new state).
       if (anyUploadFailed) {
         dispatchActionToast({
           tone: "warning",
-          title: "Closure Request Sent",
-          description: "Closure request was sent, but some attachments failed to upload. You can upload them from the Job Card Attachments tab.",
+          title: "Closure request submitted.",
+          description: "Waiting for Manager approval. Some attachments failed to upload — you can add them from the Job Card Attachments tab.",
         });
       } else {
         dispatchActionToast({
           tone: "success",
-          title: "Closure Request Sent",
-          description: "Manager will be notified to review and approve.",
+          title: "Closure request submitted.",
+          description: "Waiting for Manager approval.",
         });
       }
       onClose();
@@ -191,9 +216,36 @@ export function DailyActivityClosureModal({
           <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Closure Readiness</p>
           <ul className="space-y-1.5">
             <ChecklistRow ok={materialsReady} label="Materials completed" />
-            <ChecklistRow ok={noActiveSession} label="No active worker session" />
+            <ChecklistRow ok={allWorkersFinished} label="All workers finished" />
           </ul>
-          {!isReady && blockers.length > 0 ? (
+          {/* Task 9 — named, specific worker call-outs (not just the generic
+              blockers line below) so a Manager/Data Entry knows exactly who
+              still needs to finish, not just that "something" blocks it. */}
+          {workersCheck.pausedWorkers.length > 0 ? (
+            <div className="mt-2.5 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs font-semibold text-amber-800">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span>
+                Worker paused: {workersCheck.pausedWorkers.map((w) => w.workerName).join(", ")}. Finish work before requesting closure.
+              </span>
+            </div>
+          ) : null}
+          {workersCheck.workingWorkers.length > 0 ? (
+            <div className="mt-2.5 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs font-semibold text-amber-800">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span>
+                Worker still working: {workersCheck.workingWorkers.map((w) => w.workerName).join(", ")}. Pause or finish work before requesting closure.
+              </span>
+            </div>
+          ) : null}
+          {workersCheck.notStartedWorkers.length > 0 ? (
+            <div className="mt-2.5 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs font-semibold text-amber-800">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span>
+                Worker not started: {workersCheck.notStartedWorkers.map((w) => w.workerName).join(", ")}. Finish or remove this assignment before requesting closure.
+              </span>
+            </div>
+          ) : null}
+          {!isReady && blockers.length > 0 && workersCheck.ready ? (
             <div className="mt-2.5 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs font-semibold text-amber-800">
               <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               <span>{blockers.join(" · ")}</span>

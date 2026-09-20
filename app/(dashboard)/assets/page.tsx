@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, Boxes, Layers, PackageSearch, Plus, ShieldAlert, ShoppingCart, Upload, Wrench } from "lucide-react";
+import { AlertTriangle, Boxes, Layers, MapPin, PackageSearch, Plus, ShieldAlert, ShoppingCart, Upload, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -7,25 +7,29 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { AssetTypeCards, type AssetTypeCardRow } from "@/components/assets/asset-type-cards";
+import { AssetTypeCards, type AssetTypeCardRow, type AssetTypeMovementCounts } from "@/components/assets/asset-type-cards";
 import { SimpleAssetForm } from "@/components/assets/simple-asset-form";
 import { AssetImportForm } from "@/components/assets/asset-import-form";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
+import { SendToSiteForm, ReceiveBackForm } from "@/components/assets/asset-movement-forms";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { getActiveMovementsByAsset } from "@/lib/assets/movements-data";
+import { getMovementBadge, ALL_ASSET_TYPES_KEY } from "@/lib/assets/movement-status";
 // Categories loaded from DB — see asset_categories table
 
 type AssetsPageProps = {
-  searchParams?: Promise<{ page?: string; search?: string; status?: string; category?: string; due_soon?: string; new_asset?: string; import_assets?: string }>;
+  searchParams?: Promise<{
+    new_asset?: string; import_assets?: string;
+    // Assets Page Card-First Register UI Unit 10G.67, Task 3/4 — which
+    // Asset Type popup (a real category, or ALL_ASSET_TYPES_KEY for "View
+    // All Assets") should be open on load: set by clicking a card/"View All
+    // Assets", and carried through Send to Site / Receive Back links so the
+    // redirect after either action reopens the same popup.
+    asset_type?: string;
+    send_to_site?: string; receive_back?: string;
+  }>;
 };
-
-const pageSize = 25;
-
-// Assets Dashboard Card Clarity Cleanup Task 4/6: a Job Card is "open" if it
-// hasn't reached the one terminal status in the simplified workflow model
-// ("Closed" — see lib/workflows/status-rules.ts); "Cancelled"/"Rejected" are
-// kept in this exclusion list defensively for any legacy pre-Unit4 rows.
-const OPEN_JOB_CARD_STATUSES_EXCLUDED = ["Closed", "Cancelled", "Rejected"];
 
 // A Job Card counts as "active maintenance" once it's past Manager approval
 // and is actually queued for/undergoing repair — matches the subtitle
@@ -39,18 +43,6 @@ const ACTIVE_MAINTENANCE_JOB_CARD_STATUSES = [
   "Assigned",
   "In Progress",
 ];
-
-type AssetRow = {
-  id: string;
-  asset_code: string;
-  asset_name: string;
-  category: string;
-  status: string;
-  location: string | null;
-  plate_number: string | null;
-  chassis_number: string | null;
-  assigned_operator_driver: string | null;
-};
 
 type CategoryChip = {
   category: string;
@@ -81,28 +73,9 @@ function getCeoAssetReason(asset: CeoAsset, serviceDueSoon: Date): { label: stri
   return { label: "Executive visibility", tone: "gray" };
 }
 
-function assetStatusTone(status: string): "green" | "amber" | "red" | "gray" {
-  if (status === "Breakdown" || status === "Out of Service") return "red";
-  if (status === "Under Maintenance" || status === "Waiting for Parts") return "amber";
-  if (status === "Retired") return "gray";
-  return "green";
-}
-
-// Assets Dashboard Card Clarity Cleanup Task 3: display label only — the
-// stored status value ("Waiting for Parts") is unchanged so filtering,
-// tone lookups, and existing records are unaffected.
-function displayAssetStatus(status: string): string {
-  return status === "Waiting for Parts" ? "Waiting for Materials" : status;
-}
-
 export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   const context = await requirePermission("assets.view");
   const params = await searchParams;
-  const page = Math.max(1, Number(params?.page ?? 1) || 1);
-  const search = String(params?.search ?? "").replace(/[%,()]/g, " ").trim().slice(0, 80);
-  const status = String(params?.status ?? "").trim();
-  const category = String(params?.category ?? "").trim();
-  const dueSoonFilter = params?.due_soon === "1";
 
   const dueSoon = new Date();
   dueSoon.setDate(dueSoon.getDate() + 30);
@@ -353,64 +326,17 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   }
   // ── End CEO early-return ──────────────────────────────────────────────────
 
-  // Asset Register Import Mapping and New Asset Form Update Unit 10G.34,
-  // Task 9/10: "Asset Type" is now a flat, real-data-driven list (no main/
-  // sub category split, no admin category tree query on this page at all —
-  // that hierarchy still exists for /admin/settings/asset-categories, just
-  // not consulted here). categoryChips (one row per Asset Type actually in
-  // use, with its count) IS the "Asset Types" section directly — the exact
-  // same query already ran on this page before this unit, so this removes
-  // work rather than adding it (Task's "keep the page fast" instruction).
-  const statusFilter = status
-    ? { status }
-    : dueSoonFilter
-      ? { status: { notIn: ["Retired"] } }
-      : {};
-
-  const where = {
-    deleted_at: null,
-    ...statusFilter,
-    ...(category ? { category } : {}),
-    ...(dueSoonFilter ? { next_service_date: { lte: dueSoon } } : {}),
-    // Task 9 — search covers asset code, asset type, make/name, model/year,
-    // plate number, chassis number, location, responsible person/driver,
-    // and remarks.
-    ...(search
-      ? {
-          OR: [
-            { asset_code:              { contains: search, mode: "insensitive" as const } },
-            { category:                { contains: search, mode: "insensitive" as const } },
-            { asset_name:              { contains: search, mode: "insensitive" as const } },
-            { model:                   { contains: search, mode: "insensitive" as const } },
-            { plate_number:            { contains: search, mode: "insensitive" as const } },
-            { chassis_number:          { contains: search, mode: "insensitive" as const } },
-            { location:                { contains: search, mode: "insensitive" as const } },
-            { assigned_operator_driver:{ contains: search, mode: "insensitive" as const } },
-            { remarks:                 { contains: search, mode: "insensitive" as const } },
-          ],
-        }
-      : {}),
-  };
-
-  const [assets, count, categoryChips, needAttentionCount, activeMaintenanceCount, assetsForTypeCards] = await Promise.all([
-    prisma.assets.findMany({
-      where,
-      orderBy: dueSoonFilter ? { next_service_date: "asc" } : { asset_code: "asc" },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-      select: {
-        id: true,
-        asset_code: true,
-        asset_name: true,
-        category: true,
-        status: true,
-        location: true,
-        plate_number: true,
-        chassis_number: true,
-        assigned_operator_driver: true,
-      },
-    }) as Promise<AssetRow[]>,
-    prisma.assets.count({ where }),
+  // Assets Page Card-First Register UI Unit 10G.67, Task 1/2: this page no
+  // longer runs a paginated/filtered `assets` query at all — the only asset
+  // register left is the Asset Type popup, which filters entirely in
+  // memory over the same full `assetsForTypeCards` list already loaded for
+  // the card grid since Unit 10G.37 (Task 10: no new/unnecessary queries).
+  const [
+    categoryChips,
+    activeMaintenanceRows,
+    assetsForTypeCards,
+    activeMovementsByAsset,
+  ] = await Promise.all([
     prisma.$queryRaw<CategoryChip[]>`
       select category, count(*)::bigint as count
       from public.assets
@@ -418,37 +344,24 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
       group by category
       order by count(*) desc, category asc
     `,
-    // Assets Dashboard Card Clarity Cleanup Task 4/6: "Need Attention" — an
-    // asset in a bad status (Breakdown/Out of Service) OR one with any open
-    // (non-Closed) Job Card, same "open" definition already used for the
-    // per-row "Open Job Card" badge below (OPEN_JOB_CARD_STATUSES).
-    prisma.assets.count({
-      where: {
-        deleted_at: null,
-        OR: [
-          { status: { in: ["Breakdown", "Out of Service"] } },
-          { work_orders: { some: { deleted_at: null, status: { notIn: OPEN_JOB_CARD_STATUSES_EXCLUDED } } } },
-        ],
-      },
-    }),
     // "Active Maintenance" — an asset with a Job Card that has passed
     // approval and is actively being worked (queued for/awaiting materials,
-    // assigned, or in progress). Deliberately narrower than "Need Attention"
-    // (excludes Created/Under Review — those haven't started maintenance yet).
-    prisma.assets.count({
+    // assigned, or in progress). Replaces the previous separate count()
+    // query: the row list itself gives both the page-wide total (its
+    // length) and, grouped by category, each Asset Type card's own count
+    // (Task 2's "if available/easy") from one query instead of two.
+    prisma.assets.findMany({
       where: {
         deleted_at: null,
         work_orders: { some: { deleted_at: null, status: { in: ACTIVE_MAINTENANCE_JOB_CARD_STATUSES } } },
       },
+      select: { id: true, category: true },
     }),
     // Asset Types Card View and Popup Unit 10G.37: one lightweight query for
     // every registered asset (171 rows currently — a handful of columns
-    // each), fetched once and handed to the client-side card grid so
-    // opening a type's popup and searching inside it never triggers another
-    // database call (Task's own "use already loaded asset list, avoid
-    // extra database calls" instruction) — independent of the paginated,
-    // filtered `assets` query above, which the main Asset Register still
-    // uses unchanged.
+    // each), fetched once and handed to the client-side card grid/popup so
+    // opening a type (or "View All Assets") and searching/filtering inside
+    // it never triggers another database call.
     prisma.assets.findMany({
       where: { deleted_at: null },
       orderBy: { asset_code: "asc" },
@@ -467,43 +380,86 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         remarks: true,
       },
     }) as Promise<AssetTypeCardRow[]>,
+    // One lightweight query for every currently-active deployment; the KPI
+    // cards, Asset Type cards, and popup all read from this same in-memory
+    // map instead of a per-row query.
+    getActiveMovementsByAsset(),
   ]);
 
   const totalAssets = categoryChips.reduce((sum, item) => sum + Number(item.count), 0);
-  const totalPages = Math.max(1, Math.ceil(count / pageSize));
+  const activeMaintenanceCount = activeMaintenanceRows.length;
 
-  // Assets & Equipment Data Entry Access Alignment: this used to explicitly
-  // exclude maintenance_data_entry even though the role already carries
-  // assets.manage in the DB (route guards on /assets/new, /assets/import,
-  // and /assets/[id]/edit all already require plain assets.manage with no
-  // role-slug exception) — so Data Entry could reach every asset write
-  // route by URL but never saw the New Asset / Import Excel buttons here.
-  // Now purely permission-based, matching every other asset route/action in
-  // the app and Data Entry's real, already-granted assets.manage permission.
+  // Task 1 — both site-movement KPI counts are derived in memory from the
+  // same `activeMovementsByAsset` map already loaded above; no extra query.
+  const atSiteCount = activeMovementsByAsset.size;
+  const overdueReturnCount = [...activeMovementsByAsset.values()].filter(
+    (m) => getMovementBadge(m)?.label === "Overdue"
+  ).length;
+
+  // Task 2 — per-Asset-Type at-site/overdue/active-maintenance counts for
+  // the Asset Type cards, built from data already loaded above — no extra
+  // query.
+  const movementCountsByCategory: Record<string, AssetTypeMovementCounts> = {};
+  function categoryBucket(category: string): AssetTypeMovementCounts {
+    return (movementCountsByCategory[category] ??= { atSite: 0, overdue: 0, activeMaintenance: 0 });
+  }
+  for (const a of assetsForTypeCards) {
+    const active = activeMovementsByAsset.get(a.id);
+    if (!active) continue;
+    const bucket = categoryBucket(a.category);
+    bucket.atSite += 1;
+    if (getMovementBadge(active)?.label === "Overdue") bucket.overdue += 1;
+  }
+  for (const row of activeMaintenanceRows) {
+    categoryBucket(row.category).activeMaintenance += 1;
+  }
+
+  // Assets & Equipment Data Entry Access Alignment: purely permission-based
+  // (assets.manage), matching every other asset route/action in the app.
   const canManage =
     context.role?.slug === "super_admin" || context.permissions.includes("assets.manage");
-  // Task 10 — one simple view for every role now; no separate manager-only
-  // columns/filters (there's nothing "technical" left to gate).
-  const hasActiveFilters = !!(search || status || category || dueSoonFilter);
 
-  // New Asset Popup and Add Asset Type Unit 10G.38, Task 1/2: "+ New Asset"
-  // now opens this page's own LargeFormModal via ?new_asset=1 instead of
-  // navigating to /assets/new (that route is untouched and still works
-  // directly — Task 2). Task 8: only Super Admin / Maintenance Manager may
-  // add new asset types from inside the popup's Asset Type field.
+  // New Asset Popup and Add Asset Type Unit 10G.38: "+ New Asset" opens this
+  // page's own LargeFormModal via ?new_asset=1 instead of navigating to
+  // /assets/new (that route is untouched and still works directly).
   const showNewAssetModal = canManage && params?.new_asset === "1";
   const canManageAssetTypes =
     context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
   // categoryChips already is the exact "one row per real, in-use asset
-  // type" list (Task's own "avoid extra database calls" instruction) — no
-  // separate query needed for the popup's dropdown.
+  // type" list — no separate query needed for the popup's dropdown.
   const assetTypesForModal = categoryChips.map((c) => c.category);
 
-  // Import Excel Popup Flow Unit 10G.40, Task 1/2/11: "Import Excel" now
-  // opens this same LargeFormModal via ?import_assets=1 instead of
-  // navigating to /assets/import — that route is untouched and still works
-  // directly when opened on its own.
+  // Import Excel Popup Flow Unit 10G.40: "Import Excel" opens this same
+  // LargeFormModal via ?import_assets=1 instead of navigating to
+  // /assets/import — that route is untouched and still works directly.
   const showImportModal = canManage && params?.import_assets === "1";
+
+  // Task 3/4 — validate the requested popup against the real category list
+  // (or the "View All Assets" sentinel) so a stale/invalid `asset_type`
+  // value never silently opens the wrong thing.
+  const requestedType = params?.asset_type ?? null;
+  const initialOpenType =
+    requestedType === ALL_ASSET_TYPES_KEY || categoryChips.some((c) => c.category === requestedType)
+      ? requestedType
+      : null;
+
+  // Task 4 — the target asset is always present in `assetsForTypeCards`:
+  // the link that opens either modal is only ever rendered from inside a
+  // popup built from that same already-loaded full asset list.
+  const sendToSiteTarget =
+    canManage && params?.send_to_site ? assetsForTypeCards.find((a) => a.id === params.send_to_site) ?? null : null;
+  const showSendToSiteModal = !!sendToSiteTarget && !activeMovementsByAsset.has(sendToSiteTarget.id);
+
+  const receiveBackTarget =
+    canManage && params?.receive_back ? assetsForTypeCards.find((a) => a.id === params.receive_back) ?? null : null;
+  const receiveBackMovement = receiveBackTarget ? activeMovementsByAsset.get(receiveBackTarget.id) ?? null : null;
+  const showReceiveBackModal = !!receiveBackTarget && !!receiveBackMovement;
+
+  // Dismissing/completing either modal returns to the same popup the action
+  // was started from (Task 3/4) — never a bare, popup-less main page.
+  const movementModalDismissHref = initialOpenType
+    ? `/assets?asset_type=${encodeURIComponent(initialOpenType)}`
+    : "/assets";
 
   return (
     <>
@@ -535,22 +491,34 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
 
       <div className="p-4 lg:p-6 space-y-4">
 
-        {/* KPI cards */}
-        <section className="grid gap-3 sm:grid-cols-3">
+        {/* Task 2 — Total Assets | At Site | Overdue Return | Active
+            Maintenance. Only "Total Assets" links anywhere (to View All
+            Assets) — the other three are informational only now that there
+            is no more page-level Status/Site Movement filter for them to
+            jump to; a manager wanting to act on one drills in through the
+            relevant Asset Type card's own popup instead, which now carries
+            all of the same filtering. */}
+        <section className="grid gap-3 grid-cols-2 lg:grid-cols-4">
           <SummaryCard
-            title="Total Assets & Equipment"
+            title="Total Assets"
             value={totalAssets}
             detail="All registered machines and equipment"
             icon={Boxes}
-            href="/assets"
+            href={`/assets?asset_type=${ALL_ASSET_TYPES_KEY}`}
           />
           <SummaryCard
-            title="Need Attention"
-            value={needAttentionCount}
-            detail="Assets with open Job Cards"
-            icon={ShieldAlert}
-            tone={needAttentionCount > 0 ? "red" : "gray"}
-            href="/assets?status=Breakdown"
+            title="At Site"
+            value={atSiteCount}
+            detail="Assets currently sent to a site or project"
+            icon={MapPin}
+            tone={atSiteCount > 0 ? "blue" : "gray"}
+          />
+          <SummaryCard
+            title="Overdue Return"
+            value={overdueReturnCount}
+            detail="At site past the expected return date"
+            icon={AlertTriangle}
+            tone={overdueReturnCount > 0 ? "red" : "gray"}
           />
           <SummaryCard
             title="Active Maintenance"
@@ -558,86 +526,51 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
             detail="Assets currently being repaired or waiting for materials"
             icon={Wrench}
             tone={activeMaintenanceCount > 0 ? "amber" : "gray"}
-            href="/assets?status=Under+Maintenance"
           />
         </section>
 
-        {/* Asset Types Card View and Popup Unit 10G.37, Task 1/2/8: the
-            plain "Asset Types" table (from Unit 10G.34) replaced with a
-            compact card grid — one card per real, in-use asset type,
-            clicking one opens a search-and-browse popup instead of
-            filtering via a link. The main Asset Type dropdown further down
-            (Task 7) still does the classic same-page filter — the cards are
-            a faster, more visual alternative, not a replacement for it. */}
-        {totalAssets > 0 && (
+        {/* Task 1/2/7 — Asset Type cards are now the entire register surface
+            on this page: no global search bar, no Status/Site Movement
+            filter row, and no full Asset Register table sit below them
+            anymore. Everything those used to do now lives inside the
+            popup opened from a card or "View All Assets" (Task 3/4). */}
+        {totalAssets > 0 ? (
           <section>
-            <div className="mb-2 flex items-center justify-between">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <p className="text-[10px] font-black uppercase tracking-widest text-[#4B5563]">Asset Types</p>
-              {canManage && (
+              <div className="flex items-center gap-3">
+                {/* Task 3 — opens the same popup component, unscoped. */}
                 <Link
-                  href="/admin/settings/asset-categories"
+                  href={`/assets?asset_type=${ALL_ASSET_TYPES_KEY}`}
                   className="text-xs font-bold text-[#ED1C24] hover:underline"
                 >
-                  Manage Categories
+                  View All Assets
                 </Link>
-              )}
+                {canManage && (
+                  <Link
+                    href="/admin/settings/asset-categories"
+                    className="text-xs font-bold text-[#ED1C24] hover:underline"
+                  >
+                    Manage Categories
+                  </Link>
+                )}
+              </div>
             </div>
             <AssetTypeCards
               types={categoryChips.map((c) => ({ category: c.category, count: Number(c.count) }))}
               assets={assetsForTypeCards}
+              activeMovements={Object.fromEntries(activeMovementsByAsset)}
+              movementCounts={movementCountsByCategory}
+              canManage={canManage}
+              initialOpenType={initialOpenType}
             />
-            <p className="mt-2 text-xs text-[#9CA3AF]">
-              Only categories with registered assets are shown.
+            {/* Task 7 — no empty table box left below the cards. */}
+            <p className="mt-3 text-center text-xs text-[#9CA3AF]">
+              Select an asset type to view its register.
             </p>
           </section>
-        )}
-
-        {totalAssets > 0 && (
-        /* Task 9/10 — one simple filter bar for every role: search plus
-           Status and Asset Type. */
-        <form className="flex flex-wrap items-center gap-2 rounded-md border border-[#E5E7EB] bg-white p-3 shadow-sm">
-          <input
-            className="focus-ring h-9 min-w-[220px] flex-1 rounded-md border border-[#E5E7EB] px-3 text-sm"
-            name="search"
-            defaultValue={params?.search ?? ""}
-            placeholder="Search asset, plate number, chassis number, location, or driver…"
-          />
-          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="category" defaultValue={category}>
-            <option value="">All asset types</option>
-            {categoryChips.map((c) => (
-              <option key={c.category} value={c.category}>{c.category}</option>
-            ))}
-          </select>
-          <select className="focus-ring h-9 rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold" name="status" defaultValue={params?.status ?? ""}>
-            <option value="">Status</option>
-            {["Active", "In Use", "Under Maintenance", "Breakdown", "Waiting for Parts", "Out of Service", "Retired"].map((s) => (
-              <option key={s} value={s}>{displayAssetStatus(s)}</option>
-            ))}
-          </select>
-          <Button type="submit" className="h-9 shrink-0">Apply</Button>
-          {hasActiveFilters && (
-            <Link
-              href="/assets"
-              className="inline-flex h-9 items-center rounded-md border border-[#E5E7EB] px-3 text-sm font-semibold text-[#4B5563] hover:bg-gray-50"
-            >
-              Reset
-            </Link>
-          )}
-        </form>
-        )}
-
-        {/* Asset register table */}
-        <section className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
-          <div className="border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
-            <p className="text-xs font-black uppercase text-[#4B5563]">Asset Register</p>
-            {totalAssets > 0 && (
-              <p className="mt-1 text-sm font-semibold text-[#111827]">
-                {count.toLocaleString("en-US")} {count === 1 ? "asset" : "assets"}
-                {hasActiveFilters && " matching filters"}
-              </p>
-            )}
-          </div>
-          {totalAssets === 0 ? (
+        ) : (
+          <section className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
             <div className="px-6 py-14 text-center">
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100">
                 <Boxes className="h-6 w-6 text-[#9CA3AF]" aria-hidden="true" />
@@ -675,97 +608,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
                 </p>
               )}
             </div>
-          ) : (
-            <div className="overflow-x-auto">
-              {/* Asset Register Import Mapping and New Asset Form Update
-                  Unit 10G.34, Task 9: simple useful columns only — Asset /
-                  Equipment, Asset Type, Plate No., Chassis No., Location,
-                  Responsible Person / Driver, Status, Action — the same for
-                  every role now (no manager-only extra columns; a missing
-                  value always reads "—", never blank). */}
-              <table className="w-full min-w-[860px] text-left text-sm">
-                <thead className="bg-gray-50 text-xs font-black uppercase text-[#4B5563]">
-                  <tr>
-                    <th className="px-4 py-3">Asset / Equipment</th>
-                    <th className="px-4 py-3">Asset Type</th>
-                    <th className="px-4 py-3">Plate No.</th>
-                    <th className="px-4 py-3">Chassis No.</th>
-                    <th className="px-4 py-3">Location</th>
-                    <th className="px-4 py-3">Responsible Person / Driver</th>
-                    <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E5E7EB]">
-                  {assets.map((asset) => {
-                    const isCritical = asset.status === "Breakdown" || asset.status === "Out of Service";
-                    return (
-                      <tr
-                        key={asset.id}
-                        className={`transition ${isCritical ? "bg-red-50" : "hover:bg-gray-50"}`}
-                      >
-                        <td className="px-4 py-2.5">
-                          <Link href={`/assets/${asset.id}`} className="group/asset block">
-                            <p className="font-bold text-[#111827] transition group-hover/asset:text-[#ED1C24]">
-                              {asset.asset_code}
-                            </p>
-                            <p className="text-xs text-[#4B5563] transition group-hover/asset:text-[#ED1C24]">
-                              {asset.asset_name}
-                            </p>
-                          </Link>
-                        </td>
-                        <td className="px-4 py-2.5 text-sm text-[#4B5563]">{asset.category}</td>
-                        <td className="px-4 py-2.5 text-sm text-[#4B5563]">
-                          {asset.plate_number ?? "—"}
-                        </td>
-                        <td className="px-4 py-2.5 text-sm text-[#4B5563]">
-                          {asset.chassis_number ?? "—"}
-                        </td>
-                        <td className="px-4 py-2.5 text-sm text-[#4B5563]">
-                          {asset.location ?? "—"}
-                        </td>
-                        <td className="px-4 py-2.5 text-sm text-[#4B5563]">
-                          {asset.assigned_operator_driver ?? "—"}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <StatusBadge label={displayAssetStatus(asset.status)} tone={assetStatusTone(asset.status)} />
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-2.5 text-right">
-                          <Link
-                            href={`/assets/${asset.id}`}
-                            className="inline-block rounded-md border border-[#E5E7EB] px-3 py-1.5 text-xs font-bold text-[#111827] hover:border-[#ED1C24] hover:text-[#ED1C24]"
-                          >
-                            View
-                          </Link>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {!assets.length && (
-                    <tr>
-                      <td className="px-4 py-10 text-center" colSpan={8}>
-                        <p className="text-sm font-semibold text-[#4B5563]">No assets match the current filters.</p>
-                        <Link href="/assets" className="mt-2 inline-block text-xs text-[#ED1C24] hover:underline">
-                          Clear filters
-                        </Link>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
-        {totalAssets > 0 && (
-          <Pagination
-            page={page}
-            totalPages={totalPages}
-            search={params?.search}
-            status={params?.status}
-            category={params?.category}
-            dueSoon={dueSoonFilter ? "1" : undefined}
-          />
+          </section>
         )}
 
       </div>
@@ -792,6 +635,33 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
           closeHref="/assets"
         >
           <AssetImportForm modalMode canReplace={context.role?.slug === "super_admin"} />
+        </LargeFormModal>
+      )}
+
+      {/* Task 4 — same Send to Site / Receive Back forms the asset's own
+          detail page uses (Unit 10G.65), opened here without navigating
+          away from whichever Asset Type popup they were triggered from. */}
+      {showSendToSiteModal && sendToSiteTarget && (
+        <LargeFormModal
+          title="Send to Site"
+          subtitle={`Record ${sendToSiteTarget.asset_name} being sent to a work site or project location.`}
+          closeHref={movementModalDismissHref}
+        >
+          <SendToSiteForm assetId={sendToSiteTarget.id} dismissHref={movementModalDismissHref} />
+        </LargeFormModal>
+      )}
+      {showReceiveBackModal && receiveBackTarget && receiveBackMovement && (
+        <LargeFormModal
+          title="Receive Back"
+          subtitle={`Record ${receiveBackTarget.asset_name} being received back from ${receiveBackMovement.to_location}.`}
+          closeHref={movementModalDismissHref}
+        >
+          <ReceiveBackForm
+            assetId={receiveBackTarget.id}
+            movementId={receiveBackMovement.id}
+            defaultReturnLocation={receiveBackMovement.from_location ?? "Factory"}
+            dismissHref={movementModalDismissHref}
+          />
         </LargeFormModal>
       )}
     </>
@@ -856,43 +726,4 @@ function SummaryCard({
   );
 
   return href ? <Link href={href}>{content}</Link> : content;
-}
-
-function Pagination({
-  page, totalPages, search, status, category, dueSoon,
-}: {
-  page: number;
-  totalPages: number;
-  search?: string;
-  status?: string;
-  category?: string;
-  dueSoon?: string;
-}) {
-  const hrefFor = (nextPage: number) => {
-    const p = new URLSearchParams();
-    p.set("page", String(nextPage));
-    if (search)   p.set("search", search);
-    if (status)   p.set("status", status);
-    if (category) p.set("category", category);
-    if (dueSoon)  p.set("due_soon", dueSoon);
-    return `/assets?${p.toString()}`;
-  };
-
-  return (
-    <div className="flex items-center justify-between rounded-md border border-[#E5E7EB] bg-white p-3 text-sm font-semibold text-[#4B5563]">
-      <span>Page {page} of {totalPages}</span>
-      <div className="flex gap-2">
-        {page > 1 && (
-          <Link className="rounded-md border border-[#E5E7EB] px-3 py-2 text-[#111827] hover:bg-gray-50" href={hrefFor(page - 1)}>
-            Previous
-          </Link>
-        )}
-        {page < totalPages && (
-          <Link className="rounded-md border border-[#E5E7EB] px-3 py-2 text-[#111827] hover:bg-gray-50" href={hrefFor(page + 1)}>
-            Next
-          </Link>
-        )}
-      </div>
-    </div>
-  );
 }

@@ -16,6 +16,18 @@ export function formatDateTime(value: string | null | undefined) {
   }).format(new Date(value));
 }
 
+// Date-only display (e.g. "Sep 15, 2026") — for @db.Date columns and any
+// other value where a time-of-day would be misleading (a Date column has no
+// real time component, so pairing it with timeStyle here would just show a
+// meaningless midnight).
+export function formatDate(value: string | Date | null | undefined) {
+  if (!value) {
+    return "Not recorded";
+  }
+
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(value));
+}
+
 // Materials Requests Requested Date & Time Column Cleanup: an exact,
 // unambiguous "DD MMM YYYY, hh:mm AM/PM" timestamp (e.g. "30 Jul 2026, 11:48
 // AM") — used wherever relative wording ("Today", "2 days ago") needs to be

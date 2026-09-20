@@ -71,11 +71,11 @@ model asset_documents {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model assets {
-  id                         String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  asset_code                 String            @unique
+  id                         String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  asset_code                 String              @unique
   asset_name                 String
   category                   String
-  department_id              String?           @db.Uuid
+  department_id              String?             @db.Uuid
   location                   String?
   brand                      String?
   model                      String?
@@ -84,31 +84,32 @@ model assets {
   plate_number               String?
   chassis_number             String?
   engine_number              String?
-  purchase_date              DateTime?         @db.Date
-  warranty_expiry_date       DateTime?         @db.Date
-  registration_expiry_date   DateTime?         @db.Date
-  insurance_expiry_date      DateTime?         @db.Date
-  current_kilometer_reading  Decimal?          @db.Decimal(12, 2)
-  current_running_hours      Decimal?          @db.Decimal(12, 2)
+  purchase_date              DateTime?           @db.Date
+  warranty_expiry_date       DateTime?           @db.Date
+  registration_expiry_date   DateTime?           @db.Date
+  insurance_expiry_date      DateTime?           @db.Date
+  current_kilometer_reading  Decimal?            @db.Decimal(12, 2)
+  current_running_hours      Decimal?            @db.Decimal(12, 2)
   assigned_operator_driver   String?
-  status                     String            @default("Active")
-  next_service_date          DateTime?         @db.Date
-  next_service_kilometer     Decimal?          @db.Decimal(12, 2)
-  next_service_running_hours Decimal?          @db.Decimal(12, 2)
+  status                     String              @default("Active")
+  next_service_date          DateTime?           @db.Date
+  next_service_kilometer     Decimal?            @db.Decimal(12, 2)
+  next_service_running_hours Decimal?            @db.Decimal(12, 2)
   notes                      String?
   condition                  String?
   criticality                String?
   remarks                    String?
-  created_at                 DateTime          @default(now()) @db.Timestamptz(6)
-  updated_at                 DateTime          @default(now()) @db.Timestamptz(6)
-  created_by                 String?           @db.Uuid
-  updated_by                 String?           @db.Uuid
-  deleted_at                 DateTime?         @db.Timestamptz(6)
+  created_at                 DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at                 DateTime            @default(now()) @db.Timestamptz(6)
+  created_by                 String?             @db.Uuid
+  updated_by                 String?             @db.Uuid
+  deleted_at                 DateTime?           @db.Timestamptz(6)
   asset_documents            asset_documents[]
-  departments                departments?      @relation(fields: [department_id], references: [id], onUpdate: NoAction)
+  departments                departments?        @relation(fields: [department_id], references: [id], onUpdate: NoAction)
   parts_requests             parts_requests[]
   work_orders                work_orders[]
   service_contracts          service_contracts[]
+  asset_movements            asset_movements[]
 
   @@index([category], map: "idx_assets_category")
   @@index([deleted_at], map: "idx_assets_deleted_at")
@@ -118,6 +119,33 @@ model assets {
   @@index([status], map: "idx_assets_status")
   @@index([criticality], map: "idx_assets_criticality")
   @@index([condition], map: "idx_assets_condition")
+}
+
+// Asset Site Movement / Deployment Tracking Unit 10G.65: one row per
+// deployment trip (not separate send/return event rows) — starts ACTIVE on
+// Send to Site, updated in place to RETURNED on Receive Back. sent_by_user_id/
+// received_by_user_id are plain scalar columns with no Prisma relation, same
+// convention as assets.created_by/updated_by.
+model asset_movements {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  asset_id             String    @db.Uuid
+  status               String    @default("ACTIVE")
+  from_location        String?
+  to_location          String
+  sent_date            DateTime  @db.Date
+  expected_return_date DateTime? @db.Date
+  actual_return_date   DateTime? @db.Date
+  sent_by_user_id      String?   @db.Uuid
+  received_by_user_id  String?   @db.Uuid
+  responsible_person   String?
+  purpose              String?
+  remarks              String?
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime  @default(now()) @db.Timestamptz(6)
+  assets               assets    @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
+
+  @@index([asset_id], map: "idx_asset_movements_asset_id")
+  @@index([status], map: "idx_asset_movements_status")
 }
 
 model offline_inventory_movements {
@@ -139,6 +167,14 @@ model offline_inventory_movements {
   parts_request_id      String?   @db.Uuid
   remarks               String?
   adjustment_reason     String?
+  // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 2 —
+  // optional; null on any movement with no known price (issues, and
+  // receives/opening-stock entries where cost wasn't provided). See the
+  // migration comment for why there's no separate material-master cost
+  // column: "last unit cost" is simply the most recent movement's
+  // unit_cost for a given material identity.
+  unit_cost             Decimal?  @db.Decimal(14, 6)
+  total_cost            Decimal?  @db.Decimal(14, 3)
   created_by            String    @db.Uuid
   created_at            DateTime  @default(now()) @db.Timestamptz(6)
   updated_at            DateTime  @default(now()) @db.Timestamptz(6)
@@ -183,9 +219,9 @@ model service_contracts {
   updated_at        DateTime  @default(now()) @db.Timestamptz(6)
   deleted_at        DateTime? @db.Timestamptz(6)
 
-  assets                            assets   @relation(fields: [asset_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  profiles_created_by               profiles @relation("sc_created_by", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  profiles_updated_by               profiles? @relation("sc_updated_by", fields: [updated_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  assets              assets    @relation(fields: [asset_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  profiles_created_by profiles  @relation("sc_created_by", fields: [created_by], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  profiles_updated_by profiles? @relation("sc_updated_by", fields: [updated_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   @@index([asset_id], map: "idx_sc_asset_id")
   @@index([contract_status], map: "idx_sc_contract_status")
@@ -194,14 +230,14 @@ model service_contracts {
 }
 
 model asset_categories {
-  id         String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id         String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name       String
-  parent_id  String?           @db.Uuid
-  is_active  Boolean           @default(true)
-  sort_order Int               @default(0)
-  created_at DateTime          @default(now()) @db.Timestamptz(6)
-  updated_at DateTime          @default(now()) @db.Timestamptz(6)
-  parent     asset_categories? @relation("CategoryChildren", fields: [parent_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  parent_id  String?            @db.Uuid
+  is_active  Boolean            @default(true)
+  sort_order Int                @default(0)
+  created_at DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at DateTime           @default(now()) @db.Timestamptz(6)
+  parent     asset_categories?  @relation("CategoryChildren", fields: [parent_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
   children   asset_categories[] @relation("CategoryChildren")
 
   @@index([parent_id], map: "idx_asset_categories_parent_id")
@@ -421,34 +457,34 @@ model numbering_sequences {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model parts {
-  id                          String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  part_code                   String                   @unique
+  id                          String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  part_code                   String                        @unique
   part_name                   String
   description                 String?
   category                    String?
   part_number                 String?
   ss_rec_code                 String?
-  unit_of_measure             String                   @default("PCS")
-  current_stock               Decimal                  @default(0) @db.Decimal(12, 2)
-  minimum_stock               Decimal                  @default(0) @db.Decimal(12, 2)
-  unit_price                  Decimal                  @default(0) @db.Decimal(12, 3)
+  unit_of_measure             String                        @default("PCS")
+  current_stock               Decimal                       @default(0) @db.Decimal(12, 2)
+  minimum_stock               Decimal                       @default(0) @db.Decimal(12, 2)
+  unit_price                  Decimal                       @default(0) @db.Decimal(12, 3)
   supplier                    String?
   store_location_bin          String?
-  compatible_asset_categories String[]                 @default([])
-  status                      String                   @default("Active")
+  compatible_asset_categories String[]                      @default([])
+  status                      String                        @default("Active")
   notes                       String?
-  created_at                  DateTime                 @default(now()) @db.Timestamptz(6)
-  updated_at                  DateTime                 @default(now()) @db.Timestamptz(6)
-  created_by                  String?                  @db.Uuid
-  updated_by                  String?                  @db.Uuid
-  deleted_at                  DateTime?                @db.Timestamptz(6)
-  inventory_movements             inventory_movements[]
-  parts_request_items             parts_request_items[]
-  purchase_request_items          purchase_request_items[]
-  work_order_materials            work_order_materials[]
-  work_order_required_parts       WorkOrderRequiredPart[]
-  purchase_order_items            PurchaseOrderItem[]
-  offline_inventory_movements     offline_inventory_movements[]
+  created_at                  DateTime                      @default(now()) @db.Timestamptz(6)
+  updated_at                  DateTime                      @default(now()) @db.Timestamptz(6)
+  created_by                  String?                       @db.Uuid
+  updated_by                  String?                       @db.Uuid
+  deleted_at                  DateTime?                     @db.Timestamptz(6)
+  inventory_movements         inventory_movements[]
+  parts_request_items         parts_request_items[]
+  purchase_request_items      purchase_request_items[]
+  work_order_materials        work_order_materials[]
+  work_order_required_parts   WorkOrderRequiredPart[]
+  purchase_order_items        PurchaseOrderItem[]
+  offline_inventory_movements offline_inventory_movements[]
 
   @@index([current_stock], map: "idx_parts_current_stock")
   @@index([deleted_at], map: "idx_parts_deleted_at")
@@ -482,34 +518,34 @@ model parts_request_items {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model parts_requests {
-  id                                             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  parts_request_number                           String?               @unique
-  department_id                                  String?               @db.Uuid
-  work_order_id                                  String                @db.Uuid
-  asset_id                                       String?               @db.Uuid
+  id                                             String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parts_request_number                           String?                       @unique
+  department_id                                  String?                       @db.Uuid
+  work_order_id                                  String                        @db.Uuid
+  asset_id                                       String?                       @db.Uuid
   remarks                                        String?
-  request_date                                   DateTime              @default(dbgenerated("CURRENT_DATE")) @db.Date
-  request_time                                   DateTime              @default(dbgenerated("CURRENT_TIME")) @db.Time(6)
+  request_date                                   DateTime                      @default(dbgenerated("CURRENT_DATE")) @db.Date
+  request_time                                   DateTime                      @default(dbgenerated("CURRENT_TIME")) @db.Time(6)
   serial_number                                  String?
-  requested_by                                   String?               @db.Uuid
-  prepared_by                                    String?               @db.Uuid
-  approved_by                                    String?               @db.Uuid
-  status                                         String                @default("Submitted")
+  requested_by                                   String?                       @db.Uuid
+  prepared_by                                    String?                       @db.Uuid
+  approved_by                                    String?                       @db.Uuid
+  status                                         String                        @default("Submitted")
   approval_comments                              String?
   store_issue_comments                           String?
-  total_price                                    Decimal               @default(0) @db.Decimal(12, 3)
-  created_at                                     DateTime              @default(now()) @db.Timestamptz(6)
-  updated_at                                     DateTime              @default(now()) @db.Timestamptz(6)
-  created_by                                     String?               @db.Uuid
-  updated_by                                     String?               @db.Uuid
+  total_price                                    Decimal                       @default(0) @db.Decimal(12, 3)
+  created_at                                     DateTime                      @default(now()) @db.Timestamptz(6)
+  updated_at                                     DateTime                      @default(now()) @db.Timestamptz(6)
+  created_by                                     String?                       @db.Uuid
+  updated_by                                     String?                       @db.Uuid
   inventory_movements                            inventory_movements[]
   parts_request_items                            parts_request_items[]
-  profiles_parts_requests_approved_byToprofiles  profiles?             @relation("parts_requests_approved_byToprofiles", fields: [approved_by], references: [id], onUpdate: NoAction)
-  assets                                         assets?               @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
-  departments                                    departments?          @relation(fields: [department_id], references: [id], onUpdate: NoAction)
-  profiles_parts_requests_prepared_byToprofiles  profiles?             @relation("parts_requests_prepared_byToprofiles", fields: [prepared_by], references: [id], onUpdate: NoAction)
-  profiles_parts_requests_requested_byToprofiles profiles?             @relation("parts_requests_requested_byToprofiles", fields: [requested_by], references: [id], onUpdate: NoAction)
-  work_orders                                    work_orders           @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  profiles_parts_requests_approved_byToprofiles  profiles?                     @relation("parts_requests_approved_byToprofiles", fields: [approved_by], references: [id], onUpdate: NoAction)
+  assets                                         assets?                       @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
+  departments                                    departments?                  @relation(fields: [department_id], references: [id], onUpdate: NoAction)
+  profiles_parts_requests_prepared_byToprofiles  profiles?                     @relation("parts_requests_prepared_byToprofiles", fields: [prepared_by], references: [id], onUpdate: NoAction)
+  profiles_parts_requests_requested_byToprofiles profiles?                     @relation("parts_requests_requested_byToprofiles", fields: [requested_by], references: [id], onUpdate: NoAction)
+  work_orders                                    work_orders                   @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   purchase_requests                              purchase_requests[]
   approvals                                      approvals[]
   parts_request_attachments                      parts_request_attachments[]
@@ -562,17 +598,17 @@ model profiles {
   user_permission_overrides                                         user_permission_overrides[]   @relation("upo_profile")
   user_permission_overrides_created                                 user_permission_overrides[]   @relation("upo_created_by")
   maintenance_team_members                                          MaintenanceTeamMember[]
-  workflow_map_versions_workflow_map_versions_created_byToprofiles  WorkflowMapVersion[]    @relation("workflow_map_versions_created_byToprofiles")
-  workflow_map_versions_workflow_map_versions_updated_byToprofiles  WorkflowMapVersion[]    @relation("workflow_map_versions_updated_byToprofiles")
+  workflow_map_versions_workflow_map_versions_created_byToprofiles  WorkflowMapVersion[]          @relation("workflow_map_versions_created_byToprofiles")
+  workflow_map_versions_workflow_map_versions_updated_byToprofiles  WorkflowMapVersion[]          @relation("workflow_map_versions_updated_byToprofiles")
   work_order_required_parts_confirmed                               WorkOrderRequiredPart[]
   offline_inventory_movements                                       offline_inventory_movements[]
-  service_contracts_created                                         service_contracts[]         @relation("sc_created_by")
-  service_contracts_updated                                         service_contracts[]         @relation("sc_updated_by")
-  worker_profiles_created                                           WorkerProfile[]              @relation("worker_profiles_created_by")
-  worker_profiles_updated                                           WorkerProfile[]              @relation("worker_profiles_updated_by")
+  service_contracts_created                                         service_contracts[]           @relation("sc_created_by")
+  service_contracts_updated                                         service_contracts[]           @relation("sc_updated_by")
+  worker_profiles_created                                           WorkerProfile[]               @relation("worker_profiles_created_by")
+  worker_profiles_updated                                           WorkerProfile[]               @relation("worker_profiles_updated_by")
   work_order_worker_assignments                                     WorkOrderWorkerAssignment[]
-  work_sessions_entered_by                                          WorkOrderWorkSession[]       @relation("wows_entered_by")
-  work_sessions_edited_by                                           WorkOrderWorkSession[]       @relation("wows_edited_by")
+  work_sessions_entered_by                                          WorkOrderWorkSession[]        @relation("wows_entered_by")
+  work_sessions_edited_by                                           WorkOrderWorkSession[]        @relation("wows_edited_by")
 
   @@index([department_id], map: "idx_profiles_department_id")
   @@index([is_active], map: "idx_profiles_is_active")
@@ -580,14 +616,14 @@ model profiles {
 }
 
 model user_permission_overrides {
-  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  profile_id     String   @db.Uuid
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  profile_id     String    @db.Uuid
   permission_key String
   override_type  String
   reason         String?
-  created_by     String?  @db.Uuid
-  created_at     DateTime @default(now()) @db.Timestamptz(6)
-  profiles       profiles @relation("upo_profile", fields: [profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  created_by     String?   @db.Uuid
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+  profiles       profiles  @relation("upo_profile", fields: [profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   creator        profiles? @relation("upo_created_by", fields: [created_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   @@unique([profile_id, permission_key, override_type], map: "upo_unique")
@@ -679,26 +715,26 @@ model roles {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model work_order_assignments {
-  id                           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  work_order_id                String    @db.Uuid
-  technician_id                String?   @db.Uuid
-  assigned_by                  String?   @db.Uuid
-  assigned_at                  DateTime  @default(now()) @db.Timestamptz(6)
+  id                           String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id                String      @db.Uuid
+  technician_id                String?     @db.Uuid
+  assigned_by                  String?     @db.Uuid
+  assigned_at                  DateTime    @default(now()) @db.Timestamptz(6)
   notes                        String?
-  assignment_type              String    @default("INTERNAL_TECHNICIAN")
+  assignment_type              String      @default("INTERNAL_TECHNICIAN")
   external_name                String?
   external_company             String?
   external_contact_person      String?
   external_phone               String?
   external_trade               String?
-  external_expected_visit_date DateTime? @db.Date
+  external_expected_visit_date DateTime?   @db.Date
   // Work Assignment and Worker Profiles Foundation Unit 7: "Agreed amount or
   // hourly rate optional" for Freelancer/External Company — the one field
   // missing from this table for that use case. Internal Team's hourly-rate
   // tracking uses the separate WorkOrderWorkerAssignment roster below
   // instead, since Internal Team assignees here are always real system-user
   // profiles (technician_id), not the new no-login worker_profiles.
-  agreed_amount                Decimal?  @db.Decimal(12, 3)
+  agreed_amount                Decimal?    @db.Decimal(12, 3)
   profiles                     profiles?   @relation(fields: [technician_id], references: [id], onUpdate: NoAction)
   work_orders                  work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
@@ -720,18 +756,18 @@ model work_order_attachments {
 }
 
 model parts_request_attachments {
-  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  parts_request_id  String         @db.Uuid
-  work_order_id     String?        @db.Uuid
-  attachment_type   String
-  file_name         String
-  file_path         String
-  content_type      String?
-  file_size         Int?
-  uploaded_by       String?        @db.Uuid
-  created_at        DateTime       @default(now()) @db.Timestamptz(6)
-  parts_requests    parts_requests @relation(fields: [parts_request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  work_orders       work_orders?   @relation(fields: [work_order_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parts_request_id String         @db.Uuid
+  work_order_id    String?        @db.Uuid
+  attachment_type  String
+  file_name        String
+  file_path        String
+  content_type     String?
+  file_size        Int?
+  uploaded_by      String?        @db.Uuid
+  created_at       DateTime       @default(now()) @db.Timestamptz(6)
+  parts_requests   parts_requests @relation(fields: [parts_request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  work_orders      work_orders?   @relation(fields: [work_order_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   @@index([parts_request_id], map: "idx_pr_attachments_parts_request")
 }
@@ -916,15 +952,15 @@ model auth_users {
 }
 
 model backup_logs {
-  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  backup_type      String    @default("database")
-  status           String
-  file_path        String?
-  file_size_bytes  BigInt?
-  started_at       DateTime  @default(now()) @db.Timestamptz(6)
-  completed_at     DateTime? @db.Timestamptz(6)
-  error_message    String?
-  created_at       DateTime  @default(now()) @db.Timestamptz(6)
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  backup_type     String    @default("database")
+  status          String
+  file_path       String?
+  file_size_bytes BigInt?
+  started_at      DateTime  @default(now()) @db.Timestamptz(6)
+  completed_at    DateTime? @db.Timestamptz(6)
+  error_message   String?
+  created_at      DateTime  @default(now()) @db.Timestamptz(6)
 
   @@index([created_at(sort: Desc)], map: "idx_backup_logs_created_at")
   @@index([status, created_at(sort: Desc)], map: "idx_backup_logs_status")
@@ -967,9 +1003,9 @@ model WorkflowDefinition {
   steps       WorkflowStep[]
   instances   WorkflowInstance[]
 
-  @@map("workflow_definitions")
   @@index([code], map: "idx_workflow_definitions_code")
   @@index([entity_type, is_active], map: "idx_workflow_definitions_entity_active")
+  @@map("workflow_definitions")
 }
 
 model WorkflowStep {
@@ -992,100 +1028,100 @@ model WorkflowStep {
 
   @@unique([workflow_def_id, step_order], map: "uq_workflow_steps_def_order")
   @@unique([workflow_def_id, code], map: "uq_workflow_steps_def_code")
-  @@map("workflow_steps")
   @@index([workflow_def_id], map: "idx_workflow_steps_def_id")
+  @@map("workflow_steps")
 }
 
 model WorkflowInstance {
-  id              String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  workflow_def_id String                 @db.Uuid
-  entity_type     String
-  entity_id       String                 @db.Uuid
-  current_step_id String?                @db.Uuid
-  status          String                 @default("active")
-  started_at      DateTime               @default(now()) @db.Timestamptz(6)
-  completed_at    DateTime?              @db.Timestamptz(6)
-  cancelled_at    DateTime?              @db.Timestamptz(6)
-  created_by      String?                @db.Uuid
-  created_at      DateTime               @default(now()) @db.Timestamptz(6)
-  updated_at      DateTime               @default(now()) @db.Timestamptz(6)
+  id                  String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflow_def_id     String                 @db.Uuid
+  entity_type         String
+  entity_id           String                 @db.Uuid
+  current_step_id     String?                @db.Uuid
+  status              String                 @default("active")
+  started_at          DateTime               @default(now()) @db.Timestamptz(6)
+  completed_at        DateTime?              @db.Timestamptz(6)
+  cancelled_at        DateTime?              @db.Timestamptz(6)
+  created_by          String?                @db.Uuid
+  created_at          DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime               @default(now()) @db.Timestamptz(6)
   workflow_definition WorkflowDefinition     @relation(fields: [workflow_def_id], references: [id], onUpdate: NoAction)
   current_step        WorkflowStep?          @relation(fields: [current_step_id], references: [id], onUpdate: NoAction)
   step_instances      WorkflowStepInstance[]
 
   @@unique([entity_type, entity_id], map: "uq_workflow_instances_entity")
-  @@map("workflow_instances")
   @@index([entity_type, entity_id], map: "idx_workflow_instances_entity")
   @@index([workflow_def_id, status], map: "idx_workflow_instances_def_status")
+  @@map("workflow_instances")
 }
 
 model WorkflowStepInstance {
-  id               String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  workflow_inst_id String                 @db.Uuid
-  step_id          String                 @db.Uuid
-  status           String                 @default("pending")
-  actor_id         String?                @db.Uuid
-  decision         String?
-  comments         String?
-  started_at       DateTime?              @db.Timestamptz(6)
-  completed_at     DateTime?              @db.Timestamptz(6)
-  due_at           DateTime?              @db.Timestamptz(6)
-  created_at       DateTime               @default(now()) @db.Timestamptz(6)
-  updated_at       DateTime               @default(now()) @db.Timestamptz(6)
+  id                     String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflow_inst_id       String                 @db.Uuid
+  step_id                String                 @db.Uuid
+  status                 String                 @default("pending")
+  actor_id               String?                @db.Uuid
+  decision               String?
+  comments               String?
+  started_at             DateTime?              @db.Timestamptz(6)
+  completed_at           DateTime?              @db.Timestamptz(6)
+  due_at                 DateTime?              @db.Timestamptz(6)
+  created_at             DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime               @default(now()) @db.Timestamptz(6)
   workflow_instance      WorkflowInstance       @relation(fields: [workflow_inst_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   workflow_step          WorkflowStep           @relation(fields: [step_id], references: [id], onUpdate: NoAction)
   clarification_requests ClarificationRequest[]
 
-  @@map("workflow_step_instances")
   @@index([workflow_inst_id], map: "idx_workflow_step_instances_instance")
   @@index([step_id], map: "idx_workflow_step_instances_step")
   @@index([actor_id, status], map: "idx_workflow_step_instances_actor_status")
+  @@map("workflow_step_instances")
 }
 
 model ClarificationRequest {
-  id                    String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  workflow_step_inst_id String               @db.Uuid
-  question              String
-  requested_by          String?              @db.Uuid
-  responded_by          String?              @db.Uuid
-  response              String?
-  status                String               @default("pending")
-  requested_at          DateTime             @default(now()) @db.Timestamptz(6)
-  responded_at          DateTime?            @db.Timestamptz(6)
-  created_at            DateTime             @default(now()) @db.Timestamptz(6)
-  updated_at            DateTime             @default(now()) @db.Timestamptz(6)
+  id                     String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflow_step_inst_id  String               @db.Uuid
+  question               String
+  requested_by           String?              @db.Uuid
+  responded_by           String?              @db.Uuid
+  response               String?
+  status                 String               @default("pending")
+  requested_at           DateTime             @default(now()) @db.Timestamptz(6)
+  responded_at           DateTime?            @db.Timestamptz(6)
+  created_at             DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime             @default(now()) @db.Timestamptz(6)
   workflow_step_instance WorkflowStepInstance @relation(fields: [workflow_step_inst_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@map("clarification_requests")
   @@index([workflow_step_inst_id], map: "idx_clarification_requests_step_inst")
   @@index([status], map: "idx_clarification_requests_status")
+  @@map("clarification_requests")
 }
 
 model WorkOrderRequiredPart {
-  id                String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  work_order_id     String      @db.Uuid
-  part_id           String?     @db.Uuid
-  description       String
-  part_number       String?
-  quantity_required Decimal     @default(0) @db.Decimal(12, 2)
-  unit_of_measure   String      @default("PCS")
-  status            String      @default("pending")
-  notes             String?
-  created_at           DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at           DateTime  @default(now()) @db.Timestamptz(6)
-  created_by           String?   @db.Uuid
-  availability_status  String    @default("unchecked")
-  confirmed_by         String?   @db.Uuid
-  confirmed_at         DateTime? @db.Timestamptz(6)
+  id                   String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id        String      @db.Uuid
+  part_id              String?     @db.Uuid
+  description          String
+  part_number          String?
+  quantity_required    Decimal     @default(0) @db.Decimal(12, 2)
+  unit_of_measure      String      @default("PCS")
+  status               String      @default("pending")
+  notes                String?
+  created_at           DateTime    @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime    @default(now()) @db.Timestamptz(6)
+  created_by           String?     @db.Uuid
+  availability_status  String      @default("unchecked")
+  confirmed_by         String?     @db.Uuid
+  confirmed_at         DateTime?   @db.Timestamptz(6)
   work_orders          work_orders @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   parts                parts?      @relation(fields: [part_id], references: [id], onUpdate: NoAction)
   confirmed_by_profile profiles?   @relation(fields: [confirmed_by], references: [id], onUpdate: NoAction)
 
-  @@map("work_order_required_parts")
   @@index([work_order_id], map: "idx_work_order_required_parts_wo")
   @@index([part_id], map: "idx_work_order_required_parts_part")
   @@index([availability_status], map: "idx_work_order_required_parts_availability")
   @@index([confirmed_by], map: "idx_work_order_required_parts_confirmed_by")
+  @@map("work_order_required_parts")
 }
 
 model MaintenanceTeam {
@@ -1099,8 +1135,8 @@ model MaintenanceTeam {
   created_by  String?                 @db.Uuid
   members     MaintenanceTeamMember[]
 
-  @@map("maintenance_teams")
   @@index([is_active], map: "idx_maintenance_teams_active")
+  @@map("maintenance_teams")
 }
 
 model MaintenanceTeamMember {
@@ -1114,35 +1150,35 @@ model MaintenanceTeamMember {
   profiles   profiles        @relation(fields: [profile_id], references: [id], onUpdate: NoAction)
 
   @@unique([team_id, profile_id], map: "uq_maintenance_team_members")
-  @@map("maintenance_team_members")
   @@index([team_id], map: "idx_maintenance_team_members_team")
   @@index([profile_id], map: "idx_maintenance_team_members_profile")
+  @@map("maintenance_team_members")
 }
 
 model PurchaseOrder {
-  id                  String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  po_number           String             @unique
-  purchase_request_id String?            @db.Uuid
-  work_order_id       String?            @db.Uuid
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  po_number           String              @unique
+  purchase_request_id String?             @db.Uuid
+  work_order_id       String?             @db.Uuid
   supplier            String?
-  status              String             @default("Draft")
-  total_amount        Decimal            @default(0) @db.Decimal(12, 3)
-  currency            String             @default("KWD")
-  approved_by         String?            @db.Uuid
-  approved_at         DateTime?          @db.Timestamptz(6)
-  ordered_at          DateTime?          @db.Timestamptz(6)
-  received_at         DateTime?          @db.Timestamptz(6)
+  status              String              @default("Draft")
+  total_amount        Decimal             @default(0) @db.Decimal(12, 3)
+  currency            String              @default("KWD")
+  approved_by         String?             @db.Uuid
+  approved_at         DateTime?           @db.Timestamptz(6)
+  ordered_at          DateTime?           @db.Timestamptz(6)
+  received_at         DateTime?           @db.Timestamptz(6)
   notes               String?
-  created_at          DateTime           @default(now()) @db.Timestamptz(6)
-  updated_at          DateTime           @default(now()) @db.Timestamptz(6)
-  created_by          String?            @db.Uuid
-  purchase_requests   purchase_requests? @relation(fields: [purchase_request_id], references: [id], onUpdate: NoAction)
+  created_at          DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime            @default(now()) @db.Timestamptz(6)
+  created_by          String?             @db.Uuid
+  purchase_requests   purchase_requests?  @relation(fields: [purchase_request_id], references: [id], onUpdate: NoAction)
   items               PurchaseOrderItem[]
 
-  @@map("purchase_orders")
   @@index([purchase_request_id], map: "idx_purchase_orders_pr")
   @@index([status], map: "idx_purchase_orders_status")
   @@index([created_at], map: "idx_purchase_orders_created_at")
+  @@map("purchase_orders")
 }
 
 model PurchaseOrderItem {
@@ -1158,9 +1194,9 @@ model PurchaseOrderItem {
   purchase_order    PurchaseOrder @relation(fields: [purchase_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   parts             parts?        @relation(fields: [part_id], references: [id], onUpdate: NoAction)
 
-  @@map("purchase_order_items")
   @@index([purchase_order_id], map: "idx_purchase_order_items_po")
   @@index([part_id], map: "idx_purchase_order_items_part")
+  @@map("purchase_order_items")
 }
 
 // ─── Phase 5-C1: Schema hygiene — reconcile workflow_map_versions drift ───────
@@ -1168,23 +1204,23 @@ model PurchaseOrderItem {
 // but was missing from prisma/schema.prisma. Adding model only — no migration needed.
 
 model WorkflowMapVersion {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  title          String    @default("RECAFCO Maintenance Workflow Workshop Map")
-  version_number Int
-  status         String    @default("draft")
-  diagram        Json      @default("{}")
-  notes          String?
-  created_by     String?   @db.Uuid
-  updated_by     String?   @db.Uuid
-  published_at   DateTime? @db.Timestamptz(6)
-  created_at     DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at     DateTime  @default(now()) @db.Timestamptz(6)
+  id                                                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title                                               String    @default("RECAFCO Maintenance Workflow Workshop Map")
+  version_number                                      Int
+  status                                              String    @default("draft")
+  diagram                                             Json      @default("{}")
+  notes                                               String?
+  created_by                                          String?   @db.Uuid
+  updated_by                                          String?   @db.Uuid
+  published_at                                        DateTime? @db.Timestamptz(6)
+  created_at                                          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at                                          DateTime  @default(now()) @db.Timestamptz(6)
   profiles_workflow_map_versions_created_byToprofiles profiles? @relation("workflow_map_versions_created_byToprofiles", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   profiles_workflow_map_versions_updated_byToprofiles profiles? @relation("workflow_map_versions_updated_byToprofiles", fields: [updated_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@map("workflow_map_versions")
   @@index([status, created_at(sort: Desc)], map: "idx_workflow_map_versions_status_created")
   @@index([version_number(sort: Desc)], map: "idx_workflow_map_versions_version")
+  @@map("workflow_map_versions")
 }
 
 // ─── Work Assignment and Worker Profiles Foundation Unit 7 ───────────────────
@@ -1208,30 +1244,30 @@ model WorkflowMapVersion {
 // (Task 8), which will add a table FK'd to this one's id.
 
 model WorkerProfile {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   // Worker Profile Form Simplification and Division Rename Unit 10G.6, Task
   // 1: additive, nullable — existing rows have none. Uniqueness among
   // active workers is enforced by a partial unique index in this unit's
   // migration (not representable in Prisma's schema language), plus a
   // service-level check (lib/backend/workers/service.ts) for a clean error
   // message before the DB constraint would ever fire.
-  employee_id    String?
-  name           String
-  worker_type    String
-  hourly_rate    Decimal   @default(0) @db.Decimal(12, 3)
-  phone          String?
-  skill_category String?
-  is_active      Boolean   @default(true)
-  notes          String?
+  employee_id             String?
+  name                    String
+  worker_type             String
+  hourly_rate             Decimal  @default(0) @db.Decimal(12, 3)
+  phone                   String?
+  skill_category          String?
+  is_active               Boolean  @default(true)
+  notes                   String?
   // Worker Salary Breakdown and Manager Labor Cost View Unit 10G.41B, Task
   // 1/3: additive, nullable identity fields shown on the Manager Add/Edit
   // Worker form (job_title/work_location also shown on the Data Entry Add
   // Worker form; reporting_manager/nationality are Manager/Super-Admin-only
   // — see lib/backend/workers/service.ts).
-  job_title          String?
-  work_location      String?
-  reporting_manager  String?
-  nationality        String?
+  job_title               String?
+  work_location           String?
+  reporting_manager       String?
+  nationality             String?
   // Task 1: salary breakdown — Manager/Super-Admin-only to set (enforced in
   // lib/backend/workers/service.ts, not just hidden in the UI). Data
   // Entry-created profiles always get the defaults below (0 / 260 hours),
@@ -1245,48 +1281,62 @@ model WorkerProfile {
   // can never drift from its four parts.
   total_salary            Decimal? @default(0) @db.Decimal(12, 3)
   monthly_working_hours   Decimal? @default(260) @db.Decimal(12, 2)
-  created_at     DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at     DateTime  @default(now()) @db.Timestamptz(6)
-  created_by     String?   @db.Uuid
-  updated_by     String?   @db.Uuid
+  // Worker Salary Cost Method and Rate Calculation Unit 10G.68, Task 7 —
+  // additive, all nullable/defaulted so every existing worker row keeps
+  // opening/saving fine with no backfill required at the application layer
+  // (the migration itself does a one-time, Task-8-shaped backfill of
+  // salary_input_method/monthly_cost for rows that already had salary data).
+  // yearly_cost/monthly_cost hold the actual entered basis for whichever
+  // method is selected (both null under "manual_hourly_rate" — that
+  // method's Estimated Monthly/Yearly/Daily figures are display-only,
+  // recomputed on read, never persisted as if they were an entered value).
+  salary_input_method      String?  @default("yearly_cost")
+  yearly_cost              Decimal? @db.Decimal(14, 3)
+  monthly_cost             Decimal? @db.Decimal(14, 3)
+  monthly_working_days     Decimal? @default(26) @db.Decimal(6, 2)
+  manual_hourly_rate_reason String?
+  created_at              DateTime @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime @default(now()) @db.Timestamptz(6)
+  created_by              String?  @db.Uuid
+  updated_by              String?  @db.Uuid
 
-  profiles_created_by profiles? @relation("worker_profiles_created_by", fields: [created_by], references: [id], onUpdate: NoAction)
-  profiles_updated_by profiles? @relation("worker_profiles_updated_by", fields: [updated_by], references: [id], onUpdate: NoAction)
-  assignments          WorkOrderWorkerAssignment[]
-  work_sessions        WorkOrderWorkSession[]
+  profiles_created_by profiles?                   @relation("worker_profiles_created_by", fields: [created_by], references: [id], onUpdate: NoAction)
+  profiles_updated_by profiles?                   @relation("worker_profiles_updated_by", fields: [updated_by], references: [id], onUpdate: NoAction)
+  assignments         WorkOrderWorkerAssignment[]
+  work_sessions       WorkOrderWorkSession[]
 
-  @@map("worker_profiles")
   @@index([is_active], map: "idx_worker_profiles_is_active")
   @@index([worker_type], map: "idx_worker_profiles_worker_type")
+  @@map("worker_profiles")
 }
 
 model WorkOrderWorkerAssignment {
-  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  work_order_id        String    @db.Uuid
-  worker_id            String    @db.Uuid
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id        String   @db.Uuid
+  worker_id            String   @db.Uuid
   worker_role          String
-  hourly_rate_snapshot Decimal   @db.Decimal(12, 3)
-  status               String    @default("active")
-  assigned_by          String?   @db.Uuid
-  assigned_at          DateTime  @default(now()) @db.Timestamptz(6)
+  hourly_rate_snapshot Decimal  @db.Decimal(12, 3)
+  status               String   @default("active")
+  assigned_by          String?  @db.Uuid
+  assigned_at          DateTime @default(now()) @db.Timestamptz(6)
   notes                String?
   // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 2/14:
   // additive nullable — optional per-worker planning estimate, set at
   // assignment time (wizard) or preserved across a later roster edit
   // (lib/backend/work-orders/worker-roster.ts). Never read by session
   // start/pause/stop/correction or hourly_rate_snapshot logic.
-  estimated_hours      Decimal?  @db.Decimal(12, 2)
-  created_at           DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at           DateTime  @default(now()) @db.Timestamptz(6)
+  estimated_hours      Decimal? @db.Decimal(12, 2)
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime @default(now()) @db.Timestamptz(6)
 
-  work_orders          work_orders    @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  worker_profiles      WorkerProfile  @relation(fields: [worker_id], references: [id], onUpdate: NoAction)
-  profiles             profiles?      @relation(fields: [assigned_by], references: [id], onUpdate: NoAction)
-  work_sessions        WorkOrderWorkSession[]
+  work_orders     work_orders            @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  worker_profiles WorkerProfile          @relation(fields: [worker_id], references: [id], onUpdate: NoAction)
+  profiles        profiles?              @relation(fields: [assigned_by], references: [id], onUpdate: NoAction)
+  work_sessions   WorkOrderWorkSession[]
 
-  @@map("work_order_worker_assignments")
   @@index([work_order_id, status], map: "idx_wowa_work_order_status")
   @@index([worker_id], map: "idx_wowa_worker_id")
+  @@map("work_order_worker_assignments")
 }
 
 // ─── Work Session Time Tracking and Labor Cost Calculation Unit 8 ────────────
@@ -1321,20 +1371,104 @@ model WorkOrderWorkSession {
   notes                String?
   correction_reason    String?
   entered_by           String?   @db.Uuid
-  edited_by             String?   @db.Uuid
+  edited_by            String?   @db.Uuid
   created_at           DateTime  @default(now()) @db.Timestamptz(6)
   updated_at           DateTime  @default(now()) @db.Timestamptz(6)
 
-  work_orders          work_orders               @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  worker_assignment    WorkOrderWorkerAssignment  @relation(fields: [worker_assignment_id], references: [id], onUpdate: NoAction)
-  worker_profiles      WorkerProfile              @relation(fields: [worker_id], references: [id], onUpdate: NoAction)
-  profiles_entered_by  profiles?                  @relation("wows_entered_by", fields: [entered_by], references: [id], onUpdate: NoAction)
-  profiles_edited_by   profiles?                  @relation("wows_edited_by", fields: [edited_by], references: [id], onUpdate: NoAction)
+  work_orders         work_orders               @relation(fields: [work_order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  worker_assignment   WorkOrderWorkerAssignment @relation(fields: [worker_assignment_id], references: [id], onUpdate: NoAction)
+  worker_profiles     WorkerProfile             @relation(fields: [worker_id], references: [id], onUpdate: NoAction)
+  profiles_entered_by profiles?                 @relation("wows_entered_by", fields: [entered_by], references: [id], onUpdate: NoAction)
+  profiles_edited_by  profiles?                 @relation("wows_edited_by", fields: [edited_by], references: [id], onUpdate: NoAction)
 
-  @@map("work_order_work_sessions")
   @@index([work_order_id], map: "idx_wows_work_order")
   @@index([worker_assignment_id, status], map: "idx_wows_assignment_status")
   @@index([status], map: "idx_wows_status")
   @@index([started_at], map: "idx_wows_started_at")
   @@index([worker_id, started_at], map: "idx_wows_worker_started_at")
+  @@map("work_order_work_sessions")
+}
+
+// ─── Materials Request Type Selection Flow Unit 10G.58 ──────────────────────
+//
+// Fully separate from parts_requests (Job Card Materials Requests) on
+// purpose: parts_requests.work_order_id is a required FK the whole Job Card
+// materials workflow depends on, and its status is a locked 5-value machine
+// (lib/workflows/status-rules.ts). A General Inventory / Stock Request has
+// no Job Card and a much simpler Pending/Completed/Cancelled status, so it
+// gets its own tables instead of stretching parts_requests to cover both —
+// this guarantees nothing here can affect the existing Job Card flow.
+// requested_by/department are plain scalar columns (no Prisma relation), so
+// this feature never touches the profiles/departments models.
+model general_inventory_requests {
+  id                String                            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  request_number    String?                           @unique
+  purpose           String
+  remarks           String?
+  department        String?
+  location          String?
+  status            String                            @default("Pending")
+  requested_by_id   String?                           @db.Uuid
+  requested_by_name String?
+  created_at        DateTime                          @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime                          @default(now()) @db.Timestamptz(6)
+  completed_at      DateTime?                         @db.Timestamptz(6)
+  items             general_inventory_request_items[]
+
+  @@index([status])
+  @@index([created_at])
+}
+
+model general_inventory_request_items {
+  id                        String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  request_id                String                     @db.Uuid
+  material_name             String
+  description               String?
+  quantity_requested        Decimal                    @db.Decimal(12, 2)
+  unit                      String
+  unit_price                Decimal?                   @db.Decimal(12, 3)
+  total_price               Decimal?                   @default(dbgenerated("(COALESCE(quantity_requested, (0)::numeric) * COALESCE(unit_price, (0)::numeric))")) @db.Decimal(12, 3)
+  supplier                  String?
+  remarks                   String?
+  received_quantity         Decimal                    @default(0) @db.Decimal(12, 2)
+  received_unit_price       Decimal?                   @db.Decimal(12, 3)
+  // Unit, Price, and Conversion Polish Unit 10G.58A, Task 5/6/10: `unit`
+  // above is always the purchase unit. inventory_unit/conversion_quantity
+  // are only set when the item is purchased in one unit but stored/issued
+  // in another (e.g. 1 BARREL = 200 LITER) — both NULL means "no
+  // conversion" (inventory unit = purchase unit, 1:1). The two generated
+  // columns below already apply that same NULL-means-1 rule, so a plain
+  // PCS/BOX/etc. item's inventory_quantity_to_add/unit_cost simply equal
+  // quantity_requested/unit_price.
+  inventory_unit            String?
+  conversion_quantity       Decimal?                   @db.Decimal(12, 4)
+  inventory_quantity_to_add Decimal?                   @default(dbgenerated("(COALESCE(quantity_requested, (0)::numeric) * COALESCE(conversion_quantity, (1)::numeric))")) @db.Decimal(14, 4)
+  unit_cost                 Decimal?                   @default(dbgenerated("(CASE WHEN unit_price IS NULL THEN NULL ELSE (unit_price / COALESCE(conversion_quantity, (1)::numeric)) END)")) @db.Decimal(14, 6)
+  created_at                DateTime                   @default(now()) @db.Timestamptz(6)
+  request                   general_inventory_requests @relation(fields: [request_id], references: [id], onDelete: Cascade)
+
+  @@index([request_id])
+}
+
+// Inventory Clarity, Low Stock, and Bulk Unit Balance Unit 10G.62, Task 2 —
+// one row per Offline Inventory material identity (a catalog part_id, OR a
+// manual_material_name+unit pair — the exact same identity split
+// buildBalanceKey() in lib/store/offline-inventory-data.ts already uses).
+// A material with no row here simply has no minimum stock configured. No
+// Prisma relation declared to `parts`/`profiles` (plain scalar uuid columns
+// instead, same choice made for general_inventory_requests in Unit 10G.58)
+// so this table never requires touching either of those existing models.
+model inventory_material_settings {
+  id                     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  part_id                String?  @db.Uuid
+  manual_material_name   String?
+  unit                   String
+  minimum_stock_quantity Decimal? @db.Decimal(12, 3)
+  reorder_quantity       Decimal? @db.Decimal(12, 3)
+  remarks                String?
+  created_by             String   @db.Uuid
+  created_at             DateTime @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([part_id])
 }

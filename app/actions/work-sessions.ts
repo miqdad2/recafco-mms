@@ -8,6 +8,7 @@ import {
   startWorkSession,
   pauseWorkSession,
   stopWorkSession,
+  finishWorkSession,
   addManualTimeEntry,
   editWorkSession,
   cancelWorkSession,
@@ -79,6 +80,27 @@ export async function stopWorkSessionAction(
       workerAssignmentId: formData.get("worker_assignment_id"),
     });
     const result = await stopWorkSession(context, parsed);
+    revalidateJobCard(result.workOrderId);
+  } catch (error) {
+    return { ok: false, error: safeErrorMessage(error) };
+  }
+  return { ok: true };
+}
+
+// Worker Timer and Closure Logic Hardening Unit 10G.53, Task 3 — thin
+// wrapper matching pauseWorkSessionAction/stopWorkSessionAction above
+// exactly (same input shape, same schema).
+export async function finishWorkSessionAction(
+  _prev: WorkSessionState,
+  formData: FormData
+): Promise<WorkSessionState> {
+  const context = await requireUser();
+  try {
+    const parsed = pauseOrStopWorkSessionSchema.parse({
+      workOrderId: formData.get("work_order_id"),
+      workerAssignmentId: formData.get("worker_assignment_id"),
+    });
+    const result = await finishWorkSession(context, parsed);
     revalidateJobCard(result.workOrderId);
   } catch (error) {
     return { ok: false, error: safeErrorMessage(error) };

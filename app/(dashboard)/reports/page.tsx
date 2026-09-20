@@ -75,6 +75,7 @@ export default async function ReportsLandingPage() {
               description="Track open, in-progress, waiting materials, completed, closed, and overdue job cards."
               badge={stats.overdueWOs > 0 ? `${stats.overdueWOs} overdue` : undefined}
               badgeTone="red"
+              printReady
             />
 
             <ReportCard
@@ -82,6 +83,7 @@ export default async function ReportsLandingPage() {
               icon={Wrench}
               title="Asset Repair History"
               description="View complete repair history by asset or machine."
+              printReady
             />
 
             <ReportCard
@@ -89,6 +91,7 @@ export default async function ReportsLandingPage() {
               icon={Package}
               title="Materials Usage"
               description="Track materials used across job cards and assets."
+              printReady
             />
 
             <ReportCard
@@ -96,6 +99,7 @@ export default async function ReportsLandingPage() {
               icon={BarChart3}
               title="Technician Workload"
               description="Monitor assigned, in-progress, and completed jobs by technician."
+              printReady
             />
 
             <ReportCard
@@ -103,6 +107,7 @@ export default async function ReportsLandingPage() {
               icon={Gauge}
               title="Asset Register Report"
               description="Full asset list with status, expiry dates, service due, and inspection data."
+              printReady
             />
 
             <ReportCard
@@ -112,6 +117,7 @@ export default async function ReportsLandingPage() {
               description="View and track all materials requests by status, job card, and date."
               badge={stats.openPartsRequests > 0 ? `${stats.openPartsRequests} open` : undefined}
               badgeTone="amber"
+              printReady
             />
 
             <ReportCard
@@ -119,6 +125,7 @@ export default async function ReportsLandingPage() {
               icon={ArrowDownUp}
               title="Offline Inventory Control Report"
               description="Offline Inventory Control balance by category, movement history, and materials usage for opening stock, receipts, and usage."
+              printReady
             />
 
             <ReportCard
@@ -128,6 +135,7 @@ export default async function ReportsLandingPage() {
               description="Monitor service contract end dates, renewals, and upcoming expirations."
               badge={stats.expiringContracts > 0 ? `${stats.expiringContracts} expiring soon` : undefined}
               badgeTone="amber"
+              printReady
             />
 
           </div>
@@ -172,6 +180,7 @@ function ReportCard({
   description,
   badge,
   badgeTone = "amber",
+  printReady = false,
 }: {
   href: string;
   icon: React.ElementType;
@@ -179,6 +188,12 @@ function ReportCard({
   description: string;
   badge?: string;
   badgeTone?: "red" | "amber";
+  /** Printable Division-Based Reports Foundation Unit 10G.69, Task 9 — a
+      small "Print-ready" tag for the reports that now have a division/date-
+      filterable A4 print view; omitted (not a strikethrough/disabled look)
+      for the reports this first unit didn't reach, per Task 12's own scope
+      reduction. */
+  printReady?: boolean;
 }) {
   const badgeClass =
     badgeTone === "red"
@@ -201,7 +216,14 @@ function ReportCard({
         )}
       </div>
       <div>
-        <p className="font-bold text-[#111827]">{title}</p>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <p className="font-bold text-[#111827]">{title}</p>
+          {printReady && (
+            <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-green-700">
+              Print-ready
+            </span>
+          )}
+        </div>
         <p className="mt-1 text-sm text-[#4B5563] leading-snug">{description}</p>
       </div>
       <p className="mt-auto text-xs font-semibold text-[#ED1C24] opacity-0 transition-opacity group-hover:opacity-100">

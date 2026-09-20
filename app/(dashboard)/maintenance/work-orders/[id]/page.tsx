@@ -43,6 +43,7 @@ import { buildBalanceKey, canManageOfflineInventory } from "@/lib/store/offline-
 import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
+import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
 import { WorkTimeTracking } from "@/components/work-orders/work-time-tracking";
 import { JobCardTabHashRedirect } from "@/components/work-orders/job-card-tab-hash-redirect";
 import {
@@ -478,11 +479,11 @@ export default async function WorkOrderDetailPage({
 
   // Job Card Detail Simplification Unit 8C — readiness/chip data for the new
   // Top Operational Summary, Next Action panel, and Closure panel. Mirrors
-  // (read-only, does not call) the same three closure guards enforced
-  // server-side in lib/backend/work-orders/service.ts
-  // (assertNoPendingMaterialsRequests / assertRequiredMaterialsFulfilled /
-  // assertNoActiveWorkSessions) purely so the UI can show "not ready yet and
-  // why" before the user attempts an action that would otherwise fail.
+  // (read-only, does not call) the same closure guards enforced server-side
+  // in lib/backend/work-orders/service.ts (assertNoPendingMaterialsRequests /
+  // assertRequiredMaterialsFulfilled / assertWorkersReadyForClosure) purely
+  // so the UI can show "not ready yet and why" before the user attempts an
+  // action that would otherwise fail.
   const pendingMaterialsRequestsCount = wo.parts_requests.filter((r) => r.status !== "Issued").length;
   const materialsIncomplete = anyMaterialsIncomplete(materialFulfillment);
   // Material Fulfillment Status and Inventory Reservation Clarity Fix Unit
@@ -501,11 +502,23 @@ export default async function WorkOrderDetailPage({
   // branch below falls back to the plain pending-request check above in
   // that case, same as the quick-view popup.
   const materialsAvailability = summarizeMaterialAvailability(materialFulfillment);
+  // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 4: same
+  // shared readiness check the server guard, Daily Activity board, and
+  // Request Closure modal all use — Working/Paused/Not-Started workers all
+  // block, not just an actively-running session.
+  const workersClosureCheck = checkWorkersReadyForClosure(
+    laborSummary.workers.map((w) => ({
+      workerAssignmentId: w.worker_assignment_id,
+      workerName: w.worker_name,
+      assignmentStatus: w.assignment_status,
+      sessionStatus: w.status,
+    }))
+  );
   const closureBlockers: string[] = [];
   if (hasPendingCorrection) closureBlockers.push("A correction is pending — respond to it before requesting closure.");
   if (pendingMaterialsRequestsCount > 0) closureBlockers.push("A Materials Request is still pending — receive it first.");
   if (materialsIncomplete) closureBlockers.push("Required materials have not been fully issued yet.");
-  if (laborSummary.has_active_session) closureBlockers.push("A work session is active — stop it before requesting closure.");
+  closureBlockers.push(...workersClosureCheck.reasons);
   const closureReady = closureBlockers.length === 0;
 
   // Status chips for the hero header (Task 2, Premium Job Card Detail Page
@@ -526,15 +539,20 @@ export default async function WorkOrderDetailPage({
           : openPartsRequests > 0 || materialsIncomplete
             ? { label: "Pending", tone: "amber" }
             : { label: "Completed", tone: "green" };
-  const anyWorkerPaused = laborSummary.workers.some((w) => w.status === "Paused");
+  // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 8: Working/
+  // Paused/Finished read directly off workersClosureCheck above (the same
+  // per-worker states the Closure panel already computed) instead of a
+  // separate has_active_session/anyWorkerPaused re-derivation — "Sessions
+  // Recorded" is retired in favor of "Finished" once every worker is
+  // actually done, matching the task's exact 3 labeled cases.
   const workTimeChip: { label: string; tone: BadgeTone } = !hasInternalTeam
     ? { label: "Not Started", tone: "gray" }
-    : laborSummary.has_active_session
+    : workersClosureCheck.workingWorkers.length > 0
       ? { label: "Working", tone: "blue" }
-      : anyWorkerPaused
+      : workersClosureCheck.pausedWorkers.length > 0
         ? { label: "Paused", tone: "amber" }
-        : laborSummary.total_minutes > 0
-          ? { label: "Sessions Recorded", tone: "green" }
+        : workersClosureCheck.notStartedWorkers.length === 0
+          ? { label: "Finished", tone: "green" }
           : { label: "Not Started", tone: "gray" };
   const closureChip: { label: string; tone: BadgeTone } =
     wo.status === "Closed"
@@ -593,11 +611,17 @@ export default async function WorkOrderDetailPage({
     if (!hasAssignment) {
       return { message: "Assign workers to start work tracking.", buttons: [{ label: "Assign Workers", href: "?editAssignment=1&tab=assignment" }] };
     }
-    if (hasInternalTeam && laborSummary.has_active_session) {
-      return { message: "Work is in progress. Pause or stop active sessions when needed.", buttons: [{ label: "Track Work", href: "?tab=assignment" }] };
+    // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 8 — Next
+    // Action wording matched exactly to the task's own worked examples,
+    // driven by the same workersClosureCheck the Closure panel/chip use.
+    if (hasInternalTeam && workersClosureCheck.workingWorkers.length > 0) {
+      return { message: "Pause or finish active work before closure.", buttons: [{ label: "Track Work", href: "?tab=assignment" }] };
     }
-    if (hasInternalTeam && laborSummary.total_minutes === 0) {
-      return { message: "Workers are assigned. Start work tracking.", buttons: [{ label: "Track Work", href: "?tab=assignment" }] };
+    if (hasInternalTeam && workersClosureCheck.pausedWorkers.length > 0) {
+      return { message: "Finish paused workers before closure.", buttons: [{ label: "Track Work", href: "?tab=assignment" }] };
+    }
+    if (hasInternalTeam && workersClosureCheck.notStartedWorkers.length > 0) {
+      return { message: "Workers are assigned. Start tracking work, or remove unstarted assignments before closure.", buttons: [{ label: "Track Work", href: "?tab=assignment" }] };
     }
     return { message: "Work is ready for closure request.", buttons: [{ label: "Request Closure", href: "?tab=closure" }] };
   })();

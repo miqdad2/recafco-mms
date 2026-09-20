@@ -14,7 +14,8 @@ import { AttachmentPreviewModal } from "@/components/dashboard/attachment-previe
 import { StatusBadge } from "@/components/ui/status-badge";
 import { dispatchActionToast } from "@/lib/action-messages";
 import type { SessionRow } from "@/lib/work-orders/work-session-totals";
-import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours-variance";
+import { computeHoursVariance, hoursVarianceTone, deriveSimpleWorkerState, simpleWorkerStateTone } from "@/lib/work-orders/hours-variance";
+import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
 
 // Closure Requests Review Popup Unit 10G.2.
 //
@@ -36,12 +37,6 @@ import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours
 // read-only session table built from data the existing action already
 // returns.
 
-function statusTone(status: string): "green" | "amber" | "red" | "blue" | "gray" {
-  if (status === "Active") return "blue";
-  if (status === "Paused") return "amber";
-  if (status === "Completed") return "green";
-  return "gray";
-}
 function materialsBadgeTone(status: string): "green" | "amber" | "red" | "blue" | "gray" {
   if (status === "Fully Issued") return "green";
   if (status === "Partially Issued") return "amber";
@@ -162,7 +157,14 @@ function WorkerReviewCard({
           {worker.name} <span className="font-normal text-[#4B5563]">— {worker.role}</span>
           {worker.skillCategory ? <span className="ml-1 text-sm font-normal text-[#9CA3AF]">({worker.skillCategory})</span> : null}
         </p>
-        <StatusBadge label={worker.status} tone={statusTone(worker.status)} />
+        {/* Unit 10G.53, Task 9/11: same simple 4-state label as everywhere
+            else — by the time a Job Card reaches this review, every worker
+            here should already read "Finished" (closure is now gated on
+            it), not the raw, now-inconsistent session status "Completed". */}
+        <StatusBadge
+          label={deriveSimpleWorkerState(worker.assignmentStatus, worker.status)}
+          tone={simpleWorkerStateTone(deriveSimpleWorkerState(worker.assignmentStatus, worker.status))}
+        />
       </div>
       {/* Unit 10G.21, Task 6 (data/logic unchanged this unit — Task 4 of
           10G.25 keeps this exact block): Estimated/Actual/Variance/Status —
@@ -369,13 +371,25 @@ export function ClosureReviewModal({
     );
   }
 
-  const noActiveSession = !detail.workers.some((w) => w.status === "Active");
-  // Task 8 — guidance-only checklist: materials/no-active-session mirror the
+  // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 9: "All
+  // workers finished" instead of "No active worker session" — by
+  // construction every worker here should already be Finished (closure
+  // requires it), but this keeps the wording consistent with every other
+  // closure surface rather than a stale, narrower check.
+  const allWorkersFinished = checkWorkersReadyForClosure(
+    detail.workers.map((w) => ({
+      workerAssignmentId: w.workerAssignmentId,
+      workerName: w.name,
+      assignmentStatus: w.assignmentStatus,
+      sessionStatus: w.status,
+    }))
+  ).ready;
+  // Task 8 — guidance-only checklist: materials/workers-finished mirror the
   // real backend guards read-only; the last two are the Manager's own
   // acknowledgement, never sent to the backend or used to block the button.
   const checklist = [
     { label: "Materials completed", ok: detail.materialsFullyIssued },
-    { label: "No active worker session", ok: noActiveSession },
+    { label: "All workers finished", ok: allWorkersFinished },
     { label: "Worker hours reviewed", ok: reviewedHours, manual: true },
     { label: "Attachments reviewed", ok: reviewedAttachments, manual: true },
   ];

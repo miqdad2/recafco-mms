@@ -1,12 +1,12 @@
 "use client";
 
 import { useActionState, useEffect, useRef, useState } from "react";
-import { Loader2, Pause, Play, Square } from "lucide-react";
+import { CheckCircle2, Loader2, Pause, Play } from "lucide-react";
 
 import {
   startWorkSessionAction,
   pauseWorkSessionAction,
-  stopWorkSessionAction,
+  finishWorkSessionAction,
   type WorkSessionState,
 } from "@/app/actions/work-sessions";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -15,23 +15,23 @@ import { ManualTimeEntryModal } from "@/components/work-orders/manual-time-entry
 import { SessionHistoryModal } from "@/components/work-orders/session-history-modal";
 import { dispatchActionToast } from "@/lib/action-messages";
 import type { WorkerLaborRow } from "@/lib/work-orders/work-session-totals";
-import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours-variance";
+import {
+  computeHoursVariance,
+  hoursVarianceTone,
+  deriveSimpleWorkerState,
+  simpleWorkerStateTone,
+  type SimpleWorkerState,
+} from "@/lib/work-orders/hours-variance";
 
-function statusTone(status: WorkerLaborRow["status"]): "green" | "amber" | "blue" | "gray" {
-  if (status === "Active") return "green";
-  if (status === "Paused") return "amber";
-  if (status === "Completed") return "blue";
-  return "gray";
-}
-
-// Premium Job Card Detail Page Redesign Unit 8C.2, Task 7: a left accent bar
-// so a worker's current state reads at a glance from the row's left edge,
-// same "status color = accent" language used elsewhere on this page (Next
-// Action panel, closure readiness).
-function statusAccent(status: WorkerLaborRow["status"]): string {
-  if (status === "Active") return "border-l-[#16A34A]";
-  if (status === "Paused") return "border-l-[#F59E0B]";
-  if (status === "Completed") return "border-l-[#2563EB]";
+// Worker Timer and Closure Logic Hardening Unit 10G.53, Task 2: the badge
+// (and every button below it) now reads off the plain 4-state model —
+// Not Started / Working / Paused / Finished — instead of the raw session
+// status (Active/Paused/Completed) and the assignment's "finished" flag
+// separately. "Do not show confusing technical statuses."
+function statusAccent(state: SimpleWorkerState): string {
+  if (state === "Working") return "border-l-[#16A34A]";
+  if (state === "Paused") return "border-l-[#F59E0B]";
+  if (state === "Finished") return "border-l-[#2563EB]";
   return "border-l-[#D1D5DB]";
 }
 
@@ -88,7 +88,11 @@ function SessionActionForm({
 // urgent"), View/Manual stay neutral.
 const btnStart =
   "inline-flex min-h-9 items-center gap-1.5 rounded-md bg-[#16A34A] px-3 py-1.5 text-xs font-bold text-white transition hover:bg-green-700 disabled:opacity-60";
-const btnStop =
+// Worker Timer and Closure Logic Hardening Unit 10G.53, Task 3: "Finish
+// Work" replaces the old plain "Stop" button — same red "this is the
+// deliberate, attention-worthy click" treatment Stop had, since it's now the
+// only way to end a worker's involvement on this Job Card for good.
+const btnFinish =
   "inline-flex min-h-9 items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-1.5 text-xs font-bold text-white transition hover:bg-red-700 disabled:opacity-60";
 const btnPause =
   "inline-flex min-h-9 items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-800 transition hover:bg-amber-100 disabled:opacity-60";
@@ -116,10 +120,19 @@ export function WorkerSessionRow({
 }) {
   const [showManualEntry, setShowManualEntry] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const isWorking = worker.status === "Active";
+  // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 2: the single
+  // simple state everything below (badge, live timer, buttons) reads from.
+  const simpleState = deriveSimpleWorkerState(worker.assignment_status, worker.status);
+  const isWorking = simpleState === "Working";
+  // Task 3: Manual Entry / View Sessions in the "Not Started" bucket are
+  // only offered once there's actually history to correct/review — a
+  // worker who never started at all gets just the Start button, matching
+  // the old "Completed"-only gate for these two (see the removed status
+  // === "Completed" branch this replaces).
+  const hasHistory = worker.total_minutes > 0;
 
   return (
-    <div className={`rounded-md border border-[#E5E7EB] border-l-4 bg-white p-2.5 ${statusAccent(worker.status)}`}>
+    <div className={`rounded-md border border-[#E5E7EB] border-l-4 bg-white p-2.5 ${statusAccent(simpleState)}`}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
         {/* Left — who, role, status (Task 7) */}
         <div className="min-w-0 sm:w-40 sm:shrink-0">
@@ -129,7 +142,7 @@ export function WorkerSessionRow({
             {canViewCosts ? ` — ${worker.hourly_rate_snapshot.toFixed(3)} KWD/hr` : ""}
           </p>
           <div className="mt-1">
-            <StatusBadge label={worker.status} tone={statusTone(worker.status)} />
+            <StatusBadge label={simpleState} tone={simpleWorkerStateTone(simpleState)} />
           </div>
         </div>
 
@@ -195,21 +208,48 @@ export function WorkerSessionRow({
           )}
         </div>
 
-        {/* Right — main action buttons (Task 7 button rules, by status) */}
+        {/* Right — main action buttons (Unit 10G.53, Task 3 button rules,
+            by simple state):
+              Not Started -> Start (+ Manual Entry/View Sessions once there
+                is prior session history to correct/review)
+              Working     -> Pause, Finish Work
+              Paused      -> Resume, Finish Work, View Sessions
+              Finished    -> read-only, no Resume — just View Sessions */}
         <div className="flex flex-wrap items-center gap-1.5 sm:shrink-0 sm:justify-end">
-          {canManageSessions && worker.status === "Not Started" ? (
-            <SessionActionForm
-              action={startWorkSessionAction}
-              workOrderId={workOrderId}
-              workerAssignmentId={worker.worker_assignment_id}
-              label="Start"
-              icon={Play}
-              toastTitle="Work Session Started"
-              className={btnStart}
-            />
+          {canManageSessions && simpleState === "Not Started" ? (
+            <>
+              <SessionActionForm
+                action={startWorkSessionAction}
+                workOrderId={workOrderId}
+                workerAssignmentId={worker.worker_assignment_id}
+                label="Start"
+                icon={Play}
+                toastTitle="Work Session Started"
+                className={btnStart}
+              />
+              {hasHistory && (
+                <>
+                  {/* Daily Activity Timer Reliability and Remove Data Entry
+                      Manual Entry Unit 10G.24, Task 5/6: manual time entry
+                      can be used to fabricate hours never actually worked,
+                      so it's Manager/Super Admin only — Data Entry's only
+                      path to recorded time is the real Start/Pause/Resume/
+                      Finish flow. isManager already means super_admin OR
+                      maintenance_manager (see page.tsx). */}
+                  {isManager && (
+                    <button type="button" onClick={() => setShowManualEntry(true)} className={btnSecondary}>
+                      Add Manual Entry
+                    </button>
+                  )}
+                  <button type="button" onClick={() => setShowHistory(true)} className={btnSecondary}>
+                    View Sessions
+                  </button>
+                </>
+              )}
+            </>
           ) : null}
 
-          {canManageSessions && worker.status === "Active" ? (
+          {canManageSessions && simpleState === "Working" ? (
             <>
               <SessionActionForm
                 action={pauseWorkSessionAction}
@@ -221,18 +261,18 @@ export function WorkerSessionRow({
                 className={btnPause}
               />
               <SessionActionForm
-                action={stopWorkSessionAction}
+                action={finishWorkSessionAction}
                 workOrderId={workOrderId}
                 workerAssignmentId={worker.worker_assignment_id}
-                label="Stop"
-                icon={Square}
-                toastTitle="Work Session Stopped"
-                className={btnStop}
+                label="Finish Work"
+                icon={CheckCircle2}
+                toastTitle="Worker Finished"
+                className={btnFinish}
               />
             </>
           ) : null}
 
-          {canManageSessions && worker.status === "Paused" ? (
+          {canManageSessions && simpleState === "Paused" ? (
             <>
               <SessionActionForm
                 action={startWorkSessionAction}
@@ -243,48 +283,31 @@ export function WorkerSessionRow({
                 toastTitle="Work Session Started"
                 className={btnStart}
               />
-              <button type="button" onClick={() => setShowHistory(true)} className={btnSecondary}>
-                View Sessions
-              </button>
-            </>
-          ) : null}
-
-          {canManageSessions && worker.status === "Completed" ? (
-            <>
               <SessionActionForm
-                action={startWorkSessionAction}
+                action={finishWorkSessionAction}
                 workOrderId={workOrderId}
                 workerAssignmentId={worker.worker_assignment_id}
-                label="Resume Work"
-                icon={Play}
-                toastTitle="Work Session Started"
-                className={btnStart}
+                label="Finish Work"
+                icon={CheckCircle2}
+                toastTitle="Worker Finished"
+                className={btnFinish}
               />
-              {/* Daily Activity Timer Reliability and Remove Data Entry
-                  Manual Entry Unit 10G.24, Task 5/6: manual time entry can
-                  be used to fabricate hours never actually worked, so it's
-                  now Manager/Super Admin only — Data Entry's only path to
-                  recorded time is the real Start/Pause/Resume/Stop flow.
-                  isManager already means super_admin OR
-                  maintenance_manager (see page.tsx), so this doesn't
-                  narrow who could correct time versus before, only who
-                  reaches it from this button. */}
-              {isManager && (
-                <button type="button" onClick={() => setShowManualEntry(true)} className={btnSecondary}>
-                  Add Manual Entry
-                </button>
-              )}
               <button type="button" onClick={() => setShowHistory(true)} className={btnSecondary}>
                 View Sessions
               </button>
             </>
           ) : null}
 
-          {/* Not Started / no history yet — no View Sessions button (Task
-              7: "Not Started" only lists Start), but keep it reachable once
-              there IS something to look at (Working/Paused/Completed cover
-              that above); this covers the read-only (canManageSessions
-              false) case so history is never fully unreachable. */}
+          {/* Finished — no Resume, read-only from here on (Task 3). Session
+              history stays reachable so the recorded time is never hidden. */}
+          {canManageSessions && simpleState === "Finished" ? (
+            <button type="button" onClick={() => setShowHistory(true)} className={btnSecondary}>
+              View Sessions
+            </button>
+          ) : null}
+
+          {/* Read-only viewer (no work_orders.assign permission) — history
+              stays reachable regardless of state. */}
           {!canManageSessions && (
             <button type="button" onClick={() => setShowHistory(true)} className={btnSecondary}>
               View Sessions

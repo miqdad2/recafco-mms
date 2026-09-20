@@ -5,6 +5,7 @@ import {
   ClipboardList,
   ExternalLink,
   FileText,
+  MapPin,
   Package,
   Pencil,
   Plus,
@@ -17,6 +18,8 @@ import { uploadAssetFileAction } from "@/app/actions/files";
 import { PrivateFilePanel } from "@/components/files/private-file-panel";
 import { SignedFileList } from "@/components/files/signed-file-list";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { LargeFormModal } from "@/components/ui/large-form-modal";
+import { SendToSiteForm, ReceiveBackForm } from "@/components/assets/asset-movement-forms";
 import { requirePermission } from "@/lib/auth/context";
 import { displayStatus } from "@/lib/display/work-order-labels";
 import { displayPartsRequestStatus, partsRequestStatusTone } from "@/lib/display/parts-request-labels";
@@ -27,6 +30,8 @@ import { getAssetMaintenanceSummary } from "@/lib/backend/assets/service";
 import { computeContractStatus } from "@/lib/display/service-contract-status";
 import { getExpiryStatus } from "@/lib/assets/vehicle-status";
 import { extractNoteField } from "@/lib/assets/asset-excel-mapping";
+import { getActiveAssetMovement, getAssetMovementHistory, getUserNamesByIds } from "@/lib/assets/movements-data";
+import { computeMovementDayInfo, getMovementBadge } from "@/lib/assets/movement-status";
 import { BackLink } from "@/components/ui/back-link";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
@@ -45,6 +50,7 @@ const TABS = [
   { id: "overview",           label: "Overview" },
   { id: "repair-orders",      label: "Job Cards" },
   { id: "materials-history",  label: "Materials History" },
+  { id: "movements",          label: "Site Movement" },
   { id: "service-contracts",  label: "Service Contracts" },
   { id: "documents",          label: "Documents" },
   { id: "history",            label: "History" },
@@ -84,6 +90,22 @@ function shortDate(iso: string | Date | null | undefined): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+// Task 4 — simple wording for the active/returned deployment card, matching
+// the task's own examples exactly ("Sent 5 days ago", "Overdue by 3 days",
+// "Returned after 8 days").
+function movementStatusLine(
+  status: string,
+  dayInfo: ReturnType<typeof computeMovementDayInfo>
+): { text: string; tone: "blue" | "red" | "green" | "gray" } {
+  if (status === "RETURNED") {
+    return { text: `Returned after ${dayInfo.daysOutside} day${dayInfo.daysOutside === 1 ? "" : "s"}`, tone: "green" };
+  }
+  if (dayInfo.isOverdue) {
+    return { text: `Overdue by ${dayInfo.overdueDays} day${dayInfo.overdueDays === 1 ? "" : "s"}`, tone: "red" };
+  }
+  return { text: `Sent ${dayInfo.daysOutside} day${dayInfo.daysOutside === 1 ? "" : "s"} ago`, tone: "blue" };
+}
+
 // ── Helper component ──────────────────────────────────────────────────────────
 
 function InfoRow({ label, value }: { label: string; value: string | null | undefined }) {
@@ -111,7 +133,7 @@ export default async function AssetDetailPage({
   const sp = (await searchParams) ?? {};
   const activeTab = ((sp.tab ?? "overview") as TabId);
 
-  const [rawAsset, summary, rawDocuments, assetContracts] = await Promise.all([
+  const [rawAsset, summary, rawDocuments, assetContracts, activeMovement, movementHistory] = await Promise.all([
     prisma.assets.findUnique({
       where: { id },
       include: { departments: { select: { name: true } } },
@@ -125,6 +147,8 @@ export default async function AssetDetailPage({
       where: { asset_id: id, deleted_at: null },
       orderBy: { end_date: "asc" },
     }),
+    getActiveAssetMovement(id),
+    getAssetMovementHistory(id),
   ]);
 
   if (!rawAsset) {
@@ -160,6 +184,19 @@ export default async function AssetDetailPage({
     context.role?.slug === "super_admin" || context.permissions.includes("work_orders.manage");
   const canEdit =
     context.role?.slug === "super_admin" || context.permissions.includes("assets.manage");
+  // Asset Site Movement / Deployment Tracking Unit 10G.65, Task 10: reuses
+  // the existing assets.manage permission (already held by Manager/Super
+  // Admin/Data Entry) — no new role or permission added this unit.
+  const canManageMovements = canEdit;
+
+  const movementUserNames = await getUserNamesByIds([
+    ...movementHistory.map((m) => m.sent_by_user_id),
+    ...movementHistory.map((m) => m.received_by_user_id),
+  ]);
+
+  const showSendToSiteModal = sp.send_to_site === "1" && canManageMovements && !activeMovement;
+  const showReceiveBackModal = sp.receive_back === "1" && canManageMovements && !!activeMovement;
+  const movementDismissHref = `/assets/${id}?tab=movements`;
 
   // New Job Card Modal Wizard Refactor: opened via ?new_job_card=1 as an
   // overlay on top of this asset's own detail page, preselecting this asset.
@@ -286,6 +323,34 @@ export default async function AssetDetailPage({
           canAssignAtCreation={canAssignAtCreation}
         />
       )}
+
+      {/* Asset Site Movement / Deployment Tracking Unit 10G.65, Task 2/3 —
+          same ?query=1 modal-overlay convention as the New Job Card wizard
+          above. */}
+      {showSendToSiteModal && (
+        <LargeFormModal
+          title="Send to Site"
+          subtitle={`Record ${asset.asset_name} being sent to a work site or project location.`}
+          closeHref={movementDismissHref}
+        >
+          <SendToSiteForm assetId={asset.id} dismissHref={movementDismissHref} />
+        </LargeFormModal>
+      )}
+      {showReceiveBackModal && activeMovement && (
+        <LargeFormModal
+          title="Receive Back"
+          subtitle={`Record ${asset.asset_name} being received back from ${activeMovement.to_location}.`}
+          closeHref={movementDismissHref}
+        >
+          <ReceiveBackForm
+            assetId={asset.id}
+            movementId={activeMovement.id}
+            defaultReturnLocation={activeMovement.from_location ?? "Factory"}
+            dismissHref={movementDismissHref}
+          />
+        </LargeFormModal>
+      )}
+
       {/* ── Asset Identity Header ──────────────────────────────────────────── */}
       {/* Asset Detail Page Simplification Unit 10G.35, Task 2/8: the
           breadcrumb/Back link always go to Assets & Equipment now — the
@@ -316,11 +381,36 @@ export default async function AssetDetailPage({
             </div>
             <div className="mt-2.5 flex flex-wrap gap-2">
               <StatusBadge label={asset.status} tone={statusTone(asset.status)} />
+              {/* Task 7 — a movement badge, kept separate from asset.status so
+                  the existing status enum used by Job Card/CEO risk logic is
+                  never touched. */}
+              {(() => {
+                const badge = getMovementBadge(activeMovement);
+                return badge ? <StatusBadge label={badge.label} tone={badge.tone} /> : null;
+              })()}
             </div>
           </div>
 
           {/* Action buttons */}
           <div className="flex flex-wrap gap-2 pb-2">
+            {canManageMovements && !activeMovement && (
+              <Link
+                href={`?send_to_site=1${activeTab ? `&tab=${activeTab}` : ""}`}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] transition hover:border-[#ED1C24] hover:text-[#ED1C24]"
+              >
+                <MapPin className="h-4 w-4" aria-hidden="true" />
+                Send to Site
+              </Link>
+            )}
+            {canManageMovements && activeMovement && (
+              <Link
+                href={`?receive_back=1${activeTab ? `&tab=${activeTab}` : ""}`}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] transition hover:border-[#ED1C24] hover:text-[#ED1C24]"
+              >
+                <MapPin className="h-4 w-4" aria-hidden="true" />
+                Receive Back
+              </Link>
+            )}
             {canManage && (
               <Link
                 href={`?new_job_card=1&asset_id=${asset.id}${activeTab ? `&tab=${activeTab}` : ""}`}
@@ -522,6 +612,35 @@ export default async function AssetDetailPage({
                 <InfoRow label="Department / Location" value={asset.departments?.name ?? asset.location} />
                 <InfoRow label="Responsible Person / Driver" value={asset.assigned_operator_driver} />
               </dl>
+
+              {/* Task 6 — compact, not crowded: one short block, not a
+                  duplicate of the full Movements tab. */}
+              <div className="mt-4 border-t border-[#F3F4F6] pt-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">Current Deployment</p>
+                {activeMovement ? (
+                  (() => {
+                    const dayInfo = computeMovementDayInfo(activeMovement);
+                    return (
+                      <div className="mt-1.5">
+                        <p className="text-sm font-semibold text-[#111827]">
+                          At {activeMovement.to_location} since {shortDate(activeMovement.sent_date)}
+                        </p>
+                        <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[#4B5563]">
+                          <span>Days outside: <strong>{dayInfo.daysOutside}</strong></span>
+                          {activeMovement.expected_return_date && (
+                            <span>Expected return: <strong>{shortDate(activeMovement.expected_return_date)}</strong></span>
+                          )}
+                          {dayInfo.isOverdue && (
+                            <span className="font-bold text-[#ED1C24]">Overdue by {dayInfo.overdueDays} day{dayInfo.overdueDays === 1 ? "" : "s"}</span>
+                          )}
+                        </p>
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <p className="mt-1.5 text-sm text-[#9CA3AF]">Not deployed</p>
+                )}
+              </div>
             </section>
 
             {/* Section 4 — Remarks */}
@@ -846,6 +965,158 @@ export default async function AssetDetailPage({
               </div>
             )}
           </section>
+        )}
+
+        {/* ── SITE MOVEMENT ─────────────────────────────────────────────────── */}
+        {/* Asset Site Movement / Deployment Tracking Unit 10G.65, Task 5 —
+            kept entirely separate from Job Cards/Materials History: this tab
+            never reads or writes work_orders/parts_requests, and neither of
+            those tabs reads asset_movements. */}
+        {activeTab === "movements" && (
+          <div className="space-y-5">
+            {activeMovement ? (
+              (() => {
+                const dayInfo = computeMovementDayInfo(activeMovement);
+                const line = movementStatusLine(activeMovement.status, dayInfo);
+                return (
+                  <section
+                    className={`overflow-hidden rounded-md border shadow-sm ${
+                      dayInfo.isOverdue ? "border-red-200 bg-red-50" : "border-blue-200 bg-blue-50"
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3 p-4">
+                      <div className="min-w-0">
+                        <p
+                          className={`text-[11px] font-black uppercase tracking-widest ${
+                            dayInfo.isOverdue ? "text-red-700" : "text-blue-700"
+                          }`}
+                        >
+                          Active Deployment
+                        </p>
+                        <p className="mt-1 text-lg font-black text-[#111827]">{activeMovement.to_location}</p>
+                        <dl className="mt-2 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                          <div>
+                            <dt className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">Sent Date</dt>
+                            <dd className="text-sm font-semibold text-[#111827]">{shortDate(activeMovement.sent_date)}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">Expected Return</dt>
+                            <dd className="text-sm font-semibold text-[#111827]">{shortDate(activeMovement.expected_return_date)}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">Days Outside</dt>
+                            <dd className="text-sm font-semibold text-[#111827]">{dayInfo.daysOutside}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">Responsible Person / Driver</dt>
+                            <dd className="text-sm font-semibold text-[#111827]">{activeMovement.responsible_person ?? "—"}</dd>
+                          </div>
+                          {activeMovement.purpose && (
+                            <div className="sm:col-span-2">
+                              <dt className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">Purpose</dt>
+                              <dd className="text-sm text-[#111827]">{activeMovement.purpose}</dd>
+                            </div>
+                          )}
+                        </dl>
+                        <p className={`mt-3 text-sm font-bold ${dayInfo.isOverdue ? "text-[#ED1C24]" : "text-blue-700"}`}>
+                          {line.text}
+                        </p>
+                      </div>
+                      {canManageMovements && (
+                        <Link
+                          href={`?receive_back=1&tab=movements`}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
+                        >
+                          <MapPin className="h-4 w-4" aria-hidden="true" />
+                          Receive Back
+                        </Link>
+                      )}
+                    </div>
+                  </section>
+                );
+              })()
+            ) : (
+              <div className="flex flex-col items-center gap-3 rounded-md border border-[#E5E7EB] bg-white py-10 text-center shadow-sm">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#F5F6F8]">
+                  <MapPin className="h-6 w-6 text-[#9CA3AF]" aria-hidden="true" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-[#374151]">Not deployed</p>
+                  <p className="mt-0.5 text-xs text-[#6B7280]">This asset is not currently sent to a site.</p>
+                </div>
+                {canManageMovements && (
+                  <Link
+                    href="?send_to_site=1&tab=movements"
+                    className="inline-flex items-center gap-2 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
+                  >
+                    <MapPin className="h-4 w-4" aria-hidden="true" />
+                    Send to Site
+                  </Link>
+                )}
+              </div>
+            )}
+
+            {/* Movement history table */}
+            <section className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
+              <div className="border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
+                <p className="text-[11px] font-black uppercase tracking-widest text-[#4B5563]">History</p>
+                <p className="mt-0.5 text-sm font-bold text-[#111827]">
+                  Movement History ({movementHistory.length})
+                </p>
+              </div>
+
+              {movementHistory.length === 0 ? (
+                <div className="flex flex-col items-center gap-3 py-14 text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#F5F6F8]">
+                    <MapPin className="h-6 w-6 text-[#9CA3AF]" aria-hidden="true" />
+                  </div>
+                  <p className="text-sm font-semibold text-[#374151]">No site movements recorded yet.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[900px] text-left text-sm">
+                    <thead className="bg-gray-50 text-xs font-bold uppercase text-[#4B5563]">
+                      <tr>
+                        <th className="px-4 py-3">To Location</th>
+                        <th className="px-4 py-3">Sent Date</th>
+                        <th className="px-4 py-3">Expected Return</th>
+                        <th className="px-4 py-3">Returned Date</th>
+                        <th className="px-4 py-3">Days Outside</th>
+                        <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3">Sent By</th>
+                        <th className="px-4 py-3">Received By</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#E5E7EB]">
+                      {movementHistory.map((m) => {
+                        const dayInfo = computeMovementDayInfo(m);
+                        const tone = m.status === "RETURNED" ? "green" : dayInfo.isOverdue ? "red" : m.status === "CANCELLED" ? "gray" : "blue";
+                        const label = m.status === "RETURNED" ? "Returned" : m.status === "CANCELLED" ? "Cancelled" : dayInfo.isOverdue ? "Overdue" : "Active";
+                        return (
+                          <tr key={m.id} className="hover:bg-gray-50">
+                            <td className="px-4 py-3 font-semibold text-[#111827]">{m.to_location}</td>
+                            <td className="px-4 py-3 text-[#4B5563]">{shortDate(m.sent_date)}</td>
+                            <td className="px-4 py-3 text-[#4B5563]">{shortDate(m.expected_return_date)}</td>
+                            <td className="px-4 py-3 text-[#4B5563]">{shortDate(m.actual_return_date)}</td>
+                            <td className="px-4 py-3 text-[#4B5563]">{dayInfo.daysOutside}</td>
+                            <td className="px-4 py-3">
+                              <StatusBadge label={label} tone={tone} />
+                            </td>
+                            <td className="px-4 py-3 text-[#4B5563]">
+                              {m.sent_by_user_id ? movementUserNames.get(m.sent_by_user_id) ?? "—" : "—"}
+                            </td>
+                            <td className="px-4 py-3 text-[#4B5563]">
+                              {m.received_by_user_id ? movementUserNames.get(m.received_by_user_id) ?? "—" : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          </div>
         )}
 
         {/* ── DOCUMENTS ─────────────────────────────────────────────────────── */}

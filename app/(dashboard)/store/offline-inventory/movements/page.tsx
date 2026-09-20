@@ -10,6 +10,7 @@ import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
+import { canViewCosts as canViewCostsPermission } from "@/lib/security/permissions";
 import {
   normalizeCategory,
   movementTypeLabel,
@@ -51,6 +52,12 @@ export default async function MovementHistoryPage({
 }) {
   const context = await requirePermission("parts.view");
   const canManage = canManageOfflineInventory(context);
+  // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 8 — Unit
+  // Cost/Total Cost columns only for an allowed role; Store Keeper's own
+  // reduced "Sent Materials" view never shows cost either way (it already
+  // hides most columns), so this only actually matters for the general
+  // Movement History view.
+  const showCosts = canViewCostsPermission(context);
   // Store Issue Materials + Offline Inventory Separation Unit Task 6/9: this
   // one page now serves two audiences — Store's own "Sent Materials" record
   // of what it has issued, and everyone else's Material Ledger view of the
@@ -131,6 +138,8 @@ export default async function MovementHistoryPage({
     parts_request_number:  m.parts_requests?.parts_request_number ?? null,
     asset_name:            m.work_orders?.assets?.asset_name ?? null,
     plate_number:          m.work_orders?.assets?.plate_number ?? null,
+    unit_cost:              showCosts && m.unit_cost !== null ? Number(m.unit_cost) : null,
+    total_cost:             showCosts && m.total_cost !== null ? Number(m.total_cost) : null,
   }));
 
   const isFiltered = Boolean(q || type || from || to);
@@ -262,6 +271,8 @@ export default async function MovementHistoryPage({
                     {!isStoreKeeper && <th className="px-4 py-3">SS Rec. Code</th>}
                     <th className="px-4 py-3">{isStoreKeeper ? "Quantity Sent" : "Quantity"}</th>
                     {!isStoreKeeper && <th className="px-4 py-3">Unit</th>}
+                    {!isStoreKeeper && showCosts && <th className="px-4 py-3 text-right">Unit Cost</th>}
+                    {!isStoreKeeper && showCosts && <th className="px-4 py-3 text-right">Total Cost</th>}
                     <th className="px-4 py-3">Job Card / Asset</th>
                     <th className="px-4 py-3">Materials Request</th>
                     {!isStoreKeeper && <th className="px-4 py-3">Reference No.</th>}
@@ -302,6 +313,16 @@ export default async function MovementHistoryPage({
                           {isStoreKeeper ? ` ${m.unit}` : ""}
                         </td>
                         {!isStoreKeeper && <td className="px-4 py-3 text-[#4B5563]">{m.unit}</td>}
+                        {!isStoreKeeper && showCosts && (
+                          <td className="px-4 py-3 text-right text-[#4B5563]">
+                            {m.unit_cost !== null ? m.unit_cost.toFixed(3) : "—"}
+                          </td>
+                        )}
+                        {!isStoreKeeper && showCosts && (
+                          <td className="px-4 py-3 text-right font-semibold text-[#111827]">
+                            {m.total_cost !== null ? m.total_cost.toFixed(3) : "—"}
+                          </td>
+                        )}
                         <td className="px-4 py-3">
                           {m.related_work_order_id ? (
                             <>

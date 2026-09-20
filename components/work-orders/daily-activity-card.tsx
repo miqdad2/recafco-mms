@@ -1,18 +1,38 @@
 import Link from "next/link";
-import { AlertTriangle, PackageSearch, Printer, Users } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronRight,
+  Clock,
+  Hourglass,
+  PackageSearch,
+  PackageX,
+  PauseCircle,
+  PlayCircle,
+  Printer,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 
 import { StatusBadge } from "@/components/ui/status-badge";
 import { WorkerSessionRow } from "@/components/work-orders/worker-session-row";
 import type { WorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import type { MaterialFulfillment } from "@/lib/work-orders/material-fulfillment";
+// No-Confusion Material + Status Panel Unit 10G.56: the exact same pure
+// state-derivation function the real closure guard (Unit 10G.53) already
+// uses server-side, called here against the same laborSummary.workers data
+// already on the card — never a re-guess from rendered text.
+import { deriveSimpleWorkerState } from "@/lib/work-orders/hours-variance";
 
 // Daily Activity Compact Control Board Unit 9C, polished in Final UI Polish
 // Unit 9D.
 //
 // Two surfaces live here:
 //  - DailyActivityListRow — a compact, low-height row for the left list.
-//    Only identity + three small chips + a priority accent bar. No worker
-//    controls, no buttons — clicking it just selects the Job Card.
+//    Identity + a soft state-colored background/border and one color-matched
+//    action line (Status Color Cards Unit 10G.55 — replaced the previous
+//    white card + up to three mini chips). No worker controls, no buttons —
+//    clicking it just selects the Job Card.
 //  - DailyActivitySelectedPanel — the full control surface (Next Action,
 //    worker session controls, materials/closure mini-sections, footer
 //    actions), rendered ONCE, for whichever single Job Card is selected.
@@ -28,8 +48,8 @@ export type DailyActivityNextAction = { message: string; buttonLabel: string | n
 // Mirrors app/(dashboard)/maintenance/daily-activity/page.tsx's own
 // PriorityBucket union exactly (kept in sync manually, same convention as
 // the role-slug checks duplicated elsewhere in this app) — used only to
-// pick the list row's left accent color.
-type PriorityBucket = "working" | "paused" | "materials" | "closure" | "assigned-idle" | "unassigned";
+// pick the list row's left accent color. Unit 10G.54 added "waiting-approval".
+type PriorityBucket = "working" | "paused" | "materials" | "closure" | "waiting-approval" | "assigned-idle" | "unassigned";
 
 export type DailyActivityCardData = {
   id: string;
@@ -89,17 +109,63 @@ export type DailyActivityCardData = {
 // computation can build the exact matching href instead of duplicating the
 // literal string.
 export const WORKERS_SECTION_ID = "daily-activity-workers";
+// Unit 10G.56, Task 5/9: same purpose as WORKERS_SECTION_ID above, for the
+// "View Materials" quick link in the new Status Summary/Next Action guidance
+// to jump straight to the existing Materials mini-section below it.
+export const MATERIALS_SECTION_ID = "daily-activity-materials";
 
-// Task 3 — priority indicator color: green for working/ready, amber for
-// paused, red only for blocked/materials-pending (the one state that
-// actually needs urgent attention), neutral-blue for everything else
-// (not started / needs assignment) — most rows should NOT be red.
-function priorityAccentClass(bucket: PriorityBucket): string {
-  if (bucket === "materials") return "border-l-[#ED1C24]"; // blocked — red
-  if (bucket === "paused") return "border-l-[#F59E0B]"; // amber
-  if (bucket === "working" || bucket === "closure") return "border-l-[#16A34A]"; // working/ready — green
-  return "border-l-[#93C5FD]"; // not started / unassigned — neutral blue
-}
+// Daily Activity Status Color Cards Unit 10G.55, Task 1/2/6.
+//
+// One soft, professional solid background per operational state, keyed off
+// the exact same `priorityBucket` that already drives this page's sort
+// order and Next Action ladder (app/(dashboard)/maintenance/daily-activity/
+// page.tsx) — the established single source of truth for "the one most
+// important thing about this card right now," so card color, list sort
+// order, and the Next Action panel can never disagree about which state a
+// card is in. A card that happens to satisfy two criteria at once (e.g.
+// materials still pending while a worker is already actively working it)
+// colors for whichever one that same ladder already ranks first — Working
+// still outranks Materials Pending here exactly as it already did for
+// sorting before this unit, so a green "someone's already on it" card
+// showing up under the Materials Pending filter is accurate, not a bug.
+//
+// Each entry pairs a bg-*-50 (soft) with a full-strength left border and a
+// -800/-700 label text color in the SAME hue — the left border and colored
+// text are the color-blind-safe second signal Task 6 asks for ("red/green
+// is not the only signal"), and every -50 background stays light enough
+// that this file's existing gray/near-black text colors (asset/issue/
+// created lines) keep their contrast unchanged.
+type PriorityCardStyle = { bg: string; hoverBg: string; borderLeft: string; label: string };
+const PRIORITY_CARD_STYLE: Record<PriorityBucket, PriorityCardStyle> = {
+  working:            { bg: "bg-green-50",  hoverBg: "hover:bg-green-100",  borderLeft: "border-l-[#16A34A]", label: "text-green-800" },
+  paused:             { bg: "bg-amber-50",  hoverBg: "hover:bg-amber-100",  borderLeft: "border-l-[#F59E0B]", label: "text-amber-800" },
+  materials:          { bg: "bg-red-50",    hoverBg: "hover:bg-red-100",    borderLeft: "border-l-[#DC2626]", label: "text-red-800" },
+  // "Ready for Closure" — soft blue/green (teal), distinct from both pure
+  // green (Working) and pure blue (the neutral/default state below).
+  closure:            { bg: "bg-teal-50",   hoverBg: "hover:bg-teal-100",   borderLeft: "border-l-[#0D9488]", label: "text-teal-800" },
+  // "Waiting Manager Approval" — yellow, distinct enough from Paused's
+  // amber/orange once paired with its own left border and label text.
+  "waiting-approval": { bg: "bg-yellow-50", hoverBg: "hover:bg-yellow-100", borderLeft: "border-l-[#EAB308]", label: "text-yellow-800" },
+  "assigned-idle":    { bg: "bg-slate-50",  hoverBg: "hover:bg-slate-100",  borderLeft: "border-l-[#94A3B8]", label: "text-slate-700" },
+  // "Needs Assignment" / default — white with a light blue accent, same
+  // neutral treatment this page has always used for "nothing urgent yet."
+  unassigned:         { bg: "bg-white",     hoverBg: "hover:bg-blue-50",    borderLeft: "border-l-[#93C5FD]", label: "text-blue-700" },
+};
+
+// Job Card Card UI Polish Unit 10G.55A, Task 3/4: one small, already-
+// available lucide-react icon per state, paired with the action line — no
+// new dependency, just icons this project already ships. Chosen to be
+// visually distinct from each other and from the unrelated AlertTriangle
+// already used elsewhere on this row for "unusual active session".
+const PRIORITY_ICON: Record<PriorityBucket, LucideIcon> = {
+  working: PlayCircle,
+  paused: PauseCircle,
+  materials: PackageX,
+  closure: CheckCircle2,
+  "waiting-approval": Hourglass,
+  "assigned-idle": Clock,
+  unassigned: Users,
+};
 
 const chipToneClass: Record<DailyActivityChip["tone"], string> = {
   green: "border-green-200 bg-green-50 text-green-700",
@@ -108,16 +174,6 @@ const chipToneClass: Record<DailyActivityChip["tone"], string> = {
   blue: "border-blue-200 bg-blue-50 text-blue-700",
   gray: "border-gray-200 bg-gray-50 text-gray-700",
 };
-
-// Task 1 — a smaller-than-StatusBadge chip just for the compact list row,
-// so three of them plus the Job Card number/issue still fit in a short row.
-function MiniChip({ label, tone }: DailyActivityChip) {
-  return (
-    <span className={`inline-flex items-center rounded border px-1 py-0.5 text-[9px] font-bold leading-none ${chipToneClass[tone]}`}>
-      {label}
-    </span>
-  );
-}
 
 // A tiny status badge for the list row header line — StatusBadge itself is
 // a bit tall (px-2.5 py-1) for a row this short, so the list row uses this
@@ -156,40 +212,243 @@ export function DailyActivityListRow({
   isSelected: boolean;
   onSelect: () => void;
 }) {
+  const style = PRIORITY_CARD_STYLE[card.priorityBucket];
+  const ActionIcon = PRIORITY_ICON[card.priorityBucket];
+
   return (
     <button
       type="button"
       onClick={onSelect}
       aria-pressed={isSelected}
-      className={`block w-full rounded-md border-l-4 bg-white p-2 text-left transition ${priorityAccentClass(card.priorityBucket)} ${
-        // Task 2 — selected reads as "this is the one you're looking at":
-        // a soft blue tint + thin blue border, never red/error-styled.
-        isSelected ? "bg-blue-50 ring-1 ring-[#93C5FD]" : "ring-1 ring-[#E5E7EB] hover:bg-gray-50"
+      // Job Card Card UI Polish Unit 10G.55A, Task 2/5: rounded-lg (was -md)
+      // + a full subtle border all around (not just the ring) + a resting
+      // shadow-sm read as a real card, not a flat colored rectangle; the
+      // left accent border stays the strong, full-color one from Unit
+      // 10G.55. Selected keeps this exact background/border (never flips to
+      // plain white/blue) and layers a thicker blue ring + deeper shadow on
+      // top — obvious regardless of which state color the card already is.
+      // Hover (not selected) is a one-step-darker same-hue shade plus a
+      // slightly deeper shadow, never a flat gray swap.
+      className={`block w-full min-w-0 rounded-lg border border-black/5 border-l-4 p-2.5 text-left shadow-sm transition ${style.bg} ${style.borderLeft} ${
+        isSelected ? "shadow-md ring-2 ring-[#2563EB]" : `hover:shadow-md ${style.hoverBg}`
       }`}
     >
-      {/* Line 1 — Job Card number + status badge + NEW badge */}
-      <div className="flex items-center justify-between gap-1.5">
-        <span className="truncate text-xs font-black text-[#111827]">{card.workOrderNumber ?? "Job Card"}</span>
+      {/* Top row — Job Card number (bold, left) + main status badge (right),
+          neatly aligned (Task 1/6). min-w-0 + flex-1 + truncate on the
+          number is what actually lets it shrink/truncate before the badge
+          ever does on a narrow screen (Task 7) — the badge itself is
+          shrink-0 so it never gets squeezed into overflow or wrapping. */}
+      <div className="flex min-w-0 items-center justify-between gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-[13px] font-black leading-tight text-[#111827]">
+          {card.workOrderNumber ?? "Job Card"}
+        </span>
         <div className="flex shrink-0 items-center gap-1">
           {card.isUnusualActiveSession ? <AlertTriangle className="h-3 w-3 text-amber-600" aria-hidden="true" /> : null}
           {card.isNewJobCard ? <NewBadge /> : null}
           <TinyStatusBadge label={card.displayStatus} tone={card.displayStatusTone} />
         </div>
       </div>
-      {/* Line 2 — asset / vehicle / plate */}
-      <p className="truncate text-[11px] text-[#6B7280]">{card.assetLabel ?? "No asset linked"}</p>
-      {/* Line 3 — issue text */}
-      <p className="line-clamp-1 text-[11px] text-[#374151]">{card.issue}</p>
-      {/* Line 4 — created date/time */}
-      <p className="mt-0.5 truncate text-[10px] text-[#9CA3AF]">Created: {card.createdLabel}</p>
-      {/* Line 5 — material / work / assignment chips */}
-      <div className="mt-1 flex flex-wrap gap-1">
-        <MiniChip label={card.materialsChip.label} tone={card.materialsChip.tone} />
-        <MiniChip label={card.workTimeChip.label} tone={card.workTimeChip.tone} />
-        <MiniChip label={card.assignmentChip.label} tone={card.assignmentChip.tone} />
+
+      {/* Second row — asset code/name (Task 1/6: readable but secondary; at
+          most one line, never wraps). */}
+      <p className="mt-1 truncate text-[11px] text-[#6B7280]">{card.assetLabel ?? "No asset linked"}</p>
+
+      {/* Third row — complaint/problem, one line max (Task 1/6/7). */}
+      <p className="mt-0.5 line-clamp-1 text-[11px] text-[#374151]">
+        <span className="font-semibold text-[#4B5563]">Issue: </span>
+        {card.issue}
+      </p>
+
+      {/* Bottom action row — Task 1/2/3/4: the one clear, icon-paired,
+          color-matched action/status line (card.priorityLabel — computed
+          once in page.tsx from the same priorityBucket the card's
+          background/border already use, so text, icon, and color can never
+          disagree). A hairline top rule gives it its own "footer band"
+          instead of just being one more paragraph in the stack — this is
+          deliberately the strongest text on the card after the Job Card
+          number (Task 6), and the ONLY extra "badge-strength" signal here —
+          Task 2's "avoid too many badges." Truncates rather than wraps so a
+          long sentence (e.g. "Worker paused - resume or finish work") can
+          never cause horizontal overflow on a narrow screen (Task 7). */}
+      <div className={`mt-1.5 flex min-w-0 items-center gap-1.5 border-t border-black/10 pt-1.5 ${style.label}`}>
+        <ActionIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        <span className="min-w-0 truncate text-xs font-extrabold">{card.priorityLabel}</span>
       </div>
+
+      {/* Footer — created date/time, small and muted (Task 1/6). */}
+      <p className="mt-1 truncate text-[10px] text-[#9CA3AF]">Created: {card.createdLabel}</p>
     </button>
   );
+}
+
+// ── Status Summary + Next Action guidance (No-Confusion Material + Status
+//    Panel Unit 10G.56) ───────────────────────────────────────────────────
+//
+// Everything below is derived purely from fields already on `card` — no new
+// data, no re-query, nothing parsed from rendered text. Task 12: only the
+// plain words the business asked for (Job Card, Materials, Workers,
+// Finished, Waiting for Manager approval, Ready for closure, Not ready) —
+// never "work_order", "session", "workflow instance", or a raw status code.
+
+type SummaryTone = "green" | "amber" | "red" | "blue" | "gray";
+const SUMMARY_TONE_CLASS: Record<SummaryTone, string> = {
+  green: "border-green-200 bg-green-50 text-green-800",
+  amber: "border-amber-200 bg-amber-50 text-amber-800",
+  red: "border-red-200 bg-red-50 text-red-800",
+  blue: "border-blue-200 bg-blue-50 text-blue-800",
+  gray: "border-gray-200 bg-gray-50 text-gray-700",
+};
+
+// Task 5/6/9 — when `href` is given, the whole row IS the "View Materials"/
+// "View Workers" action (a plain same-page anchor scroll to the existing
+// mini-section below, via MATERIALS_SECTION_ID/WORKERS_SECTION_ID — no new
+// modal, no duplicate material/worker logic). The trailing chevron is the
+// only extra affordance; the row's own icon/value/detail are unchanged
+// either way, so clicking to "view" never looks different from just reading it.
+function StatusSummaryRow({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  tone,
+  href,
+  linkLabel,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  detail?: string | null;
+  tone: SummaryTone;
+  href?: string;
+  linkLabel?: string;
+}) {
+  const inner = (
+    <>
+      <Icon className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <p className="text-[9px] font-black uppercase leading-none tracking-wide opacity-70">{label}</p>
+        <p className="mt-0.5 truncate text-xs font-black leading-tight">{value}</p>
+        {detail ? <p className="mt-0.5 truncate text-[10px] font-semibold leading-tight opacity-80">{detail}</p> : null}
+      </div>
+      {href ? <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-50" aria-hidden="true" /> : null}
+    </>
+  );
+  const className = `flex min-w-0 items-start gap-2 rounded-md border px-2.5 py-2 ${SUMMARY_TONE_CLASS[tone]}`;
+
+  if (href) {
+    return (
+      <Link href={href} aria-label={linkLabel} className={`${className} transition hover:opacity-90`}>
+        {inner}
+      </Link>
+    );
+  }
+  return <div className={className}>{inner}</div>;
+}
+
+// Task 2 — reuses card.materialsChip (the exact same value the existing
+// Materials mini-section badge already shows) collapsed to the 3 plain
+// states the business asked for, and card.materialsTotals (the same
+// quantity-based Required/Issued/Remaining sum the mini-section already
+// shows) for the count line — never recalculated, never a new guess.
+function summarizeMaterials(card: DailyActivityCardData) {
+  const state: "none" | "pending" | "completed" =
+    card.materialsChip.label === "No Materials" ? "none" : card.materialsChip.label === "Materials Completed" ? "completed" : "pending";
+  const value = state === "none" ? "No materials required" : state === "completed" ? "Materials Completed" : "Materials Pending";
+  // required_qty/issued_qty/remaining_qty are true quantities (e.g. "10
+  // bolts"), not a line count (lib/work-orders/material-fulfillment.ts) —
+  // Task 2's quantity-based wording applies.
+  const detail =
+    card.materialsTotals.required > 0
+      ? `Required ${card.materialsTotals.required} items · Issued ${card.materialsTotals.issued} · Remaining ${card.materialsTotals.remaining}`
+      : null;
+  const icon = state === "pending" ? PackageX : PackageSearch;
+  return { state, value, detail, tone: card.materialsChip.tone as SummaryTone, icon };
+}
+
+// Task 3 — counts derived from the exact same laborSummary.workers rows the
+// Workers section below already renders, via the same deriveSimpleWorkerState
+// the real server-side closure guard uses. Only Not Started/Working/Paused/
+// Finished ever surface — no session/technical wording.
+function summarizeWorkers(card: DailyActivityCardData) {
+  const states = card.laborSummary.workers.map((w) => deriveSimpleWorkerState(w.assignment_status, w.status));
+  const total = states.length;
+  const working = states.filter((s) => s === "Working").length;
+  const paused = states.filter((s) => s === "Paused").length;
+  const notStarted = states.filter((s) => s === "Not Started").length;
+  const finished = states.filter((s) => s === "Finished").length;
+
+  let value: string;
+  let icon: LucideIcon;
+  if (total === 0) {
+    value = "No workers assigned";
+    icon = Users;
+  } else if (working > 0) {
+    value = `${working} worker${working > 1 ? "s" : ""} working`;
+    icon = PlayCircle;
+  } else if (paused > 0) {
+    value = `${paused} worker${paused > 1 ? "s" : ""} paused`;
+    icon = PauseCircle;
+  } else if (notStarted > 0) {
+    value = notStarted === total ? "Work not started" : `${notStarted} worker${notStarted > 1 ? "s" : ""} not started`;
+    icon = Clock;
+  } else {
+    value = "All workers finished";
+    icon = CheckCircle2;
+  }
+  const detail = total > 0 ? `Total ${total} · Finished ${finished} · Working ${working} · Paused ${paused} · Not started ${notStarted}` : null;
+  // card.workTimeChip.tone is the exact same tone the existing list-row/
+  // panel already use for this Job Card's work-time state — reused rather
+  // than a second, possibly-disagreeing color opinion.
+  return { total, working, paused, notStarted, finished, value, detail, tone: card.workTimeChip.tone as SummaryTone, icon };
+}
+
+// Task 1 (#3) — plain wording for card.closureChip.label, the exact same
+// value the existing Closure mini-section badge already shows.
+function summarizeClosure(card: DailyActivityCardData) {
+  const label = card.closureChip.label;
+  const value =
+    label === "Closed" ? "Closed" : label === "Requested" ? "Waiting for Manager approval" : label === "Ready" ? "Ready for closure" : "Not ready for closure";
+  const icon = label === "Closed" ? CheckCircle2 : label === "Requested" ? Hourglass : label === "Ready" ? CheckCircle2 : Clock;
+  return { value, tone: card.closureChip.tone as SummaryTone, icon };
+}
+
+type GuidanceButton = "materials" | "workers" | "closure";
+type Guidance = { message: string; button: GuidanceButton | null; urgent: boolean };
+
+// Task 4 — the exact 8-case priority ladder and wording, in order. Every
+// condition reads an already-computed field (card.status, the materials/
+// worker summaries above) — no new server logic, no re-derivation of
+// anything the real backend closure guard (Unit 10G.53) doesn't already
+// decide. Task 7's button-per-state table is this same ladder's `button`
+// field — message and button can never point at different states because
+// they come from the same branch.
+function computeGuidance(
+  card: DailyActivityCardData,
+  materials: ReturnType<typeof summarizeMaterials>,
+  workers: ReturnType<typeof summarizeWorkers>
+): Guidance {
+  if (card.status === "Closure Requested") {
+    return { message: "Waiting for Manager approval. This Job Card has been submitted for closure approval.", button: null, urgent: false };
+  }
+  if (card.status === "Closed") {
+    return { message: "Job Card closed.", button: null, urgent: false };
+  }
+  if (materials.state === "pending") {
+    return { message: "Materials are pending. Process remaining materials before closure.", button: "materials", urgent: true };
+  }
+  if (workers.working > 0) {
+    return { message: "Worker is currently working. Finish work before requesting closure.", button: "workers", urgent: false };
+  }
+  if (workers.paused > 0) {
+    return { message: "Worker is paused. Resume or Finish Work before requesting closure.", button: "workers", urgent: false };
+  }
+  if (workers.notStarted > 0) {
+    return { message: "Worker not started. Start and finish work before requesting closure.", button: "workers", urgent: false };
+  }
+  if (workers.total > 0) {
+    return { message: "Ready for closure. Submit to Manager for approval.", button: "closure", urgent: false };
+  }
+  return { message: "Review the Job Card details before requesting closure.", button: null, urgent: false };
 }
 
 // ── Right selected-card control panel (Task 6/7/8/9) ────────────────────────
@@ -220,10 +479,17 @@ export function DailyActivitySelectedPanel({
   const materialsOnClick = card.showProcessMaterials ? onProcessMaterials : null;
   const assignWorkersIsPrimary = card.nextAction.buttonLabel === "Assign Workers";
   const requestClosureIsPrimary = card.nextAction.buttonLabel === "Request Closure";
-  // Task 7 — red is reserved for states that genuinely need attention now;
-  // the Next Action panel itself only gets the red accent/button when it's
-  // pointing at one of those (materials blocked, or none at all left to do).
-  const nextActionIsUrgent = card.materialsChip.label === "Materials Pending";
+  // Unit 10G.56 — Status Summary + Next Action guidance, computed once per
+  // render from data already on `card` (see the functions above this
+  // component). materialsOnClick (above) is the same Process Materials
+  // modal opener the Materials mini-section already uses — not duplicated.
+  const materialsSummary = summarizeMaterials(card);
+  const workersSummary = summarizeWorkers(card);
+  const closureSummary = summarizeClosure(card);
+  const guidance = computeGuidance(card, materialsSummary, workersSummary);
+  const guidanceBtnClass = `inline-flex min-h-8 items-center justify-center gap-1 rounded-md px-3.5 py-1.5 text-xs font-bold text-white transition ${
+    guidance.urgent ? "bg-[#ED1C24] hover:bg-[#c8181e]" : "bg-[#2563EB] hover:bg-blue-700"
+  }`;
 
   return (
     <section className="rounded-lg border border-[#DDE2EA] bg-white p-3 shadow-sm sm:p-4">
@@ -256,62 +522,93 @@ export function DailyActivitySelectedPanel({
         </div>
       </div>
 
-      {/* Task 7 — Next Action: a title, one sentence, one primary button.
-          Red accent is reserved for the genuinely urgent case (materials
-          pending); every other next action uses a calmer neutral/blue
-          treatment so the panel doesn't read as an error by default. */}
-      <div
-        className={`mt-2.5 rounded-md border-l-4 p-2.5 ${
-          nextActionIsUrgent ? "border-[#ED1C24] bg-red-50/50" : "border-[#2563EB] bg-blue-50/40"
-        }`}
-      >
-        <p className={`text-[10px] font-black uppercase tracking-wide ${nextActionIsUrgent ? "text-[#B91C1C]" : "text-[#1D4ED8]"}`}>
+      {/* No-Confusion Material + Status Panel Unit 10G.56, Task 1/8 — Status
+          Summary: 3 compact rows answering "materials completed or
+          pending," "workers not started/working/paused/finished," and "is
+          closure allowed" at a glance, before the user reads anything else.
+          Each row's color reuses the exact tone the matching mini-section
+          badge below already carries (materialsChip/workTimeChip/
+          closureChip) — never a second, possibly-disagreeing opinion. */}
+      <div className="mt-2.5 grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+        <StatusSummaryRow
+          icon={materialsSummary.icon}
+          label="Materials"
+          value={materialsSummary.value}
+          detail={materialsSummary.detail}
+          tone={materialsSummary.tone}
+          href={`#${MATERIALS_SECTION_ID}`}
+          linkLabel="View Materials"
+        />
+        <StatusSummaryRow
+          icon={workersSummary.icon}
+          label="Workers"
+          value={workersSummary.value}
+          detail={workersSummary.detail}
+          tone={workersSummary.tone}
+          href={`#${WORKERS_SECTION_ID}`}
+          linkLabel="View Workers"
+        />
+        <StatusSummaryRow icon={closureSummary.icon} label="Closure" value={closureSummary.value} tone={closureSummary.tone} />
+      </div>
+
+      {/* Task 4/7 — Next Action: the one clear instruction (exact wording
+          per state), plus only the buttons that make sense right now —
+          the contextual action the ladder above points at (if any), always
+          followed/preceded by "Open Job Card" exactly as each of the
+          task's own worked examples order them, plus Print once this Job
+          Card is Closure Requested/Closed and the viewer already has print
+          permission. Red accent stays reserved for the one genuinely
+          urgent case (materials pending). */}
+      <div className={`mt-2 rounded-md border-l-4 p-2.5 ${guidance.urgent ? "border-[#ED1C24] bg-red-50/50" : "border-[#2563EB] bg-blue-50/40"}`}>
+        <p className={`text-[10px] font-black uppercase tracking-wide ${guidance.urgent ? "text-[#B91C1C]" : "text-[#1D4ED8]"}`}>
           Next Action
         </p>
-        <p className="mt-0.5 text-sm font-semibold text-[#111827]">{card.nextAction.message}</p>
-        <div className="mt-2">
-          {card.nextAction.buttonLabel && materialsActionIsPrimary && materialsOnClick ? (
-            // Task 2 — Issue Material / Receive Materials as the Next
-            // Action opens the modal in place instead of navigating away.
-            <button
-              type="button"
-              onClick={materialsOnClick}
-              className={`inline-flex min-h-8 items-center justify-center rounded-md px-3.5 py-1.5 text-xs font-bold text-white transition ${
-                nextActionIsUrgent ? "bg-[#ED1C24] hover:bg-[#c8181e]" : "bg-[#2563EB] hover:bg-blue-700"
-              }`}
-            >
-              {card.nextAction.buttonLabel}
-            </button>
-          ) : requestClosureIsPrimary ? (
-            // Unit 10F.6, Task 1 — Request Closure as the Next Action opens
-            // the closure modal in place instead of navigating to the Job
-            // Card detail page's Closure tab.
-            <button
-              type="button"
-              onClick={onRequestClosure}
-              className={`inline-flex min-h-8 items-center justify-center rounded-md px-3.5 py-1.5 text-xs font-bold text-white transition ${
-                nextActionIsUrgent ? "bg-[#ED1C24] hover:bg-[#c8181e]" : "bg-[#2563EB] hover:bg-blue-700"
-              }`}
-            >
-              {card.nextAction.buttonLabel}
-            </button>
-          ) : card.nextAction.buttonLabel && card.nextAction.href ? (
-            <Link
-              href={card.nextAction.href}
-              className={`inline-flex min-h-8 items-center justify-center rounded-md px-3.5 py-1.5 text-xs font-bold text-white transition ${
-                nextActionIsUrgent ? "bg-[#ED1C24] hover:bg-[#c8181e]" : "bg-[#2563EB] hover:bg-blue-700"
-              }`}
-            >
-              {card.nextAction.buttonLabel}
+        <p className="mt-0.5 text-sm font-semibold text-[#111827]">{guidance.message}</p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {guidance.button === "materials" ? (
+            // Task 5 — same Process Materials modal / materialsActionHref
+            // the Materials mini-section below already uses; no duplicate
+            // material-processing logic.
+            materialsOnClick ? (
+              <button type="button" onClick={materialsOnClick} className={guidanceBtnClass}>
+                <PackageSearch className="h-3.5 w-3.5" aria-hidden="true" /> {card.materialsActionLabel}
+              </button>
+            ) : (
+              <Link href={card.materialsActionHref} className={guidanceBtnClass}>
+                <PackageSearch className="h-3.5 w-3.5" aria-hidden="true" /> {card.materialsActionLabel}
+              </Link>
+            )
+          ) : null}
+          {guidance.button === "workers" ? (
+            // Task 6 — a plain scroll link to the existing Workers section
+            // below; no new modal, no change to worker timer actions.
+            <Link href={`#${WORKERS_SECTION_ID}`} className={guidanceBtnClass}>
+              <Users className="h-3.5 w-3.5" aria-hidden="true" /> View Workers
             </Link>
-          ) : (
+          ) : null}
+          {guidance.button === "closure" && card.showRequestClosure ? (
+            // Task 7 — only rendered when card.showRequestClosure already
+            // says this Job Card is actually ready AND this viewer has
+            // permission — same gate/action the Closure mini-section below
+            // already uses.
+            <button type="button" onClick={onRequestClosure} className={guidanceBtnClass}>
+              Request Closure
+            </button>
+          ) : null}
+          <Link
+            href={detailHref}
+            className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-3.5 py-1.5 text-xs font-bold text-[#111827] transition hover:bg-gray-50"
+          >
+            Open Job Card
+          </Link>
+          {(card.status === "Closure Requested" || card.status === "Closed") && canPrint ? (
             <Link
-              href={detailHref}
-              className="inline-flex min-h-8 items-center justify-center rounded-md border border-[#E5E7EB] bg-white px-3.5 py-1.5 text-xs font-bold text-[#111827] transition hover:bg-gray-50"
+              href={`${detailHref}/print`}
+              className="inline-flex min-h-8 items-center justify-center gap-1 rounded-md border border-[#E5E7EB] bg-white px-3.5 py-1.5 text-xs font-bold text-[#111827] transition hover:bg-gray-50"
             >
-              Open Job Card
+              <Printer className="h-3.5 w-3.5" aria-hidden="true" /> Print
             </Link>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -362,8 +659,10 @@ export function DailyActivitySelectedPanel({
         )}
       </div>
 
-      {/* Materials mini-section (Task 9) — one compact card. */}
-      <div className="mt-2.5 rounded-md border border-[#EEF2F6] p-2.5">
+      {/* Materials mini-section (Task 9) — one compact card. id/scroll-mt
+          added in Unit 10G.56 purely so the new guidance area's "View
+          Materials" link can scroll here — content/logic unchanged. */}
+      <div id={MATERIALS_SECTION_ID} className="mt-2.5 scroll-mt-3 rounded-md border border-[#EEF2F6] p-2.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Materials</p>
           <StatusBadge label={card.materialsChip.label} tone={card.materialsChip.tone} />

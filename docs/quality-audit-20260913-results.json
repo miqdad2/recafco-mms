@@ -1,0 +1,304 @@
+{
+  "timestamp": "2026-09-13T06:12:31.244Z",
+  "machine": {
+    "cpu": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "logicalCpus": 8,
+    "memoryGiB": 16
+  },
+  "checks": {
+    "deniedCostWithProfileFlag": true,
+    "DATA_ENTRY_login": {
+      "ok": true
+    },
+    "hiddenRateColumn": true,
+    "DATA_ENTRY_browserErrors": [],
+    "MANAGER_login": {
+      "ok": true
+    },
+    "MANAGER_browserErrors": []
+  },
+  "pages": [
+    {
+      "role": "DATA_ENTRY",
+      "route": "/dashboard",
+      "status": 200,
+      "bytes": 91802,
+      "samplesMs": [
+        162,
+        37,
+        34
+      ],
+      "nonzeroSalaryInPayload": false,
+      "nonzeroHourlyRateInPayload": false
+    },
+    {
+      "role": "DATA_ENTRY",
+      "route": "/maintenance/work-orders",
+      "status": 200,
+      "bytes": 123367,
+      "samplesMs": [
+        45,
+        52,
+        288
+      ],
+      "nonzeroSalaryInPayload": false,
+      "nonzeroHourlyRateInPayload": false
+    },
+    {
+      "role": "DATA_ENTRY",
+      "route": "/maintenance/daily-activity",
+      "status": 200,
+      "bytes": 92430,
+      "samplesMs": [
+        33,
+        36,
+        26
+      ],
+      "nonzeroSalaryInPayload": false,
+      "nonzeroHourlyRateInPayload": false
+    },
+    {
+      "role": "DATA_ENTRY",
+      "route": "/admin/worker-profiles",
+      "status": 200,
+      "bytes": 77113,
+      "samplesMs": [
+        36,
+        35,
+        31
+      ],
+      "nonzeroSalaryInPayload": false,
+      "nonzeroHourlyRateInPayload": true
+    },
+    {
+      "role": "DATA_ENTRY",
+      "route": "/maintenance/work-orders/new",
+      "status": 200,
+      "bytes": 219896,
+      "samplesMs": [
+        58,
+        39,
+        30
+      ],
+      "nonzeroSalaryInPayload": true,
+      "nonzeroHourlyRateInPayload": true
+    },
+    {
+      "role": "DATA_ENTRY",
+      "route": "/reports/work-orders",
+      "status": 200,
+      "bytes": 141194,
+      "samplesMs": [
+        37,
+        30,
+        32
+      ],
+      "nonzeroSalaryInPayload": false,
+      "nonzeroHourlyRateInPayload": false
+    },
+    {
+      "role": "MANAGER",
+      "route": "/dashboard",
+      "status": 200,
+      "bytes": 125566,
+      "samplesMs": [
+        48,
+        31,
+        36
+      ],
+      "nonzeroSalaryInPayload": false,
+      "nonzeroHourlyRateInPayload": false
+    },
+    {
+      "role": "MANAGER",
+      "route": "/maintenance/work-orders",
+      "status": 200,
+      "bytes": 124123,
+      "samplesMs": [
+        39,
+        31,
+        30
+      ],
+      "nonzeroSalaryInPayload": false,
+      "nonzeroHourlyRateInPayload": false
+    },
+    {
+      "role": "MANAGER",
+      "route": "/maintenance/daily-activity",
+      "status": 200,
+      "bytes": 96471,
+      "samplesMs": [
+        26,
+        30,
+        29
+      ],
+      "nonzeroSalaryInPayload": false,
+      "nonzeroHourlyRateInPayload": false
+    },
+    {
+      "role": "MANAGER",
+      "route": "/admin/worker-profiles",
+      "status": 200,
+      "bytes": 83421,
+      "samplesMs": [
+        37,
+        166,
+        100
+      ],
+      "nonzeroSalaryInPayload": true,
+      "nonzeroHourlyRateInPayload": true
+    },
+    {
+      "role": "MANAGER",
+      "route": "/maintenance/work-orders/new",
+      "status": 200,
+      "bytes": 222171,
+      "samplesMs": [
+        87,
+        33,
+        33
+      ],
+      "nonzeroSalaryInPayload": true,
+      "nonzeroHourlyRateInPayload": true
+    },
+    {
+      "role": "MANAGER",
+      "route": "/reports/work-orders",
+      "status": 200,
+      "bytes": 163767,
+      "samplesMs": [
+        32,
+        28,
+        36
+      ],
+      "nonzeroSalaryInPayload": false,
+      "nonzeroHourlyRateInPayload": false
+    }
+  ],
+  "load": [
+    {
+      "role": "DATA_ENTRY",
+      "concurrency": 10,
+      "requests": 10,
+      "elapsedMs": 165,
+      "p50Ms": 160,
+      "p95Ms": 165,
+      "maxMs": 165,
+      "requestsPerSecond": 60.4,
+      "statuses": {
+        "200": 10
+      },
+      "totalBytes": 1018925
+    },
+    {
+      "role": "DATA_ENTRY",
+      "concurrency": 50,
+      "requests": 50,
+      "elapsedMs": 896,
+      "p50Ms": 877,
+      "p95Ms": 892,
+      "maxMs": 893,
+      "requestsPerSecond": 55.8,
+      "statuses": {
+        "200": 50
+      },
+      "totalBytes": 5137441
+    },
+    {
+      "role": "DATA_ENTRY",
+      "concurrency": 100,
+      "requests": 100,
+      "elapsedMs": 2184,
+      "p50Ms": 2092,
+      "p95Ms": 2178,
+      "maxMs": 2178,
+      "requestsPerSecond": 45.8,
+      "statuses": {
+        "200": 100
+      },
+      "totalBytes": 10243988
+    },
+    {
+      "role": "MANAGER",
+      "concurrency": 10,
+      "requests": 10,
+      "elapsedMs": 179,
+      "p50Ms": 176,
+      "p95Ms": 178,
+      "maxMs": 178,
+      "requestsPerSecond": 55.8,
+      "statuses": {
+        "200": 10
+      },
+      "totalBytes": 1171026
+    },
+    {
+      "role": "MANAGER",
+      "concurrency": 50,
+      "requests": 50,
+      "elapsedMs": 971,
+      "p50Ms": 957,
+      "p95Ms": 968,
+      "maxMs": 968,
+      "requestsPerSecond": 51.5,
+      "statuses": {
+        "200": 50
+      },
+      "totalBytes": 5789109
+    },
+    {
+      "role": "MANAGER",
+      "concurrency": 100,
+      "requests": 100,
+      "elapsedMs": 1742,
+      "p50Ms": 1719,
+      "p95Ms": 1736,
+      "maxMs": 1737,
+      "requestsPerSecond": 57.4,
+      "statuses": {
+        "200": 100
+      },
+      "totalBytes": 11551684
+    }
+  ],
+  "database": {
+    "profiles": 11,
+    "work_orders": 0,
+    "assets": 171,
+    "worker_profiles": 2,
+    "work_order_work_sessions": 0,
+    "offline_inventory_movements": 21,
+    "notifications": 2,
+    "realtime_events": 3,
+    "flags": [
+      {
+        "inventory_check_enabled": false
+      }
+    ],
+    "sessionIndexes": [
+      {
+        "indexdef": "CREATE UNIQUE INDEX work_order_work_sessions_pkey ON public.work_order_work_sessions USING btree (id)"
+      },
+      {
+        "indexdef": "CREATE INDEX idx_wows_work_order ON public.work_order_work_sessions USING btree (work_order_id)"
+      },
+      {
+        "indexdef": "CREATE INDEX idx_wows_assignment_status ON public.work_order_work_sessions USING btree (worker_assignment_id, status)"
+      },
+      {
+        "indexdef": "CREATE INDEX idx_wows_status ON public.work_order_work_sessions USING btree (status)"
+      },
+      {
+        "indexdef": "CREATE INDEX idx_wows_started_at ON public.work_order_work_sessions USING btree (started_at)"
+      },
+      {
+        "indexdef": "CREATE INDEX idx_wows_worker_started_at ON public.work_order_work_sessions USING btree (worker_id, started_at)"
+      }
+    ],
+    "duplicateActiveAssignments": [
+      {
+        "count": 0
+      }
+    ]
+  }
+}

@@ -78,6 +78,13 @@ export type ClosureReviewWorker = {
   totalPay: number | null;
   sessionsCount: number;
   status: string;
+  // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 9/11: the
+  // roster row's own status ("active" | "finished") — by the time a Job
+  // Card reaches Closure Requested, every worker here should already be
+  // "finished" (the request itself is now gated on it), but this lets the
+  // review modal show the same "Finished" wording as everywhere else
+  // instead of the raw, now-inconsistent session status "Completed".
+  assignmentStatus: string;
   // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 8: this
   // worker's own estimate (WorkOrderWorkerAssignment.estimated_hours), if
   // set — visible regardless of canViewCosts (hours only, not gated like
@@ -227,6 +234,7 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
       totalPay: canViewCosts ? w.total_amount : null,
       sessionsCount: w.sessions_count ?? 0,
       status: w.status,
+      assignmentStatus: w.assignment_status,
       estimatedHours: w.estimated_hours,
     })),
     workersCount: laborSummary.workers.length,

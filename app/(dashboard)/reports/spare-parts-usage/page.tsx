@@ -1,4 +1,5 @@
-import { Package } from "lucide-react";
+import Link from "next/link";
+import { Package, Printer } from "lucide-react";
 
 import { ReportSummaryGrid } from "@/components/reports/report-summary-card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -37,6 +38,16 @@ export default async function SparePartsUsagePage({
       <PageHeader
         title="Materials Usage"
         description="Track materials used across job cards and assets."
+        actions={
+          // Printable Division-Based Reports Foundation Unit 10G.69, Task 3/9.
+          <Link
+            href="/reports/spare-parts-usage/print"
+            className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
+          >
+            <Printer className="h-4 w-4" aria-hidden="true" />
+            Print Report
+          </Link>
+        }
       />
 
       <div className="space-y-5 p-4 lg:p-6">

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Printer } from "lucide-react";
 
 import { ExportButton } from "@/components/reports/export-button";
 import { ReportSummaryGrid } from "@/components/reports/report-summary-card";
@@ -53,7 +54,20 @@ export default async function CriticalAssetReportPage({
       <PageHeader
         title="Critical Asset Report"
         description="Monitor breakdown, under-maintenance, and repeated-issue assets."
-        actions={<ExportButton kind="assets" searchParams={params} />}
+        actions={
+          <>
+            <ExportButton kind="assets" searchParams={params} />
+            {/* Printable Asset Register, Materials Requests, and Service
+                Contracts Reports Unit 10G.71, Task 5. */}
+            <Link
+              href="/reports/assets/print"
+              className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
+            >
+              <Printer className="h-4 w-4" aria-hidden="true" />
+              Print Report
+            </Link>
+          </>
+        }
       />
 
       <div className="space-y-5 p-4 lg:p-6">

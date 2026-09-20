@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import Link from "next/link";
-import { CheckCircle2, ClipboardList, Plus, ShoppingCart } from "lucide-react";
+import { CheckCircle2, ClipboardList, Plus, Printer, ShoppingCart } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { EmptyState } from "@/components/ui/empty-state";
@@ -22,9 +22,16 @@ import {
 } from "@/components/store/materials-request-quick-view";
 import { StoreSendMaterialsPopup, type StoreSendMaterialsData } from "@/components/store/store-send-materials-popup";
 import { PartsRequestWizard, type WorkOrderOption as PRWorkOrderOption } from "@/components/store/parts-request-wizard";
+import { MaterialsRequestTypeSelector } from "@/components/store/materials-request-type-selector";
+import { GeneralInventoryRequestForm } from "@/components/store/general-inventory-request-form";
+import {
+  GeneralInventoryRequestQuickView,
+  type GeneralInventoryRequestQuickViewData,
+} from "@/components/store/general-inventory-request-quick-view";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
+import { canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
 import {
   displayPartsRequestStatus,
   partsRequestStatusTone,
@@ -48,7 +55,7 @@ import { getPartsRequestVisibilityFilter, canReceiveIssueMaterials } from "@/lib
 import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
-import { cn, formatExactDateTime } from "@/lib/utils";
+import { cn, formatDate, formatExactDateTime } from "@/lib/utils";
 
 const PAGE_SIZE = 25;
 
@@ -71,6 +78,19 @@ const MATERIALS_REQUEST_TABS = [
   { label: "All",       key: "",               statuses: [] as string[] },
   { label: "Pending",   key: "AwaitingReceipt", statuses: ["Requested", "Approved", "Waiting Stock", "Partially Issued"] },
   { label: "Completed", key: "Received",        statuses: ["Issued"] },
+];
+
+// Materials Request Type Selection Flow Unit 10G.58, Task 9 — a second,
+// orthogonal filter row (Type) alongside the existing status tabs above.
+// Deliberately a separate ?kind= query param rather than folding into
+// MATERIALS_REQUEST_TABS: the Job Card table's status tabs are entangled
+// with work_orders.status (see the bucket-priority-sort block below) and
+// are left completely untouched; this only controls which of the two
+// tables render.
+const REQUEST_KIND_FILTERS = [
+  { label: "All", key: "all" },
+  { label: "Job Card Requests", key: "job_card" },
+  { label: "General Inventory Requests", key: "general" },
 ];
 
 // Wording for a status tab/deep-link that has zero matching Materials
@@ -120,13 +140,41 @@ function formatQty(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2);
 }
 
-function listHref({ query, status, page }: { query: string; status: string; page: number }) {
+function listHref({ query, status, page, kind }: { query: string; status: string; page: number; kind?: string }) {
   const p = new URLSearchParams();
   if (query) p.set("q", query);
   if (status) p.set("status", status);
   if (page > 1) p.set("page", String(page));
+  if (kind && kind !== "all") p.set("kind", kind);
   const qs = p.toString();
   return qs ? `/store/parts-requests?${qs}` : "/store/parts-requests";
+}
+
+function genPageHref(
+  genPage: number,
+  { query, status, page, kind }: { query: string; status: string; page: number; kind: string }
+) {
+  const p = new URLSearchParams();
+  if (query) p.set("q", query);
+  if (status) p.set("status", status);
+  if (page > 1) p.set("page", String(page));
+  if (kind && kind !== "all") p.set("kind", kind);
+  if (genPage > 1) p.set("genPage", String(genPage));
+  const qs = p.toString();
+  return qs ? `/store/parts-requests?${qs}` : "/store/parts-requests";
+}
+
+function genPreviewHref(
+  requestId: string,
+  { query, status, page, kind }: { query: string; status: string; page: number; kind: string }
+) {
+  const p = new URLSearchParams();
+  if (query) p.set("q", query);
+  if (status) p.set("status", status);
+  if (page > 1) p.set("page", String(page));
+  if (kind && kind !== "all") p.set("kind", kind);
+  p.set("genPreview", requestId);
+  return `/store/parts-requests?${p.toString()}`;
 }
 
 function jobCardPreviewHref(
@@ -192,11 +240,23 @@ export default async function PartsRequestsPage({
   const canApprove =
     context.role?.slug === "super_admin" || context.permissions.includes("parts_requests.approve");
   const canReceive = canReceiveIssueMaterials(context);
+  // Task 11: "Receiving into inventory should follow the existing
+  // inventory receive permission" — General Inventory Requests' Receive
+  // action writes offline_inventory_movements rows exactly like Offline
+  // Inventory Control's own Receive Material action, so it reuses that
+  // action's gate rather than a new permission.
+  const canReceiveGeneral = canManageOfflineInventory(context);
 
   const params = (await searchParams) ?? {};
   const query = single(params.q)?.trim() ?? "";
   const status = single(params.status)?.trim() ?? "";
   const page = Math.max(1, Number(single(params.page) ?? 1) || 1);
+  // Materials Request Type Selection Flow Unit 10G.58, Task 9 — which
+  // table(s) render below; does not affect the existing Job Card
+  // status-tab logic at all.
+  const kind = (single(params.kind)?.trim() || "all") as "all" | "job_card" | "general";
+  const showJobCardTable = kind !== "general";
+  const showGeneralTable = kind !== "job_card";
   const jobPreviewId = single(params.jobPreview)?.trim() ?? null;
   const validJobPreviewId =
     jobPreviewId && UUID_RE.test(jobPreviewId) ? jobPreviewId : null;
@@ -220,6 +280,25 @@ export default async function PartsRequestsPage({
   // standalone page itself is untouched and still works for direct URL access.
   const showNewRequest = canCreate && single(params.newRequest) !== undefined;
   const newRequestJobCardId = single(params.jobCardId)?.trim() ?? "";
+  // Materials Request Type Selection Flow Unit 10G.58, Task 1/2 — the new
+  // first step. A deep link that already names a Job Card (?jobCardId=,
+  // e.g. "Request Materials" clicked from inside a specific Job Card) skips
+  // the type selector entirely and goes straight to the existing wizard —
+  // the type is already implied, so showing the selector there would only
+  // be a regression in that flow's existing UX, not a genuine choice.
+  const newRequestType = single(params.type)?.trim() ?? "";
+  const effectiveNewRequestType: "" | "job_card" | "general" =
+    newRequestType === "job_card" || newRequestType === "general"
+      ? newRequestType
+      : newRequestJobCardId
+        ? "job_card"
+        : "";
+  const newRequestError = single(params.error)?.trim() ?? null;
+
+  // ── General Inventory / Stock Request detail/receive popup ───────────────
+  const genPreviewId = single(params.genPreview)?.trim() ?? null;
+  const validGenPreviewId = genPreviewId && UUID_RE.test(genPreviewId) ? genPreviewId : null;
+  const genPreviewError = single(params.error)?.trim() ?? null;
 
   // ── Visibility: a user can always see requests they created/requested ────
   const partsRequestVisibility = getPartsRequestVisibilityFilter(context);
@@ -531,7 +610,8 @@ export default async function PartsRequestsPage({
     return { ...w, created_at: w.created_at.toISOString() };
   }
 
-  const [newRequestWorkOrdersRaw, newRequestPreselectedRaw] = showNewRequest
+  const showJobCardWizardData = showNewRequest && effectiveNewRequestType === "job_card";
+  const [newRequestWorkOrdersRaw, newRequestPreselectedRaw] = showJobCardWizardData
     ? await Promise.all([
         prisma.work_orders.findMany({
           where: { AND: [{ deleted_at: null }, visibilityFilter] },
@@ -551,6 +631,60 @@ export default async function PartsRequestsPage({
   const newRequestWorkOrders: PRWorkOrderOption[] = newRequestWorkOrdersRaw.map(mapNewRequestWo);
   const newRequestPreselectedWo: PRWorkOrderOption | null = newRequestPreselectedRaw
     ? mapNewRequestWo(newRequestPreselectedRaw)
+    : null;
+
+  // ── General Inventory / Stock Request — new-request form data ────────────
+  const showGeneralFormData = showNewRequest && effectiveNewRequestType === "general";
+  const currentProfile = showGeneralFormData
+    ? await prisma.profiles.findUnique({ where: { id: context.userId }, select: { full_name: true } })
+    : null;
+  const generalRequestDateLabel = formatDate(new Date());
+
+  // ── General Inventory / Stock Requests — list data (Task 9) ──────────────
+  // Fully separate query from the Job Card table above — its own simple
+  // Pending/Completed/Cancelled status, no Job-Card-status bucket sort.
+  // "Manager/Super Admin can view all" (Task 11): mirrors
+  // getPartsRequestVisibilityFilter's own canSeeAll logic exactly, else a
+  // user only sees requests they made.
+  const canSeeAllGeneral =
+    context.role?.slug === "super_admin" ||
+    context.permissions.includes("store.issue") ||
+    context.permissions.includes("work_orders.approve") ||
+    context.permissions.includes("work_orders.manage");
+  const generalVisibility: Prisma.general_inventory_requestsWhereInput = canSeeAllGeneral
+    ? {}
+    : { requested_by_id: context.userId };
+  const generalStatusFilter = status === "AwaitingReceipt" ? "Pending" : status === "Received" ? "Completed" : null;
+  const generalWhere: Prisma.general_inventory_requestsWhereInput = {
+    AND: [generalVisibility, generalStatusFilter ? { status: generalStatusFilter } : {}],
+  };
+  const GENERAL_PAGE_SIZE = 25;
+  const genPage = Math.max(1, Number(single(params.genPage) ?? 1) || 1);
+
+  const [generalRequests, generalTotal, generalStatusSummaries] = showGeneralTable
+    ? await Promise.all([
+        prisma.general_inventory_requests.findMany({
+          where: generalWhere,
+          orderBy: { created_at: "desc" },
+          skip: (genPage - 1) * GENERAL_PAGE_SIZE,
+          take: GENERAL_PAGE_SIZE,
+          include: { items: { select: { material_name: true }, orderBy: { created_at: "asc" }, take: 1 } },
+        }),
+        prisma.general_inventory_requests.count({ where: generalWhere }),
+        prisma.general_inventory_requests.groupBy({ by: ["status"], where: generalVisibility, _count: { _all: true } }),
+      ])
+    : [[], 0, []];
+  const generalTotalRequests = generalStatusSummaries.reduce((n, s) => n + s._count._all, 0);
+  const generalPendingCount = generalStatusSummaries.find((s) => s.status === "Pending")?._count._all ?? 0;
+  const generalCompletedCount = generalStatusSummaries.find((s) => s.status === "Completed")?._count._all ?? 0;
+  const generalTotalPages = Math.max(1, Math.ceil(generalTotal / GENERAL_PAGE_SIZE));
+
+  // ── General Inventory / Stock Request detail/receive popup data ──────────
+  const genPreviewRequest = validGenPreviewId
+    ? await prisma.general_inventory_requests.findFirst({
+        where: { AND: [{ id: validGenPreviewId }, generalVisibility] },
+        include: { items: { orderBy: { created_at: "asc" } } },
+      })
     : null;
 
   const canAssignModal =
@@ -813,6 +947,41 @@ export default async function PartsRequestsPage({
       }
     : null;
 
+  // ── General Inventory / Stock Request quick view props (Task 10) ─────────
+  const genPreviewCloseHref = listHref({ query, status, page, kind });
+  const genPreviewQuickViewData: GeneralInventoryRequestQuickViewData | null = genPreviewRequest
+    ? {
+        id: genPreviewRequest.id,
+        requestNumber: genPreviewRequest.request_number,
+        purpose: genPreviewRequest.purpose,
+        remarks: genPreviewRequest.remarks,
+        department: genPreviewRequest.department,
+        location: genPreviewRequest.location,
+        requestedByName: genPreviewRequest.requested_by_name,
+        requestedDateLabel: formatDate(genPreviewRequest.created_at),
+        status: genPreviewRequest.status,
+        items: genPreviewRequest.items.map((item) => ({
+          id: item.id,
+          materialName: item.material_name,
+          description: item.description,
+          quantityRequested: Number(item.quantity_requested),
+          unit: item.unit,
+          unitPrice: item.unit_price !== null ? Number(item.unit_price) : null,
+          totalPrice: item.total_price !== null ? Number(item.total_price) : null,
+          supplier: item.supplier,
+          receivedQuantity: Number(item.received_quantity),
+          inventoryUnit: item.inventory_unit,
+          conversionQuantity: item.conversion_quantity !== null ? Number(item.conversion_quantity) : null,
+          inventoryQuantity: item.inventory_quantity_to_add !== null ? Number(item.inventory_quantity_to_add) : null,
+          unitCost: item.unit_cost !== null ? Number(item.unit_cost) : null,
+        })),
+        closeHref: genPreviewCloseHref,
+        canReceive: canReceiveGeneral,
+        inventoryReference: genPreviewRequest.status === "Completed" ? genPreviewRequest.request_number : null,
+        errorMessage: genPreviewError,
+      }
+    : null;
+
   return (
     <>
       <AutoRefresh intervalMs={15000} />
@@ -850,10 +1019,19 @@ export default async function PartsRequestsPage({
       )}
       <PageHeader
         title="Materials Requests"
-        description="Materials requested for Job Cards — track and receive them here."
+        description="Materials requested for Job Cards or for general inventory / stock — track and receive them here."
         actions={
           <>
             <PageNavigationActions />
+            {/* Printable Asset Register, Materials Requests, and Service
+                Contracts Reports Unit 10G.71, Task 5. */}
+            <Link
+              href="/reports/materials-requests/print"
+              className="focus-ring inline-flex min-h-10 items-center gap-1.5 rounded-md border border-[#DDE2EA] bg-white px-3 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
+            >
+              <Printer className="h-4 w-4" aria-hidden="true" />
+              Print Report
+            </Link>
             {canCreate ? (
               <Link
                 className="focus-ring inline-flex min-h-10 items-center gap-2 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-semibold text-white hover:bg-[#c9151c]"
@@ -901,6 +1079,31 @@ export default async function PartsRequestsPage({
           </form>
         </section>
 
+        {/* ── Type filter — All / Job Card Requests / General Inventory
+              Requests (Task 9). Purely which table(s) below render; the
+              existing Job Card status tabs/bucket-sort underneath are
+              completely untouched. ── */}
+        <div className="flex flex-wrap gap-2">
+          {REQUEST_KIND_FILTERS.map((f) => {
+            const isActive = kind === f.key;
+            return (
+              <Link
+                key={f.key}
+                href={listHref({ query, status, page: 1, kind: f.key })}
+                className={`inline-flex min-h-9 items-center rounded-full border px-3.5 py-1.5 text-xs font-bold transition ${
+                  isActive
+                    ? "border-[#ED1C24] bg-[#ED1C24] text-white"
+                    : "border-[#DDE2EA] bg-white text-[#4B5563] hover:bg-gray-50"
+                }`}
+              >
+                {f.label}
+              </Link>
+            );
+          })}
+        </div>
+
+        {showJobCardTable && (
+        <>
         {/* ── Status tabs — All / Pending / Completed; a raw
               ?status=Approved or ?status=Waiting+Stock deep link still
               filters correctly and highlights "Pending" as active,
@@ -917,7 +1120,7 @@ export default async function PartsRequestsPage({
               return (
                 <Link
                   key={tab.key || "all"}
-                  href={listHref({ query, status: tab.key, page: 1 })}
+                  href={listHref({ query, status: tab.key, page: 1, kind })}
                   className={`flex min-h-[48px] cursor-pointer items-center gap-2 whitespace-nowrap border-b-2 px-4 text-sm font-bold transition ${
                     isActive
                       ? "border-[#ED1C24] bg-red-50/60 text-[#ED1C24]"
@@ -938,7 +1141,7 @@ export default async function PartsRequestsPage({
           </div>
         </div>
 
-        {/* ── Table ────────────────────────────────────────────────── */}
+        {/* ── Job Card Requests table ─────────────────────────────── */}
         <section className="overflow-hidden rounded-b-md border border-t-0 border-[#E5E7EB] bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
             <div>
@@ -1013,6 +1216,10 @@ export default async function PartsRequestsPage({
                       <tr key={request.id} className="hover:bg-gray-50">
                         {/* Request number — opens the quick view (Task 7) */}
                         <td className="px-4 py-3">
+                          <span className="mb-0.5 inline-block rounded-full bg-gray-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[#4B5563]">
+                            Job Card Request
+                          </span>
+                          <br />
                           <Link
                             className="font-bold hover:text-[#ED1C24]"
                             href={previewHref(request.id, { query, status, page })}
@@ -1158,7 +1365,7 @@ export default async function PartsRequestsPage({
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[#E5E7EB] bg-white p-3 shadow-sm">
           <Link
             className={paginationClass(page <= 1)}
-            href={listHref({ query, status, page: Math.max(1, page - 1) })}
+            href={listHref({ query, status, page: Math.max(1, page - 1), kind })}
             aria-disabled={page <= 1}
           >
             Previous
@@ -1169,12 +1376,132 @@ export default async function PartsRequestsPage({
           </span>
           <Link
             className={paginationClass(page >= totalPages)}
-            href={listHref({ query, status, page: Math.min(totalPages, page + 1) })}
+            href={listHref({ query, status, page: Math.min(totalPages, page + 1), kind })}
             aria-disabled={page >= totalPages}
           >
             Next
           </Link>
         </div>
+        </>
+        )}
+
+        {/* ── General Inventory / Stock Requests table (Task 9) ────────
+            Fully separate table/query from the Job Card one above — own
+            simple Pending/Completed status, own pagination (?genPage=). */}
+        {showGeneralTable && (
+          <section className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">
+            <div className="flex items-center justify-between border-b border-[#E5E7EB] bg-gray-50 px-4 py-3">
+              <div>
+                <p className="text-xs font-black uppercase text-[#4B5563]">General Inventory / Stock Requests</p>
+                <p className="text-sm font-semibold text-[#111827]">{generalTotal} matching requests</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <StatusBadge label={`Total ${generalTotalRequests}`} tone="blue" />
+                <StatusBadge label={`Pending ${generalPendingCount}`} tone="amber" />
+                <StatusBadge label={`Completed ${generalCompletedCount}`} tone="green" />
+              </div>
+            </div>
+            {generalRequests.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[860px] text-left text-sm">
+                  <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
+                    <tr>
+                      <th className="px-4 py-3">Request</th>
+                      <th className="px-4 py-3">Job Card</th>
+                      <th className="px-4 py-3">Purpose / Materials</th>
+                      <th className="px-4 py-3">Requested Date</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E5E7EB]">
+                    {generalRequests.map((req) => (
+                      <tr key={req.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-3">
+                          <span className="mb-0.5 inline-block rounded-full bg-[#111827] px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white">
+                            General Inventory Request
+                          </span>
+                          <br />
+                          <Link
+                            className="font-bold hover:text-[#ED1C24]"
+                            href={genPreviewHref(req.id, { query, status, page, kind })}
+                            scroll={false}
+                          >
+                            {req.request_number}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="text-[#9CA3AF]">-</span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <p className="font-semibold text-[#111827]">{req.purpose}</p>
+                          <p className="text-xs text-[#9CA3AF]">{req.items[0]?.material_name ?? "—"}</p>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-xs text-[#4B5563]">
+                          {formatExactDateTime(req.created_at)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusBadge
+                            label={req.status}
+                            tone={req.status === "Completed" ? "green" : req.status === "Cancelled" ? "gray" : "amber"}
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <Link
+                              href={genPreviewHref(req.id, { query, status, page, kind })}
+                              scroll={false}
+                              className="inline-flex min-h-[30px] items-center rounded-md border border-[#E5E7EB] px-3 py-1 text-xs font-semibold text-[#111827] hover:bg-gray-50"
+                            >
+                              Open
+                            </Link>
+                            {canReceiveGeneral && req.status === "Pending" ? (
+                              <Link
+                                href={genPreviewHref(req.id, { query, status, page, kind })}
+                                scroll={false}
+                                className="inline-flex min-h-[30px] items-center rounded-md bg-[#111827] px-3 py-1 text-xs font-semibold text-white hover:bg-[#2b2b2b]"
+                              >
+                                Receive Materials
+                              </Link>
+                            ) : null}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="p-4">
+                <EmptyState
+                  title="No General Inventory Requests found."
+                  message="Requests for store stock or general inventory (no Job Card) will appear here."
+                />
+              </div>
+            )}
+            {generalTotalPages > 1 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#E5E7EB] p-3">
+                <Link
+                  className={paginationClass(genPage <= 1)}
+                  href={genPageHref(Math.max(1, genPage - 1), { query, status, page, kind })}
+                  aria-disabled={genPage <= 1}
+                >
+                  Previous
+                </Link>
+                <span className="text-sm font-semibold text-[#4B5563]">
+                  Page {genPage} of {generalTotalPages}
+                </span>
+                <Link
+                  className={paginationClass(genPage >= generalTotalPages)}
+                  href={genPageHref(Math.min(generalTotalPages, genPage + 1), { query, status, page, kind })}
+                  aria-disabled={genPage >= generalTotalPages}
+                >
+                  Next
+                </Link>
+              </div>
+            )}
+          </section>
+        )}
       </div>
 
       {/* ── Job Card quick view modal ────────────────────────────────
@@ -1246,6 +1573,37 @@ export default async function PartsRequestsPage({
         )
       )}
 
+      {/* ── General Inventory / Stock Request quick view / receive
+          modal (Task 10) ────────────────────────────────────────────
+          Opens via ?genPreview=<id>. Entirely separate from the Job
+          Card-linked MaterialsRequestQuickView/StoreSendMaterialsPopup
+          above — never touches parts_requests/work_orders. */}
+      {validGenPreviewId && (
+        genPreviewQuickViewData ? (
+          <GeneralInventoryRequestQuickView data={genPreviewQuickViewData} />
+        ) : (
+          <>
+            <div className="fixed inset-0 z-40 bg-black/50" aria-hidden="true" />
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-2xl">
+                <p className="font-bold text-[#111827]">General Inventory Request not found</p>
+                <p className="mt-1 text-sm text-[#4B5563]">
+                  This request is not available or you do not have access to it.
+                </p>
+                <div className="mt-4">
+                  <Link
+                    href={genPreviewCloseHref}
+                    className="inline-block rounded-md border border-[#E5E7EB] px-4 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
+                  >
+                    Close
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </>
+        )
+      )}
+
       {/* ── Receive Materials guided popup ───────────────────────────
           Opens via ?sendPreview=<id> from the Action column. */}
       {validSendPreviewId && canReceive && (
@@ -1296,24 +1654,46 @@ export default async function PartsRequestsPage({
 
       {/* ── New Materials Request modal ───────────────────────────────
           Opens via ?newRequest=1 (optionally ?jobCardId=<id> to preselect a
-          Job Card). The standalone /store/parts-requests/new page is
-          untouched and still works for direct URL access. Submitting the
-          wizard redirects to this same page on success (without
-          ?newRequest=), which naturally closes the modal and shows a fresh
-          list + the existing success toast/modal.
+          Job Card — that case skips the type selector below and goes
+          straight to the existing wizard, since the type is already
+          implied). Materials Request Type Selection Flow Unit 10G.58, Task
+          1: with no &type= yet, shows the new Request Type step first;
+          &type=job_card renders the existing PartsRequestWizard completely
+          unchanged (Task 2); &type=general renders the new, separate
+          GeneralInventoryRequestForm (Task 3). The standalone
+          /store/parts-requests/new page mirrors the same &type= gate.
+          Submitting either flow redirects to this same page on success,
+          which naturally closes the modal.
       ────────────────────────────────────────────────────────────── */}
       {showNewRequest && (
         <LargeFormModal
           title="New Materials Request"
-          subtitle="Request materials linked to a Job Card."
-          closeHref={listHref({ query, status, page })}
+          subtitle={
+            effectiveNewRequestType === "job_card"
+              ? "Request materials linked to a Job Card."
+              : effectiveNewRequestType === "general"
+                ? "Request materials for store stock or general inventory. No Job Card required."
+                : "Choose how this material request will be used."
+          }
+          closeHref={listHref({ query, status, page, kind })}
         >
-          <PartsRequestWizard
-            modalMode
-            workOrders={newRequestWorkOrders}
-            preselectedWorkOrderId={newRequestJobCardId || undefined}
-            preselectedWorkOrder={newRequestPreselectedWo}
-          />
+          {effectiveNewRequestType === "job_card" ? (
+            <PartsRequestWizard
+              modalMode
+              workOrders={newRequestWorkOrders}
+              preselectedWorkOrderId={newRequestJobCardId || undefined}
+              preselectedWorkOrder={newRequestPreselectedWo}
+            />
+          ) : effectiveNewRequestType === "general" ? (
+            <GeneralInventoryRequestForm
+              modalMode
+              requesterName={currentProfile?.full_name ?? null}
+              requestedDateLabel={generalRequestDateLabel}
+              errorMessage={newRequestError}
+            />
+          ) : (
+            <MaterialsRequestTypeSelector baseHref="/store/parts-requests?newRequest=1" />
+          )}
         </LargeFormModal>
       )}
     </>

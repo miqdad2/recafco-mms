@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BookOpen } from "lucide-react";
+import { BookOpen, Printer } from "lucide-react";
 
 import { ExportButton } from "@/components/reports/export-button";
 import { ReportFilterPanel } from "@/components/reports/report-filter-panel";
@@ -292,11 +292,28 @@ export default async function WorkOrderReportsPage({
             : "Overview of all job cards by status, type, and monthly trend."
         }
         actions={
-          <ExportButton
-            kind="work-orders"
-            searchParams={exportParams}
-            label={isManager ? "Export Current Report" : "Export Excel"}
-          />
+          <>
+            {/* Printable Division-Based Reports Foundation Unit 10G.69,
+                Task 3/9 — opens a separate print route with its own
+                Division/Date Range/Status filters (not the same filter
+                state as this screen), matching the app's existing
+                Job-Card-detail-page-to-print-page pattern. Unit 10G.70,
+                Task 4: when the Manager is on the Technician Workload mode
+                of this same page, the link points at that report's own
+                print route instead of the plain Job Card Summary one. */}
+            <Link
+              href={isManager && reportMode === "technician-workload" ? "/reports/technician-workload/print" : "/reports/work-orders/print"}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] transition hover:bg-gray-50"
+            >
+              <Printer className="h-4 w-4" aria-hidden="true" />
+              Print Report
+            </Link>
+            <ExportButton
+              kind="work-orders"
+              searchParams={exportParams}
+              label={isManager ? "Export Current Report" : "Export Excel"}
+            />
+          </>
         }
       />
 
