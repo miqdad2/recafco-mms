@@ -53,13 +53,13 @@ export const workerProfileSchema = z.object({
   monthlyCost: z.coerce.number().min(0).max(999999.999).optional(),
   monthlyWorkingDays: z.coerce.number().min(1).max(31).optional(),
   manualHourlyRateReason: z.string().trim().max(300).optional(),
-  // Closure Review Work and Material Cost Unit 10G.72, Task 1/2 —
-  // Manager/Super-Admin-only to set (enforced in service.ts, same as every
-  // other salary field above). Deliberately not part of computeSalary()'s
-  // SalaryInputs — this is a flat, one-time-per-Job-Card amount, never an
-  // hourly-rate input.
-  indirectCostPerJobCard: z.coerce.number().min(0).max(999999.999).optional(),
-  indirectCostNote: z.string().trim().max(300).optional(),
+  // Job Card Level Indirect Cost Correction Unit 10G.72B, Task 1 — Unit
+  // 10G.72's own indirectCostPerJobCard/indirectCostNote fields are removed
+  // here: Indirect Cost is corrected to be a single, Job-Card-wide setting
+  // (app_settings.job_card_indirect_cost, configured via
+  // /admin/settings/job-card-cost), never a per-worker input. This schema no
+  // longer accepts either field at all — a stray submitted value is simply
+  // dropped, never persisted.
 });
 
 export type WorkerProfileInput = z.infer<typeof workerProfileSchema>;

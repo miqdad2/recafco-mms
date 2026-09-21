@@ -90,12 +90,6 @@ export function WorkerProfileFormModal({
   const [monthlyWorkingDays, setMonthlyWorkingDays] = useState(worker?.monthly_working_days ?? DEFAULT_MONTHLY_WORKING_DAYS);
   const [monthlyWorkingHours, setMonthlyWorkingHours] = useState(worker?.monthly_working_hours ?? DEFAULT_MONTHLY_WORKING_HOURS);
 
-  // Closure Review Work and Material Cost Unit 10G.72, Task 1/2 — a flat,
-  // one-time-per-Job-Card amount, completely separate from the Hourly Rate
-  // preview above (never fed into computeSalary).
-  const [indirectCostPerJobCard, setIndirectCostPerJobCard] = useState(worker?.indirect_cost_per_job_card ?? 0);
-  const [indirectCostNote, setIndirectCostNote] = useState(worker?.indirect_cost_note ?? "");
-
   // Task 5 — Salary Breakdown (optional): kept for backward compatibility
   // and record-keeping only, collapsed by default, never feeding the
   // Hourly Rate calculation above.
@@ -559,49 +553,16 @@ export function WorkerProfileFormModal({
                     Hourly Rate is used to calculate Job Card labor cost from worker time.
                   </p>
 
-                  {/* Closure Review Work and Material Cost Unit 10G.72, Task
-                      1/2 — Indirect Cost per Job Card: its own subsection
-                      inside Salary Details, visually separate from the
-                      Hourly Rate calculation above (it never feeds it).
-                      Read automatically by Closure Review; there is no
-                      per-Job-Card override — see the helper text below. */}
-                  <div className="mt-3 border-t border-[#E5E7EB] pt-3">
-                    <p className="text-sm font-bold text-[#111827]">Indirect Cost per Job Card</p>
-                    <p className="mt-1 text-xs text-[#6B7280]">
-                      Indirect Cost is optional additional worker cost added once per worker in Job Card Closure
-                      Review. It is not calculated per hour.
-                    </p>
-                    <div className="mt-2 grid grid-cols-2 gap-2">
-                      <div>
-                        <label htmlFor="wp-indirect-cost" className={lbl}>Indirect Cost per Job Card (KWD)</label>
-                        <input
-                          id="wp-indirect-cost"
-                          name="indirect_cost_per_job_card"
-                          type="number"
-                          min="0"
-                          step="0.001"
-                          value={indirectCostPerJobCard}
-                          onChange={(e) => setIndirectCostPerJobCard(Number(e.target.value) || 0)}
-                          className={inp}
-                          disabled={isPending}
-                        />
-                      </div>
-                      <div>
-                        <label htmlFor="wp-indirect-cost-note" className={lbl}>Indirect Cost Note (optional)</label>
-                        <input
-                          id="wp-indirect-cost-note"
-                          name="indirect_cost_note"
-                          type="text"
-                          maxLength={300}
-                          value={indirectCostNote}
-                          onChange={(e) => setIndirectCostNote(e.target.value)}
-                          placeholder="e.g. Tools, transport, PPE"
-                          className={inp}
-                          disabled={isPending}
-                        />
-                      </div>
-                    </div>
-                  </div>
+                  {/* Job Card Level Indirect Cost Correction Unit 10G.72B,
+                      Task 1/6 — Unit 10G.72's own "Indirect Cost per Job
+                      Card" subsection (a per-worker field) is removed here:
+                      Indirect Cost is corrected to be a single, Job-Card-wide
+                      amount configured once (Admin/Settings →
+                      /admin/settings/job-card-cost), never per worker and
+                      never entered on this form. worker_profiles.
+                      indirect_cost_per_job_card/indirect_cost_note remain in
+                      the schema (unused) for backward compatibility — this
+                      form no longer reads, shows, or submits either field. */}
 
                   {/* Task 5 — Salary Breakdown (optional): the legacy
                       allowance fields still exist and still save (so

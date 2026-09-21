@@ -33,6 +33,7 @@ import {
   TriangleAlert,
   Upload,
   Users,
+  Wallet,
   Wrench
 } from "lucide-react";
 
@@ -69,6 +70,7 @@ export const navIcons = {
   TriangleAlert,
   Upload,
   Users,
+  Wallet,
   Wrench
 };
 

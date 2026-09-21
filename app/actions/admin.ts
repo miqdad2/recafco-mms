@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
-import { requirePermission } from "@/lib/auth/context";
+import { requirePermission, requireUser } from "@/lib/auth/context";
 import { hashPassword } from "@/lib/auth/password";
 import { writeAuditLog } from "@/lib/audit/log";
 import { prisma } from "@/lib/db/prisma";
@@ -13,6 +13,7 @@ import { notifyByEvent } from "@/lib/notifications/service";
 import { emitRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { ACCOUNT_TYPE_SLUGS } from "@/lib/users/account-types";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
+import { canManageJobCardIndirectCostSetting } from "@/lib/security/permissions";
 
 
 const checkbox = z.preprocess((value) => value === "on" || value === "true", z.boolean());
@@ -366,6 +367,62 @@ export async function updateSettingsAction(formData: FormData) {
 
   revalidatePath("/admin/settings");
   redirect("/admin/settings?success=settings-saved");
+}
+
+// Job Card Level Indirect Cost Correction Unit 10G.72B, Task 2 — its own
+// small schema/action, separate from settingsSchema/updateSettingsAction
+// above (which stays admin.settings.manage-only, Super Admin/IT Admin
+// only). This one is gated by canManageJobCardIndirectCostSetting instead,
+// so Maintenance Manager can also reach it, per the task's own explicit
+// "Manager should be able to configure it" requirement — without
+// broadening the main Settings page's own access.
+const jobCardIndirectCostSettingSchema = z.object({
+  job_card_indirect_cost: z.coerce.number().min(0).max(999999.999),
+  job_card_indirect_cost_note: z.string().trim().max(300).optional()
+});
+
+export async function updateJobCardIndirectCostSettingAction(formData: FormData) {
+  const context = await requireUser();
+  if (!canManageJobCardIndirectCostSetting(context)) {
+    redirect("/admin/settings/job-card-cost?error=permission-denied");
+  }
+
+  const parsed = jobCardIndirectCostSettingSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    redirect("/admin/settings/job-card-cost?error=invalid-input");
+  }
+
+  try {
+    await prisma.app_settings.upsert({
+      where: { id: "00000000-0000-0000-0000-000000000001" },
+      create: {
+        id: "00000000-0000-0000-0000-000000000001",
+        job_card_indirect_cost: parsed.data.job_card_indirect_cost,
+        job_card_indirect_cost_note: parsed.data.job_card_indirect_cost_note || null,
+        updated_by: context.userId
+      },
+      update: {
+        job_card_indirect_cost: parsed.data.job_card_indirect_cost,
+        job_card_indirect_cost_note: parsed.data.job_card_indirect_cost_note || null,
+        updated_by: context.userId
+      },
+      select: { id: true }
+    });
+  } catch {
+    redirect("/admin/settings/job-card-cost?error=save-failed");
+  }
+
+  await writeAuditLog({
+    actorId: context.userId,
+    action: "settings.job_card_indirect_cost.update",
+    entityType: "app_settings",
+    entityId: "00000000-0000-0000-0000-000000000001",
+    summary: `Updated Job Card Indirect Cost setting to ${parsed.data.job_card_indirect_cost.toFixed(3)} KWD`,
+    metadata: { job_card_indirect_cost: parsed.data.job_card_indirect_cost }
+  });
+
+  revalidatePath("/admin/settings/job-card-cost");
+  redirect("/admin/settings/job-card-cost?success=settings-saved");
 }
 
 const resetPasswordSchema = z.object({

@@ -19,6 +19,7 @@ import { ActionToast } from "@/components/ui/action-toast";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requireUser, type CurrentUserContext } from "@/lib/auth/context";
+import { canManageJobCardIndirectCostSetting } from "@/lib/security/permissions";
 import { initials } from "@/lib/utils";
 import type { PermissionKey } from "@/types/database";
 
@@ -30,6 +31,13 @@ type NavItem = {
   iconKey: NavIconKey;
   permission?: PermissionKey;
   superAdminOnly?: boolean;
+  // Job Card Indirect Cost Sidebar Visibility Unit 10G.72D, Task 2 — this one
+  // item's visibility can't be expressed as a single PermissionKey string:
+  // its real gate (canManageJobCardIndirectCostSetting) is Super Admin always,
+  // or IT Admin/Maintenance Manager only when canViewCosts also passes. When
+  // set, canSee() below calls that function instead of the plain
+  // permission-slug check.
+  customGate?: "jobCardIndirectCost";
 };
 
 type NavGroup = {
@@ -125,6 +133,13 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
       { href: "/maintenance/assignments", label: "Worker Activity",     iconKey: "Wrench",    permission: "work_orders.assign" },
       { href: "/admin/worker-profiles",   label: "Worker Profiles",     iconKey: "Users",     permission: "work_orders.assign" },
       { href: "/reports",                 label: "Reports",             iconKey: "BarChart3", permission: "reports.view" },
+      // Job Card Indirect Cost Sidebar Visibility Unit 10G.72D, Task 1/2 —
+      // stable sidebar path to the dedicated setting page (Unit 10G.72B),
+      // alongside the existing Dashboard quick action (Unit 10G.72C, renamed
+      // this unit). Gated by customGate: "jobCardIndirectCost" instead of a
+      // plain permission string, so it never shows for a Manager who lacks
+      // canViewCosts even though every Manager sees this same array.
+      { href: "/admin/settings/job-card-cost", label: "Job Card Indirect Cost", iconKey: "Wallet", customGate: "jobCardIndirectCost" },
       { href: "/notifications",           label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
     ]
   }
@@ -294,6 +309,7 @@ const normalUserNavigationGroups: NavGroup[] = [
 
 function canSee(context: CurrentUserContext, item: NavItem) {
   if (item.superAdminOnly) return context.role?.slug === "super_admin";
+  if (item.customGate === "jobCardIndirectCost") return canManageJobCardIndirectCostSetting(context);
   const permission = item.permission;
   return !permission || context.role?.slug === "super_admin" || context.permissions.includes(permission);
 }

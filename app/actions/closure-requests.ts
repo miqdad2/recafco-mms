@@ -10,6 +10,7 @@ import { getMaterialFulfillmentForWorkOrder, type MaterialFulfillment } from "@/
 import { getWorkOrderLaborSummariesBulk } from "@/lib/work-orders/work-session-totals";
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
 import { buildBalanceKey, getLastUnitCostsForIdentities } from "@/lib/store/offline-inventory-data";
+import { getJobCardIndirectCostSetting } from "@/lib/work-orders/job-card-indirect-cost";
 
 // Closure Requests Review Popup Unit 10G.2, Task 10.
 //
@@ -77,16 +78,17 @@ export type ClosureReviewWorker = {
   hours: number;
   hourlyRate: number | null;
   totalPay: number | null;
-  // Closure Review Work and Material Cost Unit 10G.72, Task 3/4/9 —
+  // Closure Review Work and Material Cost Unit 10G.72, Task 3/4/9, corrected
+  // by Job Card Level Indirect Cost Correction Unit 10G.72B, Task 1/3/6 —
   // directLaborCost is the same figure as totalPay above (actual hours ×
-  // hourly rate, from the worker's own logged sessions) under its new,
-  // task-required name; indirectCost is worker_profiles.indirect_cost_per_job_card
-  // (read automatically, never entered here); totalWorkerCost is their sum.
-  // All three are null (not 0) for a non-cost-permitted viewer, same
-  // convention as hourlyRate/totalPay above.
+  // hourly rate, from the worker's own logged sessions) under its
+  // task-required name. Indirect Cost is NOT worker-level any more — Unit
+  // 10G.72B removed the per-worker indirectCost/totalWorkerCost fields that
+  // used to live here (Indirect Cost is now a single Job-Card-wide amount,
+  // shown once in the Final Job Card Cost summary, not per worker). null
+  // (not 0) for a non-cost-permitted viewer, same convention as
+  // hourlyRate/totalPay above.
   directLaborCost: number | null;
-  indirectCost: number | null;
-  totalWorkerCost: number | null;
   sessionsCount: number;
   status: string;
   // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 9/11: the
@@ -153,20 +155,21 @@ export type ClosureReviewDetail = {
   note: string | null;
   canViewCosts: boolean;
   detailHref: string;
-  // Closure Review Work and Material Cost Unit 10G.72, Task 4/6/9 — the
+  // Closure Review Work and Material Cost Unit 10G.72, Task 4/6/9, corrected
+  // by Job Card Level Indirect Cost Correction Unit 10G.72B, Task 4 — the
   // Job-Card-wide cost summary. directLaborCostTotal is the same figure as
   // totalAmount above (kept for backward compatibility with the existing
-  // per-worker table's "Pay" column); indirectCostTotal sums each DISTINCT
-  // worker's own indirect_cost_per_job_card once (never once per assignment
-  // row, per the business rule's own "added once for that worker" wording).
-  // materialCostTotal sums only PRICED material lines (materials with
-  // isUnpriced true are excluded, never treated as 0). grandTotalJobCost =
-  // totalLaborCost + materialCostTotal. All null for a non-cost-permitted
-  // viewer.
+  // per-worker table's "Pay" column). materialCostTotal sums only PRICED
+  // material lines (materials with isUnpriced true are excluded, never
+  // treated as 0). jobCardIndirectCost is the ONE global, Job-Card-wide
+  // setting (app_settings.job_card_indirect_cost) — not summed from
+  // workers any more; read once per Job Card, added once, per Unit
+  // 10G.72B's own corrected business rule. grandTotalJobCost =
+  // directLaborCostTotal + materialCostTotal + jobCardIndirectCost. All
+  // null for a non-cost-permitted viewer.
   directLaborCostTotal: number | null;
-  indirectCostTotal: number | null;
-  totalLaborCost: number | null;
   materialCostTotal: number | null;
+  jobCardIndirectCost: number | null;
   grandTotalJobCost: number | null;
   hasUnpricedMaterial: boolean;
 };
@@ -214,29 +217,20 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
   ]);
   const laborSummary = laborMap.get(workOrderId) ?? { workers: [], total_minutes: 0, total_hours: 0, total_amount: 0, has_active_session: false, today_minutes: 0, today_amount: 0, week_minutes: 0, week_amount: 0, month_minutes: 0, month_amount: 0 };
 
-  // Closure Review Work and Material Cost Unit 10G.72, Task 1/3/4 — each
-  // worker's own saved indirect_cost_per_job_card, read automatically (never
-  // entered here — see Task 1's own "not entered in Closure Review" rule).
+  // Job Card Level Indirect Cost Correction Unit 10G.72B, Task 1/4 — the
+  // ONE global, Job-Card-wide Indirect Cost setting, read once regardless of
+  // how many workers are on this Job Card (it is no longer a per-worker
+  // figure at all — Unit 10G.72's own worker_profiles.indirect_cost_per_job_card
+  // read is removed here, per Task 1's own "stop using worker-level
+  // indirect cost" instruction; that column is left in the schema, unused).
   // Skipped entirely for a non-cost-permitted viewer, same "never even
-  // queried" pattern the print reports already use for their own cost
-  // fields (defense in depth, not just a rendering choice).
-  const workerIds = [...new Set(laborSummary.workers.map((w) => w.worker_id))];
-  const indirectCostByWorkerId =
-    canViewCosts && workerIds.length > 0
-      ? new Map(
-          (
-            await prisma.workerProfile.findMany({
-              where: { id: { in: workerIds } },
-              select: { id: true, indirect_cost_per_job_card: true },
-            })
-          ).map((w) => [w.id, Number(w.indirect_cost_per_job_card)])
-        )
-      : new Map<string, number>();
+  // queried" pattern this action already uses for material unit cost below.
+  const jobCardIndirectCost = canViewCosts ? (await getJobCardIndirectCostSetting()).amount : null;
 
   // Task 5/7/9 — each required material's last known unit cost (Offline
   // Inventory's own Unit 10G.61 "last unit cost" method, scoped to just
   // this Job Card's required materials). Skipped entirely for a
-  // non-cost-permitted viewer, same reasoning as indirectCostByWorkerId above.
+  // non-cost-permitted viewer, same reasoning as jobCardIndirectCost above.
   const unitCostByKey =
     canViewCosts && fulfillment.length > 0
       ? await getLastUnitCostsForIdentities(
@@ -294,22 +288,15 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
     : null;
   const hasUnpricedMaterial = canViewCosts && materials.some((m) => m.isUnpriced);
 
-  // Task 4 — indirect cost is summed once per DISTINCT worker on this Job
-  // Card (workerIds is already de-duplicated above), matching the business
-  // rule's own "if that worker is included ... 5.000 KWD is added once for
-  // that worker" wording, even in the edge case of a worker holding more
-  // than one assignment row on the same Job Card.
-  const indirectCostTotal = canViewCosts
-    ? Math.round(workerIds.reduce((sum, id) => sum + (indirectCostByWorkerId.get(id) ?? 0), 0) * 1000) / 1000
-    : null;
   const directLaborCostTotal = canViewCosts ? laborSummary.total_amount : null;
-  const totalLaborCost =
-    canViewCosts && directLaborCostTotal !== null && indirectCostTotal !== null
-      ? Math.round((directLaborCostTotal + indirectCostTotal) * 1000) / 1000
-      : null;
+  // Job Card Level Indirect Cost Correction Unit 10G.72B, Task 4 — "Grand
+  // Total Job Cost = Direct Labor Cost + Material Cost + Job Card Indirect
+  // Cost", a plain 3-way sum (the old "Total Labor Cost" = Direct + Indirect
+  // concept from Unit 10G.72 no longer exists — Indirect Cost is its own
+  // independent line, not a labor-cost component any more).
   const grandTotalJobCost =
-    canViewCosts && totalLaborCost !== null && materialCostTotal !== null
-      ? Math.round((totalLaborCost + materialCostTotal) * 1000) / 1000
+    canViewCosts && directLaborCostTotal !== null && materialCostTotal !== null && jobCardIndirectCost !== null
+      ? Math.round((directLaborCostTotal + materialCostTotal + jobCardIndirectCost) * 1000) / 1000
       : null;
 
   return {
@@ -328,30 +315,24 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
     // what the Closure Requests LIST still uses for its own "Requested by"
     // — left as-is there, out of scope for this unit).
     requestedByName: approval?.decided_by ? nameById.get(approval.decided_by) ?? null : null,
-    workers: laborSummary.workers.map((w) => {
-      const directLaborCost = canViewCosts ? w.total_amount : null;
-      const indirectCost = canViewCosts ? indirectCostByWorkerId.get(w.worker_id) ?? 0 : null;
-      const totalWorkerCost =
-        canViewCosts && directLaborCost !== null && indirectCost !== null
-          ? Math.round((directLaborCost + indirectCost) * 1000) / 1000
-          : null;
-      return {
-        workerAssignmentId: w.worker_assignment_id,
-        name: w.worker_name,
-        role: w.worker_role,
-        skillCategory: w.skill_category ?? null,
-        hours: w.total_hours,
-        hourlyRate: canViewCosts ? w.hourly_rate_snapshot : null,
-        totalPay: canViewCosts ? w.total_amount : null,
-        directLaborCost,
-        indirectCost,
-        totalWorkerCost,
-        sessionsCount: w.sessions_count ?? 0,
-        status: w.status,
-        assignmentStatus: w.assignment_status,
-        estimatedHours: w.estimated_hours,
-      };
-    }),
+    workers: laborSummary.workers.map((w) => ({
+      workerAssignmentId: w.worker_assignment_id,
+      name: w.worker_name,
+      role: w.worker_role,
+      skillCategory: w.skill_category ?? null,
+      hours: w.total_hours,
+      hourlyRate: canViewCosts ? w.hourly_rate_snapshot : null,
+      totalPay: canViewCosts ? w.total_amount : null,
+      // Job Card Level Indirect Cost Correction Unit 10G.72B, Task 1/3 —
+      // no indirectCost/totalWorkerCost here any more; Indirect Cost is a
+      // Job-Card-wide figure shown once in the Final Job Card Cost summary
+      // below, never per worker.
+      directLaborCost: canViewCosts ? w.total_amount : null,
+      sessionsCount: w.sessions_count ?? 0,
+      status: w.status,
+      assignmentStatus: w.assignment_status,
+      estimatedHours: w.estimated_hours,
+    })),
     workersCount: laborSummary.workers.length,
     totalHours: laborSummary.total_hours,
     totalAmount: canViewCosts ? laborSummary.total_amount : null,
@@ -369,9 +350,8 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
     canViewCosts,
     detailHref: `/maintenance/work-orders/${wo.id}`,
     directLaborCostTotal,
-    indirectCostTotal,
-    totalLaborCost,
     materialCostTotal,
+    jobCardIndirectCost,
     grandTotalJobCost,
     hasUnpricedMaterial,
   };

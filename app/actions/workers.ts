@@ -50,12 +50,6 @@ function parseWorkerProfileForm(formData: FormData) {
     monthlyCost: formData.get("monthly_cost") || undefined,
     monthlyWorkingDays: formData.get("monthly_working_days") || undefined,
     manualHourlyRateReason: formData.get("manual_hourly_rate_reason") || undefined,
-    // Closure Review Work and Material Cost Unit 10G.72, Task 1/2 — present
-    // only when the Salary Details section rendered (Manager/Super Admin);
-    // parsed the same way either way, the service layer decides whether to
-    // trust it (same as every salary field above).
-    indirectCostPerJobCard: formData.get("indirect_cost_per_job_card") || undefined,
-    indirectCostNote: formData.get("indirect_cost_note") || undefined,
   });
 }
 

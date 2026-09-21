@@ -13,6 +13,7 @@ import {
   PauseCircle,
   PlayCircle,
   PlusCircle,
+  Settings,
   ShieldAlert,
   ShoppingCart,
   Upload,
@@ -65,7 +66,7 @@ import { getWorkOrderLaborSummariesBulk, getLaborPeriodTotals } from "@/lib/work
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
 import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
-import { hasPermission, canViewCosts as canViewCostsForContext } from "@/lib/security/permissions";
+import { hasPermission, canViewCosts as canViewCostsForContext, canManageJobCardIndirectCostSetting } from "@/lib/security/permissions";
 import { VEHICLE_CATEGORIES } from "@/lib/assets/categories";
 import { getExpiryStatus } from "@/lib/assets/vehicle-status";
 import { StoreSendMaterialsPopup } from "@/components/store/store-send-materials-popup";
@@ -1256,6 +1257,11 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const mgClosedWeekCount = mgData?.[5] ?? 0;
   const mgClosedMonthCount = mgData?.[6] ?? 0;
   const mgCanViewCosts = canViewCostsForContext(context);
+  // Job Card Cost Setting Visibility Unit 10G.72C, Task 2/4 — same gate the
+  // dedicated /admin/settings/job-card-cost page itself uses (Unit
+  // 10G.72B); the Quick Actions shortcut below only renders when this
+  // Manager can actually reach and use that page.
+  const mgCanManageJobCardCost = canManageJobCardIndirectCostSetting(context);
 
   // Task 9 — resolve closure-requester names in one bulk read.
   const mgClosureRequesterIds = [...new Set(mgClosureRequestedAll.map((r) => r.created_by).filter((id): id is string => Boolean(id)))];
@@ -2392,6 +2398,27 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                     on the page instead of navigating to the old view. */}
                 <QuickActionTile title="Vehicle Expiry" helper="Renewals due" href="/dashboard?vehicleExpiry=1" icon={Car} iconBg="bg-amber-50" iconColor="text-amber-600" />
                 <QuickActionTile title="Reports" helper="Full reports" href="/reports" icon={BarChart3} iconBg="bg-gray-100" iconColor="text-[#4B5563]" />
+                {/* Job Card Cost Setting Visibility Unit 10G.72C, Task 2,
+                    renamed by Job Card Indirect Cost Sidebar Visibility Unit
+                    10G.72D, Task 3 — Manager has no access to the main
+                    /admin/settings page (admin.settings.manage-only); this is
+                    a second, dashboard-discoverable path to the dedicated
+                    Job Card Indirect Cost setting page (Unit 10G.72B),
+                    alongside the new stable sidebar item (Task 1) — only
+                    rendered for a Manager who actually passes
+                    canManageJobCardIndirectCostSetting (same gate that page
+                    itself enforces), so this tile never appears as a dead
+                    end. */}
+                {mgCanManageJobCardCost && (
+                  <QuickActionTile
+                    title="Job Card Indirect Cost"
+                    helper="Set indirect cost per Job Card"
+                    href="/admin/settings/job-card-cost"
+                    icon={Settings}
+                    iconBg="bg-gray-100"
+                    iconColor="text-[#4B5563]"
+                  />
+                )}
               </div>
             </section>
 

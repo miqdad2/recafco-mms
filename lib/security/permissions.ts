@@ -24,3 +24,25 @@ export function canViewCosts(context: CurrentUserContext) {
 export function isManagerRole(context: CurrentUserContext) {
   return context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
 }
+
+// Job Card Level Indirect Cost Correction Unit 10G.72B, Task 2 — "Only
+// Super Admin/System Admin/Maintenance Manager with settings/cost
+// permission can edit" the global Job Card Indirect Cost setting. Super
+// Admin always bypasses (matches every other role-bypass in this app);
+// IT Admin ("System Admin") and Maintenance Manager additionally need cost
+// visibility (canViewCosts) — a Manager whose profile isn't cost-permitted
+// cannot reach this setting either, same spirit as every other cost-gated
+// surface in this app. Deliberately a plain role/permission check, not a
+// new `permissions` table row — this setting has its own small, dedicated
+// settings sub-page (app/(dashboard)/admin/settings/job-card-cost/page.tsx),
+// reachable independently of the broader admin.settings.manage-gated main
+// Settings page (which Maintenance Manager does not have access to), same
+// established pattern as admin/settings/asset-categories's own narrower
+// assets.manage gate.
+export function canManageJobCardIndirectCostSetting(context: CurrentUserContext): boolean {
+  if (context.role?.slug === "super_admin") return true;
+  if (context.role?.slug === "it_admin" || context.role?.slug === "maintenance_manager") {
+    return canViewCosts(context);
+  }
+  return false;
+}

@@ -30,6 +30,17 @@ model app_settings {
   force_critical_notifications       Boolean  @default(true)
   max_upload_size_mb                 Int      @default(10)
   signed_url_expiry_seconds          Int      @default(300)
+  // Job Card Level Indirect Cost Correction Unit 10G.72B, Task 2 — additive,
+  // NOT NULL DEFAULT 0 so every existing Job Card's Closure Review total is
+  // unchanged until a Super Admin/IT Admin/Maintenance Manager explicitly
+  // sets a non-zero value. This is a Job-Card-wide, one-time-configured
+  // amount — NOT per worker, NOT per hour — added once to a Job Card's own
+  // Closure Review cost summary, replacing Unit 10G.72's (incorrect)
+  // worker-level worker_profiles.indirect_cost_per_job_card/
+  // indirect_cost_note, which are left in place (unused) for backward
+  // compatibility per this unit's own "do not remove" instruction.
+  job_card_indirect_cost      Decimal @default(0) @db.Decimal(12, 3)
+  job_card_indirect_cost_note String?
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.

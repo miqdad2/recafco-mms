@@ -1,3 +1,6 @@
+import Link from "next/link";
+import { ArrowRight } from "lucide-react";
+
 import { updateSettingsAction } from "@/app/actions/admin";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/page-header";
@@ -80,6 +83,36 @@ export default async function SettingsPage() {
             Save settings
           </Button>
         </form>
+
+        {/* Job Card Cost Setting Visibility Unit 10G.72C, Task 1, wording
+            polished by Job Card Indirect Cost Sidebar Visibility Unit
+            10G.72D, Task 4 — a plain link/card to the dedicated Job Card
+            Indirect Cost setting sub-page (Unit 10G.72B), not the full
+            editable form inlined here: that form is also reachable by
+            Maintenance Manager via its own, narrower
+            canManageJobCardIndirectCostSetting gate (10G.72D's own sidebar
+            item and Dashboard shortcut), which does not extend to this page,
+            so duplicating the editable inputs here would need its own
+            separate permission carve-out inside an otherwise
+            admin.settings.manage-only page — a plain card is enough and
+            keeps this page's own gate completely unchanged. */}
+        <div className="mt-5 max-w-4xl rounded-md border border-[#E5E7EB] bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-black text-[#111827]">Job Card Indirect Cost</h2>
+          <p className="mt-1 text-sm text-[#4B5563]">
+            Set the indirect cost added once to each Job Card during Closure Review.
+          </p>
+          <p className="mt-3 text-sm text-[#111827]">
+            Indirect Cost per Job Card:{" "}
+            <strong>{(settings ? settings.job_card_indirect_cost.toNumber() : 0).toFixed(3)} KWD</strong>
+          </p>
+          <Link
+            href="/admin/settings/job-card-cost"
+            className="focus-ring mt-4 inline-flex min-h-10 items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white hover:bg-[#c9151c]"
+          >
+            Open Indirect Cost Setting
+            <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </Link>
+        </div>
       </div>
     </>
   );
