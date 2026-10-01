@@ -194,6 +194,8 @@ Use `withBackendTransaction(actorId, operation)` for multi-step writes such as a
 - Company-wide scope with no MMS user context — documented exception to `getWorkOrderVisibilityFilter()`, equivalent to full-access roles. No cost fields are selected or returned.
 - Reads only (`count`/`findMany`/`findFirst`); no audit logs, notifications, or `system_errors` rows per poll (failures log to console only).
 - 10-second in-process cache with in-flight dedupe; `Cache-Control: no-store`. `openUrl` base: `MMS_PUBLIC_BASE_URL` (runtime) → `NEXT_PUBLIC_APP_URL`.
+- FMP-MAINT-04 executive summary: the same endpoint also returns `links`, `jobCards`, `materialsRequests`, `inventory`, `assets`, `vehicleCompliance`, `labor`, and `managerAttention` (`lib/integrations/fmp/executive-summary.ts`). Additive only; each section is `null` if its query fails (logged to console) while the original fields still fail the request with 500.
+- Cost figures (labor cost, stock/received/issued value) are included unless `FMP_INTEGRATION_INCLUDE_COSTS=false`. This is a deliberate exception to `canViewCosts(context)`: there is no MMS user behind the request, so the env switch is the gate.
 - Code: `lib/integrations/fmp/`; unit tests: `npm run test:unit` (`tests/unit/`, Node built-in test runner with type stripping).
 
 ## Deployment Assumptions

@@ -5467,3 +5467,24 @@ Added a read-only, key-authenticated endpoint for the separate FMP platform: `GE
 **Security:** `FMP_INTEGRATION_KEY` env var (≥32 chars, not committed; `.env.example` documents it); 401 missing / 403 invalid / 503 not configured / 400 bad `userEmail` / 500 safe message only. `proxy.ts` bypasses the session redirect for `/api/integrations/fmp/*` and adds a 120/min/IP rate limit. Optional `MMS_PUBLIC_BASE_URL` sets the `openUrl` base at runtime.
 
 **Verification:** new `npm run test:unit` (17 tests: key required/invalid, live-shaped response, summary/recent/needs-attention mapping, safe 500, cache TTL, and a fake DB that throws on any write or any model other than `work_orders`/`auth_users`). Live against the local DB via `next start -p 3100`: 401/403/400 confirmed, real payload returned, warm polls ~10 ms, cache refreshed after 10 s, and `audit_logs` (95,960), `notifications` (30), `work_orders` count and max `updated_at` unchanged after ~40 polls. `npm run db:check` ✓, `lint` ✓, `typecheck` ✓, `build` ✓. `test:e2e` not run. No schema/migration change, no deployment.
+
+## FMP Live API — Full Executive Summary (FMP-MAINT-04, MMS side) — 2026-10-01
+
+Extended `GET /api/integrations/fmp/maintenance-dashboard/live` so FMP can show the whole MMS, not only job cards. New module `lib/integrations/fmp/executive-summary.ts` (`buildFmpLiveDashboard`) wraps the existing builder; the route now calls it. All MMS-FMP-INTEGRATION-01 fields (`source`, `online`, `generatedAt`, `cacheTtlSeconds`, `summary`, `needsAttention`, `recentRequests`) are unchanged. Not committed, not deployed.
+
+**New top-level sections (each `null` if its query fails):**
+
+- `links` — real MMS routes (dashboard, job cards, materials requests, inventory, assets, vehicles, worker activity, daily activity).
+- `jobCards` — totalJobCards, activeJobs, inProgress, closureRequests, completedThisMonth, paused, workingNow (Manager dashboard buckets; working/paused counted over active Job Cards only).
+- `materialsRequests` — total/pending/completed across `parts_requests` + `general_inventory_requests`, the two sub-totals, and `materialsPending` (Job Cards with an open request, `OPEN_PR_STATUSES`).
+- `inventory` — totalMaterials, currentBalance, lowStockCount, outOfStockCount from `getOfflineInventoryBalance()` (same numbers as Inventory Control), plus currentStockValueKwd and received/issued value this month.
+- `assets` — totalAssets, assetsAtSite, activeMaintenance, overdueReturn (Assets page rules) and the top 12 asset types.
+- `vehicleCompliance` — insurance/registration expired or expiring within 15 days (Manager dashboard window), counts plus the 5 most overdue.
+- `labor` — workers working now / paused, labor hours and cost today and this week (Sunday start), from non-cancelled work sessions.
+- `managerAttention` — six category counts (closure requests, vehicle expiry, overdue jobs, waiting materials, low stock, unassigned jobs), their sum, and up to 6 items picked round-robin across categories.
+
+**Costs:** labor cost and stock/received/issued values are sent unless `FMP_INTEGRATION_INCLUDE_COSTS=false` (documented in `.env.example`). Deliberate exception to `canViewCosts(context)` — no MMS user exists for this server-to-server request.
+
+**Read-only:** count/findMany/groupBy only. Verified live on the local DB (`next start -p 3100`): after ~55 polls `audit_logs` (95,960), `notifications` (30), `work_orders` count and max `updated_at` were unchanged. Payload ~7 KB, ~25 ms uncached, 10 s cache unchanged. The real payload was also run through FMP's parser: all seven sections parsed.
+
+**Validation:** `npm run test:unit` 23/23 (new `tests/unit/fmp-executive-summary.test.ts`: section mapping, cost withholding, failed-section isolation, read-only fake DB), `npm run db:check` ✓, `lint` ✓, `typecheck` ✓, `build` ✓. `test:e2e` not run. No schema or migration change.
