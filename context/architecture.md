@@ -186,6 +186,16 @@ Use `withBackendTransaction(actorId, operation)` for multi-step writes such as a
 - Significant actions create audit records.
 - Secrets and hashes are never logged.
 
+## External Integrations (MMS-FMP-INTEGRATION-01)
+
+- `GET /api/integrations/fmp/maintenance-dashboard/live` — read-only, live Maintenance dashboard summary for the separate Factory Management Platform (FMP). MMS stays the source of truth.
+- Server-to-server auth: `x-fmp-integration-key` header compared (SHA-256 + `timingSafeEqual`) to `FMP_INTEGRATION_KEY` (min 32 chars). Unset key → 503 (disabled); missing header → 401; wrong key → 403.
+- `proxy.ts` exempts `/api/integrations/fmp/*` from the session-cookie redirect and rate-limits it (120/min/IP); the route handler does all authentication.
+- Company-wide scope with no MMS user context — documented exception to `getWorkOrderVisibilityFilter()`, equivalent to full-access roles. No cost fields are selected or returned.
+- Reads only (`count`/`findMany`/`findFirst`); no audit logs, notifications, or `system_errors` rows per poll (failures log to console only).
+- 10-second in-process cache with in-flight dedupe; `Cache-Control: no-store`. `openUrl` base: `MMS_PUBLIC_BASE_URL` (runtime) → `NEXT_PUBLIC_APP_URL`.
+- Code: `lib/integrations/fmp/`; unit tests: `npm run test:unit` (`tests/unit/`, Node built-in test runner with type stripping).
+
 ## Deployment Assumptions
 
 Suitable now:

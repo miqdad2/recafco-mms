@@ -5,6 +5,7 @@
  * 1. Auth session enforcement — redirects unauthenticated users to /login.
  * 2. IP-based rate limiting for login submissions (brute-force prevention).
  * 3. IP-based rate limiting for health-check endpoints (DoS prevention).
+ * 4. Session-redirect bypass + rate limit for /api/integrations/fmp/* (key-authenticated in the route).
  *
  * The module-level Map persists across requests in a single Node.js process,
  * which is correct for local dev and single-instance private-cloud deployments.
@@ -55,6 +56,11 @@ const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const HEALTH_MAX = 120;
 const HEALTH_WINDOW_MS = 60 * 1000;
 
+// 120 FMP integration requests per IP per minute — FMP polls every 15–30s,
+// so this leaves ample headroom for several FMP instances behind one IP.
+const FMP_MAX = 120;
+const FMP_WINDOW_MS = 60 * 1000;
+
 // ── Proxy ─────────────────────────────────────────────────────────────────────
 
 export async function proxy(request: NextRequest) {
@@ -88,6 +94,21 @@ export async function proxy(request: NextRequest) {
         { status: 429, headers: { "Retry-After": "60" } }
       );
     }
+  }
+
+  // FMP server-to-server integration (MMS-FMP-INTEGRATION-01). No MMS
+  // session cookie — the route handler authenticates with the
+  // x-fmp-integration-key header — so it must skip updateSession() below,
+  // which would otherwise redirect it to /login.
+  if (pathname.startsWith("/api/integrations/fmp/")) {
+    const allowed = consume(`rl:fmp:ip:${ip}`, FMP_MAX, FMP_WINDOW_MS);
+    if (!allowed) {
+      return NextResponse.json(
+        { error: "Too many integration requests. Please slow down." },
+        { status: 429, headers: { "Retry-After": "60" } }
+      );
+    }
+    return NextResponse.next({ request });
   }
 
   // Roles page redirects to Users page — two-account model has no role management UI.
