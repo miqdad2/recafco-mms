@@ -2,9 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 
-import { requirePermission } from "@/lib/auth/context";
+import { requirePermission, requireUser } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
-import { canViewCosts } from "@/lib/security/permissions";
+import { canViewCosts, isManagerRole } from "@/lib/security/permissions";
+import { canCreatePartsRequest } from "@/lib/parts-requests/visibility";
 import { normalizeCategory, ADD_NEW_CATEGORY_VALUE } from "@/components/store/offline-inventory-types";
 import { CUSTOM_UNIT_VALUE, DEFAULT_UNIT } from "@/components/store/general-inventory-units";
 import { pickUploadedFile, validatePrivateFileWithOptions } from "@/lib/files/validation";
@@ -299,9 +300,23 @@ export async function addNewMaterialAction(
 
     const useConversion = String(formData.get("use_conversion") ?? "") === "on";
 
-    // Task 3/4 — when NOT using a different inventory unit, Inventory Unit
-    // is simply the (already custom-resolved) Purchase Unit — the "normal
-    // item" case, no separate inventory-unit input is even submitted then.
+    // Register-First and Unit Conversion UX Fix Unit, Task 1/2 — "Add
+    // opening stock now" is OFF by default; the default save is a
+    // register-only, zero-balance material. Purchase Quantity is only ever
+    // honored when this is explicitly ON — even if a stale/tampered
+    // purchase_quantity value were posted while this is off, it is ignored
+    // below rather than trusted.
+    const openingStockOn = String(formData.get("add_opening_stock") ?? "") === "on";
+
+    // inventoryUnit is what the form calls "Stock Unit" (the unit used for
+    // inventory balance and material issue). When the purchase unit is NOT
+    // different from the stock unit, it is simply the (already
+    // custom-resolved) Purchase Unit — the "normal item" case, no separate
+    // stock-unit input is even submitted then. Conversion direction is
+    // always 1 purchaseUnit = conversionQty inventoryUnit.
+    // Task 6 — when a different unit IS in use, this must be an explicit
+    // choice: an empty/missing selection is a validation error, never a
+    // silent fallback to PCS.
     let inventoryUnit: string | null;
     if (!useConversion) {
       inventoryUnit = purchaseUnit;
@@ -310,28 +325,42 @@ export async function addNewMaterialAction(
       inventoryUnit =
         inventoryUnitField === CUSTOM_UNIT_VALUE
           ? toNullable(String(formData.get("custom_inventory_unit") ?? ""))
-          : (inventoryUnitField ?? DEFAULT_UNIT);
-    }
-    if (!inventoryUnit) {
-      return { ok: false, error: "Inventory unit is required." };
+          : inventoryUnitField;
+      if (!inventoryUnit) {
+        return { ok: false, error: "Select stock unit." };
+      }
+      // A conversion between a unit and itself ("1 PCS = 5 PCS") is never
+      // meaningful and would silently multiply opening stock.
+      if (inventoryUnit.toLowerCase() === purchaseUnit.toLowerCase()) {
+        return {
+          ok: false,
+          error: "Stock unit is the same as purchase unit. Choose a different stock unit, or untick “Purchase unit is different from stock unit”.",
+        };
+      }
     }
 
-    // Task 7 — Purchase Quantity >= 0, no whole-number requirement (a
-    // fractional purchase quantity, e.g. 2.5 DRUM, is legitimate).
-    const purchaseQty = parseNonNegativeDecimal(String(formData.get("purchase_quantity") ?? ""), "Purchase quantity");
+    // Task 1/2/8 — Purchase Quantity only has meaning (and is only
+    // required) when opening stock is explicitly being added; forced to 0
+    // otherwise regardless of what was posted, so the default save is
+    // always a true zero-balance registration.
+    const purchaseQty = openingStockOn
+      ? parseNonNegativeDecimal(String(formData.get("purchase_quantity") ?? ""), "Purchase quantity")
+      : 0;
+    if (openingStockOn && !(purchaseQty > 0)) {
+      return { ok: false, error: "Purchase quantity is required only when adding opening stock." };
+    }
 
-    // Task 7 — Conversion Quantity > 0 only required when units genuinely
-    // differ AND a quantity is actually being added; a conversion factor
-    // has no meaning to validate for a quantity-less "register the material
-    // now" save (Task 6).
+    // Task 8 — Conversion Quantity is required and must be greater than 0
+    // whenever a different store/issue unit is in use, regardless of
+    // whether opening stock is being added now — the conversion setup
+    // itself is validated upfront even for a zero-balance registration.
     let conversionQty = 1;
     if (useConversion) {
       const conversionRaw = toNullable(String(formData.get("conversion_quantity") ?? ""));
       conversionQty = conversionRaw !== null ? Number(conversionRaw) : NaN;
-      if (purchaseQty > 0 && (!Number.isFinite(conversionQty) || conversionQty <= 0)) {
-        return { ok: false, error: "Conversion quantity must be greater than 0 when using a different inventory unit." };
+      if (!Number.isFinite(conversionQty) || conversionQty <= 0) {
+        return { ok: false, error: "Enter how many stock units are inside 1 purchase unit." };
       }
-      if (!(conversionQty > 0)) conversionQty = 1;
     }
 
     // Task 4 — the three formulas this whole unit is about: Opening
@@ -339,6 +368,9 @@ export async function addNewMaterialAction(
     // "same unit" case is simply conversionQty === 1, so this one formula
     // covers both cases without a separate code path).
     const qty = Math.round(purchaseQty * conversionQty * 1000) / 1000;
+    if (openingStockOn && !(qty > 0)) {
+      return { ok: false, error: "Opening stock must be greater than 0 when enabled." };
+    }
 
     // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 3,
     // extended by Unit 10G.73, Task 4/6 — optional; only rendered on the
@@ -347,7 +379,14 @@ export async function addNewMaterialAction(
     // × Purchase Unit Cost (Task 4's own formula) — 0 when purchase
     // quantity is 0, even if a unit cost was still entered "as a default
     // for later" (Task 6's explicit "allow cost to be saved" behavior).
-    const purchaseUnitCostRaw = toNullable(String(formData.get("purchase_unit_cost") ?? ""));
+    //
+    // Simple Layout Register-First Fix, Task 10 — a cost is only ever
+    // recorded together with real opening stock, and only from a viewer
+    // with cost permission: a register-only save writes no unit cost and
+    // no stock value, and a price posted by a cost-restricted user is
+    // dropped rather than trusted.
+    const purchaseUnitCostRaw =
+      openingStockOn && canViewCosts(context) ? toNullable(String(formData.get("purchase_unit_cost") ?? "")) : null;
     const purchaseUnitCost = purchaseUnitCostRaw !== null ? Number(purchaseUnitCostRaw) : null;
     if (purchaseUnitCost !== null && (!Number.isFinite(purchaseUnitCost) || purchaseUnitCost < 0)) {
       return { ok: false, error: "Purchase unit cost must be 0 or greater." };
@@ -355,14 +394,15 @@ export async function addNewMaterialAction(
     const inventoryUnitCost = purchaseUnitCost !== null ? Math.round((purchaseUnitCost / conversionQty) * 1000000) / 1000000 : null;
     const openingStockValue = purchaseUnitCost !== null ? Math.round(purchaseQty * purchaseUnitCost * 1000) / 1000 : null;
 
-    // Task 4 — a clear, human-readable audit note on the movement itself
-    // ("Opening stock — 1 BARREL converted to 200 LITER"), only when a real
+    // Task 4/9 — a clear, human-readable audit note on the movement itself
+    // ("Opening stock: 1 BARREL × 200 LITER = 200 LITER"), only when a real
     // conversion actually applies (different units AND an actual quantity
-    // was converted) — a plain same-unit save gets no such note, matching
-    // this form's existing plain-remarks behavior.
+    // was converted — i.e. opening stock is ON) — a plain same-unit save, or
+    // any register-only zero-balance save, gets no such note, matching this
+    // form's existing plain-remarks behavior.
     const conversionNote =
       useConversion && purchaseQty > 0 && conversionQty !== 1
-        ? `Opening stock — ${purchaseQty} ${purchaseUnit} converted to ${qty} ${inventoryUnit}`
+        ? `Opening stock: ${purchaseQty} ${purchaseUnit} × ${conversionQty} ${inventoryUnit} = ${qty} ${inventoryUnit}`
         : null;
     const remarks = conversionNote ? (userRemarks ? `${conversionNote} · ${userRemarks}` : conversionNote) : userRemarks;
 
@@ -902,4 +942,45 @@ export async function searchOfflineInventoryMaterialsAction(
 export async function getCostViewPermissionAction(): Promise<boolean> {
   const context = await requirePermission("work_orders.manage");
   return canViewCosts(context);
+}
+
+// Job Card Materials Request UX and Existing Inventory Selection Fix —
+// the Materials Request wizard's own Requested Materials step reuses the
+// exact same debounced-search pattern as the two actions above, but cannot
+// reuse them directly: both gate on work_orders.manage, which Technician
+// (parts_requests.create only) does not have, even though Technician is one
+// of this wizard's own legitimate creators (see canCreatePartsRequest). Gated
+// on that shared check instead, so every role that can reach Step 2 of this
+// wizard gets real suggestions, never a silently-empty list.
+export async function searchOfflineInventoryMaterialsForPartsRequestAction(
+  query: string,
+  opts?: { unit?: string; partNumber?: string }
+): Promise<OfflineInventorySearchMatch[]> {
+  const context = await requireUser();
+  if (!canCreatePartsRequest(context)) return [];
+  try {
+    return await searchOfflineInventoryMaterials({
+      query,
+      unit: opts?.unit ?? null,
+      partNumber: opts?.partNumber ?? null,
+      limit: 10,
+      canViewCosts: canViewCosts(context),
+    });
+  } catch {
+    return [];
+  }
+}
+
+// Companion to the search action above — fetched once on the wizard's own
+// mount so Data Entry/Technician/etc. never see so much as a flash of the
+// Estimated Unit Price/Estimated Total columns before this resolves.
+// canUnlockRequestUnit additionally reuses isManagerRole — Task 6's "Request
+// / Issue Unit is locked for an existing-inventory match unless an
+// authorized user intentionally changes it" — Super Admin/Maintenance
+// Manager are the one existing "authorized override" role set this codebase
+// already uses for comparable worker-rate/cost unlocks.
+export async function getPartsRequestWizardFlagsAction(): Promise<{ canViewCosts: boolean; canUnlockRequestUnit: boolean }> {
+  const context = await requireUser();
+  if (!canCreatePartsRequest(context)) return { canViewCosts: false, canUnlockRequestUnit: false };
+  return { canViewCosts: canViewCosts(context), canUnlockRequestUnit: isManagerRole(context) };
 }

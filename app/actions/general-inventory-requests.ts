@@ -8,9 +8,11 @@ import { requireUser } from "@/lib/auth/context";
 import {
   createGeneralInventoryRequest,
   receiveGeneralInventoryRequest,
-  createGeneralInventoryRequestSchema
+  createGeneralInventoryRequestSchema,
+  searchInventoryMaterialsForRequest,
+  type MaterialsRequestInventoryMatch
 } from "@/lib/backend/general-inventory-requests/service";
-import { CUSTOM_UNIT_VALUE, DEFAULT_UNIT } from "@/components/store/general-inventory-units";
+import { CUSTOM_UNIT_VALUE } from "@/components/store/general-inventory-units";
 import { safeErrorMessage } from "@/lib/errors/error-handler";
 import { errorToLogInput, logSystemError } from "@/lib/errors/logging";
 
@@ -50,26 +52,44 @@ function parseGeneralItems(formData: FormData) {
     .map((index) => {
       const materialName = field(formData, "material_name", index);
       if (!materialName) return null;
-      // Task 5/6: conversion is only "on" when the row's checkbox was
-      // checked — its inventory_unit/conversion fields are otherwise
-      // ignored even if stray values are present, so a toggled-off row
-      // never accidentally saves a conversion.
+      // "Purchased in a different unit" is only "on" when the row's
+      // checkbox was checked — its purchase_unit/conversion fields are
+      // otherwise ignored even if stray values are present, so a
+      // toggled-off row never accidentally saves a conversion.
       const conversionEnabled = formData.get(`use_conversion_${index}`) === "on";
-      const inventoryUnit = conversionEnabled ? resolveUnit(formData, "inventory_unit", index) : "";
+      const purchaseUnit = conversionEnabled ? resolveUnit(formData, "purchase_unit", index) : "";
       const conversionQuantity = conversionEnabled ? num(field(formData, "conversion_quantity", index)) : undefined;
       return {
         materialName,
         description: field(formData, "description", index) || undefined,
         quantity: Number(field(formData, "quantity", index)) || 0,
-        unit: resolveUnit(formData, "unit", index) || DEFAULT_UNIT,
+        // unit_ is the Request / Issue Unit. No PCS fallback: an
+        // unselected unit reaches the schema as "" and is rejected there.
+        unit: resolveUnit(formData, "unit", index),
         unitPrice: num(field(formData, "unit_price", index)),
         supplier: field(formData, "supplier", index) || undefined,
         remarks: field(formData, "remarks", index) || undefined,
-        inventoryUnit: inventoryUnit || undefined,
-        conversionQuantity
+        purchaseUnit: purchaseUnit || undefined,
+        conversionQuantity,
+        inventoryMaterialKey: field(formData, "material_key", index) || undefined
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
+// Existing-material autocomplete for the New Materials Request item rows.
+// Called directly (not as a <form action>) while the user types, debounced
+// client-side; authorization lives in the service (same gate as creating
+// the request). Returns no cost fields for any viewer.
+export async function searchInventoryMaterialsForRequestAction(
+  query: string
+): Promise<MaterialsRequestInventoryMatch[]> {
+  const context = await requireUser();
+  try {
+    return await searchInventoryMaterialsForRequest(context, query);
+  } catch {
+    return [];
+  }
 }
 
 export async function createGeneralInventoryRequestAction(formData: FormData) {
@@ -95,7 +115,10 @@ export async function createGeneralInventoryRequestAction(formData: FormData) {
     revalidatePath("/dashboard");
     // Opens straight into the new request's detail view as confirmation —
     // it already shows the generated request number and full item list.
-    targetPath = `/store/parts-requests?genPreview=${result.id}`;
+    // submitted=1 makes that view show its one-time "request submitted"
+    // state with next-action buttons; any later open of the same request
+    // (list link, receive error redirect) has no such flag.
+    targetPath = `/store/parts-requests?genPreview=${result.id}&submitted=1`;
   } catch (error) {
     await logSystemError(errorToLogInput(error, "general-inventory-requests.createGeneralInventoryRequestAction", context.userId, {
       entityType: "general_inventory_request"

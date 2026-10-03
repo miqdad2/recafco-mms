@@ -513,12 +513,29 @@ model parts_request_items {
   part_number            String?
   ss_rec_code            String?
   quantity_requested     Decimal                  @default(0) @db.Decimal(12, 2)
-  unit_price             Decimal                  @default(0) @db.Decimal(12, 3)
+  unit_price             Decimal?                 @db.Decimal(12, 3)
   total_price            Decimal?                 @default(dbgenerated("(COALESCE(quantity_requested, (0)::numeric) * COALESCE(unit_price, (0)::numeric))")) @db.Decimal(12, 3)
   remarks                String?
   stock_availability     String                   @default("Unchecked")
   issued_quantity        Decimal                  @default(0) @db.Decimal(12, 2)
   created_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  // Job Card Materials Request UX and Existing Inventory Selection Fix —
+  // unit is the Request / Issue Unit (the unit maintenance/store will issue
+  // in); NULL on rows created before this unit. inventory_material_key is
+  // set only when this row was linked to an existing, non-catalog (manual)
+  // Offline Inventory material (buildBalanceKey()'s "manual:<name>|<unit>"
+  // identity) — a catalog-backed match instead sets the part_id column
+  // above, reusing the same parts.id both tables already share. Both NULL
+  // means "New Material Request", not linked to inventory. purchase_unit/
+  // conversion_quantity are set only when "Purchased in a different unit"
+  // is used — quantity_requested/unit stay in Request/Issue Unit terms;
+  // conversion_quantity means "1 purchase_unit = conversion_quantity unit",
+  // so the purchase estimate (quantity_requested / conversion_quantity) is
+  // always computed on display, never persisted as its own column.
+  unit                   String?
+  inventory_material_key String?
+  purchase_unit          String?
+  conversion_quantity    Decimal?                 @db.Decimal(12, 4)
   parts                  parts?                   @relation(fields: [part_id], references: [id], onUpdate: NoAction)
   parts_requests         parts_requests           @relation(fields: [parts_request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   purchase_request_items purchase_request_items[]
@@ -1464,6 +1481,18 @@ model general_inventory_request_items {
   conversion_quantity       Decimal?                   @db.Decimal(12, 4)
   inventory_quantity_to_add Decimal?                   @default(dbgenerated("(COALESCE(quantity_requested, (0)::numeric) * COALESCE(conversion_quantity, (1)::numeric))")) @db.Decimal(14, 4)
   unit_cost                 Decimal?                   @default(dbgenerated("(CASE WHEN unit_price IS NULL THEN NULL ELSE (unit_price / COALESCE(conversion_quantity, (1)::numeric)) END)")) @db.Decimal(14, 6)
+  // Materials Request Existing-vs-New Material and Unit Conversion UX Fix:
+  // inventory_material_key/inventory_part_id are set only when the row was
+  // linked to an existing Offline Inventory material (buildBalanceKey()
+  // identity); both NULL means "New Material Request". request_unit/
+  // request_quantity hold the Request / Issue Unit and the quantity entered
+  // in it — `unit`/`quantity_requested` above keep their purchase-unit
+  // meaning (for a converted row quantity_requested is the purchase
+  // estimate). All four are NULL on rows created before this unit.
+  inventory_material_key    String?
+  inventory_part_id         String?                    @db.Uuid
+  request_unit              String?
+  request_quantity          Decimal?                   @db.Decimal(14, 4)
   created_at                DateTime                   @default(now()) @db.Timestamptz(6)
   request                   general_inventory_requests @relation(fields: [request_id], references: [id], onDelete: Cascade)
 

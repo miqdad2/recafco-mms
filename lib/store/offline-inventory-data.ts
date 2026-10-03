@@ -624,6 +624,15 @@ export type OfflineInventorySearchMatch = {
   // searchOfflineInventoryMaterials's own canViewCosts parameter) or when
   // the material genuinely has no priced movement recorded.
   last_unit_cost: number | null;
+  // Job Card Materials Request UX and Existing Inventory Selection Fix —
+  // the same status this material would show on the main Inventory Control
+  // list (getOfflineInventoryBalance's own negative/out_of_stock/low_stock/
+  // ok rules, using minimum_stock_quantity when configured), so a
+  // suggestion's status badge never disagrees with the real list. The list's
+  // own "review_required" (cross-unit name mismatch) leg is not computed
+  // here — too costly to check per keystroke for a top-N candidate set —
+  // so this never returns "review_required", only the other four.
+  stock_status: Exclude<StockStatus, "review_required">;
 };
 
 // Required Materials Inventory Matching Unit 5, Task 2: Required Materials
@@ -711,7 +720,7 @@ export async function searchOfflineInventoryMaterials(opts: {
         }
   );
 
-  const [grouped, locationRows, lastUnitCostByKey] = await Promise.all([
+  const [grouped, locationRows, lastUnitCostByKey, settingsRows] = await Promise.all([
     prisma.offline_inventory_movements.groupBy({
       by: ["part_id", "manual_material_name", "unit", "movement_type"],
       where: { OR: identityOr },
@@ -728,6 +737,20 @@ export async function searchOfflineInventoryMaterials(opts: {
     // queried) for a caller without cost permission, same "no leak by
     // design" pattern this codebase already uses for every other cost read.
     opts.canViewCosts ? getLastUnitCostsForIdentities(candidates) : Promise.resolve(new Map<string, number | null>()),
+    // Job Card Materials Request UX and Existing Inventory Selection Fix —
+    // minimum_stock_quantity per candidate, for the same Low Stock rule
+    // getOfflineInventoryBalance() uses (only a handful of rows: one
+    // settings lookup per candidate identity, not the whole table).
+    prisma.inventory_material_settings.findMany({
+      where: {
+        OR: candidates.map((c) =>
+          c.part_id
+            ? { part_id: c.part_id }
+            : { part_id: null, manual_material_name: { equals: c.manual_material_name ?? "", mode: "insensitive" as const }, unit: { equals: c.unit, mode: "insensitive" as const } }
+        ),
+      },
+      select: { part_id: true, manual_material_name: true, unit: true, minimum_stock_quantity: true },
+    }),
   ]);
 
   const balanceByKey = new Map<string, number>();
@@ -739,10 +762,25 @@ export async function searchOfflineInventoryMaterials(opts: {
     balanceByKey.set(key, (balanceByKey.get(key) ?? 0) + delta);
   }
   const locationByKey = new Map(locationRows.map((r) => [buildBalanceKey(r), r.counterparty]));
+  const minimumByKey = new Map(
+    settingsRows.map((s) => [buildBalanceKey(s), s.minimum_stock_quantity !== null ? Number(s.minimum_stock_quantity) : null])
+  );
+
+  // Job Card Materials Request UX and Existing Inventory Selection Fix —
+  // same priority order as getOfflineInventoryBalance(): Negative, then Out
+  // of Stock, then Low Stock, else OK (review_required is never returned
+  // here, see the type's own comment above).
+  function stockStatusFor(balance: number, minimum: number | null): Exclude<StockStatus, "review_required"> {
+    if (balance < 0) return "negative";
+    if (balance === 0) return "out_of_stock";
+    const isLowStock = minimum !== null ? balance <= minimum : balance === 1;
+    return isLowStock ? "low_stock" : "ok";
+  }
 
   return candidates
     .map((c) => {
       const key = buildBalanceKey(c);
+      const balance = balanceByKey.get(key) ?? 0;
       return {
         key,
         part_id: c.part_id,
@@ -753,9 +791,10 @@ export async function searchOfflineInventoryMaterials(opts: {
         unit: c.unit,
         category: c.category ? normalizeCategory(c.category) : OTHER_CATEGORY,
         location: locationByKey.get(key) ?? null,
-        balance: balanceByKey.get(key) ?? 0,
+        balance,
         last_movement_date: c.movement_date.toISOString(),
         last_unit_cost: opts.canViewCosts ? lastUnitCostByKey.get(key) ?? null : null,
+        stock_status: stockStatusFor(balance, minimumByKey.get(key) ?? null),
       };
     })
     .sort((a, b) => a.display_name.localeCompare(b.display_name));
@@ -854,6 +893,82 @@ export async function resolveMaterialMatchByKey(key: string | null | undefined):
   }
 
   return { matched: true, key: trimmedKey, part_id: partId, balance };
+}
+
+export type OfflineInventoryMaterialIdentity = {
+  key: string;
+  part_id: string | null;
+  manual_material_name: string | null;
+  manual_part_number: string | null;
+  ss_rec_code: string | null;
+  display_name: string;
+  unit: string;
+  category: string;
+};
+
+const MATERIAL_KEY_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Materials Request Existing-vs-New Material and Unit Conversion UX Fix —
+// resolves a buildBalanceKey() identity back to the material's own stored
+// metadata (its most recent movement, the same "latest movement wins" rule
+// getOfflineInventoryBalance() uses for display). Used when a Materials
+// Request row is linked to an existing material, both at save time (to take
+// the Request / Issue Unit from Inventory rather than from the form) and at
+// receive time (so the RECEIVED movement lands on that exact identity with
+// its part number / SS Rec. Code / category intact). Returns null when the
+// key is blank, malformed, or no longer resolves to any movement — callers
+// then fall back to plain typed-name behavior, never to a different
+// material.
+export async function getOfflineInventoryMaterialByKey(
+  key: string | null | undefined
+): Promise<OfflineInventoryMaterialIdentity | null> {
+  const trimmedKey = (key ?? "").trim();
+  if (!trimmedKey) return null;
+
+  let where: Prisma.offline_inventory_movementsWhereInput;
+  if (trimmedKey.startsWith("part:")) {
+    const partId = trimmedKey.slice("part:".length);
+    if (!MATERIAL_KEY_UUID_RE.test(partId)) return null;
+    where = { part_id: partId, deleted_at: null };
+  } else if (trimmedKey.startsWith("manual:")) {
+    const rest = trimmedKey.slice("manual:".length);
+    const sepIndex = rest.lastIndexOf("|");
+    if (sepIndex <= 0) return null;
+    where = {
+      part_id: null,
+      manual_material_name: { equals: rest.slice(0, sepIndex), mode: "insensitive" },
+      unit: { equals: rest.slice(sepIndex + 1), mode: "insensitive" },
+      deleted_at: null,
+    };
+  } else {
+    return null;
+  }
+
+  const latest = await prisma.offline_inventory_movements.findFirst({
+    where,
+    orderBy: [{ movement_date: "desc" }, { created_at: "desc" }],
+    select: {
+      part_id: true,
+      manual_material_name: true,
+      manual_part_number: true,
+      ss_rec_code: true,
+      unit: true,
+      category: true,
+      parts: { select: { part_name: true } },
+    },
+  });
+  if (!latest) return null;
+
+  return {
+    key: buildBalanceKey(latest),
+    part_id: latest.part_id,
+    manual_material_name: latest.manual_material_name,
+    manual_part_number: latest.manual_part_number,
+    ss_rec_code: latest.ss_rec_code,
+    display_name: latest.parts?.part_name ?? latest.manual_material_name ?? "Unknown",
+    unit: latest.unit,
+    category: latest.category ? normalizeCategory(latest.category) : OTHER_CATEGORY,
+  };
 }
 
 export type ExistingMaterialMatch = {

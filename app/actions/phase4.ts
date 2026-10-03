@@ -35,6 +35,7 @@ import { errorToLogInput, logSystemError } from "@/lib/errors/logging";
 import { prisma } from "@/lib/db/prisma";
 import { OPEN_PR_STATUSES } from "@/lib/display/parts-request-labels";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
+import { canViewCosts } from "@/lib/security/permissions";
 import { normalizeCategory } from "@/components/store/offline-inventory-types";
 import { emitOfflineInventoryRealtimeEvent, emitMaterialsRequestRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 
@@ -54,14 +55,25 @@ function parseItems(formData: FormData) {
     .map((index) => {
       const description = field(formData, "description", index);
       if (!description) return null;
+      // Job Card Materials Request UX and Existing Inventory Selection Fix,
+      // Task 8/10 — unit_price is only a real number when something was
+      // actually typed; an empty field means "not priced yet" (null), never
+      // a silently-invented 0. conversion_quantity similarly stays null
+      // unless "Purchased in a different unit" actually supplied one.
+      const unitPriceRaw = field(formData, "unit_price", index);
+      const conversionRaw = field(formData, "conversion_quantity", index);
       return {
         part_id: field(formData, "part_id", index) || null,
         description,
         part_number: field(formData, "part_number", index) || null,
         ss_rec_code: field(formData, "ss_rec_code", index) || null,
         quantity_requested: num(field(formData, "quantity_requested", index)),
-        unit_price: num(field(formData, "unit_price", index)),
-        remarks: field(formData, "remarks", index) || null
+        unit_price: unitPriceRaw ? num(unitPriceRaw) : null,
+        remarks: field(formData, "remarks", index) || null,
+        unit: field(formData, "unit", index) || null,
+        inventory_material_key: field(formData, "inventory_material_key", index) || null,
+        purchase_unit: field(formData, "purchase_unit", index) || null,
+        conversion_quantity: conversionRaw ? num(conversionRaw) : null
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
@@ -94,11 +106,45 @@ async function requireReceiveIssuePermission() {
 export async function createPartsRequestAction(formData: FormData) {
   const context = await requirePartsRequestCreator();
   const workOrderId = idFrom(formData, "work_order_id");
-  const items = parseItems(formData);
+  // Estimated unit price is a cost field: the wizard only renders it for a
+  // cost-permitted viewer, and this drops it server-side for anyone else so
+  // a hand-built request can't save one either.
+  const mayEnterPrices = canViewCosts(context);
+  const items = parseItems(formData).map((item) => (mayEnterPrices ? item : { ...item, unit_price: null }));
   if (!items.length) redirect(`/maintenance/work-orders/${workOrderId}?error=no-items`);
   if (items.some((item) => !Number.isInteger(item.quantity_requested) || item.quantity_requested <= 0)) {
     redirect(
       `/maintenance/work-orders/${workOrderId}?error=${encodeURIComponent("Quantity must be a whole number greater than 0.")}`
+    );
+  }
+  // Job Card Materials Request UX and Existing Inventory Selection Fix,
+  // Task 4/6 — a Request / Issue Unit is always required, whether the row
+  // came from an existing Offline Inventory match (auto-filled) or a
+  // hand-typed new material (user must pick one) — the wizard's own client
+  // validation already blocks this, this is the server-side backstop.
+  if (items.some((item) => !item.unit)) {
+    redirect(
+      `/maintenance/work-orders/${workOrderId}?error=${encodeURIComponent("Select the unit used for storing and issuing this material.")}`
+    );
+  }
+  // Task 7 — "Purchased in a different unit" is all-or-nothing: a
+  // purchase_unit without a conversion_quantity (or vice versa) can never
+  // reach here from the wizard's own UI, but is rejected defensively rather
+  // than silently saved half-configured.
+  if (
+    items.some(
+      (item) =>
+        Boolean(item.purchase_unit) !== Boolean(item.conversion_quantity) ||
+        (item.conversion_quantity !== null && item.conversion_quantity <= 0)
+    )
+  ) {
+    redirect(
+      `/maintenance/work-orders/${workOrderId}?error=${encodeURIComponent("Enter how many request/issue units are inside 1 purchase unit.")}`
+    );
+  }
+  if (items.some((item) => item.unit_price !== null && item.unit_price < 0)) {
+    redirect(
+      `/maintenance/work-orders/${workOrderId}?error=${encodeURIComponent("Estimated unit price must be 0 or greater.")}`
     );
   }
 

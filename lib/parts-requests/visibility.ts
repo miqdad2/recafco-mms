@@ -58,3 +58,25 @@ export function canReceiveIssueMaterials(context: CurrentUserContext): boolean {
     context.permissions.includes("store.issue")
   );
 }
+
+/**
+ * Who may create a Job Card Materials Request — the exact same check
+ * duplicated inline as `requirePartsRequestCreator()` in app/actions/
+ * phase4.ts and `assertCanCreatePartsRequest()` in lib/backend/parts-
+ * requests/service.ts (both left as-is, out of scope to refactor here).
+ * Job Card Materials Request UX and Existing Inventory Selection Fix adds
+ * this exported copy so its own new Requested Materials autocomplete/cost-
+ * permission actions (app/actions/offline-inventory.ts) can gate on the
+ * wizard's real creator set — including Technician, who has
+ * parts_requests.create but not work_orders.manage — rather than reusing
+ * the New Job Card wizard's own work_orders.manage-only search action,
+ * which would silently return nothing for a Technician typing a material
+ * name.
+ */
+export function canCreatePartsRequest(context: CurrentUserContext): boolean {
+  return (
+    context.role?.slug === "super_admin" ||
+    context.permissions.includes("parts_requests.create") ||
+    context.permissions.includes("work_orders.manage")
+  );
+}

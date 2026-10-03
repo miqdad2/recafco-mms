@@ -16,6 +16,7 @@ import {
 
 import { StatusBadge } from "@/components/ui/status-badge";
 import { WorkerSessionRow } from "@/components/work-orders/worker-session-row";
+import { ReviewApproveClosureButton } from "@/components/work-orders/review-approve-closure-button";
 import type { WorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import type { MaterialFulfillment } from "@/lib/work-orders/material-fulfillment";
 // No-Confusion Material + Status Panel Unit 10G.56: the exact same pure
@@ -94,6 +95,12 @@ export type DailyActivityCardData = {
   nextAction: DailyActivityNextAction;
   showAssignWorkers: boolean;
   showRequestClosure: boolean;
+  // Daily Activity Manager Closure Request Review Action: true only when
+  // this Job Card's real status is Closure Requested AND the viewer is a
+  // Manager/Super Admin (the same role check the closure review/approve
+  // backend enforces) — computed server-side in page.tsx, never guessed
+  // from label text here.
+  showReviewClosure: boolean;
   laborSummary: WorkOrderLaborSummary;
   canManageSessions: boolean;
   isManager: boolean;
@@ -428,7 +435,16 @@ function computeGuidance(
   workers: ReturnType<typeof summarizeWorkers>
 ): Guidance {
   if (card.status === "Closure Requested") {
-    return { message: "Waiting for Manager approval. This Job Card has been submitted for closure approval.", button: null, urgent: false };
+    // A viewer who can actually review/approve gets the reviewer wording
+    // (and the Review Closure & Approve button below); everyone else keeps
+    // the existing "submitted, waiting" wording.
+    return {
+      message: card.showReviewClosure
+        ? "Waiting for Manager approval. Review the closure details before approving."
+        : "Waiting for Manager approval. This Job Card has been submitted for closure approval.",
+      button: null,
+      urgent: false,
+    };
   }
   if (card.status === "Closed") {
     return { message: "Job Card closed.", button: null, urgent: false };
@@ -594,6 +610,20 @@ export function DailyActivitySelectedPanel({
             <button type="button" onClick={onRequestClosure} className={guidanceBtnClass}>
               Request Closure
             </button>
+          ) : null}
+          {card.showReviewClosure ? (
+            // Opens the existing ClosureReviewModal (same component and
+            // approve action as the dashboard and Job Card detail page) and
+            // router.refresh()es this page after approval — no closure
+            // logic lives here. key resets its open state if the selected
+            // Job Card changes.
+            <ReviewApproveClosureButton
+              key={card.id}
+              workOrderId={card.id}
+              label="Review Closure & Approve"
+              loadErrorMessage="Closure review could not be loaded. Please try again or open the Job Card."
+              className={guidanceBtnClass}
+            />
           ) : null}
           <Link
             href={detailHref}

@@ -11,10 +11,21 @@ import { X } from "lucide-react";
 // stay their existing small/medium size; this shell is only for these four
 // data-entry forms.
 //
-// Dirty tracking is intentionally coarse: any input/change anywhere in the
-// body (event delegation via onInputCapture/onChangeCapture) flips `dirty`
-// to true once. This matches "if user has entered data" well enough without
-// requiring each wrapped form to separately report its own field state.
+// Dirty tracking is intentionally coarse: any change anywhere in the body
+// (event delegation via onChangeCapture) flips `dirty` to true once. This
+// matches "if user has entered data" well enough without requiring each
+// wrapped form to separately report its own field state.
+//
+// Deliberately NOT also onInputCapture: a native <select> fires `input` and
+// then `change` as two separate events, and React only runs a select's own
+// onChange on the second. Flipping `dirty` on the first re-rendered the
+// wrapped form in between (the context value below is a new object every
+// render), which made React write the still-old controlled value back into
+// the <select> — so `change` then arrived carrying the old value and the
+// first pick in any freshly opened modal was silently lost. onChangeCapture
+// alone still covers text inputs/textareas (React's onChange fires on their
+// `input` event), checkboxes, file inputs and selects, in the same batch as
+// the field's own onChange.
 
 type LargeFormModalContextValue = {
   requestClose: () => void;
@@ -113,7 +124,6 @@ export function LargeFormModal({
           {/* Body — the only scrolling region; also owns dirty-detection */}
           <div
             className="flex-1 overflow-y-auto px-6 py-5"
-            onInputCapture={() => setDirty(true)}
             onChangeCapture={() => setDirty(true)}
           >
             <LargeFormModalContext.Provider value={{ requestClose }}>

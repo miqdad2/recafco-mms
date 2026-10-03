@@ -916,6 +916,17 @@ export async function upsertWorkOrderAction(formData: FormData) {
           quantity_requested: row!.quantity_required,
           unit_price: 0,
           remarks: row!.notes,
+          // Job Card Materials Request UX and Existing Inventory Selection
+          // Fix — this auto-created request comes from the Job Card's own
+          // Required Materials list (work_order_required_parts), which
+          // already tracks its own unit (unit_of_measure) but not yet a
+          // distinct manual-inventory identity or purchase conversion; both
+          // stay null here rather than inventing values this source list
+          // doesn't actually have.
+          unit: row!.unit_of_measure,
+          inventory_material_key: null,
+          purchase_unit: null,
+          conversion_quantity: null,
         })),
       });
     } catch (autoRequestError) {

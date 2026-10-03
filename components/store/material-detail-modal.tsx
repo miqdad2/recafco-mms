@@ -268,8 +268,8 @@ export function MaterialDetailModal({
                     <div key={r.id} className="rounded-md border border-[#E5E7EB] p-3">
                       <div className="flex items-center justify-between gap-3">
                         <StatusBadge
-                          label={movementTypeLabel(r.movement_type, r.reference_number)}
-                          tone={movementTypeTone(r.movement_type)}
+                          label={movementTypeLabel(r.movement_type, r.reference_number, r.quantity)}
+                          tone={movementTypeTone(r.movement_type, r.quantity)}
                         />
                         <p className="shrink-0 font-bold text-[#111827]">
                           {r.quantity.toLocaleString("en-US", { maximumFractionDigits: 3 })} {r.unit}

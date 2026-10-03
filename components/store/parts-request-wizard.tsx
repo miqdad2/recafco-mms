@@ -1,10 +1,17 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { Check, ChevronLeft, ChevronRight, Loader2, Plus, X } from "lucide-react";
 
 import { createPartsRequestAction } from "@/app/actions/phase4";
+import {
+  searchOfflineInventoryMaterialsForPartsRequestAction,
+  getPartsRequestWizardFlagsAction,
+} from "@/app/actions/offline-inventory";
+import type { OfflineInventorySearchMatch } from "@/lib/store/offline-inventory-data";
+import { GENERAL_INVENTORY_UNIT_OPTIONS, CUSTOM_UNIT_VALUE } from "@/components/store/general-inventory-units";
 import { AttachmentUploadFields } from "@/components/files/attachment-upload-fields";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { useLargeFormModal } from "@/components/ui/large-form-modal";
 import {
   ATTACHMENT_FILE_ACCEPT,
@@ -12,26 +19,166 @@ import {
   PARTS_REQUEST_ATTACHMENT_CATEGORIES,
 } from "@/lib/files/attachment-constants";
 
+// Job Card Materials Request UX and Existing Inventory Selection Fix.
+//
+// Task 1 — the Select Job Card dropdown below is a standard, fully-
+// controlled <select value=... onChange=...>: selectedWo/the warning text/
+// the Next button's own validate() all read the SAME selectedWoId state in
+// the SAME render pass. The "first selection is lost" bug reported against
+// it was not in this file — it came from LargeFormModal's dirty tracking
+// re-rendering this form between the select's native `input` and `change`
+// events (see the note in components/ui/large-form-modal.tsx), fixed there.
+//
+// Tasks 2–11 — Requested Materials is rewritten from a fixed-8-row HTML
+// table (3 default rows, a plain text Part/Material input, a free-typed
+// "Unit" field that was never actually read server-side) into a dynamic
+// list of material rows (1 default row; Add Row up to MAX_ITEM_ROWS;
+// Remove on any row, never below 1). Job Card Materials Request Table
+// Layout and Inventory Search Fix: those rows are laid out as a compact
+// table again (one line per material, with a conversion mini-row under a
+// line only when "Purchased in a different unit" is on), replacing the
+// large one-card-per-material layout — same row state and save fields.
+// Each row has a debounced Offline Inventory
+// autocomplete — same 300ms-debounce/stale-response-guard pattern already
+// established in the New Job Card wizard's own Required Materials step
+// (components/work-orders/work-order-wizard.tsx), reused here via a new,
+// more broadly-gated pair of actions (searchOfflineInventoryMaterialsFor
+// PartsRequestAction / getPartsRequestWizardFlagsAction) since that
+// wizard's own actions gate on work_orders.manage only, which Technician
+// (parts_requests.create only) lacks.
+//
+// "Existing Inventory Material" vs "New Material Request" is the one
+// genuinely new concept here: selecting a suggestion locks in either the
+// match's own part_id (catalog-backed) or its manual buildBalanceKey()
+// identity (inventoryMaterialKey) — both null means "new, not linked to
+// inventory yet". Request / Issue Unit always comes from that match once
+// selected (never silently PCS) and is locked (plain text) until an
+// authorized user (Super Admin/Maintenance Manager — canUnlockRequestUnit)
+// clicks "Change". Everything here is a request line only — no inventory
+// balance, no stock movement, nothing auto-received; that still happens
+// later, through Receive Materials.
+
 const MAX_ITEM_ROWS = 8;
 
-type AssetSummary = {
-  asset_code: string;
-  asset_name: string;
-  location: string | null;
-  category: string | null;
-  status: string;
+function unitOptionList() {
+  return [...GENERAL_INVENTORY_UNIT_OPTIONS, CUSTOM_UNIT_VALUE];
+}
+function unitLabel(value: string) {
+  return value === CUSTOM_UNIT_VALUE ? "OTHER / CUSTOM" : value;
+}
+// "" (the "Select unit" placeholder) while nothing is chosen yet — an empty
+// unit only maps to OTHER / CUSTOM once the user has actually picked that
+// option (custom), so a fresh row never looks like it already has a unit.
+function unitSelectValue(unit: string, custom: boolean): string {
+  if (custom) return CUSTOM_UNIT_VALUE;
+  if (unit === "") return "";
+  return (GENERAL_INVENTORY_UNIT_OPTIONS as readonly string[]).includes(unit) ? unit : CUSTOM_UNIT_VALUE;
+}
+function fmt(n: number): string {
+  return Number.isFinite(n) ? (Math.round(n * 1000) / 1000).toString() : "0";
+}
+function stockStatusLabel(status: OfflineInventorySearchMatch["stock_status"]): string {
+  const labels: Record<OfflineInventorySearchMatch["stock_status"], string> = {
+    ok: "OK",
+    low_stock: "Low Stock",
+    out_of_stock: "Out of Stock",
+    negative: "Negative Stock",
+  };
+  return labels[status];
+}
+function stockStatusTone(status: OfflineInventorySearchMatch["stock_status"]): "green" | "amber" | "red" {
+  if (status === "ok") return "green";
+  if (status === "low_stock") return "amber";
+  return "red";
+}
+
+type RequestedMaterialRowState = {
+  description: string;
+  partNumber: string;
+  ssRecCode: string;
+  qty: string;
+  // Task 5/6 — always the final, authoritative Request / Issue Unit string
+  // (never defaults to PCS on its own — see emptyMaterialRow). Locked
+  // (plain text) once a row is linked to an existing match, until an
+  // authorized user unlocks it (unitLocked).
+  unit: string;
+  unitLocked: boolean;
+  // True once the user picks OTHER / CUSTOM and types their own unit.
+  unitCustom: boolean;
+  remarks: string;
+  // Task 3/4/10 — link state. matchKey is the full Offline Inventory
+  // identity (OfflineInventorySearchMatch.key) of the selected suggestion;
+  // matchPartId is that same match's own part_id when it is catalog-backed
+  // (null for a manual/non-catalog match). Both null means "New Material
+  // Request" — not linked to inventory.
+  matchKey: string | null;
+  matchPartId: string | null;
+  balance: number | null;
+  // The matched material's own Stock Unit — the balance is always shown in
+  // this unit, even if an authorized user later changes the Request Unit.
+  balanceUnit: string;
+  stockStatus: OfflineInventorySearchMatch["stock_status"] | null;
+  suggestions: OfflineInventorySearchMatch[];
+  showSuggestions: boolean;
+  loading: boolean;
+  searched: boolean;
+  // Task 7 — "Purchased in a different unit". purchaseUnit/conversionQty
+  // are only meaningful while usePurchaseConversion is on; quantity_
+  // requested/unit above always stay in Request/Issue Unit terms.
+  usePurchaseConversion: boolean;
+  purchaseUnit: string;
+  purchaseUnitCustom: boolean;
+  conversionQty: string;
+  // Task 8/9 — Manager/Super Admin only, optional; blank means "not priced
+  // yet", never submitted/shown as 0.
+  unitPrice: string;
 };
 
-export type WorkOrderOption = {
-  id: string;
-  work_order_number: string | null;
-  ordered_by: string | null;
-  worker_type: string | null;
-  maintenance_type: string | null;
-  operator_complaint: string | null;
-  created_at: string;
-  assets: AssetSummary | null;
-};
+function emptyMaterialRow(): RequestedMaterialRowState {
+  return {
+    description: "",
+    partNumber: "",
+    ssRecCode: "",
+    qty: "",
+    unit: "",
+    unitLocked: false,
+    unitCustom: false,
+    remarks: "",
+    matchKey: null,
+    matchPartId: null,
+    balance: null,
+    balanceUnit: "",
+    stockStatus: null,
+    suggestions: [],
+    showSuggestions: false,
+    loading: false,
+    searched: false,
+    usePurchaseConversion: false,
+    // Blank, not PCS: the user picks how the supplier sells it, so the
+    // preview never reads "1 PCS = …" by accident.
+    purchaseUnit: "",
+    purchaseUnitCustom: false,
+    conversionQty: "",
+    unitPrice: "",
+  };
+}
+
+function purchaseEstimate(row: RequestedMaterialRowState): number | null {
+  if (!row.usePurchaseConversion) return null;
+  const conv = Number(row.conversionQty);
+  const qty = Number(row.qty);
+  if (!(conv > 0) || !Number.isFinite(qty)) return null;
+  return qty / conv;
+}
+
+function rowEstimatedTotal(row: RequestedMaterialRowState): number | null {
+  const price = row.unitPrice.trim();
+  if (price === "") return null;
+  const n = Number(price);
+  if (!Number.isFinite(n) || n < 0) return null;
+  const qty = Number(row.qty) || 0;
+  return Math.round(qty * n * 1000) / 1000;
+}
 
 // ── Step indicator ────────────────────────────────────────────────────────────
 
@@ -90,8 +237,30 @@ function StepIndicator({
 
 const inp =
   "focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm";
+const miniInp = "w-full rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1.5 text-sm outline-none focus:border-[#ED1C24]";
+const th = "border border-[#E5E7EB] px-1.5 py-1.5";
+const td = "border border-[#E5E7EB] p-1.5 align-top";
 
 // ── Main wizard export ────────────────────────────────────────────────────────
+
+export type AssetSummary = {
+  asset_code: string;
+  asset_name: string;
+  location: string | null;
+  category: string | null;
+  status: string;
+};
+
+export type WorkOrderOption = {
+  id: string;
+  work_order_number: string | null;
+  ordered_by: string | null;
+  worker_type: string | null;
+  maintenance_type: string | null;
+  operator_complaint: string | null;
+  created_at: string;
+  assets: AssetSummary | null;
+};
 
 // Large Popup Conversion: `modalMode` is set when this wizard is rendered
 // inside <LargeFormModal> from the Materials Requests page instead of its
@@ -118,10 +287,41 @@ export function PartsRequestWizard({
   const formRef = useRef<HTMLFormElement>(null);
   const [step, setStep] = useState(1);
   const [selectedWoId, setSelectedWoId] = useState(preselectedWorkOrderId ?? "");
-  const [numItemRows, setNumItemRows] = useState(3);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [reviewData, setReviewData] = useState<Record<string, string>>({});
   const [reviewFiles, setReviewFiles] = useState<Record<string, File>>({});
+
+  // Task 2 — one empty row by default, not three.
+  const [rows, setRows] = useState<RequestedMaterialRowState[]>(() => [emptyMaterialRow()]);
+  const searchTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+  const searchSeq = useRef<Record<number, number>>({});
+
+  // Task 8/9 — resolved once on mount; both default to false (no cost UI,
+  // unit always locked) until resolved, so neither flashes on briefly for a
+  // viewer who turns out not to have it.
+  const [canViewCosts, setCanViewCosts] = useState(false);
+  const [canUnlockRequestUnit, setCanUnlockRequestUnit] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    getPartsRequestWizardFlagsAction()
+      .then((flags) => {
+        if (!cancelled) {
+          setCanViewCosts(flags.canViewCosts);
+          setCanUnlockRequestUnit(flags.canUnlockRequestUnit);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const timers = searchTimers.current;
+    return () => {
+      Object.values(timers).forEach((t) => clearTimeout(t));
+    };
+  }, []);
 
   // Resolve the selected work order: use preselected prop if provided, else find in list
   const selectedWo: WorkOrderOption | null = isPreselected
@@ -134,6 +334,100 @@ export function PartsRequestWizard({
     ? ["Job Card Context", "Requested Materials", "Attachments", "Review & Submit"]
     : ["Select Job Card", "Requested Materials", "Attachments", "Review & Submit"];
 
+  function updateRow(index: number, patch: Partial<RequestedMaterialRowState>) {
+    setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+    // A row-level validation message is stale as soon as the user edits a
+    // row; it is re-checked on the next Next click.
+    setErrors((prev) => (prev.items ? { ...prev, items: "" } : prev));
+  }
+
+  function addRow() {
+    setRows((prev) => (prev.length >= MAX_ITEM_ROWS ? prev : [...prev, emptyMaterialRow()]));
+  }
+
+  // Task 2 — remove any row; never below 1 (the button itself is hidden at
+  // length 1, this is the defensive backstop).
+  function removeRow(index: number) {
+    setRows((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== index)));
+    if (searchTimers.current[index]) clearTimeout(searchTimers.current[index]);
+  }
+
+  function handleMaterialNameChange(index: number, value: string) {
+    // Task 4 — editing the description after a match was selected clears
+    // the link entirely; the row goes back to "New Material Request" until
+    // re-matched (or the user keeps typing/picks a new unit themselves).
+    // Qty defaults to 1 the first time a name is typed into an empty row
+    // (same quality-of-life default the New Job Card wizard's own Required
+    // Materials step already uses) — never overrides a quantity the user
+    // already entered, and clearing the name back to blank does not clear
+    // a quantity they already typed.
+    const currentQty = rows[index]?.qty ?? "";
+    const shouldDefaultQty = value.trim() !== "" && currentQty.trim() === "";
+    updateRow(index, {
+      description: value,
+      matchKey: null,
+      matchPartId: null,
+      balance: null,
+      balanceUnit: "",
+      stockStatus: null,
+      unitLocked: false,
+      showSuggestions: true,
+      ...(shouldDefaultQty ? { qty: "1" } : {}),
+    });
+
+    if (searchTimers.current[index]) clearTimeout(searchTimers.current[index]);
+
+    const trimmed = value.trim();
+    if (trimmed.length < 2) {
+      updateRow(index, { suggestions: [], loading: false, searched: false });
+      return;
+    }
+
+    updateRow(index, { loading: true });
+    const seq = (searchSeq.current[index] ?? 0) + 1;
+    searchSeq.current[index] = seq;
+
+    searchTimers.current[index] = setTimeout(async () => {
+      try {
+        const results = await searchOfflineInventoryMaterialsForPartsRequestAction(trimmed);
+        // Ignore stale responses from an earlier keystroke that resolved late.
+        if (searchSeq.current[index] !== seq) return;
+        updateRow(index, { suggestions: results, loading: false, searched: true });
+      } catch {
+        if (searchSeq.current[index] !== seq) return;
+        updateRow(index, { suggestions: [], loading: false, searched: true });
+      }
+    }, 300);
+  }
+
+  function handleSelectSuggestion(index: number, match: OfflineInventorySearchMatch) {
+    // Task 3 — save the inventory material id (part_id for a catalog match,
+    // the manual identity key otherwise), show the badge, show balance, and
+    // auto-fill Part No./SS Rec. Code/Unit from the match — Unit never
+    // defaults to PCS unless the match's own unit genuinely is PCS. Task 6
+    // — locks the unit immediately on match. Selecting a suggestion counts
+    // as entering a material name too, for the same Qty-defaults-to-1 rule.
+    const currentQty = rows[index]?.qty ?? "";
+    const shouldDefaultQty = currentQty.trim() === "";
+    updateRow(index, {
+      description: match.display_name,
+      partNumber: match.part_number ?? "",
+      ssRecCode: match.ss_rec_code ?? "",
+      unit: match.unit,
+      unitLocked: true,
+      unitCustom: false,
+      matchKey: match.key,
+      matchPartId: match.part_id,
+      balance: match.balance,
+      balanceUnit: match.unit,
+      stockStatus: match.stock_status,
+      suggestions: [],
+      showSuggestions: false,
+      searched: false,
+      ...(shouldDefaultQty ? { qty: "1" } : {}),
+    });
+  }
+
   function validate(): boolean {
     const errs: Record<string, string> = {};
 
@@ -142,21 +436,32 @@ export function PartsRequestWizard({
     }
 
     if (step === 2) {
-      const form = formRef.current;
-      if (form) {
-        const fd = new FormData(form);
-        let hasItem = false;
-        for (let i = 0; i < MAX_ITEM_ROWS; i++) {
-          const hasDescription = fd.get(`description_${i}`)?.toString().trim();
-          if (hasDescription) {
-            hasItem = true;
-            const qty = Number(fd.get(`quantity_requested_${i}`));
-            if (!Number.isInteger(qty) || qty <= 0) {
-              errs.items = "Quantity must be a whole number greater than 0.";
+      const described = rows.filter((r) => r.description.trim());
+      if (described.length === 0) {
+        errs.items = "Please add at least one part or material.";
+      } else {
+        for (const r of described) {
+          const qty = Number(r.qty);
+          if (!Number.isInteger(qty) || qty <= 0) {
+            errs.items = "Requested Qty must be a whole number greater than 0.";
+            break;
+          }
+          if (!r.unit.trim()) {
+            errs.items = `Select the Request Unit for "${r.description.trim()}".`;
+            break;
+          }
+          if (r.usePurchaseConversion) {
+            if (!r.purchaseUnit.trim()) {
+              errs.items = `Select the Purchase Unit for "${r.description.trim()}".`;
+              break;
+            }
+            const conv = Number(r.conversionQty);
+            if (!(conv > 0)) {
+              errs.items = "Enter the Conversion Quantity: how many request units are inside 1 purchase unit.";
+              break;
             }
           }
         }
-        if (!hasItem) errs.items = "Please add at least one part or material.";
       }
     }
 
@@ -192,14 +497,11 @@ export function PartsRequestWizard({
     setStep((p) => Math.max(p - 1, 1));
   }
 
-  const reviewItems = Array.from({ length: MAX_ITEM_ROWS }, (_, i) => ({
-    desc: reviewData[`description_${i}`] ?? "",
-    partNo: reviewData[`part_number_${i}`] ?? "",
-    qty: reviewData[`quantity_requested_${i}`] ?? "1",
-    ssCode: reviewData[`ss_rec_code_${i}`] ?? "",
-    unitPrice: reviewData[`unit_price_${i}`] ?? "",
-    remarks: reviewData[`remarks_${i}`] ?? "",
-  })).filter((it) => it.desc);
+  // #, Part / Material, Part No., SS Rec. Code, Requested Qty, Request Unit,
+  // Remarks, Action — plus the two cost columns for cost-permitted viewers.
+  const columnCount = canViewCosts ? 10 : 8;
+
+  const reviewItems = rows.filter((r) => r.description.trim());
 
   const reviewAttachments = Array.from({ length: MAX_ATTACHMENT_ROWS }, (_, i) => {
     const file = reviewFiles[`pr_attachment_file_${i}`];
@@ -210,6 +512,13 @@ export function PartsRequestWizard({
       remarks: reviewData[`pr_attachment_remarks_${i}`] ?? "",
     };
   }).filter((a): a is { category: string; fileName: string; remarks: string } => a !== null);
+
+  // Task 11 — Manager/Super Admin cost summary, only over rows that have
+  // both a description and a real (non-blank) unit price; a fully unpriced
+  // set reads "Not available" rather than a misleading 0.000 KWD.
+  const pricedReviewTotals = reviewItems.map(rowEstimatedTotal).filter((t): t is number => t !== null);
+  const reviewHasUnpriced = reviewItems.some((r) => rowEstimatedTotal(r) === null);
+  const reviewEstimatedTotal = pricedReviewTotals.reduce((sum, t) => sum + t, 0);
 
   return (
     <div className={modalMode ? "" : "mx-auto max-w-3xl"}>
@@ -276,7 +585,13 @@ export function PartsRequestWizard({
                 </p>
               </div>
             ) : (
-              /* Normal flow: show work order dropdown */
+              /* Normal flow: show work order dropdown — Task 1: a plain,
+                 fully controlled <select>. selectedWo/the warning below/the
+                 Next button's own validate() all derive from the SAME
+                 selectedWoId state in the SAME render, so the very first
+                 onChange already carries the fully up-to-date value — there
+                 is no separate "confirm" step and nothing here depends on a
+                 previous render's stale value. */
               <div>
                 <label className="block">
                   <PRLabel label="Job Card" required />
@@ -285,8 +600,9 @@ export function PartsRequestWizard({
                     className={inp}
                     value={selectedWoId}
                     onChange={(e) => {
-                      setSelectedWoId(e.target.value);
-                      setErrors({});
+                      const nextId = e.target.value;
+                      setSelectedWoId(nextId);
+                      if (nextId) setErrors((prev) => ({ ...prev, work_order_id: "" }));
                     }}
                   >
                     <option value="">— Select a job card —</option>
@@ -352,7 +668,7 @@ export function PartsRequestWizard({
           </PRCard>
         </div>
 
-        {/* ── Step 2: Requested Parts ────────────────────────────────────── */}
+        {/* ── Step 2: Requested Materials ─────────────────────────────────── */}
         <div className={step !== 2 ? "hidden" : ""}>
           <PRCard
             title="Requested Materials"
@@ -368,7 +684,11 @@ export function PartsRequestWizard({
                   <p className="mt-0.5 text-xs text-[#4B5563]">
                     Asset: {selectedAsset.asset_code} — {selectedAsset.asset_name}
                     {selectedAsset.location ? ` · ${selectedAsset.location}` : ""}
+                    {selectedWo.maintenance_type ? ` · ${selectedWo.maintenance_type}` : ""}
                   </p>
+                )}
+                {!selectedAsset && selectedWo.maintenance_type && (
+                  <p className="mt-0.5 text-xs text-[#4B5563]">{selectedWo.maintenance_type}</p>
                 )}
               </div>
             )}
@@ -384,85 +704,387 @@ export function PartsRequestWizard({
               </label>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[640px] border-collapse text-sm">
+            <p className="mb-2 text-xs text-[#6B7280]">
+              Type in Part / Material to search Inventory by name, part number, or SS Rec. Code. Request Unit is the unit
+              requested for this Job Card.
+            </p>
+
+            {/* Compact table entry (one line per material) — the same row
+                state, autocomplete, conversion and cost logic as before, laid
+                out as a table instead of one large card per material.
+                overflow-x-auto only below lg: at lg+ the modal is wide enough
+                for every column, and leaving overflow visible there keeps the
+                autocomplete list from being clipped by a scroll container. */}
+            <div className="overflow-x-auto lg:overflow-visible">
+              <table className="w-full min-w-[900px] border-collapse text-left text-sm">
                 <thead>
-                  <tr className="bg-[#F3F4F6] text-left text-[10px] font-black uppercase tracking-wide text-[#4B5563]">
-                    <th className="w-8 border border-[#E5E7EB] px-2 py-2">#</th>
-                    <th className="border border-[#E5E7EB] px-3 py-2">Part / Material</th>
-                    <th className="w-28 border border-[#E5E7EB] px-3 py-2">Part No.</th>
-                    <th className="w-24 border border-[#E5E7EB] px-3 py-2">SS Rec. Code</th>
-                    <th className="w-16 border border-[#E5E7EB] px-3 py-2">Qty</th>
-                    <th className="w-20 border border-[#E5E7EB] px-3 py-2">Unit</th>
-                    <th className="border border-[#E5E7EB] px-3 py-2">Remarks</th>
+                  <tr className="bg-[#F9FAFB] text-[10px] font-black uppercase tracking-wide text-[#6B7280]">
+                    <th className={cn(th, "w-8 text-center")}>#</th>
+                    <th className={th}>Part / Material</th>
+                    <th className={cn(th, "w-28")}>Part No.</th>
+                    <th className={cn(th, "w-28")}>SS Rec. Code</th>
+                    <th className={cn(th, "w-20")}>Requested Qty</th>
+                    <th className={cn(th, "w-32")}>Request Unit</th>
+                    {canViewCosts && <th className={cn(th, "w-28")}>Estimated Unit Price (KWD)</th>}
+                    {canViewCosts && <th className={cn(th, "w-28")}>Estimated Total</th>}
+                    <th className={cn(th, "w-36")}>Remarks</th>
+                    <th className={cn(th, "w-16 text-center")}>Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {Array.from({ length: MAX_ITEM_ROWS }, (_, i) => (
-                    <tr key={i} className={i >= numItemRows ? "hidden" : ""}>
-                      <td className="border border-[#E5E7EB] px-2 py-1.5 text-center text-xs font-semibold text-[#9CA3AF]">
-                        {i + 1}
-                      </td>
-                      <td className="border border-[#E5E7EB] p-0.5">
-                        <input
-                          name={`description_${i}`}
-                          className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                          placeholder={i === 0 ? "e.g. oil filter…" : ""}
-                        />
-                      </td>
-                      <td className="border border-[#E5E7EB] p-0.5">
-                        <input
-                          name={`part_number_${i}`}
-                          className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                        />
-                      </td>
-                      <td className="border border-[#E5E7EB] p-0.5">
-                        <input
-                          name={`ss_rec_code_${i}`}
-                          className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                        />
-                      </td>
-                      <td className="border border-[#E5E7EB] p-0.5">
-                        <input
-                          name={`quantity_requested_${i}`}
-                          type="number"
-                          step="1"
-                          min="1"
-                          defaultValue="1"
-                          className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                        />
-                      </td>
-                      <td className="border border-[#E5E7EB] p-0.5">
-                        <input
-                          name={`unit_of_measure_${i}`}
-                          defaultValue="PCS"
-                          className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                        />
-                      </td>
-                      <td className="border border-[#E5E7EB] p-0.5">
-                        <input
-                          name={`remarks_${i}`}
-                          className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                        />
-                      </td>
-                    </tr>
-                  ))}
+                  {rows.map((row, i) => {
+                    const isExisting = row.matchKey !== null;
+                    const hasDescription = row.description.trim().length > 0;
+                    const estTotal = rowEstimatedTotal(row);
+                    const estimate = purchaseEstimate(row);
+                    const conversionValid = Number(row.conversionQty) > 0;
+
+                    return (
+                      <Fragment key={i}>
+                        <tr>
+                          <td className={cn(td, "text-center text-xs font-bold text-[#9CA3AF]")}>{i + 1}</td>
+
+                          {/* Part / Material — search, link badge, balance */}
+                          <td className={cn(td, "relative min-w-[220px]")}>
+                            <input
+                              name={`description_${i}`}
+                              aria-label={`Part / Material ${i + 1}`}
+                              value={row.description}
+                              onChange={(e) => handleMaterialNameChange(i, e.target.value)}
+                              onFocus={() => updateRow(i, { showSuggestions: true })}
+                              onBlur={() => updateRow(i, { showSuggestions: false })}
+                              autoComplete="off"
+                              placeholder="Search or type material…"
+                              className={miniInp}
+                            />
+                            <input type="hidden" name={`part_id_${i}`} value={row.matchPartId ?? ""} />
+                            <input type="hidden" name={`inventory_material_key_${i}`} value={!row.matchPartId && row.matchKey ? row.matchKey : ""} />
+
+                            {row.showSuggestions && (row.loading || row.suggestions.length > 0 || row.searched) && (
+                              <div className="absolute left-1.5 top-full z-20 -mt-1 w-[min(28rem,80vw)] rounded-md border border-[#E5E7EB] bg-white shadow-lg">
+                                {row.loading ? (
+                                  <div className="flex items-center gap-2 px-3 py-2.5 text-xs text-[#6B7280]">
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                                    Searching Inventory…
+                                  </div>
+                                ) : row.suggestions.length === 0 ? (
+                                  <p className="px-3 py-2.5 text-xs text-[#9CA3AF]">
+                                    No match in Inventory. This will be saved as a New Material request.
+                                  </p>
+                                ) : (
+                                  <ul className="max-h-64 divide-y divide-[#F3F4F6] overflow-y-auto">
+                                    {row.suggestions.map((s) => (
+                                      <li key={s.key}>
+                                        <button
+                                          type="button"
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            handleSelectSuggestion(i, s);
+                                          }}
+                                          className="block w-full px-3 py-2 text-left hover:bg-gray-50"
+                                        >
+                                          <div className="flex items-center justify-between gap-2">
+                                            <p className="text-sm font-bold text-[#111827]">
+                                              {s.display_name}
+                                              <span className="font-normal text-[#4B5563]">
+                                                {" "}— Balance {fmt(s.balance)} {s.unit}
+                                              </span>
+                                            </p>
+                                            <StatusBadge label={stockStatusLabel(s.stock_status)} tone={stockStatusTone(s.stock_status)} />
+                                          </div>
+                                          {(s.part_number || s.ss_rec_code) && (
+                                            <p className="mt-0.5 text-[11px] text-[#6B7280]">
+                                              {s.part_number ? `Part No: ${s.part_number}` : ""}
+                                              {s.part_number && s.ss_rec_code ? " • " : ""}
+                                              {s.ss_rec_code ? `SS Rec. Code: ${s.ss_rec_code}` : ""}
+                                            </p>
+                                          )}
+                                        </button>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                            )}
+
+                            {hasDescription && (
+                              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                <StatusBadge
+                                  label={isExisting ? "Existing Inventory" : "New Material"}
+                                  tone={isExisting ? "green" : "gray"}
+                                />
+                                {isExisting && row.stockStatus && (
+                                  <StatusBadge label={stockStatusLabel(row.stockStatus)} tone={stockStatusTone(row.stockStatus)} />
+                                )}
+                                {isExisting && row.balance !== null && (
+                                  <span className="text-[11px] text-[#6B7280]">
+                                    Balance: {fmt(row.balance)} {row.balanceUnit}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            {!isExisting && hasDescription && (
+                              <p className="mt-0.5 text-[11px] text-[#9CA3AF]">
+                                Not linked to inventory yet. Store can register it during receiving if required.
+                              </p>
+                            )}
+                            {hasDescription && (
+                              <label className="mt-1 flex items-center gap-1.5 text-[11px] font-semibold text-[#4B5563]">
+                                <input
+                                  type="checkbox"
+                                  checked={row.usePurchaseConversion}
+                                  onChange={(e) => updateRow(i, { usePurchaseConversion: e.target.checked })}
+                                  className="h-3.5 w-3.5 accent-[#ED1C24]"
+                                />
+                                Purchased in a different unit
+                              </label>
+                            )}
+                          </td>
+
+                          {/* readOnly (not disabled) for a linked row: a
+                              disabled input is left out of the submitted
+                              form, which would drop the auto-filled value. */}
+                          <td className={td}>
+                            <input
+                              name={`part_number_${i}`}
+                              aria-label={`Part No. ${i + 1}`}
+                              value={row.partNumber}
+                              onChange={(e) => updateRow(i, { partNumber: e.target.value })}
+                              readOnly={isExisting}
+                              className={cn(miniInp, isExisting && "bg-gray-50 text-[#6B7280]")}
+                            />
+                          </td>
+                          <td className={td}>
+                            <input
+                              name={`ss_rec_code_${i}`}
+                              aria-label={`SS Rec. Code ${i + 1}`}
+                              value={row.ssRecCode}
+                              onChange={(e) => updateRow(i, { ssRecCode: e.target.value })}
+                              readOnly={isExisting}
+                              className={cn(miniInp, isExisting && "bg-gray-50 text-[#6B7280]")}
+                            />
+                          </td>
+
+                          <td className={td}>
+                            <input
+                              name={`quantity_requested_${i}`}
+                              aria-label={`Requested Qty ${i + 1}`}
+                              type="number"
+                              step="1"
+                              min="1"
+                              value={row.qty}
+                              onChange={(e) => updateRow(i, { qty: e.target.value })}
+                              className={miniInp}
+                            />
+                          </td>
+
+                          {/* Request Unit — from the inventory Stock Unit for
+                              a linked row (locked); chosen by the user for a
+                              new material, never silently PCS. */}
+                          <td className={td}>
+                            {row.unitLocked ? (
+                              <div className="flex items-center gap-1.5">
+                                <p className={cn(miniInp, "bg-gray-50 text-[#4B5563]")}>{row.unit || "—"}</p>
+                                {canUnlockRequestUnit && (
+                                  <button
+                                    type="button"
+                                    onClick={() => updateRow(i, { unitLocked: false })}
+                                    className="shrink-0 text-[11px] font-semibold text-[#ED1C24] hover:underline"
+                                  >
+                                    Change
+                                  </button>
+                                )}
+                              </div>
+                            ) : (
+                              <>
+                                <select
+                                  aria-label={`Request Unit ${i + 1}`}
+                                  value={unitSelectValue(row.unit, row.unitCustom)}
+                                  onChange={(e) =>
+                                    updateRow(
+                                      i,
+                                      e.target.value === CUSTOM_UNIT_VALUE
+                                        ? { unit: "", unitCustom: true }
+                                        : { unit: e.target.value, unitCustom: false }
+                                    )
+                                  }
+                                  className={miniInp}
+                                >
+                                  <option value="" disabled hidden>
+                                    Select unit
+                                  </option>
+                                  {unitOptionList().map((u) => (
+                                    <option key={u} value={u}>
+                                      {unitLabel(u)}
+                                    </option>
+                                  ))}
+                                </select>
+                                {unitSelectValue(row.unit, row.unitCustom) === CUSTOM_UNIT_VALUE && (
+                                  <input
+                                    aria-label={`Custom Request Unit ${i + 1}`}
+                                    value={row.unit}
+                                    onChange={(e) => updateRow(i, { unit: e.target.value })}
+                                    placeholder="e.g. Bundle"
+                                    className={cn(miniInp, "mt-1")}
+                                  />
+                                )}
+                              </>
+                            )}
+                            <input type="hidden" name={`unit_${i}`} value={row.unit} />
+                          </td>
+
+                          {/* Manager/Super Admin with cost permission only */}
+                          {canViewCosts && (
+                            <td className={td}>
+                              <input
+                                name={`unit_price_${i}`}
+                                aria-label={`Estimated Unit Price ${i + 1}`}
+                                type="number"
+                                min="0"
+                                step="0.001"
+                                placeholder="Not priced yet"
+                                value={row.unitPrice}
+                                onChange={(e) => updateRow(i, { unitPrice: e.target.value })}
+                                disabled={!hasDescription}
+                                className={miniInp}
+                              />
+                            </td>
+                          )}
+                          {canViewCosts && (
+                            <td className={cn(td, "text-xs font-semibold text-[#111827]")}>
+                              {!hasDescription ? "—" : estTotal !== null ? `${estTotal.toFixed(3)} KWD` : "Not priced yet"}
+                            </td>
+                          )}
+
+                          <td className={td}>
+                            <input
+                              name={`remarks_${i}`}
+                              aria-label={`Remarks ${i + 1}`}
+                              value={row.remarks}
+                              onChange={(e) => updateRow(i, { remarks: e.target.value })}
+                              className={miniInp}
+                            />
+                          </td>
+
+                          <td className={cn(td, "text-center")}>
+                            {rows.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => removeRow(i)}
+                                aria-label={`Remove material ${i + 1}`}
+                                title="Remove row"
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[#DC2626] hover:bg-red-50"
+                              >
+                                <X className="h-4 w-4" aria-hidden="true" />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+
+                        {/* Conversion mini-row — only while "Purchased in a
+                            different unit" is on. Direction is always
+                            1 [Purchase Unit] = [Conversion Quantity] [Request Unit]. */}
+                        {row.usePurchaseConversion && hasDescription && (
+                          <tr className="bg-[#F9FAFB]">
+                            <td className={td} />
+                            <td className={td} colSpan={columnCount - 1}>
+                              <div className="flex flex-wrap items-end gap-3">
+                                <div className="w-36">
+                                  <span className="block text-[11px] font-semibold text-[#111827]">Purchase Unit</span>
+                                  <select
+                                    aria-label={`Purchase Unit ${i + 1}`}
+                                    value={unitSelectValue(row.purchaseUnit, row.purchaseUnitCustom)}
+                                    onChange={(e) =>
+                                      updateRow(
+                                        i,
+                                        e.target.value === CUSTOM_UNIT_VALUE
+                                          ? { purchaseUnit: "", purchaseUnitCustom: true }
+                                          : { purchaseUnit: e.target.value, purchaseUnitCustom: false }
+                                      )
+                                    }
+                                    className={miniInp}
+                                  >
+                                    <option value="" disabled hidden>
+                                      Select unit
+                                    </option>
+                                    {unitOptionList().map((u) => (
+                                      <option key={u} value={u}>
+                                        {unitLabel(u)}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {unitSelectValue(row.purchaseUnit, row.purchaseUnitCustom) === CUSTOM_UNIT_VALUE && (
+                                    <input
+                                      aria-label={`Custom Purchase Unit ${i + 1}`}
+                                      value={row.purchaseUnit}
+                                      onChange={(e) => updateRow(i, { purchaseUnit: e.target.value })}
+                                      placeholder="e.g. PALLET"
+                                      className={cn(miniInp, "mt-1")}
+                                    />
+                                  )}
+                                </div>
+                                <div className="w-64">
+                                  <span className="block text-[11px] font-semibold text-[#111827]">
+                                    Conversion Quantity
+                                    <span className="font-normal text-[#6B7280]">
+                                      {" "}({row.unit || "Request Unit"} per 1 {row.purchaseUnit || "Purchase Unit"})
+                                    </span>
+                                  </span>
+                                  <input
+                                    aria-label={`Conversion Quantity ${i + 1}`}
+                                    type="number"
+                                    min="0"
+                                    step="0.0001"
+                                    placeholder="e.g. 200"
+                                    value={row.conversionQty}
+                                    onChange={(e) => updateRow(i, { conversionQty: e.target.value })}
+                                    className={miniInp}
+                                  />
+                                </div>
+                                <div className="rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1.5 text-xs text-[#111827]">
+                                  <p className="font-bold">
+                                    1 {row.purchaseUnit || "Purchase Unit"} = {conversionValid ? fmt(Number(row.conversionQty)) : "?"}{" "}
+                                    {row.unit || "Request Unit"}
+                                  </p>
+                                  <p className="mt-0.5">
+                                    Requested: {row.qty || 0} {row.unit || "—"} · Purchase Estimate:{" "}
+                                    <span className="font-bold">
+                                      {estimate !== null && row.purchaseUnit ? `${fmt(estimate)} ${row.purchaseUnit}` : "—"}
+                                    </span>
+                                  </p>
+                                </div>
+                              </div>
+                              <p className="mt-1.5 text-[11px] text-[#9CA3AF]">
+                                Use this when the requested unit is different from how supplier sells the item. Example: request in
+                                LITER, purchase in BARREL.
+                                {canViewCosts
+                                  ? ` Estimated Unit Price is per Request Unit${row.unit ? ` (${row.unit})` : ""}, not per Purchase Unit.`
+                                  : ""}
+                              </p>
+                              <input type="hidden" name={`purchase_unit_${i}`} value={row.purchaseUnit} />
+                              <input type="hidden" name={`conversion_quantity_${i}`} value={row.conversionQty} />
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
 
             {errors.items && (
-              <p className="mt-2 text-xs text-[#DC2626]">{errors.items}</p>
+              <p className="mt-3 text-xs text-[#DC2626]">{errors.items}</p>
             )}
 
-            <p className="mt-2 text-xs text-[#9CA3AF]">
+            <p className="mt-3 text-xs text-[#9CA3AF]">
               SS Rec. Code is reserved for SAP material/reference mapping.
             </p>
 
-            {numItemRows < MAX_ITEM_ROWS && (
+            {rows.length < MAX_ITEM_ROWS && (
               <button
                 type="button"
-                onClick={() => setNumItemRows((n) => n + 1)}
+                onClick={addRow}
                 className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-1.5 text-xs font-semibold text-[#4B5563] hover:bg-[#F3F4F6]"
               >
                 <Plus className="h-3.5 w-3.5" aria-hidden="true" />
@@ -533,46 +1155,76 @@ export function PartsRequestWizard({
                 )}
               </PRReviewSection>
 
+              {/* Task 11 — each item shown as either "Existing Inventory
+                  Material" with its Requested/Current Balance, or "New
+                  Material Request" with "Not linked to inventory yet". */}
               {reviewItems.length > 0 ? (
-                <PRReviewSection title="Requested Parts">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="bg-[#F3F4F6] text-left text-[10px] font-bold text-[#4B5563]">
-                          <th className="px-3 py-1.5">#</th>
-                          <th className="px-3 py-1.5">Part / Material</th>
-                          <th className="px-3 py-1.5">Part No.</th>
-                          <th className="px-3 py-1.5">SS Rec. Code</th>
-                          <th className="px-3 py-1.5">Qty</th>
-                          <th className="px-3 py-1.5">Unit</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[#F3F4F6]">
-                        {reviewItems.map((it, i) => (
-                          <tr key={i}>
-                            <td className="px-3 py-1.5 text-[#9CA3AF]">{i + 1}</td>
-                            <td className="px-3 py-1.5 text-[#111827]">{it.desc}</td>
-                            <td className="px-3 py-1.5 text-[#4B5563]">{it.partNo || "—"}</td>
-                            <td className="px-3 py-1.5 text-[#4B5563]">{it.ssCode || "—"}</td>
-                            <td className="px-3 py-1.5 text-[#4B5563]">{it.qty}</td>
-                            <td className="px-3 py-1.5 text-[#4B5563]">
-                              {reviewData[`unit_of_measure_${i}`] || "PCS"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                <PRReviewSection title="Requested Materials">
+                  <ul className="divide-y divide-[#F3F4F6]">
+                    {reviewItems.map((it, i) => {
+                      const isExisting = it.matchKey !== null;
+                      const estimate = purchaseEstimate(it);
+                      return (
+                        <li key={i} className="py-3 first:pt-0 last:pb-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <StatusBadge
+                              label={isExisting ? "Existing Inventory" : "New Material"}
+                              tone={isExisting ? "green" : "gray"}
+                            />
+                          </div>
+                          <p className="mt-1 font-bold text-[#111827]">{it.description}</p>
+                          <p className="text-xs text-[#4B5563]">
+                            Requested: {it.qty || 0} {it.unit || "—"}
+                            {it.usePurchaseConversion && estimate !== null && (
+                              <> · Purchase estimate: {fmt(estimate)} {it.purchaseUnit}</>
+                            )}
+                          </p>
+                          {isExisting ? (
+                            <p className="text-xs text-[#4B5563]">
+                              Current Balance: {it.balance !== null ? `${fmt(it.balance)} ${it.balanceUnit}` : "—"}
+                            </p>
+                          ) : (
+                            <p className="text-xs italic text-[#9CA3AF]">Not linked to inventory yet</p>
+                          )}
+                          {(it.partNumber || it.ssRecCode) && (
+                            <p className="mt-0.5 text-[11px] text-[#9CA3AF]">
+                              {it.partNumber ? `Part No: ${it.partNumber}` : ""}
+                              {it.partNumber && it.ssRecCode ? " · " : ""}
+                              {it.ssRecCode ? `SS Rec. Code: ${it.ssRecCode}` : ""}
+                            </p>
+                          )}
+                          {it.remarks && (
+                            <p className="mt-0.5 text-xs text-[#4B5563]"><strong>Remarks:</strong> {it.remarks}</p>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
                   {reviewData.remarks && (
                     <p className="mt-3 text-xs text-[#4B5563]">
-                      <strong>Remarks:</strong> {reviewData.remarks}
+                      <strong>Overall remarks:</strong> {reviewData.remarks}
                     </p>
+                  )}
+                  {/* Task 11 — Data Entry gets no cost summary at all; Manager/
+                      Super Admin only, and only if cost permission exists. */}
+                  {canViewCosts && (
+                    <div className="mt-3 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3">
+                      <p className="text-sm font-bold text-[#111827]">
+                        Estimated Cost Summary:{" "}
+                        {pricedReviewTotals.length > 0 ? `${reviewEstimatedTotal.toFixed(3)} KWD` : "Not available"}
+                      </p>
+                      {reviewHasUnpriced && pricedReviewTotals.length > 0 && (
+                        <p className="mt-1 text-xs text-amber-700">
+                          Some material lines are not priced yet. Estimated total excludes them.
+                        </p>
+                      )}
+                    </div>
                   )}
                 </PRReviewSection>
               ) : (
                 <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3">
                   <p className="text-sm text-amber-700">
-                    No parts have been added. Go back to Step 2 to add parts.
+                    No materials have been added. Go back to Step 2 to add materials.
                   </p>
                 </div>
               )}
@@ -602,7 +1254,7 @@ export function PartsRequestWizard({
                 Submit Materials Request
               </button>
               <p className="mt-2 text-center text-xs text-[#9CA3AF]">
-                A reference number will be generated on submission.
+                A reference number will be generated on submission. Inventory balance does not change until materials are received.
               </p>
             </div>
           </PRCard>
@@ -648,6 +1300,10 @@ export function PartsRequestWizard({
 }
 
 // ── Local sub-components ──────────────────────────────────────────────────────
+
+function cn(...classes: Array<string | false | undefined | null>) {
+  return classes.filter(Boolean).join(" ");
+}
 
 function PRCard({
   title,

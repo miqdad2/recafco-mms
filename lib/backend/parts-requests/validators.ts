@@ -10,8 +10,23 @@ export const partsRequestItemSchema = z.object({
   part_number: z.string().nullable(),
   ss_rec_code: z.string().nullable(),
   quantity_requested: z.number().int().positive(),
-  unit_price: z.number().nonnegative(),
-  remarks: z.string().nullable()
+  // Job Card Materials Request UX and Existing Inventory Selection Fix,
+  // Task 8 — null means "not priced yet" (never invented as 0); the form
+  // only ever sends a real number when Manager/Super Admin typed one.
+  unit_price: z.number().nonnegative().nullable(),
+  remarks: z.string().nullable(),
+  // Task 3/4/5/6/10 — unit is the Request / Issue Unit; null only for a row
+  // somehow submitted with neither an existing-match unit nor a manually
+  // chosen one (the form itself always sends one or the other once a
+  // description is present). inventory_material_key links to an existing,
+  // non-catalog Offline Inventory material (buildBalanceKey()'s own
+  // "manual:<name>|<unit>" identity) — null together with part_id means
+  // "New Material Request". Task 7 — purchase_unit/conversion_quantity are
+  // only set together, when "Purchased in a different unit" is used.
+  unit: z.string().min(1).nullable(),
+  inventory_material_key: z.string().nullable(),
+  purchase_unit: z.string().nullable(),
+  conversion_quantity: z.number().positive().nullable()
 });
 
 export const approvePartsRequestSchema = z.object({

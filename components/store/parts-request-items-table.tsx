@@ -43,8 +43,12 @@ export function PartsRequestItemsTable({ items, context }: { items: Array<Record
                 <td className="px-3 py-2">{String(item.part_number ?? "-")}</td>
                 <td className="px-3 py-2">{String(item.ss_rec_code ?? "-")}</td>
                 <td className="px-3 py-2">{String(item.quantity_requested ?? "0")}</td>
-                <td className="px-3 py-2"><CostVisibilityGuard context={context}>{String(item.unit_price ?? "0")}</CostVisibilityGuard></td>
-                <td className="px-3 py-2"><CostVisibilityGuard context={context}>{String(item.total_price ?? "0")}</CostVisibilityGuard></td>
+                {/* Job Card Materials Request UX and Existing Inventory
+                    Selection Fix, Task 8 — unit_price/total_price are only
+                    ever null when genuinely "not priced yet"; shown as
+                    that phrase, never a misleading 0. */}
+                <td className="px-3 py-2"><CostVisibilityGuard context={context}>{item.unit_price == null ? "Not priced yet" : String(item.unit_price)}</CostVisibilityGuard></td>
+                <td className="px-3 py-2"><CostVisibilityGuard context={context}>{item.total_price == null ? "Not priced yet" : String(item.total_price)}</CostVisibilityGuard></td>
                 <td className="px-3 py-2">{String(item.issued_quantity ?? "0")}</td>
                 <td className="px-3 py-2">{remaining.toFixed(2)}</td>
                 <td className="px-3 py-2"><StatusBadge label={status.label} tone={status.tone} /></td>

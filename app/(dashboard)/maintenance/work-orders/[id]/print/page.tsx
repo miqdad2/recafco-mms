@@ -10,6 +10,9 @@ import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { displaySimplifiedStatus } from "@/lib/work-orders/simplified-status-display";
 import { deriveSimpleWorkerState } from "@/lib/work-orders/hours-variance";
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete } from "@/lib/work-orders/material-fulfillment";
+import { getJobCardCostSummary } from "@/lib/work-orders/job-card-cost-summary";
+
+const formatKwd = (value: number) => `${value.toFixed(3)} KWD`;
 
 export default async function PrintWorkOrderPage({ params }: { params: Promise<{ id: string }> }) {
   const context = await requirePermission("work_orders.print");
@@ -84,6 +87,13 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
     ]);
 
   if (!rawWo) return <div className="p-8">Job Card not found.</div>;
+
+  // Job Card Print Cost Summary Unit — null for a viewer without cost
+  // permission (the helper checks canViewCosts itself and runs no cost
+  // query for them), so every cost section below is gated on this one
+  // value: no rate, unit cost, indirect cost or total exists in this
+  // render at all for Data Entry / Viewer / no-cost users.
+  const costSummary = await getJobCardCostSummary(context, id, materialFulfillment);
 
   const decidedByIds = [...new Set(rawApprovals.map((a) => a.decided_by).filter((v): v is string => Boolean(v)))];
   const decidedByProfiles = decidedByIds.length
@@ -282,7 +292,20 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
       )
     : new Map<string, string | null>();
 
-  type MaterialRow = { id: string; name: string; partNo: string | null; ssRecCode: string | null; qty: string };
+  // Job Card Print Cost Summary Unit — `cost` is only ever set from
+  // costSummary (cost-permitted viewers) and only for Required Materials
+  // lines, the same lines Closure Review prices. A free-form "Record
+  // Material Used" row has no cost entry: Closure Review does not cost that
+  // log either, so pricing it here would make the two totals disagree.
+  type MaterialRow = {
+    id: string;
+    name: string;
+    partNo: string | null;
+    ssRecCode: string | null;
+    qty: string;
+    unit: string | null;
+    cost: { unitCost: number | null; totalCost: number | null; status: string } | null;
+  };
   const materials: MaterialRow[] = [
     ...issuedRequiredParts.map(
       (f): MaterialRow => ({
@@ -290,7 +313,9 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
         name: f.description,
         partNo: f.part_number,
         ssRecCode: f.part_id ? ssRecCodeByPartId.get(f.part_id) ?? null : null,
-        qty: f.issued_qty.toFixed(2)
+        qty: f.issued_qty.toFixed(2),
+        unit: f.unit,
+        cost: costSummary?.materialLineById.get(f.id) ?? null
       })
     ),
     ...rawMaterials.map(
@@ -299,10 +324,16 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
         name: row.material_name,
         partNo: row.part_number,
         ssRecCode: row.ss_rec_code,
-        qty: row.quantity.toFixed(2)
+        qty: row.quantity.toFixed(2),
+        unit: null,
+        cost: null
       })
     )
   ];
+  const hasUncostedLoggedMaterial = costSummary !== null && rawMaterials.length > 0;
+  const materialHeaders = costSummary
+    ? ["Material", "Part No.", "SS Rec Code", "Qty", "Unit", "Unit Cost", "Total Cost", "Status"]
+    : ["Material", "Part No.", "SS Rec Code", "Qty", "Unit"];
   // Task 3's exact 3 cases: something was actually used (table); nothing
   // used yet but materials ARE required (Materials pending); nothing
   // required or used at all (No material used) — never the last one when
@@ -329,8 +360,16 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
   const hasLongComplaintText = complaintTextLength > 400;
   const workerCount = workerRows.length;
   const materialCount = materials.length;
-  const signatureSpacerClass: "signature-spacer-normal" | "signature-spacer-small" | null =
-    workerCount > 5 || materialCount > 10
+  // Job Card Print Cost Summary Unit — the Labor Cost Summary table and the
+  // Final Job Card Cost boxes take up roughly what the 35mm spacer used to
+  // reserve, so a cost-permitted print only keeps the small spacer for a
+  // genuinely short Job Card and otherwise gets none (same "never cause a
+  // page 2" priority as above).
+  const signatureSpacerClass: "signature-spacer-normal" | "signature-spacer-small" | null = costSummary
+    ? workerCount <= 2 && materialCount <= 2 && !hasLongComplaintText
+      ? "signature-spacer-small"
+      : null
+    : workerCount > 5 || materialCount > 10
       ? null
       : workerCount > 4 || materialCount > 6 || hasLongComplaintText
         ? "signature-spacer-small"
@@ -466,6 +505,59 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
           )}
         </section>
 
+        {/* Job Card Print Cost Summary Unit — cost-permitted viewers only
+            (costSummary is null otherwise). Same per-worker figures and
+            totals as Closure Review's worker table. */}
+        {costSummary ? (
+          <section className="mt-3">
+            <SectionHeading className="print-table-heading">Labor Cost Summary</SectionHeading>
+            {costSummary.workers.length ? (
+              <table className="print-table mt-1.5 w-full border-collapse text-left">
+                <thead>
+                  <tr>
+                    {["Worker", "Estimated Hours", "Actual Hours", "Hourly Rate", "Direct Labor Cost", "Status"].map((h) => (
+                      <th key={h} className="border border-[#E5E7EB] bg-gray-50 p-1 text-[9px] font-bold uppercase text-[#4B5563]">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {costSummary.workers.map((w) => {
+                    const state = deriveSimpleWorkerState(w.assignmentStatus, w.sessionStatus);
+                    return (
+                      <tr key={w.workerAssignmentId}>
+                        <td className="border border-[#E5E7EB] p-1 font-semibold">{w.name}</td>
+                        <td className="border border-[#E5E7EB] p-1">{w.estimatedHours !== null ? `${w.estimatedHours} h` : "-"}</td>
+                        <td className="border border-[#E5E7EB] p-1">{w.actualHours.toFixed(2)} h</td>
+                        <td className="border border-[#E5E7EB] p-1">{formatKwd(w.hourlyRate)}</td>
+                        <td className="border border-[#E5E7EB] p-1">{formatKwd(w.directLaborCost)}</td>
+                        <td className="border border-[#E5E7EB] p-1">{state === "Working" ? "In Progress" : state}</td>
+                      </tr>
+                    );
+                  })}
+                  {/* A plain last body row, not a tfoot: a tfoot would repeat
+                      on every printed page of a long table. */}
+                  <tr className="bg-gray-50 font-bold">
+                    <td className="border border-[#E5E7EB] p-1" colSpan={2}>
+                      Total
+                    </td>
+                    <td className="border border-[#E5E7EB] p-1">{costSummary.totalActualHours.toFixed(2)} h</td>
+                    <td className="border border-[#E5E7EB] p-1 text-right text-[9px] uppercase text-[#4B5563]">Total Direct Labor Cost</td>
+                    <td className="border border-[#E5E7EB] p-1" colSpan={2}>
+                      {formatKwd(costSummary.directLaborCostTotal)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            ) : (
+              <p className="mt-1 text-[10px] text-[#6B7280]">
+                No timed worker sessions recorded. Total Direct Labor Cost: {formatKwd(costSummary.directLaborCostTotal)}
+              </p>
+            )}
+          </section>
+        ) : null}
+
         {/* Task 3/4/8 — Material Used: real issued materials from the same
             source Daily Activity/the Job Card detail page use, merged with
             the free-form "Record Material Used" log (see the fetch comments
@@ -477,7 +569,7 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
               <table className="print-table mt-1.5 w-full border-collapse text-left">
                 <thead>
                   <tr>
-                    {["Material", "Part No.", "SS Rec Code", "Qty"].map((h) => (
+                    {materialHeaders.map((h) => (
                       <th key={h} className="border border-[#E5E7EB] bg-gray-50 p-1 text-[9px] font-bold uppercase text-[#4B5563]">
                         {h}
                       </th>
@@ -491,10 +583,42 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
                       <td className="border border-[#E5E7EB] p-1">{row.partNo ?? "-"}</td>
                       <td className="border border-[#E5E7EB] p-1">{row.ssRecCode ?? "-"}</td>
                       <td className="border border-[#E5E7EB] p-1">{row.qty}</td>
+                      <td className="border border-[#E5E7EB] p-1">{row.unit ?? "-"}</td>
+                      {costSummary ? (
+                        <>
+                          <td className="border border-[#E5E7EB] p-1">
+                            {row.cost ? (row.cost.unitCost !== null ? formatKwd(row.cost.unitCost) : "Unpriced") : "-"}
+                          </td>
+                          <td className="border border-[#E5E7EB] p-1">
+                            {row.cost ? (row.cost.totalCost !== null ? formatKwd(row.cost.totalCost) : "Unpriced") : "-"}
+                          </td>
+                          <td className="border border-[#E5E7EB] p-1">{row.cost ? row.cost.status : "Logged"}</td>
+                        </>
+                      ) : null}
                     </tr>
                   ))}
+                  {costSummary ? (
+                    <tr className="bg-gray-50 font-bold">
+                      <td className="border border-[#E5E7EB] p-1 text-right" colSpan={6}>
+                        Total Material Cost
+                      </td>
+                      <td className="border border-[#E5E7EB] p-1" colSpan={2}>
+                        {formatKwd(costSummary.materialCostTotal)}
+                      </td>
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
+              {costSummary?.hasUnpricedMaterial ? (
+                <p className="mt-1 text-[10px] font-semibold text-amber-700">
+                  Some materials do not have unit cost recorded. Material total excludes unpriced lines.
+                </p>
+              ) : null}
+              {hasUncostedLoggedMaterial ? (
+                <p className="mt-1 text-[10px] text-[#6B7280]">
+                  Lines marked Logged were recorded manually, not issued from inventory, and are not included in the material total.
+                </p>
+              ) : null}
               {materialsPartiallyPending ? (
                 <p className="mt-1 text-[10px] font-semibold text-amber-700">Some required materials are still pending.</p>
               ) : null}
@@ -505,6 +629,34 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
             <p className="mt-1 text-[10px] text-[#6B7280]">No material used.</p>
           )}
         </section>
+
+        {/* Job Card Print Cost Summary Unit — cost-permitted viewers only.
+            The same four figures, formula and unpriced warning as Closure
+            Review's Final Job Card Cost box; Indirect Cost is the one
+            Job-Card-wide setting, added once. */}
+        {costSummary ? (
+          <section className="mt-3 avoid-break">
+            <SectionHeading>Final Job Card Cost</SectionHeading>
+            <div className="mt-1.5 grid grid-cols-4 border-l border-t border-[#E5E7EB]">
+              {(
+                [
+                  ["Direct Labor Cost", costSummary.directLaborCostTotal],
+                  ["Material Cost", costSummary.materialCostTotal],
+                  ["Indirect Cost", costSummary.jobCardIndirectCost],
+                  ["Grand Total Job Cost", costSummary.grandTotalJobCost]
+                ] as Array<[string, number]>
+              ).map(([label, value], i) => (
+                <div key={label} className={`border-b border-r border-[#E5E7EB] p-1 ${i === 3 ? "bg-gray-50" : ""}`}>
+                  <p className="text-[8.5px] font-bold uppercase text-[#6B7280]">{label}</p>
+                  <p className={`mt-0.5 text-[10px] ${i === 3 ? "font-black" : "font-semibold"}`}>{formatKwd(value)}</p>
+                </div>
+              ))}
+            </div>
+            {costSummary.hasUnpricedMaterial ? (
+              <p className="mt-1 text-[10px] font-semibold text-amber-700">Grand total excludes unpriced material lines.</p>
+            ) : null}
+          </section>
+        ) : null}
 
         {/* Task 5/9 — Status History and Approval and Closure are useful for
             Manager review on screen but are not part of the official

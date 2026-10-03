@@ -70,8 +70,12 @@ export async function createPartsRequest(
     }
     await assertNoActiveDuplicateMaterialsRequest(tx, input.workOrderId);
 
+    // Job Card Materials Request UX and Existing Inventory Selection Fix,
+    // Task 8 — an unpriced line (unit_price null) contributes 0 to this
+    // request-level total, same as the main Inventory Control/Add Material
+    // "unknown cost treated as 0 for totals, shown as — in the UI" pattern.
     const total = input.items.reduce(
-      (sum, item) => sum + item.quantity_requested * item.unit_price,
+      (sum, item) => sum + item.quantity_requested * (item.unit_price ?? 0),
       0
     );
 
@@ -102,7 +106,11 @@ export async function createPartsRequest(
           ss_rec_code: item.ss_rec_code,
           quantity_requested: item.quantity_requested,
           unit_price: item.unit_price,
-          remarks: item.remarks
+          remarks: item.remarks,
+          unit: item.unit,
+          inventory_material_key: item.inventory_material_key,
+          purchase_unit: item.purchase_unit,
+          conversion_quantity: item.conversion_quantity
         }))
       });
     }

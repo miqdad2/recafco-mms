@@ -251,6 +251,7 @@ export function ClosureReviewModal({
   onClose,
   onApproved,
   onLoaded,
+  loadErrorMessage,
 }: {
   workOrderId: string;
   onClose: () => void;
@@ -262,6 +263,10 @@ export function ClosureReviewModal({
   // pre-existing callers of this modal (the Closure Requests dashboard
   // section) simply don't pass it, so their behavior is unchanged.
   onLoaded?: () => void;
+  // Optional override for the load-failure text (Daily Activity's Review
+  // Closure & Approve entry point passes its own wording) — every other
+  // caller omits it and keeps the default below.
+  loadErrorMessage?: string;
 }) {
   const router = useRouter();
   const [detail, setDetail] = useState<ClosureReviewDetail | null>(null);
@@ -380,7 +385,7 @@ export function ClosureReviewModal({
   if (loadError) {
     return (
       <LargeFormModal title="Closure Review" onClose={onClose}>
-        <p className="text-sm text-[#6B7280]">Could not load this Job Card. It may no longer be visible to you.</p>
+        <p className="text-sm text-[#6B7280]">{loadErrorMessage ?? "Could not load this Job Card. It may no longer be visible to you."}</p>
       </LargeFormModal>
     );
   }

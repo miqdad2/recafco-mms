@@ -132,7 +132,14 @@ export async function createPurchaseFromUnavailableParts(context: CurrentUserCon
             part_id: item.part_id,
             description: item.description,
             quantity: item.quantity_requested,
-            estimated_unit_price: item.unit_price
+            // Job Card Materials Request UX and Existing Inventory Selection
+            // Fix: parts_request_items.unit_price is now nullable ("Not
+            // priced yet" shown instead of a misleading 0 in the request
+            // UI) — purchase_request_items.estimated_unit_price stays
+            // NOT NULL, so an unpriced source line becomes 0 here, same as
+            // this total's own Number(item.unit_price) coercion two lines
+            // above already treated it.
+            estimated_unit_price: item.unit_price ?? 0
           }))
         }
       },

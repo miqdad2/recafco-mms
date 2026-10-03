@@ -224,7 +224,19 @@ export function isImportedOpeningStock(movementType: string, referenceNumber: st
   return movementType === "OPENING_STOCK" && !!referenceNumber?.startsWith(IMPORT_REFERENCE_PREFIX);
 }
 
-export function movementTypeLabel(movementType: string, referenceNumber: string | null | undefined): string {
+// Add New Material's default save registers a material with no stock: the
+// ledger has no separate material master, so that registration is a
+// zero-quantity OPENING_STOCK row. It must never read as stock received.
+export function isRegistrationOnlyMovement(movementType: string, quantity: number | null | undefined): boolean {
+  return movementType === "OPENING_STOCK" && quantity === 0;
+}
+
+export function movementTypeLabel(
+  movementType: string,
+  referenceNumber: string | null | undefined,
+  quantity?: number | null
+): string {
+  if (isRegistrationOnlyMovement(movementType, quantity)) return "Material Registered";
   // Simple Wording Cleanup: "Initial Stock" is display wording only — the
   // underlying movement_type value is still literally "OPENING_STOCK".
   if (isImportedOpeningStock(movementType, referenceNumber)) return "Imported Initial Stock";
@@ -238,7 +250,8 @@ export function movementTypeLabel(movementType: string, referenceNumber: string 
   return labels[movementType] ?? movementType;
 }
 
-export function movementTypeTone(movementType: string): MovementBadgeTone {
+export function movementTypeTone(movementType: string, quantity?: number | null): MovementBadgeTone {
+  if (isRegistrationOnlyMovement(movementType, quantity)) return "gray";
   const tones: Record<string, MovementBadgeTone> = {
     OPENING_STOCK: "blue",
     RECEIVED: "green",

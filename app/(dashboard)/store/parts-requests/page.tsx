@@ -31,7 +31,7 @@ import {
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
-import { canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
+import { canManageOfflineInventory, resolveMaterialMatchByKey } from "@/lib/store/offline-inventory-data";
 import {
   displayPartsRequestStatus,
   partsRequestStatusTone,
@@ -42,6 +42,7 @@ import {
   OPEN_PR_STATUSES,
 } from "@/lib/display/parts-request-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import { canViewCosts } from "@/lib/security/permissions";
 import { getReviewedWorkOrderIds } from "@/lib/work-orders/review-status";
 import { getMaterialFulfillmentForWorkOrder, summarizeMaterialAvailability } from "@/lib/work-orders/material-fulfillment";
 import { getPendingClarificationForWorkOrder } from "@/lib/backend/workflows/queries";
@@ -246,6 +247,10 @@ export default async function PartsRequestsPage({
   // Inventory Control's own Receive Material action, so it reuses that
   // action's gate rather than a new permission.
   const canReceiveGeneral = canManageOfflineInventory(context);
+  // General Inventory Request prices/totals/unit costs are stripped here,
+  // server-side, for a viewer without cost permission — the form and quick
+  // view never receive them.
+  const showGeneralCosts = canViewCosts(context);
 
   const params = (await searchParams) ?? {};
   const query = single(params.q)?.trim() ?? "";
@@ -299,6 +304,8 @@ export default async function PartsRequestsPage({
   const genPreviewId = single(params.genPreview)?.trim() ?? null;
   const validGenPreviewId = genPreviewId && UUID_RE.test(genPreviewId) ? genPreviewId : null;
   const genPreviewError = single(params.error)?.trim() ?? null;
+  // Set only by createGeneralInventoryRequestAction's success redirect.
+  const genPreviewJustSubmitted = single(params.submitted) === "1";
 
   // ── Visibility: a user can always see requests they created/requested ────
   const partsRequestVisibility = getPartsRequestVisibilityFilter(context);
@@ -686,6 +693,19 @@ export default async function PartsRequestsPage({
         include: { items: { orderBy: { created_at: "asc" } } },
       })
     : null;
+  // Current Offline Inventory balance for each row linked to an existing
+  // material (read-only; a quantity, not a cost, so shown to every viewer).
+  const genPreviewBalanceByItemId = new Map<string, number>();
+  if (genPreviewRequest) {
+    await Promise.all(
+      genPreviewRequest.items
+        .filter((item) => item.inventory_material_key)
+        .map(async (item) => {
+          const resolved = await resolveMaterialMatchByKey(item.inventory_material_key);
+          if (resolved.matched) genPreviewBalanceByItemId.set(item.id, resolved.balance);
+        })
+    );
+  }
 
   const canAssignModal =
     context.role?.slug === "super_admin" ||
@@ -966,16 +986,29 @@ export default async function PartsRequestsPage({
           description: item.description,
           quantityRequested: Number(item.quantity_requested),
           unit: item.unit,
-          unitPrice: item.unit_price !== null ? Number(item.unit_price) : null,
-          totalPrice: item.total_price !== null ? Number(item.total_price) : null,
+          unitPrice: showGeneralCosts && item.unit_price !== null ? Number(item.unit_price) : null,
+          totalPrice: showGeneralCosts && item.total_price !== null ? Number(item.total_price) : null,
           supplier: item.supplier,
           receivedQuantity: Number(item.received_quantity),
           inventoryUnit: item.inventory_unit,
           conversionQuantity: item.conversion_quantity !== null ? Number(item.conversion_quantity) : null,
           inventoryQuantity: item.inventory_quantity_to_add !== null ? Number(item.inventory_quantity_to_add) : null,
-          unitCost: item.unit_cost !== null ? Number(item.unit_cost) : null,
+          unitCost: showGeneralCosts && item.unit_cost !== null ? Number(item.unit_cost) : null,
+          requestUnit: item.request_unit,
+          requestQuantity: item.request_quantity !== null ? Number(item.request_quantity) : null,
+          // Rows saved before the existing-vs-new link existed have no
+          // request_unit and carry no badge at all.
+          isExistingMaterial: item.request_unit === null ? null : item.inventory_material_key !== null,
+          currentBalance: genPreviewBalanceByItemId.get(item.id) ?? null,
+          remarks: item.remarks,
         })),
         closeHref: genPreviewCloseHref,
+        // The submitted state only ever applies to a request that is still
+        // Pending and has no error to show — a completed/cancelled request
+        // opened with a stale ?submitted=1 URL shows the normal detail view.
+        justSubmitted: genPreviewJustSubmitted && genPreviewRequest.status === "Pending" && !genPreviewError,
+        viewHref: genPreviewHref(genPreviewRequest.id, { query, status, page, kind }),
+        canViewCosts: showGeneralCosts,
         canReceive: canReceiveGeneral,
         inventoryReference: genPreviewRequest.status === "Completed" ? genPreviewRequest.request_number : null,
         errorMessage: genPreviewError,
@@ -1689,6 +1722,7 @@ export default async function PartsRequestsPage({
               modalMode
               requesterName={currentProfile?.full_name ?? null}
               requestedDateLabel={generalRequestDateLabel}
+              canViewCosts={showGeneralCosts}
               errorMessage={newRequestError}
             />
           ) : (

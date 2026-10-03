@@ -291,8 +291,8 @@ export default async function MovementHistoryPage({
                         {!isStoreKeeper && (
                           <td className="px-4 py-3">
                             <StatusBadge
-                              label={movementTypeLabel(m.movement_type, m.reference_number)}
-                              tone={movementTypeTone(m.movement_type)}
+                              label={movementTypeLabel(m.movement_type, m.reference_number, Number(m.quantity))}
+                              tone={movementTypeTone(m.movement_type, Number(m.quantity))}
                             />
                           </td>
                         )}

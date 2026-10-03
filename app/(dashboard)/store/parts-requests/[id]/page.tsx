@@ -270,7 +270,10 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
   const items = rawItems.map((item) => ({
     ...item,
     quantity_requested: item.quantity_requested.toFixed(2),
-    unit_price: item.unit_price.toFixed(3),
+    // Job Card Materials Request UX and Existing Inventory Selection Fix,
+    // Task 8 — unit_price is nullable now ("not priced yet"); null stays
+    // null here rather than being forced into a misleading "0.000".
+    unit_price: item.unit_price?.toFixed(3) ?? null,
     total_price: item.total_price?.toFixed(3) ?? null,
     issued_quantity: item.issued_quantity.toFixed(2)
   }));

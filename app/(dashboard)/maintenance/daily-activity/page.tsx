@@ -639,6 +639,11 @@ export default async function DailyActivityPage({
       // in, since none of that state itself changes at request time.
       showAssignWorkers: !c.hasAssignment && canEditAssignment && !c.isClosureRequested,
       showRequestClosure: c.closureReady && canRequestClosureRole && !c.isClosureRequested,
+      // Review Closure & Approve — strictly the real Closure Requested
+      // status (never "ready for closure") plus the same Manager/Super
+      // Admin role check getClosureReviewDetailAction/approveJobCardClosure
+      // enforce server-side; no new permission.
+      showReviewClosure: c.isClosureRequested && isManagerRole,
       laborSummary: c.laborSummary,
       canManageSessions: canManageSessions && c.wo.status !== "Closed" && !c.isClosureRequested,
       isManager: isManagerRole,

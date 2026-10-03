@@ -18,9 +18,15 @@ import { ClosureReviewModal } from "@/components/dashboard/closure-review-modal"
 export function ReviewApproveClosureButton({
   workOrderId,
   className,
+  label = "Review & Approve Closure",
+  loadErrorMessage,
 }: {
   workOrderId: string;
   className: string;
+  // Daily Activity's Next Action uses its own wording for both; the Job
+  // Card detail page omits them and keeps the defaults.
+  label?: string;
+  loadErrorMessage?: string;
 }) {
   const router = useRouter();
   const [reviewing, setReviewing] = useState(false);
@@ -28,11 +34,12 @@ export function ReviewApproveClosureButton({
   return (
     <>
       <button type="button" onClick={() => setReviewing(true)} className={className}>
-        Review &amp; Approve Closure
+        {label}
       </button>
       {reviewing ? (
         <ClosureReviewModal
           workOrderId={workOrderId}
+          loadErrorMessage={loadErrorMessage}
           onClose={() => setReviewing(false)}
           onApproved={() => {
             // The "Job Card Closed" success toast is already dispatched

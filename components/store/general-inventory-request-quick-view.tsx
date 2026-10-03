@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { X } from "lucide-react";
+import { CheckCircle2, X } from "lucide-react";
 
 import { StatusBadge } from "@/components/ui/status-badge";
 import { receiveGeneralInventoryRequestAction } from "@/app/actions/general-inventory-requests";
@@ -27,7 +28,50 @@ export type GeneralInventoryRequestQuickViewItem = {
   conversionQuantity: number | null;
   inventoryQuantity: number | null;
   unitCost: number | null;
+  // Materials Request Existing-vs-New Material and Unit Conversion UX Fix —
+  // the Request / Issue Unit and the quantity entered in it; both null on
+  // rows saved before that unit (their requested figures are then derived
+  // from the purchase quantity and conversion, see itemQuantities below).
+  // isExistingMaterial: true = linked to an Offline Inventory material,
+  // false = New Material Request, null = older row with no link recorded.
+  requestUnit: string | null;
+  requestQuantity: number | null;
+  isExistingMaterial: boolean | null;
+  // Live Offline Inventory balance of the linked material, in its own unit;
+  // null for an unlinked row or when the link no longer resolves.
+  currentBalance: number | null;
+  remarks: string | null;
 };
+
+// One place for the two units of a row: Requested is always in the
+// Request / Issue Unit; the purchase side only exists when the row has a
+// conversion ("1 purchaseUnit = conversion requestedUnit").
+function itemQuantities(item: GeneralInventoryRequestQuickViewItem) {
+  const conversion = item.inventoryUnit && item.conversionQuantity ? item.conversionQuantity : null;
+  if (!conversion) {
+    return {
+      conversion: null,
+      requestedQty: item.requestQuantity ?? item.quantityRequested,
+      requestedUnit: item.requestUnit ?? item.unit,
+      purchaseQty: item.quantityRequested,
+      purchaseUnit: item.unit
+    };
+  }
+  return {
+    conversion,
+    requestedQty: item.requestQuantity ?? item.inventoryQuantity ?? item.quantityRequested * conversion,
+    requestedUnit: item.inventoryUnit ?? item.unit,
+    // From the exact requested quantity where it was recorded, so the
+    // estimate is not limited to the stored purchase quantity's 2 decimals.
+    purchaseQty: item.requestQuantity !== null ? item.requestQuantity / conversion : item.quantityRequested,
+    purchaseUnit: item.unit
+  };
+}
+
+// Quantities: up to 4 decimals, no trailing zeros.
+function fmtQty(n: number): string {
+  return Number.isFinite(n) ? String(Number(n.toFixed(4))) : "0";
+}
 
 export type GeneralInventoryRequestQuickViewData = {
   id: string;
@@ -41,6 +85,14 @@ export type GeneralInventoryRequestQuickViewData = {
   status: string;
   items: GeneralInventoryRequestQuickViewItem[];
   closeHref: string;
+  // True only right after a successful submit (and only while Pending):
+  // shows the "request submitted" message and the next-action buttons.
+  // viewHref is this same request's plain detail view, without that state.
+  justSubmitted: boolean;
+  viewHref: string;
+  // Decided server-side; when false the item cost fields above are already
+  // null and no price column or input is rendered.
+  canViewCosts: boolean;
   canReceive: boolean;
   inventoryReference: string | null;
   errorMessage?: string | null;
@@ -73,7 +125,9 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
   function receiveDraft(item: GeneralInventoryRequestQuickViewItem) {
     return (
       receiveDrafts[item.id] ?? {
-        qty: String(item.quantityRequested),
+        // Received quantity is entered in the purchase unit (the same unit
+        // as the request when there is no conversion).
+        qty: fmtQty(itemQuantities(item).purchaseQty),
         price: item.unitPrice !== null ? String(item.unitPrice) : ""
       }
     );
@@ -107,7 +161,13 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
     };
   }, []);
 
-  const totalRequestedValue = data.items.reduce((sum, i) => sum + (i.totalPrice ?? 0), 0);
+  const canStartReceive = data.canReceive && data.status === "Pending" && !receiving;
+  const secondaryButton =
+    "inline-flex min-h-[44px] items-center rounded-md border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-bold text-[#4B5563] hover:bg-gray-50 sm:min-h-0";
+
+  const pricedItems = data.items.filter((i) => i.unitPrice !== null);
+  const pricedCount = pricedItems.length;
+  const totalRequestedValue = pricedItems.reduce((sum, i) => sum + (i.totalPrice ?? 0), 0);
 
   return (
     <>
@@ -131,6 +191,11 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
                 </span>
                 <StatusBadge label={data.status} tone={statusTone(data.status)} />
               </div>
+              {data.status === "Pending" && (
+                <p className="mt-1.5 text-xs text-[#4B5563]">
+                  Pending means materials have been requested but not received yet.
+                </p>
+              )}
             </div>
             <button
               ref={closeButtonRef}
@@ -146,6 +211,25 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
             {data.errorMessage && (
               <div className="mx-5 mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {data.errorMessage}
+              </div>
+            )}
+
+            {/* Shown once, right after submit. The request's own status
+                badge above stays Pending — nothing has been received. */}
+            {data.justSubmitted && (
+              <div role="status" className="mx-5 my-4 flex items-start gap-3 rounded-md border border-green-200 bg-green-50 px-4 py-3">
+                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-green-700" aria-hidden="true" />
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-green-800">General Inventory Material Request Submitted</p>
+                  <p className="mt-0.5 text-sm text-green-800">
+                    Your request has been saved. Stock balance will update only after materials are received.
+                  </p>
+                  <p className="mt-1.5 text-sm text-[#111827]">
+                    Request No: <span className="font-bold">{data.requestNumber ?? "—"}</span>
+                    <span className="mx-2 text-[#9CA3AF]">·</span>
+                    Status: <span className="font-bold">{data.status}</span>
+                  </p>
+                </div>
               </div>
             )}
 
@@ -188,49 +272,80 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
                     <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
                       <tr>
                         <th className="px-3 py-2 text-left">Material</th>
-                        <th className="px-3 py-2 text-right">Quantity</th>
-                        <th className="px-3 py-2 text-left">Purchase Unit</th>
-                        <th className="px-3 py-2 text-right">Unit Price</th>
-                        <th className="px-3 py-2 text-right">Total</th>
+                        <th className="px-3 py-2 text-right">Requested</th>
+                        <th className="px-3 py-2 text-right">Purchase Estimate</th>
+                        {data.canViewCosts && <th className="px-3 py-2 text-right">Estimated Unit Price</th>}
+                        {data.canViewCosts && <th className="px-3 py-2 text-right">Estimated Total</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#E5E7EB]">
                       {data.items.map((item) => {
-                        const hasConversion = Boolean(item.inventoryUnit && item.conversionQuantity);
+                        const q = itemQuantities(item);
                         return (
                           <tr key={item.id}>
                             <td className="px-3 py-2 font-semibold text-[#111827]">
+                              {item.isExistingMaterial !== null && (
+                                <span className="mb-1 block">
+                                  <StatusBadge
+                                    label={item.isExistingMaterial ? "Existing Inventory" : "New Material"}
+                                    tone={item.isExistingMaterial ? "green" : "amber"}
+                                  />
+                                </span>
+                              )}
                               {item.materialName}
+                              {item.isExistingMaterial === true && item.currentBalance !== null && (
+                                <p className="text-xs font-normal text-[#4B5563]">
+                                  Current Balance: {fmtQty(item.currentBalance)} {q.requestedUnit}
+                                </p>
+                              )}
+                              {item.isExistingMaterial === false && (
+                                <p className="text-xs font-normal text-[#4B5563]">Not linked to inventory yet</p>
+                              )}
                               {item.description && <p className="text-xs font-normal text-[#9CA3AF]">{item.description}</p>}
-                              {hasConversion && (
+                              {item.supplier && <p className="text-xs font-normal text-[#9CA3AF]">Supplier: {item.supplier}</p>}
+                              {item.remarks && <p className="text-xs font-normal text-[#9CA3AF]">Note: {item.remarks}</p>}
+                              {q.conversion && (
                                 <p className="mt-0.5 text-xs font-normal text-[#4B5563]">
-                                  → {item.inventoryQuantity?.toFixed(3)} {item.inventoryUnit} (Inventory Unit) · Unit Cost{" "}
-                                  {item.unitCost !== null ? item.unitCost.toFixed(3) : "—"} per {item.inventoryUnit}
+                                  1 {q.purchaseUnit} = {fmtQty(q.conversion)} {q.requestedUnit}
+                                  {data.canViewCosts && item.unitCost !== null && (
+                                    <> · Unit Cost {item.unitCost.toFixed(3)} per {q.requestedUnit}</>
+                                  )}
                                 </p>
                               )}
                             </td>
-                            <td className="px-3 py-2 text-right tabular-nums text-[#111827]">{item.quantityRequested}</td>
-                            <td className="px-3 py-2 text-[#4B5563]">{item.unit}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-[#111827]">
+                              {fmtQty(q.requestedQty)} {q.requestedUnit}
+                            </td>
                             <td className="px-3 py-2 text-right tabular-nums text-[#4B5563]">
-                              {item.unitPrice !== null ? item.unitPrice.toFixed(3) : "—"}
+                              {q.conversion ? `${fmtQty(q.purchaseQty)} ${q.purchaseUnit}` : "—"}
                             </td>
-                            <td className="px-3 py-2 text-right tabular-nums font-semibold text-[#111827]">
-                              {item.totalPrice !== null ? item.totalPrice.toFixed(3) : "—"}
-                            </td>
+                            {data.canViewCosts && (
+                              <td className="px-3 py-2 text-right tabular-nums text-[#4B5563]">
+                                {item.unitPrice !== null ? `${item.unitPrice.toFixed(3)} / ${q.purchaseUnit}` : "Not priced yet"}
+                              </td>
+                            )}
+                            {data.canViewCosts && (
+                              <td className="px-3 py-2 text-right tabular-nums font-semibold text-[#111827]">
+                                {/* The stored total is 0 for an unpriced row; never show that as a cost. */}
+                                {item.unitPrice !== null && item.totalPrice !== null ? item.totalPrice.toFixed(3) : "—"}
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
                     </tbody>
-                    <tfoot>
-                      <tr className="bg-gray-50">
-                        <td className="px-3 py-2 text-right text-xs font-bold text-[#4B5563]" colSpan={4}>
-                          Total
-                        </td>
-                        <td className="px-3 py-2 text-right text-sm font-bold text-[#111827]">
-                          {totalRequestedValue.toFixed(3)}
-                        </td>
-                      </tr>
-                    </tfoot>
+                    {data.canViewCosts && (
+                      <tfoot>
+                        <tr className="bg-gray-50">
+                          <td className="px-3 py-2 text-right text-xs font-bold text-[#4B5563]" colSpan={4}>
+                            Estimated Total{pricedCount > 0 && pricedCount < data.items.length ? " (priced items only)" : ""}
+                          </td>
+                          <td className="px-3 py-2 text-right text-sm font-bold text-[#111827]">
+                            {pricedCount > 0 ? totalRequestedValue.toFixed(3) : "Not priced yet"}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    )}
                   </table>
                 </div>
               ) : (
@@ -241,54 +356,80 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
                       <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
                         <tr>
                           <th className="px-3 py-2 text-left">Material</th>
-                          <th className="px-3 py-2 text-right">Purchase Qty</th>
-                          <th className="w-28 px-3 py-2 text-right">Received Qty</th>
-                          <th className="w-28 px-3 py-2 text-right">Unit Price</th>
-                          <th className="px-3 py-2 text-right">Inventory Qty / Unit Cost</th>
+                          <th className="px-3 py-2 text-right">Requested</th>
+                          <th className="w-32 px-3 py-2 text-right">Received Qty</th>
+                          {data.canViewCosts && <th className="w-28 px-3 py-2 text-right">Unit Price</th>}
+                          <th className="px-3 py-2 text-right">Added to Inventory</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#E5E7EB]">
                         {data.items.map((item, i) => {
-                          const hasConversion = Boolean(item.inventoryUnit && item.conversionQuantity);
+                          const q = itemQuantities(item);
                           const draft = receiveDraft(item);
                           const qty = Number(draft.qty) || 0;
                           const price = draft.price ? Number(draft.price) : null;
-                          const conversion = hasConversion ? Number(item.conversionQuantity) : 1;
-                          const invQty = hasConversion ? qty * conversion : qty;
-                          const invUnit = hasConversion ? item.inventoryUnit : item.unit;
-                          const unitCost = price !== null ? (hasConversion ? price / conversion : price) : null;
+                          const conversion = q.conversion ?? 1;
+                          const invQty = qty * conversion;
+                          const unitCost = price !== null ? price / conversion : null;
                           return (
                             <tr key={item.id}>
                               <input type="hidden" name={`item_id_${i}`} value={item.id} />
-                              <td className="px-3 py-2 font-semibold text-[#111827]">{item.materialName}</td>
+                              <td className="px-3 py-2 font-semibold text-[#111827]">
+                                {item.materialName}
+                                <p className="text-xs font-normal text-[#4B5563]">
+                                  {item.isExistingMaterial
+                                    ? "Existing inventory material — added to its current balance."
+                                    : "Not linked to Inventory — registered as a new material on receive."}
+                                </p>
+                                {q.conversion && (
+                                  <p className="text-xs font-normal text-[#4B5563]">
+                                    1 {q.purchaseUnit} = {fmtQty(q.conversion)} {q.requestedUnit}
+                                  </p>
+                                )}
+                              </td>
                               <td className="px-3 py-2 text-right tabular-nums text-[#4B5563]">
-                                {item.quantityRequested} {item.unit}
+                                {fmtQty(q.requestedQty)} {q.requestedUnit}
+                                {q.conversion && (
+                                  <p className="text-xs">
+                                    ≈ {fmtQty(q.purchaseQty)} {q.purchaseUnit}
+                                  </p>
+                                )}
                               </td>
                               <td className="px-1.5 py-1">
                                 <input
                                   name={`received_quantity_${i}`}
                                   type="number"
-                                  step="0.01"
-                                  min="0.01"
+                                  step="any"
+                                  min="0.0001"
                                   value={draft.qty}
                                   onChange={(e) => updateReceiveDraft(item, { qty: e.target.value })}
+                                  aria-label={`Received quantity in ${q.purchaseUnit}`}
                                   className="focus-ring w-full rounded border border-[#E5E7EB] px-2 py-1 text-right text-sm"
                                 />
+                                <p className="mt-0.5 text-right text-xs text-[#4B5563]">{q.purchaseUnit}</p>
                               </td>
-                              <td className="px-1.5 py-1">
-                                <input
-                                  name={`received_unit_price_${i}`}
-                                  type="number"
-                                  step="0.001"
-                                  min="0"
-                                  value={draft.price}
-                                  onChange={(e) => updateReceiveDraft(item, { price: e.target.value })}
-                                  className="focus-ring w-full rounded border border-[#E5E7EB] px-2 py-1 text-right text-sm"
-                                />
-                              </td>
-                              <td className="px-3 py-2 text-right text-xs tabular-nums text-[#4B5563]">
-                                {invQty.toFixed(3)} {invUnit}
-                                {unitCost !== null && <p>{unitCost.toFixed(3)} / {invUnit}</p>}
+                              {data.canViewCosts && (
+                                <td className="px-1.5 py-1">
+                                  <input
+                                    name={`received_unit_price_${i}`}
+                                    type="number"
+                                    step="0.001"
+                                    min="0"
+                                    value={draft.price}
+                                    onChange={(e) => updateReceiveDraft(item, { price: e.target.value })}
+                                    aria-label={`Unit price per ${q.purchaseUnit}`}
+                                    className="focus-ring w-full rounded border border-[#E5E7EB] px-2 py-1 text-right text-sm"
+                                  />
+                                  <p className="mt-0.5 text-right text-xs text-[#4B5563]">per {q.purchaseUnit}</p>
+                                </td>
+                              )}
+                              <td className="px-3 py-2 text-right text-xs tabular-nums text-[#111827]">
+                                <span className="font-semibold">
+                                  {fmtQty(invQty)} {q.requestedUnit}
+                                </span>
+                                {data.canViewCosts && unitCost !== null && (
+                                  <p className="text-[#4B5563]">{unitCost.toFixed(3)} / {q.requestedUnit}</p>
+                                )}
                               </td>
                             </tr>
                           );
@@ -297,8 +438,9 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
                     </table>
                   </div>
                   <p className="mt-2 text-xs text-[#9CA3AF]">
-                    All items are received together and added into inventory. Received quantity defaults to the requested
-                    quantity — adjust actual unit price if needed. Inventory Qty / Unit Cost updates live as you type.
+                    All items are received together and added into inventory. Enter the received quantity in the unit shown
+                    under each field; where an item is purchased in a different unit, it is converted to the request unit
+                    shown under Added to Inventory.
                   </p>
                   <div className="mt-4 flex items-center gap-2">
                     <button
@@ -320,23 +462,45 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
             </section>
           </div>
 
-          <div className="flex shrink-0 items-center gap-2 border-t border-[#E5E7EB] px-5 py-4">
-            {data.canReceive && data.status === "Pending" && !receiving && (
-              <button
-                type="button"
-                onClick={() => setReceiving(true)}
-                className="inline-flex items-center gap-1.5 rounded-md bg-[#111827] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#2b2b2b]"
-              >
-                Receive Materials
-              </button>
+          <div className="shrink-0 border-t border-[#E5E7EB] px-5 py-4">
+            <div className="flex flex-wrap items-center gap-2">
+              {canStartReceive && (
+                <button
+                  type="button"
+                  onClick={() => setReceiving(true)}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-md bg-[#111827] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#2b2b2b] sm:min-h-0"
+                >
+                  Receive Materials
+                </button>
+              )}
+              {data.justSubmitted ? (
+                <>
+                  {/* Same request, plain detail view — drops the submitted state. */}
+                  <button
+                    type="button"
+                    onClick={() => router.replace(data.viewHref, { scroll: false })}
+                    className={secondaryButton}
+                  >
+                    View Material Request
+                  </button>
+                  <Link href="/store/offline-inventory" className={secondaryButton}>
+                    Go to Inventory Control
+                  </Link>
+                  <button type="button" onClick={close} className={secondaryButton}>
+                    Back to Materials Requests
+                  </button>
+                </>
+              ) : (
+                <button type="button" onClick={close} className={secondaryButton}>
+                  Close
+                </button>
+              )}
+            </div>
+            {canStartReceive && (
+              <p className="mt-2 text-xs text-[#4B5563]">
+                Use Receive Materials only when the physical materials are available in store.
+              </p>
             )}
-            <button
-              type="button"
-              onClick={close}
-              className="rounded-md border border-[#E5E7EB] bg-white px-4 py-2.5 text-sm font-bold text-[#4B5563] hover:bg-gray-50"
-            >
-              Close
-            </button>
           </div>
         </div>
       </div>
