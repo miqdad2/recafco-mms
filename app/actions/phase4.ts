@@ -35,7 +35,15 @@ import { errorToLogInput, logSystemError } from "@/lib/errors/logging";
 import { prisma } from "@/lib/db/prisma";
 import { OPEN_PR_STATUSES } from "@/lib/display/parts-request-labels";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
-import { canViewCosts } from "@/lib/security/permissions";
+import { canEnterMaterialRequestPrice } from "@/lib/security/permissions";
+import {
+  computeRequestLine,
+  isPriceBasis,
+  pricePerStockUnit,
+  reversedUnitsMessage,
+  unitsLookReversed,
+  type PriceBasis
+} from "@/lib/materials/request-pricing";
 import { normalizeCategory } from "@/components/store/offline-inventory-types";
 import { emitOfflineInventoryRealtimeEvent, emitMaterialsRequestRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 
@@ -50,33 +58,78 @@ function num(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function parseItems(formData: FormData) {
-  return [0, 1, 2, 3, 4, 5, 6, 7]
-    .map((index) => {
-      const description = field(formData, "description", index);
-      if (!description) return null;
-      // Job Card Materials Request UX and Existing Inventory Selection Fix,
-      // Task 8/10 — unit_price is only a real number when something was
-      // actually typed; an empty field means "not priced yet" (null), never
-      // a silently-invented 0. conversion_quantity similarly stays null
-      // unless "Purchased in a different unit" actually supplied one.
-      const unitPriceRaw = field(formData, "unit_price", index);
-      const conversionRaw = field(formData, "conversion_quantity", index);
-      return {
-        part_id: field(formData, "part_id", index) || null,
-        description,
-        part_number: field(formData, "part_number", index) || null,
-        ss_rec_code: field(formData, "ss_rec_code", index) || null,
-        quantity_requested: num(field(formData, "quantity_requested", index)),
-        unit_price: unitPriceRaw ? num(unitPriceRaw) : null,
-        remarks: field(formData, "remarks", index) || null,
-        unit: field(formData, "unit", index) || null,
-        inventory_material_key: field(formData, "inventory_material_key", index) || null,
-        purchase_unit: field(formData, "purchase_unit", index) || null,
-        conversion_quantity: conversionRaw ? num(conversionRaw) : null
-      };
-    })
-    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+// Material Request Purchase-First Unit and Flexible Price Basis — each row
+// is posted as Requested Purchase Qty (purchase_quantity_) in purchase_unit_,
+// the Stock Unit (unit_), conversion_quantity_ (only when the two units
+// differ) and an optional price with its basis. Saved in the table's
+// existing stock-unit terms: quantity_requested = calculated stock quantity
+// (what issuing works against) and unit_price = price per stock unit (what
+// the generated total_price and purchase-request creation use); the price as
+// typed and its basis are kept alongside. Same maths as the wizard's
+// preview (lib/materials/request-pricing.ts). Returns the first friendly
+// validation error instead of items when a row is incomplete.
+function parseItems(formData: FormData, mayEnterPrices: boolean) {
+  const items = [];
+  for (const index of [0, 1, 2, 3, 4, 5, 6, 7]) {
+    const description = field(formData, "description", index);
+    if (!description) continue;
+    const purchaseQty = num(field(formData, "purchase_quantity", index));
+    const purchaseUnit = field(formData, "purchase_unit", index);
+    const stockUnit = field(formData, "unit", index);
+    const conversionRaw = field(formData, "conversion_quantity", index);
+    const priceRaw = mayEnterPrices ? field(formData, "unit_price", index) : "";
+    const basisRaw = field(formData, "price_basis", index);
+
+    if (!(purchaseQty > 0)) return { error: "Enter requested purchase quantity." };
+    if (!Number.isInteger(purchaseQty)) return { error: "Requested Purchase Qty must be a whole number." };
+    if (!purchaseUnit) return { error: "Select purchase unit." };
+    if (!stockUnit) return { error: "Select stock unit." };
+    // Allowed only when the user chose "Keep as entered" for this row.
+    if (unitsLookReversed(purchaseUnit, stockUnit) && formData.get(`units_confirmed_${index}`) !== "1") {
+      return { error: reversedUnitsMessage(purchaseUnit, stockUnit) };
+    }
+
+    const price = priceRaw ? num(priceRaw) : null;
+    if (price !== null && price < 0) return { error: "Estimated unit price must be 0 or greater." };
+    if (price !== null && !isPriceBasis(basisRaw)) {
+      return { error: "Select whether price is per purchase unit or per stock unit." };
+    }
+
+    const figures = computeRequestLine({
+      purchaseQty,
+      purchaseUnit,
+      stockUnit,
+      conversion: conversionRaw ? num(conversionRaw) : null,
+      price,
+      basis: isPriceBasis(basisRaw) ? basisRaw : null
+    });
+    if (figures.conversion === null || figures.stockQty === null) {
+      return { error: "Enter how many stock units are inside 1 purchase unit." };
+    }
+    const stockQty = Math.round(figures.stockQty * 1e6) / 1e6;
+    if (!Number.isInteger(stockQty)) {
+      return { error: `Calculated Stock Quantity must be a whole number of ${stockUnit}.` };
+    }
+    // One unit: both bases mean the same thing.
+    const basis = price !== null ? (figures.unitsDiffer ? (basisRaw as PriceBasis) : "purchase_unit") : null;
+
+    items.push({
+      part_id: field(formData, "part_id", index) || null,
+      description,
+      part_number: field(formData, "part_number", index) || null,
+      ss_rec_code: field(formData, "ss_rec_code", index) || null,
+      quantity_requested: stockQty,
+      unit_price: price !== null && basis ? pricePerStockUnit(price, basis, figures.conversion) : null,
+      entered_unit_price: price,
+      price_basis: basis,
+      remarks: field(formData, "remarks", index) || null,
+      unit: stockUnit,
+      inventory_material_key: field(formData, "inventory_material_key", index) || null,
+      purchase_unit: figures.unitsDiffer ? purchaseUnit : null,
+      conversion_quantity: figures.unitsDiffer ? figures.conversion : null
+    });
+  }
+  return { items };
 }
 
 function idFrom(formData: FormData, key: string) {
@@ -106,47 +159,17 @@ async function requireReceiveIssuePermission() {
 export async function createPartsRequestAction(formData: FormData) {
   const context = await requirePartsRequestCreator();
   const workOrderId = idFrom(formData, "work_order_id");
-  // Estimated unit price is a cost field: the wizard only renders it for a
-  // cost-permitted viewer, and this drops it server-side for anyone else so
-  // a hand-built request can't save one either.
-  const mayEnterPrices = canViewCosts(context);
-  const items = parseItems(formData).map((item) => (mayEnterPrices ? item : { ...item, unit_price: null }));
+  // The wizard only renders Estimated Unit Price for a viewer allowed to
+  // price material requests (canEnterMaterialRequestPrice); parseItems
+  // ignores a posted price for anyone else so a hand-built request can't
+  // save one. The wizard validates the same rules client-side first; these
+  // are the server-side backstop.
+  const parsed = parseItems(formData, canEnterMaterialRequestPrice(context));
+  if ("error" in parsed) {
+    redirect(`/maintenance/work-orders/${workOrderId}?error=${encodeURIComponent(parsed.error ?? "Check the requested materials.")}`);
+  }
+  const items = parsed.items;
   if (!items.length) redirect(`/maintenance/work-orders/${workOrderId}?error=no-items`);
-  if (items.some((item) => !Number.isInteger(item.quantity_requested) || item.quantity_requested <= 0)) {
-    redirect(
-      `/maintenance/work-orders/${workOrderId}?error=${encodeURIComponent("Quantity must be a whole number greater than 0.")}`
-    );
-  }
-  // Job Card Materials Request UX and Existing Inventory Selection Fix,
-  // Task 4/6 — a Request / Issue Unit is always required, whether the row
-  // came from an existing Offline Inventory match (auto-filled) or a
-  // hand-typed new material (user must pick one) — the wizard's own client
-  // validation already blocks this, this is the server-side backstop.
-  if (items.some((item) => !item.unit)) {
-    redirect(
-      `/maintenance/work-orders/${workOrderId}?error=${encodeURIComponent("Select the unit used for storing and issuing this material.")}`
-    );
-  }
-  // Task 7 — "Purchased in a different unit" is all-or-nothing: a
-  // purchase_unit without a conversion_quantity (or vice versa) can never
-  // reach here from the wizard's own UI, but is rejected defensively rather
-  // than silently saved half-configured.
-  if (
-    items.some(
-      (item) =>
-        Boolean(item.purchase_unit) !== Boolean(item.conversion_quantity) ||
-        (item.conversion_quantity !== null && item.conversion_quantity <= 0)
-    )
-  ) {
-    redirect(
-      `/maintenance/work-orders/${workOrderId}?error=${encodeURIComponent("Enter how many request/issue units are inside 1 purchase unit.")}`
-    );
-  }
-  if (items.some((item) => item.unit_price !== null && item.unit_price < 0)) {
-    redirect(
-      `/maintenance/work-orders/${workOrderId}?error=${encodeURIComponent("Estimated unit price must be 0 or greater.")}`
-    );
-  }
 
   // Attachments step — optional, files ride along in this same multipart submission.
   const pendingAttachments = parsePendingAttachments(formData, "pr_attachment", MAX_ATTACHMENT_ROWS);

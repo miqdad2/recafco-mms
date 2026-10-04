@@ -7,7 +7,7 @@ import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
 import { requireUser } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
-import { canViewCosts } from "@/lib/security/permissions";
+import { canEnterMaterialRequestPrice } from "@/lib/security/permissions";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { formatDate } from "@/lib/utils";
 
@@ -94,7 +94,7 @@ export default async function NewPartsRequestPage({
           <GeneralInventoryRequestForm
             requesterName={requester?.full_name ?? null}
             requestedDateLabel={formatDate(new Date())}
-            canViewCosts={canViewCosts(context)}
+            canEnterPrices={canEnterMaterialRequestPrice(context)}
             errorMessage={formError}
           />
         </div>

@@ -927,6 +927,9 @@ export async function upsertWorkOrderAction(formData: FormData) {
           inventory_material_key: null,
           purchase_unit: null,
           conversion_quantity: null,
+          // No estimated price is entered on this path.
+          entered_unit_price: null,
+          price_basis: null,
         })),
       });
     } catch (autoRequestError) {

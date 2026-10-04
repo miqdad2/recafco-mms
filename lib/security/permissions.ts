@@ -13,6 +13,24 @@ export function canViewCosts(context: CurrentUserContext) {
   return hasPermission(context, "costs.view") || context.profile.can_view_costs;
 }
 
+// Data Entry Material Request Price Entry Alignment — who may enter and see
+// the ESTIMATED price on a Materials Request line (General Inventory /
+// Stock Request and Job Card Materials Request: the request forms, their
+// detail views and the submitted popup). Deliberately separate from
+// canViewCosts above: that one also unlocks labor cost, worker rates,
+// indirect cost, final Job Card cost and inventory unit cost, none of which
+// this grants. Use this ONLY for material request price fields.
+export function canEnterMaterialRequestPrice(context: CurrentUserContext) {
+  const slug = context.role?.slug;
+  return (
+    slug === "super_admin" ||
+    slug === "maintenance_manager" ||
+    slug === "maintenance_data_entry" ||
+    // Anyone who already saw request pricing through cost visibility keeps it.
+    canViewCosts(context)
+  );
+}
+
 // Worker Rate Visibility and Data Entry Lockdown Unit 10F.4: the "Manager or
 // Super Admin only" role check was already duplicated inline in four places
 // (lib/backend/work-orders/work-sessions.ts, lib/backend/work-orders/service.ts,

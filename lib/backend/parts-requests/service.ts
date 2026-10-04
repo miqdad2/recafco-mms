@@ -29,6 +29,7 @@ import { canTransition, transitionError } from "@/lib/workflows/status-rules";
 import { normalizeCategory } from "@/components/store/offline-inventory-types";
 import { emitMaterialsRequestRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { anyMaterialsIncomplete, getMaterialFulfillmentForWorkOrder } from "@/lib/work-orders/material-fulfillment";
+import { savedStockLineTotal } from "@/lib/materials/request-pricing";
 
 type PartsRequestResult = {
   partsRequestId: string;
@@ -74,10 +75,12 @@ export async function createPartsRequest(
     // Task 8 — an unpriced line (unit_price null) contributes 0 to this
     // request-level total, same as the main Inventory Control/Add Material
     // "unknown cost treated as 0 for totals, shown as — in the UI" pattern.
-    const total = input.items.reduce(
-      (sum, item) => sum + item.quantity_requested * (item.unit_price ?? 0),
-      0
-    );
+    //
+    // Purchase-first price basis: a priced row's total is taken from the
+    // price as typed (per purchase unit -> purchase qty × price; per stock
+    // unit -> stock qty × price), so it is exact even when unit_price (per
+    // stock unit) had to be rounded, e.g. 10.000 KWD per BOX of 9 PCS.
+    const total = input.items.reduce((sum, item) => sum + savedStockLineTotal(item), 0);
 
     const request = await tx.parts_requests.create({
       data: {
@@ -110,7 +113,9 @@ export async function createPartsRequest(
           unit: item.unit,
           inventory_material_key: item.inventory_material_key,
           purchase_unit: item.purchase_unit,
-          conversion_quantity: item.conversion_quantity
+          conversion_quantity: item.conversion_quantity,
+          entered_unit_price: item.entered_unit_price,
+          price_basis: item.price_basis
         }))
       });
     }

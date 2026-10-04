@@ -7,6 +7,7 @@ import { CheckCircle2, X } from "lucide-react";
 
 import { StatusBadge } from "@/components/ui/status-badge";
 import { receiveGeneralInventoryRequestAction } from "@/app/actions/general-inventory-requests";
+import { round3, type PriceBasis } from "@/lib/materials/request-pricing";
 
 export type GeneralInventoryRequestQuickViewItem = {
   id: string;
@@ -16,6 +17,11 @@ export type GeneralInventoryRequestQuickViewItem = {
   unit: string;
   unitPrice: number | null;
   totalPrice: number | null;
+  // Purchase-first price basis: the price exactly as typed and which unit
+  // it is per. Both null on rows saved before that unit (their unit_price
+  // above is then shown per purchase unit).
+  enteredUnitPrice: number | null;
+  priceBasis: PriceBasis | null;
   supplier: string | null;
   receivedQuantity: number;
   // General Inventory Request Unit, Price, and Conversion Polish Unit
@@ -46,6 +52,31 @@ export type GeneralInventoryRequestQuickViewItem = {
 // One place for the two units of a row: Requested is always in the
 // Request / Issue Unit; the purchase side only exists when the row has a
 // conversion ("1 purchaseUnit = conversion requestedUnit").
+// Estimated price as entered, the unit it is per, and the total — same
+// rule as the request form (lib/materials/request-pricing.ts): per purchase
+// unit -> purchase qty × price; per stock unit -> stock qty × price. Rows
+// saved before the price basis existed show their stored unit_price, which
+// is per purchase unit.
+function requestUnitPricing(item: GeneralInventoryRequestQuickViewItem, q: ReturnType<typeof itemQuantities>) {
+  if (item.enteredUnitPrice !== null && item.priceBasis) {
+    const perStock = item.priceBasis === "stock_unit";
+    const unitLabel = perStock ? q.requestedUnit : q.purchaseUnit;
+    return {
+      price: item.enteredUnitPrice,
+      unitLabel,
+      basisLabel: `Per ${unitLabel}`,
+      total: round3((perStock ? q.requestedQty : item.quantityRequested) * item.enteredUnitPrice)
+    };
+  }
+  if (item.unitPrice === null) return { price: null, unitLabel: "", basisLabel: null, total: null };
+  return {
+    price: item.unitPrice,
+    unitLabel: q.purchaseUnit,
+    basisLabel: `Per ${q.purchaseUnit}`,
+    total: round3(item.quantityRequested * item.unitPrice)
+  };
+}
+
 function itemQuantities(item: GeneralInventoryRequestQuickViewItem) {
   const conversion = item.inventoryUnit && item.conversionQuantity ? item.conversionQuantity : null;
   if (!conversion) {
@@ -68,9 +99,10 @@ function itemQuantities(item: GeneralInventoryRequestQuickViewItem) {
   };
 }
 
-// Quantities: up to 4 decimals, no trailing zeros.
+// Quantities: up to 3 decimals, no trailing zeros (0.111, 0.25, 2) — same
+// precision the request form's own Purchase Estimate preview uses.
 function fmtQty(n: number): string {
-  return Number.isFinite(n) ? String(Number(n.toFixed(4))) : "0";
+  return Number.isFinite(n) ? String(Number(n.toFixed(3))) : "0";
 }
 
 export type GeneralInventoryRequestQuickViewData = {
@@ -90,8 +122,12 @@ export type GeneralInventoryRequestQuickViewData = {
   // viewHref is this same request's plain detail view, without that state.
   justSubmitted: boolean;
   viewHref: string;
-  // Decided server-side; when false the item cost fields above are already
-  // null and no price column or input is rendered.
+  // Both decided server-side; when false the matching item fields above
+  // are already null. canViewPrices covers the request's own Estimated Unit
+  // Price / Estimated Total (Manager, Super Admin, Data Entry).
+  // canViewCosts is full cost visibility and covers the receive-side unit
+  // price input and the inventory unit cost.
+  canViewPrices: boolean;
   canViewCosts: boolean;
   canReceive: boolean;
   inventoryReference: string | null;
@@ -167,7 +203,7 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
 
   const pricedItems = data.items.filter((i) => i.unitPrice !== null);
   const pricedCount = pricedItems.length;
-  const totalRequestedValue = pricedItems.reduce((sum, i) => sum + (i.totalPrice ?? 0), 0);
+  const totalRequestedValue = pricedItems.reduce((sum, i) => sum + (requestUnitPricing(i, itemQuantities(i)).total ?? 0), 0);
 
   return (
     <>
@@ -272,15 +308,16 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
                     <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
                       <tr>
                         <th className="px-3 py-2 text-left">Material</th>
-                        <th className="px-3 py-2 text-right">Requested</th>
-                        <th className="px-3 py-2 text-right">Purchase Estimate</th>
-                        {data.canViewCosts && <th className="px-3 py-2 text-right">Estimated Unit Price</th>}
-                        {data.canViewCosts && <th className="px-3 py-2 text-right">Estimated Total</th>}
+                        <th className="px-3 py-2 text-right">Requested Purchase Qty</th>
+                        <th className="px-3 py-2 text-right">Expected Stock After Receiving</th>
+                        {data.canViewPrices && <th className="px-3 py-2 text-right">Estimated Unit Price</th>}
+                        {data.canViewPrices && <th className="px-3 py-2 text-right">Estimated Total</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#E5E7EB]">
                       {data.items.map((item) => {
                         const q = itemQuantities(item);
+                        const pricing = requestUnitPricing(item, q);
                         return (
                           <tr key={item.id}>
                             <td className="px-3 py-2 font-semibold text-[#111827]">
@@ -314,27 +351,34 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
                               )}
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums text-[#111827]">
-                              {fmtQty(q.requestedQty)} {q.requestedUnit}
+                              {fmtQty(q.purchaseQty)} {q.purchaseUnit}
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums text-[#4B5563]">
-                              {q.conversion ? `${fmtQty(q.purchaseQty)} ${q.purchaseUnit}` : "—"}
+                              {fmtQty(q.requestedQty)} {q.requestedUnit}
                             </td>
-                            {data.canViewCosts && (
+                            {data.canViewPrices && (
                               <td className="px-3 py-2 text-right tabular-nums text-[#4B5563]">
-                                {item.unitPrice !== null ? `${item.unitPrice.toFixed(3)} / ${q.purchaseUnit}` : "Not priced yet"}
+                                {pricing.price !== null ? (
+                                  <>
+                                    {pricing.price.toFixed(3)} KWD / {pricing.unitLabel}
+                                    <span className="block text-xs">Price Basis: {pricing.basisLabel}</span>
+                                  </>
+                                ) : (
+                                  "Not priced yet"
+                                )}
                               </td>
                             )}
-                            {data.canViewCosts && (
+                            {data.canViewPrices && (
                               <td className="px-3 py-2 text-right tabular-nums font-semibold text-[#111827]">
-                                {/* The stored total is 0 for an unpriced row; never show that as a cost. */}
-                                {item.unitPrice !== null && item.totalPrice !== null ? item.totalPrice.toFixed(3) : "—"}
+                                {/* Per the price basis; "—" when unpriced, never 0. */}
+                                {pricing.total !== null ? pricing.total.toFixed(3) : "—"}
                               </td>
                             )}
                           </tr>
                         );
                       })}
                     </tbody>
-                    {data.canViewCosts && (
+                    {data.canViewPrices && (
                       <tfoot>
                         <tr className="bg-gray-50">
                           <td className="px-3 py-2 text-right text-xs font-bold text-[#4B5563]" colSpan={4}>

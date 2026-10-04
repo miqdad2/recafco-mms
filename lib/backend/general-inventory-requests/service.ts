@@ -8,7 +8,8 @@ import type { BackendTransaction } from "@/lib/backend/shared/transaction";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { assertActiveUser } from "@/lib/backend/security/guards";
 import { AppError } from "@/lib/errors/app-error";
-import { canViewCosts } from "@/lib/security/permissions";
+import { canEnterMaterialRequestPrice, canViewCosts } from "@/lib/security/permissions";
+import { pricePerPurchaseUnit, reversedUnitsMessage, unitsLookReversed } from "@/lib/materials/request-pricing";
 import {
   buildBalanceKey,
   canManageOfflineInventory,
@@ -46,23 +47,36 @@ const generalRequestItemSchema = z
   .object({
     materialName: z.string().trim().min(1, "Material name is required."),
     description: z.string().trim().optional(),
-    quantity: z.number().positive("Quantity must be greater than 0."),
-    unit: z.string().trim().min(1, "Select the request unit for every item."),
-    unitPrice: z.number().min(0, "Unit price must be 0 or greater.").optional(),
+    // Purchase-first: quantity is the Requested Purchase Qty, in
+    // purchaseUnit; unit is the Stock Unit.
+    quantity: z.number().positive("Enter requested purchase quantity."),
+    purchaseUnit: z.string().trim().min(1, "Select purchase unit."),
+    unit: z.string().trim().min(1, "Select stock unit."),
+    conversionQuantity: z.number().positive("Enter how many stock units are inside 1 purchase unit.").optional(),
+    unitPrice: z.number().min(0, "Estimated unit price must be 0 or greater.").optional(),
+    priceBasis: z.enum(["purchase_unit", "stock_unit"]).optional(),
     supplier: z.string().trim().optional(),
     remarks: z.string().trim().optional(),
-    purchaseUnit: z.string().trim().optional(),
-    conversionQuantity: z.number().positive("Conversion quantity must be greater than 0.").optional(),
-    inventoryMaterialKey: z.string().trim().optional()
+    inventoryMaterialKey: z.string().trim().optional(),
+    // Set only when the user chose "Keep as entered" for units that look
+    // reversed (lib/materials/request-pricing.ts unitsLookReversed).
+    unitsConfirmed: z.boolean().optional()
   })
   .superRefine((item, ctx) => {
-    const hasUnit = Boolean(item.purchaseUnit);
-    const hasQty = item.conversionQuantity !== undefined;
-    if (hasUnit !== hasQty) {
+    // Re-checked against the existing material's own unit in
+    // createGeneralInventoryRequest, since that unit wins over the form's.
+    if (!sameUnit(item.purchaseUnit, item.unit) && item.conversionQuantity === undefined) {
       ctx.addIssue({
         code: "custom",
-        message: "Purchase unit and conversion quantity are both required when the item is purchased in a different unit.",
-        path: hasUnit ? ["conversionQuantity"] : ["purchaseUnit"]
+        message: "Enter how many stock units are inside 1 purchase unit.",
+        path: ["conversionQuantity"]
+      });
+    }
+    if (item.unitPrice !== undefined && !item.priceBasis) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Select whether price is per purchase unit or per stock unit.",
+        path: ["priceBasis"]
       });
     }
   });
@@ -180,10 +194,11 @@ export async function createGeneralInventoryRequest(
     select: { full_name: true }
   });
 
-  // A price is only ever saved for a cost-permitted requester — the form
-  // does not render the field otherwise, and a posted value is dropped here
-  // rather than trusted.
-  const showCosts = canViewCosts(context);
+  // A price is only ever saved for a requester allowed to price material
+  // requests (Manager, Super Admin, Data Entry — see
+  // canEnterMaterialRequestPrice) — the form does not render the field
+  // otherwise, and a posted value is dropped here rather than trusted.
+  const showCosts = canEnterMaterialRequestPrice(context);
 
   // Existing-vs-new is decided here, not by the form: a posted material key
   // counts only if it still resolves to an Offline Inventory material, and
@@ -194,34 +209,41 @@ export async function createGeneralInventoryRequest(
   const itemRows = await Promise.all(
     input.items.map(async (item) => {
       const existing = await getOfflineInventoryMaterialByKey(item.inventoryMaterialKey);
-      const requestUnit = existing?.unit ?? item.unit;
-      const conversion = item.purchaseUnit && item.conversionQuantity ? item.conversionQuantity : null;
-      if (conversion && sameUnit(item.purchaseUnit!, requestUnit)) {
-        throw new AppError(
-          "Purchase unit must be different from the request unit. Turn off “Purchased in a different unit” if they are the same.",
-          { code: "BAD_REQUEST" }
-        );
+      // Purchase-first. An existing material's own unit is its Stock Unit.
+      const stockUnit = existing?.unit ?? item.unit;
+      if (unitsLookReversed(item.purchaseUnit, stockUnit) && !item.unitsConfirmed) {
+        throw new AppError(reversedUnitsMessage(item.purchaseUnit, stockUnit), { code: "BAD_REQUEST" });
       }
-      // quantity_requested stays in the purchase unit (2 decimals, > 0) so
-      // the receive flow and the table's generated columns keep working
-      // unchanged; request_quantity keeps the exact requested amount.
-      const purchaseQuantity = conversion
-        ? Math.max(Math.round((item.quantity / conversion) * 100) / 100, 0.01)
-        : item.quantity;
+      const unitsDiffer = !sameUnit(item.purchaseUnit, stockUnit);
+      if (unitsDiffer && !item.conversionQuantity) {
+        throw new AppError("Enter how many stock units are inside 1 purchase unit.", { code: "BAD_REQUEST" });
+      }
+      const conversion = unitsDiffer ? item.conversionQuantity! : null;
+      const priced = showCosts && item.unitPrice !== undefined && item.priceBasis !== undefined;
+      // One unit: the two bases are the same thing.
+      const basis = priced ? (unitsDiffer ? item.priceBasis! : "purchase_unit") : null;
+      // quantity_requested/unit = the purchase side (what Receive expects,
+      // 2 decimals); request_quantity/request_unit = the calculated stock
+      // side. unit_price stays per purchase unit — Receive and the
+      // generated unit_cost/total_price columns depend on that — so a
+      // per-stock-unit price is converted (1.200 KWD/PCS × 9 = 10.800
+      // KWD/BOX); entered_unit_price/price_basis keep what was typed.
       return {
         material_name: existing?.display_name ?? item.materialName,
         description: item.description || null,
-        quantity_requested: purchaseQuantity,
-        unit: conversion ? item.purchaseUnit! : requestUnit,
-        unit_price: showCosts ? (item.unitPrice ?? null) : null,
+        quantity_requested: Math.round(item.quantity * 100) / 100,
+        unit: unitsDiffer ? item.purchaseUnit : stockUnit,
+        unit_price: priced ? pricePerPurchaseUnit(item.unitPrice!, basis!, conversion ?? 1) : null,
+        entered_unit_price: priced ? item.unitPrice! : null,
+        price_basis: basis,
         supplier: item.supplier || null,
         remarks: item.remarks || null,
-        inventory_unit: conversion ? requestUnit : null,
+        inventory_unit: unitsDiffer ? stockUnit : null,
         conversion_quantity: conversion,
         inventory_material_key: existing?.key ?? null,
         inventory_part_id: existing?.part_id ?? null,
-        request_unit: requestUnit,
-        request_quantity: item.quantity
+        request_unit: stockUnit,
+        request_quantity: item.quantity * (conversion ?? 1)
       };
     })
   );

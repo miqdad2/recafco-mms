@@ -26,7 +26,14 @@ export const partsRequestItemSchema = z.object({
   unit: z.string().min(1).nullable(),
   inventory_material_key: z.string().nullable(),
   purchase_unit: z.string().nullable(),
-  conversion_quantity: z.number().positive().nullable()
+  conversion_quantity: z.number().positive().nullable(),
+  // Material Request Purchase-First Unit and Flexible Price Basis — the
+  // estimated price exactly as typed and which unit it is per. unit_price
+  // above stays per stock unit (converted from this on save) because the
+  // generated total_price and purchase-request creation depend on it. Both
+  // null when unpriced.
+  entered_unit_price: z.number().nonnegative().nullable(),
+  price_basis: z.enum(["purchase_unit", "stock_unit"]).nullable()
 });
 
 export const approvePartsRequestSchema = z.object({

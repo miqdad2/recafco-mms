@@ -46,10 +46,14 @@ export function LargeFormModal({
   subtitle,
   onClose,
   closeHref,
+  size = "default",
   children,
 }: {
   title: string;
   subtitle?: string;
+  // "wide" is for forms built around a multi-column item table (New
+  // Materials Request); every other caller keeps the default width.
+  size?: "default" | "wide";
   // Client callers (already-client parent components, e.g. StoreBalanceView)
   // pass onClose. Server-component parents (e.g. the Materials Requests
   // page) can't hold a callback, so they pass closeHref instead and the
@@ -101,7 +105,9 @@ export function LargeFormModal({
           role="dialog"
           aria-modal="true"
           aria-labelledby="large-form-modal-heading"
-          className="flex max-h-[90vh] w-[min(85vw,1250px)] flex-col rounded-xl bg-white shadow-2xl"
+          className={`flex max-h-[90vh] flex-col rounded-xl bg-white shadow-2xl ${
+            size === "wide" ? "w-[min(96vw,1500px)]" : "w-[min(85vw,1250px)]"
+          }`}
         >
           {/* Header — non-scrolling */}
           <div className="flex items-start justify-between gap-4 border-b border-[#E5E7EB] px-6 py-5">

@@ -16,6 +16,7 @@ import type {
 } from "@/lib/backend/purchase-requests/validators";
 import { AppError } from "@/lib/errors/app-error";
 import { canTransition, transitionError } from "@/lib/workflows/status-rules";
+import { savedStockLineTotal } from "@/lib/materials/request-pricing";
 
 const SETTINGS_ID = "00000000-0000-0000-0000-000000000001";
 
@@ -111,7 +112,20 @@ export async function createPurchaseFromUnavailableParts(context: CurrentUserCon
       throw new AppError("Purchase request can be created only for parts waiting for purchase.", { code: "WORKFLOW_ERROR" });
     }
 
-    const total = request.parts_request_items.reduce((sum, item) => sum + Number(item.quantity_requested) * Number(item.unit_price), 0);
+    // Exact per the saved price basis (savedStockLineTotal), so the approval
+    // threshold below is not decided on a rounded per-stock-unit price.
+    const total = request.parts_request_items.reduce(
+      (sum, item) =>
+        sum +
+        savedStockLineTotal({
+          quantity_requested: Number(item.quantity_requested),
+          unit_price: item.unit_price === null ? null : Number(item.unit_price),
+          conversion_quantity: item.conversion_quantity === null ? null : Number(item.conversion_quantity),
+          entered_unit_price: item.entered_unit_price === null ? null : Number(item.entered_unit_price),
+          price_basis: item.price_basis
+        }),
+      0
+    );
     const settings = await getPurchaseSettings(tx);
     const status = nextPurchaseApprovalStatus(settings, total);
     if (!canTransition("purchase_request", "Draft", status)) {

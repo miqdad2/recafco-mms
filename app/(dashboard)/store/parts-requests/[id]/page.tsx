@@ -13,7 +13,7 @@ import { PartsRequestItemsTable } from "@/components/store/parts-request-items-t
 import { StoreIssuePanel } from "@/components/store/store-issue-panel";
 import { BackLink } from "@/components/ui/back-link";
 import { Button } from "@/components/ui/button";
-import { canViewCosts } from "@/components/ui/cost-visibility-guard";
+import { canEnterMaterialRequestPrice } from "@/lib/security/permissions";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
@@ -485,8 +485,8 @@ export default async function PartsRequestDetailPage({ params, searchParams }: {
                 here — hidden entirely for them instead, since a
                 permission-restricted field showing "Restricted" reads as
                 confusing/broken rather than intentional. */}
-            {canViewCosts(context) && (
-              <Info label="Total" value={request.total_price.toFixed(3)} />
+            {canEnterMaterialRequestPrice(context) && (
+              <Info label="Estimated Total" value={request.total_price.toFixed(3)} />
             )}
           </dl>
         </section>

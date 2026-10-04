@@ -528,6 +528,11 @@ model parts_request_items {
   // above, reusing the same parts.id both tables already share. Both NULL
   // means "New Material Request", not linked to inventory. purchase_unit/
   // conversion_quantity are set only when "Purchased in a different unit"
+  // Purchase-first price basis: 'purchase_unit' | 'stock_unit', and the
+  // estimated price exactly as typed in that unit. unit_price above stays
+  // per request/stock unit (converted on save).
+  price_basis            String?
+  entered_unit_price     Decimal?                 @db.Decimal(12, 3)
   // is used — quantity_requested/unit stay in Request/Issue Unit terms;
   // conversion_quantity means "1 purchase_unit = conversion_quantity unit",
   // so the purchase estimate (quantity_requested / conversion_quantity) is
@@ -1486,6 +1491,11 @@ model general_inventory_request_items {
   // linked to an existing Offline Inventory material (buildBalanceKey()
   // identity); both NULL means "New Material Request". request_unit/
   // request_quantity hold the Request / Issue Unit and the quantity entered
+  // Purchase-first price basis: 'purchase_unit' | 'stock_unit', and the
+  // estimated price exactly as typed in that unit. unit_price above stays
+  // per purchase unit (converted on save).
+  price_basis               String?
+  entered_unit_price        Decimal?                   @db.Decimal(12, 3)
   // in it — `unit`/`quantity_requested` above keep their purchase-unit
   // meaning (for a converted row quantity_requested is the purchase
   // estimate). All four are NULL on rows created before this unit.

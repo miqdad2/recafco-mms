@@ -42,7 +42,8 @@ import {
   OPEN_PR_STATUSES,
 } from "@/lib/display/parts-request-labels";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
-import { canViewCosts } from "@/lib/security/permissions";
+import { canEnterMaterialRequestPrice, canViewCosts } from "@/lib/security/permissions";
+import { isPriceBasis } from "@/lib/materials/request-pricing";
 import { getReviewedWorkOrderIds } from "@/lib/work-orders/review-status";
 import { getMaterialFulfillmentForWorkOrder, summarizeMaterialAvailability } from "@/lib/work-orders/material-fulfillment";
 import { getPendingClarificationForWorkOrder } from "@/lib/backend/workflows/queries";
@@ -247,9 +248,12 @@ export default async function PartsRequestsPage({
   // Inventory Control's own Receive Material action, so it reuses that
   // action's gate rather than a new permission.
   const canReceiveGeneral = canManageOfflineInventory(context);
-  // General Inventory Request prices/totals/unit costs are stripped here,
-  // server-side, for a viewer without cost permission — the form and quick
-  // view never receive them.
+  // General Inventory Request figures are stripped here, server-side — the
+  // form and quick view never receive what the viewer may not see. Two
+  // separate gates: the request's own ESTIMATED price/total (Manager, Super
+  // Admin, Data Entry — canEnterMaterialRequestPrice) and the receive-side
+  // unit price / inventory unit cost (full cost visibility only).
+  const showGeneralPrices = canEnterMaterialRequestPrice(context);
   const showGeneralCosts = canViewCosts(context);
 
   const params = (await searchParams) ?? {};
@@ -986,8 +990,10 @@ export default async function PartsRequestsPage({
           description: item.description,
           quantityRequested: Number(item.quantity_requested),
           unit: item.unit,
-          unitPrice: showGeneralCosts && item.unit_price !== null ? Number(item.unit_price) : null,
-          totalPrice: showGeneralCosts && item.total_price !== null ? Number(item.total_price) : null,
+          unitPrice: showGeneralPrices && item.unit_price !== null ? Number(item.unit_price) : null,
+          totalPrice: showGeneralPrices && item.total_price !== null ? Number(item.total_price) : null,
+          enteredUnitPrice: showGeneralPrices && item.entered_unit_price !== null ? Number(item.entered_unit_price) : null,
+          priceBasis: showGeneralPrices && isPriceBasis(item.price_basis) ? item.price_basis : null,
           supplier: item.supplier,
           receivedQuantity: Number(item.received_quantity),
           inventoryUnit: item.inventory_unit,
@@ -1008,6 +1014,7 @@ export default async function PartsRequestsPage({
         // opened with a stale ?submitted=1 URL shows the normal detail view.
         justSubmitted: genPreviewJustSubmitted && genPreviewRequest.status === "Pending" && !genPreviewError,
         viewHref: genPreviewHref(genPreviewRequest.id, { query, status, page, kind }),
+        canViewPrices: showGeneralPrices,
         canViewCosts: showGeneralCosts,
         canReceive: canReceiveGeneral,
         inventoryReference: genPreviewRequest.status === "Completed" ? genPreviewRequest.request_number : null,
@@ -1700,6 +1707,7 @@ export default async function PartsRequestsPage({
       ────────────────────────────────────────────────────────────── */}
       {showNewRequest && (
         <LargeFormModal
+          size="wide"
           title="New Materials Request"
           subtitle={
             effectiveNewRequestType === "job_card"
@@ -1722,7 +1730,7 @@ export default async function PartsRequestsPage({
               modalMode
               requesterName={currentProfile?.full_name ?? null}
               requestedDateLabel={generalRequestDateLabel}
-              canViewCosts={showGeneralCosts}
+              canEnterPrices={showGeneralPrices}
               errorMessage={newRequestError}
             />
           ) : (

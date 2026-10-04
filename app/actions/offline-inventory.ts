@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 
 import { requirePermission, requireUser } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
-import { canViewCosts, isManagerRole } from "@/lib/security/permissions";
+import { canEnterMaterialRequestPrice, canViewCosts, isManagerRole } from "@/lib/security/permissions";
 import { canCreatePartsRequest } from "@/lib/parts-requests/visibility";
 import { normalizeCategory, ADD_NEW_CATEGORY_VALUE } from "@/components/store/offline-inventory-types";
 import { CUSTOM_UNIT_VALUE, DEFAULT_UNIT } from "@/components/store/general-inventory-units";
@@ -979,8 +979,13 @@ export async function searchOfflineInventoryMaterialsForPartsRequestAction(
 // authorized user intentionally changes it" — Super Admin/Maintenance
 // Manager are the one existing "authorized override" role set this codebase
 // already uses for comparable worker-rate/cost unlocks.
-export async function getPartsRequestWizardFlagsAction(): Promise<{ canViewCosts: boolean; canUnlockRequestUnit: boolean }> {
+//
+// canEnterPrices is the material-request-price permission only
+// (canEnterMaterialRequestPrice — Manager, Super Admin, Data Entry), NOT
+// general cost visibility: the search action above still gates the
+// inventory's own last unit cost on canViewCosts, unchanged.
+export async function getPartsRequestWizardFlagsAction(): Promise<{ canEnterPrices: boolean; canUnlockRequestUnit: boolean }> {
   const context = await requireUser();
-  if (!canCreatePartsRequest(context)) return { canViewCosts: false, canUnlockRequestUnit: false };
-  return { canViewCosts: canViewCosts(context), canUnlockRequestUnit: isManagerRole(context) };
+  if (!canCreatePartsRequest(context)) return { canEnterPrices: false, canUnlockRequestUnit: false };
+  return { canEnterPrices: canEnterMaterialRequestPrice(context), canUnlockRequestUnit: isManagerRole(context) };
 }

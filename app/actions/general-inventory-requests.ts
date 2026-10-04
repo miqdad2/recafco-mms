@@ -52,25 +52,24 @@ function parseGeneralItems(formData: FormData) {
     .map((index) => {
       const materialName = field(formData, "material_name", index);
       if (!materialName) return null;
-      // "Purchased in a different unit" is only "on" when the row's
-      // checkbox was checked — its purchase_unit/conversion fields are
-      // otherwise ignored even if stray values are present, so a
-      // toggled-off row never accidentally saves a conversion.
-      const conversionEnabled = formData.get(`use_conversion_${index}`) === "on";
-      const purchaseUnit = conversionEnabled ? resolveUnit(formData, "purchase_unit", index) : "";
-      const conversionQuantity = conversionEnabled ? num(field(formData, "conversion_quantity", index)) : undefined;
+      // Purchase-first: quantity_ is the Requested Purchase Qty in the
+      // Purchase Unit; unit_ is the Stock Unit. conversion_quantity_ is only
+      // rendered (and only used) when the two units differ. No PCS
+      // fallback: an empty unit reaches the schema as "" and is rejected.
+      const priceBasis = field(formData, "price_basis", index);
       return {
         materialName,
         description: field(formData, "description", index) || undefined,
         quantity: Number(field(formData, "quantity", index)) || 0,
-        // unit_ is the Request / Issue Unit. No PCS fallback: an
-        // unselected unit reaches the schema as "" and is rejected there.
         unit: resolveUnit(formData, "unit", index),
+        purchaseUnit: resolveUnit(formData, "purchase_unit", index),
+        conversionQuantity: num(field(formData, "conversion_quantity", index)),
         unitPrice: num(field(formData, "unit_price", index)),
+        priceBasis: priceBasis || undefined,
+        // "Keep as entered" on a reversed-units warning.
+        unitsConfirmed: formData.get(`units_confirmed_${index}`) === "1",
         supplier: field(formData, "supplier", index) || undefined,
         remarks: field(formData, "remarks", index) || undefined,
-        purchaseUnit: purchaseUnit || undefined,
-        conversionQuantity,
         inventoryMaterialKey: field(formData, "material_key", index) || undefined
       };
     })
