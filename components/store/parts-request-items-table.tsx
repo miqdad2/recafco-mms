@@ -2,7 +2,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { StockAvailabilityBadge } from "@/components/store/stock-badges";
 import type { CurrentUserContext } from "@/lib/auth/context";
 import { canEnterMaterialRequestPrice } from "@/lib/security/permissions";
-import { isPriceBasis, priceBasisLabel } from "@/lib/materials/request-pricing";
+import { formatKwd, isPriceBasis } from "@/lib/materials/request-pricing";
 
 // Per-item issue status — distinct from `stock_availability` (a pre-issue
 // stock-check concept, still shown separately). This reflects what has
@@ -34,16 +34,16 @@ function lineView(item: Record<string, unknown>) {
     const perStock = basis === "stock_unit";
     return {
       stockQty, stockUnit, conversion, purchaseUnit, purchaseQty,
-      priceText: `${entered.toFixed(3)} KWD / ${perStock ? stockUnit : purchaseUnit}`,
-      basisText: priceBasisLabel(basis, purchaseUnit, stockUnit),
-      totalText: (perStock ? stockQty * entered : purchaseQty * entered).toFixed(3),
+      // Always states the unit the price is for: "45.000 KWD for 1 BARREL".
+      priceText: `${formatKwd(entered)} KWD for 1 ${perStock ? stockUnit : purchaseUnit}`,
+      totalText: `${formatKwd(perStock ? stockQty * entered : purchaseQty * entered)} KWD`,
     };
   }
   return {
     stockQty, stockUnit, conversion, purchaseUnit, purchaseQty,
-    priceText: item.unit_price == null ? null : String(item.unit_price),
-    basisText: null,
-    totalText: item.total_price == null ? null : String(item.total_price),
+    // Older lines: unit_price is per stock unit.
+    priceText: item.unit_price == null ? null : `${formatKwd(Number(item.unit_price))} KWD for 1 ${stockUnit || "unit"}`,
+    totalText: item.total_price == null ? null : `${formatKwd(Number(item.total_price))} KWD`,
   };
 }
 
@@ -62,7 +62,7 @@ export function PartsRequestItemsTable({ items, context }: { items: Array<Record
             <th className="px-3 py-2">SS Rec. Code</th>
             <th className="px-3 py-2">Requested Purchase Qty</th>
             <th className="px-3 py-2">Expected Stock</th>
-            <th className="px-3 py-2">Estimated Unit Price</th>
+            <th className="px-3 py-2">Estimated Price</th>
             <th className="px-3 py-2">Estimated Total</th>
             <th className="px-3 py-2">Issued</th>
             <th className="px-3 py-2">Remaining</th>
@@ -107,7 +107,6 @@ export function PartsRequestItemsTable({ items, context }: { items: Array<Record
                     ) : (
                       <>
                         {line.priceText}
-                        {line.basisText ? <span className="block text-xs text-[#4B5563]">Price Basis: {line.basisText}</span> : null}
                       </>
                     )
                   ) : (

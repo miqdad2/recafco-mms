@@ -8,13 +8,15 @@ import type { BackendTransaction } from "@/lib/backend/shared/transaction";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { assertActiveUser } from "@/lib/backend/security/guards";
 import { AppError } from "@/lib/errors/app-error";
-import { canEnterMaterialRequestPrice, canViewCosts } from "@/lib/security/permissions";
-import { pricePerPurchaseUnit, reversedUnitsMessage, unitsLookReversed } from "@/lib/materials/request-pricing";
+import { canEnterMaterialRequestPrice, canViewCosts, isManagerRole } from "@/lib/security/permissions";
+import { pricePerPurchaseUnit } from "@/lib/materials/request-pricing";
 import {
   buildBalanceKey,
   canManageOfflineInventory,
+  getMaterialUnitSetupByKey,
   getOfflineInventoryMaterialByKey,
-  searchOfflineInventoryMaterials
+  searchOfflineInventoryMaterials,
+  unitSetupFromSettings
 } from "@/lib/store/offline-inventory-data";
 import { OTHER_CATEGORY, type StockStatus } from "@/components/store/offline-inventory-types";
 import { emitRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
@@ -58,9 +60,9 @@ const generalRequestItemSchema = z
     supplier: z.string().trim().optional(),
     remarks: z.string().trim().optional(),
     inventoryMaterialKey: z.string().trim().optional(),
-    // Set only when the user chose "Keep as entered" for units that look
-    // reversed (lib/materials/request-pricing.ts unitsLookReversed).
-    unitsConfirmed: z.boolean().optional()
+    // Manager / Super Admin override: request a material that is not in
+    // Inventory (one unit, no conversion). Ignored for anyone else.
+    unlinkedOverride: z.boolean().optional()
   })
   .superRefine((item, ctx) => {
     // Re-checked against the existing material's own unit in
@@ -135,6 +137,9 @@ export type MaterialsRequestInventoryMatch = {
   unit: string;
   balance: number;
   stock_status: StockStatus;
+  // The material's Inventory unit setup (null = bought in `unit`, 1:1).
+  purchase_unit: string | null;
+  conversion_quantity: number | null;
 };
 
 // Existing-material autocomplete for the New Materials Request item rows —
@@ -156,8 +161,16 @@ export async function searchInventoryMaterialsForRequest(
   if (matches.length === 0) return [];
 
   const settingsRows = await prisma.inventory_material_settings.findMany({
-    select: { part_id: true, manual_material_name: true, unit: true, minimum_stock_quantity: true }
+    select: {
+      part_id: true,
+      manual_material_name: true,
+      unit: true,
+      minimum_stock_quantity: true,
+      purchase_unit: true,
+      conversion_quantity: true
+    }
   });
+  const unitSetupByKey = new Map(settingsRows.map((s) => [buildBalanceKey(s), unitSetupFromSettings(s)]));
   const minimumByKey = new Map(
     settingsRows.map((s) => [buildBalanceKey(s), s.minimum_stock_quantity !== null ? Number(s.minimum_stock_quantity) : null])
   );
@@ -174,7 +187,9 @@ export async function searchInventoryMaterialsForRequest(
       ss_rec_code: m.ss_rec_code,
       unit: m.unit,
       balance: m.balance,
-      stock_status
+      stock_status,
+      purchase_unit: unitSetupByKey.get(m.key)?.purchase_unit ?? null,
+      conversion_quantity: unitSetupByKey.get(m.key)?.conversion_quantity ?? null
     };
   });
 }
@@ -209,16 +224,31 @@ export async function createGeneralInventoryRequest(
   const itemRows = await Promise.all(
     input.items.map(async (item) => {
       const existing = await getOfflineInventoryMaterialByKey(item.inventoryMaterialKey);
-      // Purchase-first. An existing material's own unit is its Stock Unit.
-      const stockUnit = existing?.unit ?? item.unit;
-      if (unitsLookReversed(item.purchaseUnit, stockUnit) && !item.unitsConfirmed) {
-        throw new AppError(reversedUnitsMessage(item.purchaseUnit, stockUnit), { code: "BAD_REQUEST" });
+      // Inventory-First Material Request Workflow: Inventory is the source
+      // of truth for units. A linked material's Stock Unit is its own unit
+      // and its Purchase Unit / conversion come from its Inventory unit
+      // setup — whatever the form posted for them is ignored. A material
+      // not in Inventory is refused unless a Manager / Super Admin chose the
+      // override, and then it is one plain unit with no conversion.
+      let stockUnit: string;
+      let purchaseUnit: string;
+      let conversion: number | null;
+      if (existing) {
+        const setup = await getMaterialUnitSetupByKey(existing.key);
+        stockUnit = existing.unit;
+        purchaseUnit = setup.purchase_unit ?? existing.unit;
+        conversion = setup.purchase_unit ? setup.conversion_quantity : null;
+      } else if (item.unlinkedOverride && isManagerRole(context)) {
+        stockUnit = item.unit;
+        purchaseUnit = item.unit;
+        conversion = null;
+      } else {
+        throw new AppError(
+          `"${item.materialName}" is not in Inventory. Add this material in Inventory first, then create the request.`,
+          { code: "BAD_REQUEST" }
+        );
       }
-      const unitsDiffer = !sameUnit(item.purchaseUnit, stockUnit);
-      if (unitsDiffer && !item.conversionQuantity) {
-        throw new AppError("Enter how many stock units are inside 1 purchase unit.", { code: "BAD_REQUEST" });
-      }
-      const conversion = unitsDiffer ? item.conversionQuantity! : null;
+      const unitsDiffer = conversion !== null && !sameUnit(purchaseUnit, stockUnit);
       const priced = showCosts && item.unitPrice !== undefined && item.priceBasis !== undefined;
       // One unit: the two bases are the same thing.
       const basis = priced ? (unitsDiffer ? item.priceBasis! : "purchase_unit") : null;
@@ -232,7 +262,7 @@ export async function createGeneralInventoryRequest(
         material_name: existing?.display_name ?? item.materialName,
         description: item.description || null,
         quantity_requested: Math.round(item.quantity * 100) / 100,
-        unit: unitsDiffer ? item.purchaseUnit : stockUnit,
+        unit: unitsDiffer ? purchaseUnit : stockUnit,
         unit_price: priced ? pricePerPurchaseUnit(item.unitPrice!, basis!, conversion ?? 1) : null,
         entered_unit_price: priced ? item.unitPrice! : null,
         price_basis: basis,

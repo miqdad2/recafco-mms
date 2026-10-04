@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, ChevronLeft, ChevronRight, Loader2, Plus, Search, X } from "lucide-react";
 
@@ -17,61 +17,54 @@ import {
 } from "@/lib/files/attachment-constants";
 import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/maintenance-types";
 import type { WorkerProfileRow } from "@/lib/backend/workers/service";
-// Job Card Required Materials Unit Dropdown Polish Unit 10G.59, Task 1 —
-// reads the same static unit list General Inventory / Stock Request
-// already uses (no price/conversion concept here, just the plain option
-// list + the "OTHER / CUSTOM" sentinel), so the two flows never drift onto
-// different vocabularies. Read-only import — that flow's own files are not
-// touched by this unit.
-import { GENERAL_INVENTORY_UNIT_OPTIONS, CUSTOM_UNIT_VALUE } from "@/components/store/general-inventory-units";
+import { stockStatusLabel, stockStatusTone } from "@/components/store/offline-inventory-types";
 
 // Required Materials Inventory Matching Unit 5 — Required Materials row
-// state. Description/Part No./Qty/Unit were previously plain uncontrolled
-// inputs (name attribute only); they're controlled now so a selected
-// Offline Inventory suggestion can fill them in and so quantity changes can
-// recompute availability without another server round trip.
+// state. New Job Card Required Materials Inventory Selection and Smart Unit
+// UX: a row is a material SELECTED FROM INVENTORY (Inventory Control is the
+// source of truth for materials and their units). A typed name with no
+// selection is "not in Inventory" and blocks the step until the user adds
+// it in Inventory and selects it. `unit` is the unit the quantity is
+// entered in — only the material's Stock Unit or, when its Inventory unit
+// setup has one, its Purchase Unit (converted to stock units for
+// availability and on save).
 type RequiredMaterialRowState = {
   description: string;
   partNumber: string;
+  ssRecCode: string;
   qty: string;
   unit: string;
   notes: string;
-  // Identity key of the Offline Inventory match the user selected from the
-  // dropdown (same "part:<id>" / "manual:<name>|<unit>" key used across
-  // Offline Inventory Control) — null once the description is hand-typed or
-  // edited away from a selected suggestion (Task 5).
+  // Identity key of the Offline Inventory material the user selected
+  // ("part:<id>" / "manual:<name>|<unit>") — null once the description is
+  // typed or edited away from a selected suggestion.
   materialKey: string | null;
   balance: number | null;
   suggestions: OfflineInventorySearchMatch[];
   showSuggestions: boolean;
   loading: boolean;
   searched: boolean;
-  // Job Card Required Materials Estimated Cost Visibility Unit 10G.73
-  // (second unit of this name), Task 1/8 — inventoryUnit is the matched
-  // suggestion's OWN unit (frozen at selection time), kept separate from
-  // the row's own, possibly-edited `unit` so a later mismatch can be
-  // detected and warned about without silently overwriting what the user
-  // chose. lastUnitCost is the matched material's own last known unit cost
-  // (Unit 10G.61's method) — read-only here, never editable (Task 1's own
-  // "do not update inventory cost from this step"). estimatedUnitCost is
-  // the user's own optional planning figure, only meaningful/editable for a
-  // material with no inventory match (Task 2) — never sent anywhere beyond
-  // this wizard's own live preview (Task 6's "UI-only planning estimate").
+  // The selected material's Stock Unit and Inventory unit setup (purchase
+  // unit + stock units inside 1 of it; both null = bought in the stock
+  // unit). lastUnitCost is its last known cost per stock unit (Unit
+  // 10G.61), read-only — never editable from this step.
   inventoryUnit: string | null;
+  purchaseUnit: string | null;
+  conversion: number | null;
+  stockStatus: OfflineInventorySearchMatch["stock_status"] | null;
   lastUnitCost: number | null;
-  estimatedUnitCost: string;
 };
 
 function emptyMaterialRow(): RequiredMaterialRowState {
   return {
     description: "",
     partNumber: "",
+    ssRecCode: "",
     // Required Materials Empty Row Quantity UX Fix Unit 10F.5, Task 1: an
     // empty row must not look like a real material row with Qty 1 — blank
-    // until the user actually enters a material name (see
-    // handleMaterialNameChange/handleSelectSuggestion, Task 2).
+    // until the user actually selects a material.
     qty: "",
-    unit: "PCS",
+    unit: "",
     notes: "",
     materialKey: null,
     balance: null,
@@ -80,112 +73,90 @@ function emptyMaterialRow(): RequiredMaterialRowState {
     loading: false,
     searched: false,
     inventoryUnit: null,
+    purchaseUnit: null,
+    conversion: null,
+    stockStatus: null,
     lastUnitCost: null,
-    estimatedUnitCost: "",
   };
 }
 
-// Task 1/2 — `row.unit` is always the final, authoritative unit string
-// (unchanged in meaning from before this unit); the dropdown just needs to
-// know whether that string is one of the fixed options or something else
-// (a hand-typed custom unit, or a raw unit string carried over from a
-// matched Offline Inventory suggestion, e.g. handleSelectSuggestion below,
-// which may not exactly match one of the fixed options) — in which case it
-// shows CUSTOM_UNIT_VALUE selected with that exact string still visible and
-// editable in the custom-unit input, never silently lost or coerced.
-function unitSelectValue(unit: string): string {
-  return (GENERAL_INVENTORY_UNIT_OPTIONS as readonly string[]).includes(unit) ? unit : CUSTOM_UNIT_VALUE;
+// True when the row's quantity is entered in the material's Purchase Unit
+// (so it is multiplied by the conversion to get stock units).
+function usesPurchaseUnit(row: RequiredMaterialRowState): boolean {
+  return (
+    row.purchaseUnit !== null &&
+    row.conversion !== null &&
+    row.purchaseUnit !== row.inventoryUnit &&
+    row.unit === row.purchaseUnit
+  );
+}
+
+// Required stock quantity in the Stock Unit — what availability, shortage
+// and the saved quantity_required use. null for a row not selected from
+// Inventory.
+function rowStockQty(row: RequiredMaterialRowState): number | null {
+  if (row.materialKey === null) return null;
+  const qty = Number(row.qty) || 0;
+  return Math.round(qty * (usesPurchaseUnit(row) ? row.conversion! : 1) * 1e6) / 1e6;
+}
+
+// The unit choices for a selected material: Stock Unit first (the default
+// — Job Card issue happens in it), then its Purchase Unit when different.
+function unitOptionsFor(row: RequiredMaterialRowState): string[] {
+  if (!row.inventoryUnit) return [];
+  return row.purchaseUnit && row.conversion !== null && row.purchaseUnit !== row.inventoryUnit
+    ? [row.inventoryUnit, row.purchaseUnit]
+    : [row.inventoryUnit];
+}
+
+function fmtQty(n: number): string {
+  return String(Number(n.toFixed(3)));
 }
 
 type RowAvailability =
   | { kind: "available" }
   | { kind: "partial"; shortage: number }
-  | { kind: "unavailable" }
-  | { kind: "new" };
+  | { kind: "unavailable"; shortage: number }
+  | { kind: "not_in_inventory" };
 
 function computeRowAvailability(row: RequiredMaterialRowState): RowAvailability | null {
   if (!row.description.trim()) return null;
-  if (row.materialKey === null || row.balance === null) return { kind: "new" };
-  const qty = Number(row.qty) || 0;
-  if (row.balance <= 0) return { kind: "unavailable" };
-  if (qty <= row.balance) return { kind: "available" };
-  return { kind: "partial", shortage: qty - row.balance };
+  const required = rowStockQty(row);
+  if (required === null || row.balance === null) return { kind: "not_in_inventory" };
+  if (row.balance <= 0) return { kind: "unavailable", shortage: required };
+  if (required <= row.balance) return { kind: "available" };
+  return { kind: "partial", shortage: required - row.balance };
 }
 
-// Job Card Required Materials Estimated Cost Visibility Unit 10G.73 (second
-// unit of this name), Task 1/2 — the ONE unit cost this row's estimate is
-// based on: the matched material's own lastUnitCost for an existing-inventory
-// row, or the user's own typed estimatedUnitCost for a brand-new/unmatched
-// row. null means "unpriced" (existing material with no recorded cost) or
-// "not entered yet" (new material) — the two cases this form always shows
-// as "Unpriced" per Task 1's own "do not invent cost, show Unpriced" rule.
-// Never invents a number for either case.
-function rowUnitCost(row: RequiredMaterialRowState): number | null {
-  if (row.materialKey !== null) return row.lastUnitCost;
-  const typed = row.estimatedUnitCost.trim();
-  if (typed === "") return null;
-  const n = Number(typed);
-  return Number.isFinite(n) && n >= 0 ? n : null;
-}
-
-// Task 1/2 — "Estimated Total Cost = requested qty × latest/estimated unit
-// cost"; null (never 0) whenever the unit cost itself is unknown, so an
-// unpriced line is never silently treated as free in the Job-Card-wide sum
-// below.
+// Estimated Total = required stock quantity × the material's last known
+// cost per stock unit; null (never 0) when unpriced. Planning only — the
+// final cost comes from the real received/issued movements.
 function rowEstimatedTotal(row: RequiredMaterialRowState): number | null {
-  if (!row.description.trim()) return null;
-  const unitCost = rowUnitCost(row);
-  if (unitCost === null) return null;
-  const qty = Number(row.qty) || 0;
-  return Math.round(qty * unitCost * 1000) / 1000;
-}
-
-// Task 8 — "if inventory unit differs from selected required unit... do not
-// silently convert, show warning." Only meaningful once a real Offline
-// Inventory match exists (inventoryUnit is only ever set by
-// handleSelectSuggestion); comparison is case-sensitive on the exact unit
-// strings, matching how `unit` is stored/compared everywhere else in this
-// form (no normalization invented here).
-function hasUnitMismatch(row: RequiredMaterialRowState): boolean {
-  return row.materialKey !== null && row.inventoryUnit !== null && row.unit !== row.inventoryUnit;
+  const required = rowStockQty(row);
+  if (required === null || row.lastUnitCost === null) return null;
+  return Math.round(required * row.lastUnitCost * 1000) / 1000;
 }
 
 function AvailabilityBadge({ row }: { row: RequiredMaterialRowState }) {
   const availability = computeRowAvailability(row);
   if (!availability) return null;
-
-  if (availability.kind === "available") {
-    return (
-      <div className="mt-1 flex items-center gap-2">
-        <StatusBadge label="Available" tone="green" />
-        {row.balance !== null && (
-          <span className="text-[11px] text-[#6B7280]">
-            Available: {row.balance} {row.unit}
-          </span>
-        )}
-      </div>
-    );
-  }
-  if (availability.kind === "partial") {
-    return (
-      <div className="mt-1 flex flex-wrap items-center gap-2">
-        <StatusBadge label="Partially Available" tone="amber" />
-        <span className="text-[11px] font-semibold text-[#B45309]">
-          Shortage: {availability.shortage} {row.unit}
-        </span>
-      </div>
-    );
-  }
-  if (availability.kind === "unavailable") {
+  if (availability.kind === "not_in_inventory") {
     return (
       <div className="mt-1">
-        <StatusBadge label="Not Available" tone="red" />
+        <StatusBadge label="Not in Inventory" tone="red" />
       </div>
     );
   }
   return (
-    <div className="mt-1">
-      <StatusBadge label="New Material" tone="gray" />
+    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+      <StatusBadge label="Existing Inventory" tone="green" />
+      {availability.kind === "available" ? (
+        <StatusBadge label="Available OK" tone="green" />
+      ) : availability.kind === "partial" ? (
+        <StatusBadge label="Partially Available" tone="amber" />
+      ) : (
+        <StatusBadge label="Not Available" tone="red" />
+      )}
     </div>
   );
 }
@@ -451,11 +422,19 @@ export function WorkOrderWizard({
     // 10G.73 (second unit of this name): inventoryUnit/lastUnitCost are
     // cleared alongside materialKey/balance — they describe THAT match, not
     // whatever gets typed next.
+    // Typing unlinks the row: it is "not in Inventory" until a suggestion
+    // is selected, and its units/part number are cleared with the link.
     updateRow(index, {
       description: value,
+      partNumber: "",
+      ssRecCode: "",
+      unit: "",
       materialKey: null,
       balance: null,
       inventoryUnit: null,
+      purchaseUnit: null,
+      conversion: null,
+      stockStatus: null,
       lastUnitCost: null,
       showSuggestions: true,
       ...(shouldDefaultQty ? { qty: "1" } : {}),
@@ -491,18 +470,19 @@ export function WorkOrderWizard({
     // Task 2 — selecting a suggestion counts as entering a material name too.
     const currentQty = partRows[index]?.qty ?? "";
     const shouldDefaultQty = currentQty.trim() === "";
+    // Everything comes from the Inventory record: name, part number, SS
+    // Rec. Code, balance, Stock Unit (the default unit) and its unit setup.
     updateRow(index, {
       description: match.display_name,
       partNumber: match.part_number ?? "",
+      ssRecCode: match.ss_rec_code ?? "",
       unit: match.unit,
       materialKey: match.key,
       balance: match.balance,
-      // Job Card Required Materials Estimated Cost Visibility Unit 10G.73
-      // (second unit of this name), Task 1/8 — inventoryUnit records this
-      // match's own unit (for the Task 8 mismatch check if the user later
-      // edits Unit away from it); lastUnitCost is this match's own last
-      // known cost, read-only display only, never editable from this step.
       inventoryUnit: match.unit,
+      purchaseUnit: match.purchase_unit,
+      conversion: match.conversion_quantity,
+      stockStatus: match.stock_status,
       lastUnitCost: match.last_unit_cost,
       suggestions: [],
       showSuggestions: false,
@@ -595,17 +575,21 @@ export function WorkOrderWizard({
       }
     }
 
-    if (step === 4 && form) {
-      const fd = new FormData(form);
+    if (step === 4) {
       // Unit 10F.5, Task 6: a completely blank extra row (no description)
-      // never blocks submit. A row WITH a material name needs a quantity —
-      // "Enter quantity." when it's blank, a distinct "Quantity must be
-      // greater than 0." once something was entered but isn't a valid
-      // positive whole number. Stops at the first offending row so one
-      // message shows at a time, top to bottom.
-      for (let i = 0; i < MAX_PART_ROWS; i++) {
-        if (!fd.get(`req_part_description_${i}`)?.toString().trim()) continue;
-        const qtyRaw = fd.get(`req_part_quantity_${i}`)?.toString().trim();
+      // never blocks submit. A row WITH a material name must be selected
+      // from Inventory and needs a quantity — "Enter quantity." when it's
+      // blank, "Quantity must be greater than 0." once something was
+      // entered but isn't a valid positive whole number. Stops at the first
+      // offending row so one message shows at a time, top to bottom.
+      for (let i = 0; i < numPartRows; i++) {
+        const row = partRows[i];
+        if (!row || !row.description.trim()) continue;
+        if (row.materialKey === null) {
+          errs.required_parts = `"${row.description.trim()}" is not in Inventory. Add this material in Inventory first, then select it here.`;
+          break;
+        }
+        const qtyRaw = row.qty.trim();
         if (!qtyRaw) {
           errs.required_parts = "Enter quantity.";
           break;
@@ -615,12 +599,11 @@ export function WorkOrderWizard({
           errs.required_parts = "Quantity must be greater than 0.";
           break;
         }
-        // Task 2 — only reachable when OTHER / CUSTOM is selected and left
-        // blank: the hidden req_part_uom_${i} input carries "" in that case
-        // (see unitSelectValue/the select's onChange above), every other
-        // choice always has a real, non-empty value.
-        if (!fd.get(`req_part_uom_${i}`)?.toString().trim()) {
-          errs.required_parts = "Enter a unit, or choose a value from the Unit list.";
+        // Issued in whole stock units (the existing whole-quantity rule,
+        // applied after conversion).
+        const required = rowStockQty(row);
+        if (required !== null && !Number.isInteger(required)) {
+          errs.required_parts = `Required stock quantity for "${row.description.trim()}" must be a whole number of ${row.inventoryUnit}.`;
           break;
         }
       }
@@ -652,12 +635,7 @@ export function WorkOrderWizard({
     setStep((p) => Math.max(p - 1, 1));
   }
 
-  const reviewParts = Array.from({ length: MAX_PART_ROWS }, (_, i) => ({
-    desc: reviewData[`req_part_description_${i}`] ?? "",
-    partNo: reviewData[`req_part_part_number_${i}`] ?? "",
-    qty: reviewData[`req_part_quantity_${i}`] ?? "1",
-    unit: reviewData[`req_part_uom_${i}`] ?? "PCS",
-  })).filter((p) => p.desc);
+  const reviewParts = partRows.slice(0, numPartRows).filter((p) => p.description.trim() && p.materialKey !== null);
 
   // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 3/5: the
   // Job Card total is never typed — it's the sum of whatever the currently
@@ -1141,18 +1119,17 @@ export function WorkOrderWizard({
             title="Required Materials"
             description="List materials required for this Job Card. This is not a purchase order."
           >
+            {/* New Job Card Required Materials Inventory Selection: the
+                server only accepts Inventory-selected rows when this marker
+                is posted (see parseRequiredPartRows). */}
+            <input type="hidden" name="req_parts_inventory_first" value="1" />
             <p className="mb-1 text-xs text-[#6B7280]">
-              Type a material name to check Offline Inventory availability.
+              Type a material name, part number or SS Rec. Code and select it from Inventory. Units come from the
+              material&apos;s Inventory setup.
             </p>
-            {/* Job Card Required Materials Estimated Cost Visibility Unit
-                10G.73 (second unit of this name), Task 2/7 — replaces the
-                old "prices are handled elsewhere" line now that this step
-                genuinely shows cost estimates; the "not a purchase order"
-                framing is kept (still true — this is a planning estimate,
-                not an actual/posted cost). */}
             <p className="mb-3 text-xs text-[#6B7280]">
               This is not a purchase order or inventory receiving screen. Estimated cost is for Job Card planning
-              only — final cost is recorded when material is received or issued from inventory.
+              only. Final cost is recorded when material is received or issued from inventory.
             </p>
             <div>
               <table className="w-full min-w-[560px] border-collapse text-sm">
@@ -1162,11 +1139,11 @@ export function WorkOrderWizard({
                     <th className="border border-[#E5E7EB] px-3 py-2">Material Name / Description</th>
                     <th className="w-28 border border-[#E5E7EB] px-3 py-2">Part No. / Code</th>
                     <th className="w-16 border border-[#E5E7EB] px-3 py-2">Qty</th>
-                    <th className="w-20 border border-[#E5E7EB] px-3 py-2">Unit</th>
-                    <th className="w-24 border border-[#E5E7EB] px-3 py-2">Available Stock</th>
+                    <th className="w-24 border border-[#E5E7EB] px-3 py-2">Unit</th>
+                    <th className="w-40 border border-[#E5E7EB] px-3 py-2">Available Stock</th>
                     {canViewCosts && (
                       <>
-                        <th className="w-28 border border-[#E5E7EB] px-3 py-2">Unit Cost / Estimated Unit Cost</th>
+                        <th className="w-28 border border-[#E5E7EB] px-3 py-2">Unit Cost (per stock unit)</th>
                         <th className="w-24 border border-[#E5E7EB] px-3 py-2">Estimated Total</th>
                       </>
                     )}
@@ -1174,191 +1151,230 @@ export function WorkOrderWizard({
                   </tr>
                 </thead>
                 <tbody>
-                  {partRows.map((row, i) => (
-                    <tr key={i} className={i >= numPartRows ? "hidden" : ""}>
-                      <td className="border border-[#E5E7EB] px-2 py-1.5 text-center text-xs font-semibold text-[#9CA3AF]">
-                        {i + 1}
-                      </td>
-                      <td className="relative border border-[#E5E7EB] p-0.5 align-top">
-                        <input
-                          name={`req_part_description_${i}`}
-                          value={row.description}
-                          onChange={(e) => handleMaterialNameChange(i, e.target.value)}
-                          onFocus={() => updateRow(i, { showSuggestions: true })}
-                          onBlur={() => updateRow(i, { showSuggestions: false })}
-                          autoComplete="off"
-                          className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                          placeholder={i === 0 ? "e.g. oil filter…" : ""}
-                        />
-                        <input type="hidden" name={`req_part_material_key_${i}`} value={row.materialKey ?? ""} />
-                        <AvailabilityBadge row={row} />
+                  {partRows.map((row, i) => {
+                    const linked = row.materialKey !== null;
+                    const hasName = row.description.trim().length > 0;
+                    const required = rowStockQty(row);
+                    const availability = computeRowAvailability(row);
+                    const options = unitOptionsFor(row);
+                    const hidden = i >= numPartRows ? "hidden" : "";
+                    return (
+                      <Fragment key={i}>
+                        <tr className={hidden}>
+                          <td className="border border-[#E5E7EB] px-2 py-1.5 text-center text-xs font-semibold text-[#9CA3AF]">
+                            {i + 1}
+                          </td>
+                          <td className="relative border border-[#E5E7EB] p-0.5 align-top">
+                            <input
+                              name={`req_part_description_${i}`}
+                              aria-label={`Material ${i + 1}`}
+                              value={row.description}
+                              onChange={(e) => handleMaterialNameChange(i, e.target.value)}
+                              onFocus={() => updateRow(i, { showSuggestions: true })}
+                              onBlur={() => updateRow(i, { showSuggestions: false })}
+                              autoComplete="off"
+                              className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
+                              placeholder={i === 0 ? "Search Inventory… e.g. oil filter" : ""}
+                            />
+                            <input type="hidden" name={`req_part_material_key_${i}`} value={row.materialKey ?? ""} />
+                            <AvailabilityBadge row={row} />
 
-                        {row.showSuggestions && (row.loading || row.suggestions.length > 0 || row.searched) && (
-                          <div className="absolute left-0 top-full z-20 mt-1 w-72 max-w-[80vw] rounded-md border border-[#E5E7EB] bg-white shadow-lg">
-                            {row.loading ? (
-                              <div className="flex items-center gap-2 px-3 py-2.5 text-xs text-[#6B7280]">
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                                Searching Offline Inventory…
+                            {row.showSuggestions && (row.loading || row.suggestions.length > 0 || row.searched) && (
+                              <div className="absolute left-0 top-full z-20 mt-1 w-96 max-w-[85vw] rounded-md border border-[#E5E7EB] bg-white shadow-lg">
+                                {row.loading ? (
+                                  <div className="flex items-center gap-2 px-3 py-2.5 text-xs text-[#6B7280]">
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                                    Searching Inventory…
+                                  </div>
+                                ) : row.suggestions.length === 0 ? (
+                                  <p className="px-3 py-2.5 text-xs text-[#9CA3AF]">
+                                    Not in Inventory. Add this material in Inventory first, then select it here.
+                                  </p>
+                                ) : (
+                                  <ul className="max-h-64 divide-y divide-[#F3F4F6] overflow-y-auto">
+                                    {row.suggestions.map((s) => (
+                                      <li key={s.key}>
+                                        <button
+                                          type="button"
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            handleSelectSuggestion(i, s);
+                                          }}
+                                          className="block w-full px-3 py-2 text-left hover:bg-gray-50"
+                                        >
+                                          <div className="flex items-center justify-between gap-2">
+                                            <p className="text-sm font-bold text-[#111827]">
+                                              {s.display_name}
+                                              <span className="font-normal text-[#4B5563]">
+                                                {" "}— Balance {fmtQty(s.balance)} {s.unit}
+                                              </span>
+                                            </p>
+                                            <StatusBadge label={stockStatusLabel(s.stock_status)} tone={stockStatusTone(s.stock_status)} />
+                                          </div>
+                                          <p className="mt-0.5 text-[11px] text-[#6B7280]">
+                                            {[
+                                              s.part_number ? `Part No: ${s.part_number}` : null,
+                                              s.ss_rec_code ? `SS Rec. Code: ${s.ss_rec_code}` : null,
+                                              s.purchase_unit && s.conversion_quantity
+                                                ? `Purchase Unit ${s.purchase_unit} — 1 ${s.purchase_unit} = ${fmtQty(s.conversion_quantity)} ${s.unit}`
+                                                : null,
+                                            ]
+                                              .filter(Boolean)
+                                              .join(" • ")}
+                                          </p>
+                                        </button>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
                               </div>
-                            ) : row.suggestions.length === 0 ? (
-                              <p className="px-3 py-2.5 text-xs text-[#9CA3AF]">
-                                No match in Offline Inventory. You can still type this material manually.
-                              </p>
-                            ) : (
-                              <ul className="max-h-64 divide-y divide-[#F3F4F6] overflow-y-auto">
-                                {row.suggestions.map((s) => (
-                                  <li key={s.key}>
-                                    <button
-                                      type="button"
-                                      onMouseDown={(e) => {
-                                        e.preventDefault();
-                                        handleSelectSuggestion(i, s);
-                                      }}
-                                      className="block w-full px-3 py-2 text-left hover:bg-gray-50"
-                                    >
-                                      <p className="text-sm font-bold text-[#111827]">{s.display_name}</p>
-                                      <p className="mt-0.5 text-[11px] text-[#6B7280]">
-                                        Available: {s.balance} {s.unit}
-                                        {s.part_number ? ` • Part No: ${s.part_number}` : ""}
-                                        {s.ss_rec_code ? ` • SS Rec. Code: ${s.ss_rec_code}` : ""}
-                                        {s.location ? ` • Location: ${s.location}` : ""}
-                                      </p>
-                                    </button>
-                                  </li>
-                                ))}
-                              </ul>
                             )}
-                          </div>
-                        )}
-                      </td>
-                      <td className="border border-[#E5E7EB] p-0.5 align-top">
-                        <input
-                          name={`req_part_part_number_${i}`}
-                          value={row.partNumber}
-                          onChange={(e) => updateRow(i, { partNumber: e.target.value })}
-                          className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                        />
-                      </td>
-                      <td className="border border-[#E5E7EB] p-0.5 align-top">
-                        <input
-                          name={`req_part_quantity_${i}`}
-                          type="number"
-                          min="1"
-                          step="1"
-                          inputMode="numeric"
-                          value={row.qty}
-                          onChange={(e) => updateRow(i, { qty: e.target.value })}
-                          className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                        />
-                      </td>
-                      <td className="border border-[#E5E7EB] p-0.5 align-top">
-                        {/* Task 1/2 — the visible select/custom input are
-                            pure UI controls (no name attribute); the hidden
-                            input below always carries the one final,
-                            resolved unit string that actually gets
-                            submitted, so the server never has to resolve a
-                            sentinel value itself. */}
-                        <select
-                          value={unitSelectValue(row.unit)}
-                          onChange={(e) =>
-                            updateRow(i, { unit: e.target.value === CUSTOM_UNIT_VALUE ? "" : e.target.value })
-                          }
-                          className="w-full rounded bg-transparent px-1.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                        >
-                          {GENERAL_INVENTORY_UNIT_OPTIONS.map((u) => (
-                            <option key={u} value={u}>
-                              {u}
-                            </option>
-                          ))}
-                          <option value={CUSTOM_UNIT_VALUE}>OTHER / CUSTOM</option>
-                        </select>
-                        {unitSelectValue(row.unit) === CUSTOM_UNIT_VALUE && (
-                          <input
-                            value={row.unit}
-                            onChange={(e) => updateRow(i, { unit: e.target.value })}
-                            placeholder="e.g. Bundle"
-                            className="mt-1 w-full rounded border border-[#E5E7EB] bg-white px-2 py-1 text-xs outline-none focus:bg-red-50"
-                          />
-                        )}
-                        <input type="hidden" name={`req_part_uom_${i}`} value={row.unit} />
-                        {/* Task 8 — "do not silently convert, show
-                            warning" — only once a real Offline Inventory
-                            match exists and the user has since changed Unit
-                            away from that match's own unit. */}
-                        {hasUnitMismatch(row) && (
-                          <p className="mt-1 text-[10px] font-semibold text-amber-700">
-                            Selected unit differs from inventory unit. Please confirm unit before saving.
-                          </p>
-                        )}
-                      </td>
-                      <td className="border border-[#E5E7EB] p-0.5 align-top text-xs text-[#4B5563]">
-                        {/* Task 1/3 — plain read display; the color-coded
-                            Available/Partially Available/Not Available/New
-                            Material badge already lives under the
-                            description cell above (unchanged) — this column
-                            is the plain "quantity available" figure Task 3
-                            explicitly asks for as its own column. */}
-                        {row.materialKey !== null && row.balance !== null
-                          ? `${row.balance} ${row.inventoryUnit ?? row.unit}`
-                          : row.description.trim()
-                            ? "New Material"
-                            : "—"}
-                      </td>
-                      {canViewCosts && (
-                        <>
+                          </td>
                           <td className="border border-[#E5E7EB] p-0.5 align-top">
-                            {row.materialKey !== null ? (
-                              // Task 1 — read-only: "do not update inventory
-                              // cost from this step." Never invents a cost;
-                              // "Unpriced" (not 0.000) when none is recorded.
-                              <p className="px-2.5 py-1.5 text-xs text-[#4B5563]">
-                                {row.lastUnitCost !== null ? `${row.lastUnitCost.toFixed(3)} KWD` : "Unpriced"}
-                              </p>
+                            {/* From Inventory for a selected material (readOnly,
+                                not disabled, so it is still posted). */}
+                            <input
+                              name={`req_part_part_number_${i}`}
+                              aria-label={`Part No. ${i + 1}`}
+                              value={row.partNumber}
+                              readOnly
+                              className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm text-[#4B5563] outline-none"
+                            />
+                            {row.ssRecCode && <p className="px-2.5 pb-1 text-[10px] text-[#9CA3AF]">SS Rec. {row.ssRecCode}</p>}
+                          </td>
+                          <td className="border border-[#E5E7EB] p-0.5 align-top">
+                            <input
+                              name={`req_part_quantity_${i}`}
+                              aria-label={`Qty ${i + 1}`}
+                              type="number"
+                              min="1"
+                              step="1"
+                              inputMode="numeric"
+                              value={row.qty}
+                              onChange={(e) => updateRow(i, { qty: e.target.value })}
+                              disabled={!linked}
+                              className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50 disabled:text-[#9CA3AF]"
+                            />
+                          </td>
+                          <td className="border border-[#E5E7EB] p-0.5 align-top">
+                            {/* Only the selected material's own units: its Stock
+                                Unit (default) and, when its Inventory setup has
+                                one, its Purchase Unit. */}
+                            {linked ? (
+                              <select
+                                aria-label={`Unit ${i + 1}`}
+                                value={row.unit}
+                                onChange={(e) => updateRow(i, { unit: e.target.value })}
+                                className="w-full rounded bg-transparent px-1.5 py-1.5 text-sm outline-none focus:bg-red-50"
+                              >
+                                {options.map((u) => (
+                                  <option key={u} value={u}>
+                                    {u}
+                                  </option>
+                                ))}
+                              </select>
                             ) : (
-                              // Task 2 — editable only for a material with no
-                              // inventory match; purely a planning figure,
-                              // never submitted to the server (Task 6).
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.001"
-                                placeholder="Optional"
-                                value={row.estimatedUnitCost}
-                                onChange={(e) => updateRow(i, { estimatedUnitCost: e.target.value })}
-                                className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                                disabled={!row.description.trim()}
-                              />
+                              <p className="px-2.5 py-1.5 text-sm text-[#9CA3AF]">—</p>
                             )}
+                            <input type="hidden" name={`req_part_entered_unit_${i}`} value={row.unit} />
+                            <input type="hidden" name={`req_part_uom_${i}`} value={row.inventoryUnit ?? ""} />
                           </td>
                           <td className="border border-[#E5E7EB] px-2.5 py-1.5 align-top text-xs text-[#4B5563]">
-                            {(() => {
-                              if (!row.description.trim()) return "—";
-                              const total = rowEstimatedTotal(row);
-                              return total !== null ? `${total.toFixed(3)} KWD` : "Unpriced";
-                            })()}
+                            {linked && row.balance !== null ? (
+                              <>
+                                <p>
+                                  Available Stock: <span className="font-semibold text-[#111827]">{fmtQty(row.balance)} {row.inventoryUnit}</span>
+                                </p>
+                                {usesPurchaseUnit(row) && (
+                                  <p className="font-semibold text-[#111827]">
+                                    1 {row.purchaseUnit} = {fmtQty(row.conversion!)} {row.inventoryUnit}
+                                  </p>
+                                )}
+                                {required !== null && Number(row.qty) > 0 && (
+                                  <>
+                                    <p>
+                                      Required: <span className="font-semibold text-[#111827]">{fmtQty(required)} {row.inventoryUnit}</span>
+                                    </p>
+                                    {availability?.kind === "available" ? (
+                                      <p className="font-semibold text-green-700">Available OK</p>
+                                    ) : availability?.kind === "partial" || availability?.kind === "unavailable" ? (
+                                      <p className="font-semibold text-[#B91C1C]">
+                                        Shortage: {fmtQty(availability.shortage)} {row.inventoryUnit}
+                                      </p>
+                                    ) : null}
+                                  </>
+                                )}
+                              </>
+                            ) : hasName ? (
+                              <span className="font-semibold text-[#B91C1C]">Not in Inventory</span>
+                            ) : (
+                              "—"
+                            )}
                           </td>
-                        </>
-                      )}
-                      <td className="border border-[#E5E7EB] p-0.5 align-top">
-                        <input
-                          name={`req_part_notes_${i}`}
-                          value={row.notes}
-                          onChange={(e) => updateRow(i, { notes: e.target.value })}
-                          className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
-                        />
-                      </td>
-                    </tr>
-                  ))}
+                          {canViewCosts && (
+                            <>
+                              <td className="border border-[#E5E7EB] px-2.5 py-1.5 align-top text-xs text-[#4B5563]">
+                                {linked
+                                  ? row.lastUnitCost !== null
+                                    ? `${row.lastUnitCost.toFixed(3)} KWD / ${row.inventoryUnit}`
+                                    : "Unpriced"
+                                  : "—"}
+                              </td>
+                              <td className="border border-[#E5E7EB] px-2.5 py-1.5 align-top text-xs text-[#4B5563]">
+                                {!linked ? "—" : rowEstimatedTotal(row) !== null ? `${rowEstimatedTotal(row)!.toFixed(3)} KWD` : "Unpriced"}
+                              </td>
+                            </>
+                          )}
+                          <td className="border border-[#E5E7EB] p-0.5 align-top">
+                            <input
+                              name={`req_part_notes_${i}`}
+                              aria-label={`Notes ${i + 1}`}
+                              value={row.notes}
+                              onChange={(e) => updateRow(i, { notes: e.target.value })}
+                              className="w-full rounded bg-transparent px-2.5 py-1.5 text-sm outline-none focus:bg-red-50"
+                            />
+                          </td>
+                        </tr>
+
+                        {/* Not in Inventory: add it there first, then select it. */}
+                        {hasName && !linked && !row.showSuggestions && (
+                          <tr className={hidden}>
+                            <td className="border border-[#E5E7EB]" />
+                            <td colSpan={canViewCosts ? 8 : 6} className="border border-[#E5E7EB] bg-amber-50 px-3 py-2">
+                              <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-amber-900">
+                                <span className="font-black">Material not found in Inventory.</span>
+                                <span>Add this material in Inventory first, then select it here.</span>
+                                <a
+                                  href="/store/offline-inventory/add-material"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex min-h-8 items-center rounded-md bg-[#ED1C24] px-3 py-1 text-xs font-bold text-white hover:bg-[#c8181e]"
+                                >
+                                  Add New Material
+                                </a>
+                                <button
+                                  type="button"
+                                  onClick={() => handleMaterialNameChange(i, row.description)}
+                                  className="inline-flex min-h-8 items-center rounded-md border border-amber-400 bg-white px-3 py-1 text-xs font-bold text-amber-900 hover:bg-amber-100"
+                                >
+                                  Search again
+                                </button>
+                                <span className="text-xs">Opens in a new tab, so this Job Card is kept.</span>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
 
-            {/* Task 4 — Estimated Material Cost, summed only over rows that
-                actually have a description AND a known unit cost; a fully
-                unpriced set of lines reads "Not available" rather than a
-                misleading "0.000 KWD". */}
+            {/* Estimated Material Cost — cost-permitted viewers only, summed
+                over selected rows that have a known cost; planning only. */}
             {canViewCosts && (() => {
-              const describedRows = partRows.slice(0, numPartRows).filter((r) => r.description.trim());
+              const describedRows = partRows.slice(0, numPartRows).filter((r) => r.materialKey !== null);
               if (describedRows.length === 0) return null;
               const lineTotals = describedRows.map(rowEstimatedTotal);
               const pricedTotals = lineTotals.filter((t): t is number => t !== null);
@@ -1367,7 +1383,7 @@ export function WorkOrderWizard({
               return (
                 <div className="mt-3 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3">
                   <p className="text-sm font-bold text-[#111827]">
-                    Estimated Material Cost:{" "}
+                    Estimated Material Cost (planning only):{" "}
                     {pricedTotals.length > 0 ? `${estimatedMaterialCost.toFixed(3)} KWD` : "Not available"}
                   </p>
                   {hasUnpriced && pricedTotals.length > 0 && (
@@ -1582,28 +1598,36 @@ export function WorkOrderWizard({
 
               <ReviewSection title="Required Materials">
                 {reviewParts.length > 0 ? (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="bg-[#F3F4F6] text-left text-[10px] font-bold text-[#4B5563]">
-                          <th className="px-3 py-1.5">Material Name / Description</th>
-                          <th className="px-3 py-1.5">Part No. / Code</th>
-                          <th className="px-3 py-1.5">Qty</th>
-                          <th className="px-3 py-1.5">Unit</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[#F3F4F6]">
-                        {reviewParts.map((p, i) => (
-                          <tr key={i}>
-                            <td className="px-3 py-1.5 text-[#111827]">{p.desc}</td>
-                            <td className="px-3 py-1.5 text-[#4B5563]">{p.partNo || "—"}</td>
-                            <td className="px-3 py-1.5 text-[#4B5563]">{p.qty}</td>
-                            <td className="px-3 py-1.5 text-[#4B5563]">{p.unit}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <ul className="divide-y divide-[#F3F4F6]">
+                    {reviewParts.map((p, i) => {
+                      const required = rowStockQty(p);
+                      const availability = computeRowAvailability(p);
+                      return (
+                        <li key={i} className="py-2 text-sm first:pt-0 last:pb-0">
+                          <p className="font-semibold text-[#111827]">
+                            {p.description}
+                            {p.partNumber ? <span className="font-normal text-[#6B7280]"> · Part No. {p.partNumber}</span> : null}
+                          </p>
+                          <p className="text-xs text-[#4B5563]">
+                            Requested/Planned: {p.qty} {p.unit}
+                            {usesPurchaseUnit(p) && <> · Conversion: 1 {p.purchaseUnit} = {fmtQty(p.conversion!)} {p.inventoryUnit}</>}
+                          </p>
+                          {required !== null && (
+                            <p className="text-xs text-[#4B5563]">
+                              Required stock quantity: {fmtQty(required)} {p.inventoryUnit} · Available stock:{" "}
+                              {fmtQty(p.balance ?? 0)} {p.inventoryUnit}
+                              {availability && (availability.kind === "partial" || availability.kind === "unavailable") && (
+                                <span className="font-semibold text-[#B91C1C]">
+                                  {" "}· Shortage: {fmtQty(availability.shortage)} {p.inventoryUnit}
+                                </span>
+                              )}
+                              {availability?.kind === "available" && <span className="font-semibold text-green-700"> · Available OK</span>}
+                            </p>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
                 ) : (
                   <p className="text-sm italic text-[#9CA3AF]">No materials requested</p>
                 )}

@@ -11,14 +11,14 @@ import {
 import type { OfflineInventorySearchMatch } from "@/lib/store/offline-inventory-data";
 import { GENERAL_INVENTORY_UNIT_OPTIONS, CUSTOM_UNIT_VALUE } from "@/components/store/general-inventory-units";
 import {
+  basisUnit,
   computeRequestLine,
-  priceBasisLabel,
-  reversedUnitsMessage,
-  suggestedStockUnit,
-  unitPairKey,
-  unitsLookReversed,
+  formatKwd,
+  isLargeEstimatedTotal,
+  largeTotalAckKey,
   type PriceBasis,
 } from "@/lib/materials/request-pricing";
+import { PriceBasisField, PriceBasisWarnings } from "@/components/store/price-basis-field";
 import { AttachmentUploadFields } from "@/components/files/attachment-upload-fields";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useLargeFormModal } from "@/components/ui/large-form-modal";
@@ -59,14 +59,14 @@ import {
 // wizard's own actions gate on work_orders.manage only, which Technician
 // (parts_requests.create only) lacks.
 //
-// "Existing Inventory Material" vs "New Material Request" is the one
-// genuinely new concept here: selecting a suggestion locks in either the
-// match's own part_id (catalog-backed) or its manual buildBalanceKey()
-// identity (inventoryMaterialKey) — both null means "new, not linked to
-// inventory yet". Request / Issue Unit always comes from that match once
-// selected (never silently PCS) and is locked (plain text) until an
-// authorized user (Super Admin/Maintenance Manager — canUnlockRequestUnit)
-// clicks "Change". Everything here is a request line only — no inventory
+// Inventory-First Material Request Workflow: selecting a suggestion locks
+// in either the match's own part_id (catalog-backed) or its manual
+// buildBalanceKey() identity (inventoryMaterialKey), and its Purchase Unit,
+// Stock Unit and conversion from the material's Inventory unit setup
+// (read-only; changed only in Inventory). A name not in Inventory shows a
+// "Material not found" panel with Add New Material; only a Manager / Super
+// Admin (canRequestUnlinked) may request it anyway, with one plain unit.
+// Everything here is a request line only — no inventory
 // balance, no stock movement, nothing auto-received; that still happens
 // later, through Receive Materials.
 
@@ -136,21 +136,25 @@ type RequestedMaterialRowState = {
   showSuggestions: boolean;
   loading: boolean;
   searched: boolean;
-  // How the supplier sells it. conversionQty (stock units inside 1
-  // purchase unit) only applies when it differs from the Stock Unit.
+  // Inventory-First Material Request Workflow: purchaseUnit / unit /
+  // conversionQty are copied from the selected material's Inventory unit
+  // setup and shown read-only — never set up in this form. conversionQty
+  // (stock units inside 1 purchase unit) only applies when the two differ.
   purchaseUnit: string;
   purchaseUnitCustom: boolean;
-  // True once the user picks a Stock Unit themselves; until then a
-  // Purchase Unit change may suggest one (suggestedStockUnit).
-  stockUnitTouched: boolean;
   conversionQty: string;
-  // Set by "Keep as entered" on a reversed-units warning, keyed to the
-  // exact unit pair it was given for (unitPairKey).
-  unitsConfirmedKey: string | null;
+  // Manager / Super Admin only: request a material that is not in
+  // Inventory, with one plain unit (purchaseUnit = unit, no conversion).
+  unlinkedOverride: boolean;
   // Optional; blank means "not priced yet", never submitted/shown as 0.
   // priceBasis says which unit the price is per.
   unitPrice: string;
-  priceBasis: PriceBasis;
+  // null until the user picks it — required when the purchase and stock
+  // units differ (no silent default); automatic when they are the same.
+  priceBasis: PriceBasis | null;
+  // "I confirm the price basis is correct" for a large total, keyed to the
+  // exact price/basis/total it was given for (largeTotalAckKey).
+  largeTotalAckKey: string | null;
 };
 
 function emptyMaterialRow(): RequestedMaterialRowState {
@@ -177,11 +181,11 @@ function emptyMaterialRow(): RequestedMaterialRowState {
     // Same unit as the Stock Unit by default (conversion 1).
     purchaseUnit: "PCS",
     purchaseUnitCustom: false,
-    stockUnitTouched: false,
     conversionQty: "",
-    unitsConfirmedKey: null,
+    unlinkedOverride: false,
     unitPrice: "",
-    priceBasis: "purchase_unit",
+    priceBasis: null,
+    largeTotalAckKey: null,
   };
 }
 
@@ -199,23 +203,16 @@ function rowFigures(row: RequestedMaterialRowState) {
     price,
     basis: row.priceBasis,
   });
-  const basis: PriceBasis = figures.unitsDiffer ? row.priceBasis : "purchase_unit";
-  // Reversed units (Stock Unit = BOX, Purchase Unit = PCS) the user has not
-  // kept on purpose: show no conversion or stock result at all rather than
-  // "1 PCS = 9 BOX", and block the row.
-  const reversed = unitsLookReversed(row.purchaseUnit, row.unit);
-  const unitsConfirmed = reversed && row.unitsConfirmedKey === unitPairKey(row.purchaseUnit, row.unit);
-  const blocked = reversed && !unitsConfirmed;
-  return {
-    ...figures,
-    stockQty: blocked ? null : figures.stockQty,
-    total: blocked && basis === "stock_unit" ? null : figures.total,
-    reversed,
-    unitsConfirmed,
-    blocked,
-    price,
-    basis,
-  };
+  // With two units the basis stays null (and there is no total) until the
+  // user picks it; with one unit it is purchase_unit automatically.
+  const basis: PriceBasis | null = figures.unitsDiffer ? row.priceBasis : "purchase_unit";
+  const total = basis === null ? null : figures.total;
+  const largeTotal = basis !== null && isLargeEstimatedTotal(total, price);
+  const largeTotalAcked = largeTotal && row.largeTotalAckKey === largeTotalAckKey(price!, basis!, total!);
+  // Inventory-first: a row is usable only when linked to an Inventory
+  // material, or a Manager override row with a unit chosen.
+  const usable = row.matchKey !== null || (row.unlinkedOverride && row.unit.trim() !== "");
+  return { ...figures, total, price, basis, largeTotal, largeTotalAcked, usable };
 }
 
 // ── Step indicator ────────────────────────────────────────────────────────────
@@ -340,14 +337,15 @@ export function PartsRequestWizard({
   // material-request-price permission (Manager, Super Admin, Data Entry),
   // not general cost visibility.
   const [canEnterPrices, setCanEnterPrices] = useState(false);
-  const [canUnlockRequestUnit, setCanUnlockRequestUnit] = useState(false);
+  // Manager / Super Admin: may request a material not in Inventory.
+  const [canRequestUnlinked, setCanRequestUnlinked] = useState(false);
   useEffect(() => {
     let cancelled = false;
     getPartsRequestWizardFlagsAction()
       .then((flags) => {
         if (!cancelled) {
           setCanEnterPrices(flags.canEnterPrices);
-          setCanUnlockRequestUnit(flags.canUnlockRequestUnit);
+          setCanRequestUnlinked(flags.canRequestUnlinked);
         }
       })
       .catch(() => {});
@@ -456,12 +454,12 @@ export function PartsRequestWizard({
       unit: match.unit,
       unitLocked: true,
       unitCustom: false,
-      // Inventory stores no purchase unit/conversion, so the Purchase Unit
-      // starts as the material's own Stock Unit (conversion 1); the user
-      // changes it when the supplier sells in a different unit.
-      purchaseUnit: match.unit,
+      // Inventory-First: Purchase Unit and conversion come from the
+      // material's Inventory unit setup; no setup = bought in its stock unit.
+      purchaseUnit: match.purchase_unit ?? match.unit,
       purchaseUnitCustom: false,
-      conversionQty: "",
+      conversionQty: match.purchase_unit && match.conversion_quantity ? String(match.conversion_quantity) : "",
+      unlinkedOverride: false,
       matchKey: match.key,
       matchPartId: match.part_id,
       balance: match.balance,
@@ -472,48 +470,6 @@ export function PartsRequestWizard({
       searched: false,
       ...(shouldDefaultQty ? { qty: "1" } : {}),
     });
-  }
-
-  // "Swap units" on the reversed-units warning (only offered while the
-  // Stock Unit is editable, i.e. not locked to an existing material).
-  // "Fix automatically" on the reversed-units panel: swaps the two units
-  // and keeps the Conversion Quantity (1 PCS = 9 BOX -> 1 BOX = 9 PCS).
-  // While the Stock Unit is locked to an existing material it cannot
-  // change, so the Purchase Unit is set to that same unit instead.
-  function fixUnits(index: number) {
-    const row = rows[index];
-    if (!row) return;
-    if (row.unitLocked) {
-      updateRow(index, { purchaseUnit: row.unit, purchaseUnitCustom: false, conversionQty: "" });
-      return;
-    }
-    updateRow(index, {
-      purchaseUnit: row.unit,
-      purchaseUnitCustom: row.unitCustom,
-      unit: row.purchaseUnit,
-      unitCustom: row.purchaseUnitCustom,
-      stockUnitTouched: true,
-    });
-  }
-
-  // Purchase Unit change. While the Stock Unit is neither locked to an
-  // existing material nor picked by the user, suggest the usual one
-  // (BARREL -> LITER, ROLL -> METER, BAG -> KG, BOX -> PCS).
-  function handlePurchaseUnitChange(index: number, value: string) {
-    if (value === CUSTOM_UNIT_VALUE) {
-      updateRow(index, { purchaseUnit: "", purchaseUnitCustom: true });
-      return;
-    }
-    const row = rows[index];
-    const patch: Partial<RequestedMaterialRowState> = { purchaseUnit: value, purchaseUnitCustom: false };
-    if (row && !row.unitLocked && !row.stockUnitTouched) {
-      const suggestion = suggestedStockUnit(value);
-      if (suggestion) {
-        patch.unit = suggestion;
-        patch.unitCustom = false;
-      }
-    }
-    updateRow(index, patch);
   }
 
   function validate(): boolean {
@@ -532,23 +488,23 @@ export function PartsRequestWizard({
           const name = r.description.trim();
           const qty = Number(r.qty);
           const f = rowFigures(r);
-          if (!(qty > 0)) {
+          if (r.matchKey === null && !r.unlinkedOverride) {
+            errs.items = `"${name}" is not in Inventory. Add this material in Inventory first, then create the request.`;
+          } else if (!(qty > 0)) {
             errs.items = `Enter requested purchase quantity for "${name}".`;
           } else if (!Number.isInteger(qty)) {
             errs.items = `Requested Purchase Qty for "${name}" must be a whole number.`;
-          } else if (!r.purchaseUnit.trim()) {
-            errs.items = `Select purchase unit for "${name}".`;
-          } else if (!r.unit.trim()) {
-            errs.items = `Select stock unit for "${name}".`;
-          } else if (f.blocked) {
-            errs.items = reversedUnitsMessage(r.purchaseUnit, r.unit);
-          } else if (f.unitsDiffer && f.conversion === null) {
-            errs.items = `Enter how many stock units are inside 1 purchase unit for "${name}".`;
+          } else if (!f.usable) {
+            errs.items = `Select a unit for "${name}".`;
           } else if (f.stockQty !== null && !Number.isInteger(Math.round(f.stockQty * 1e6) / 1e6)) {
             // Job Card materials are issued in whole stock units.
             errs.items = `Calculated Stock Quantity for "${name}" must be a whole number of ${r.unit}.`;
           } else if (canEnterPrices && f.price !== null && f.price < 0) {
-            errs.items = "Estimated unit price must be 0 or greater.";
+            errs.items = "Estimated price must be 0 or greater.";
+          } else if (canEnterPrices && f.price !== null && f.basis === null) {
+            errs.items = `Select whether the price for "${name}" is for 1 ${r.purchaseUnit} or 1 ${r.unit}.`;
+          } else if (canEnterPrices && f.largeTotal && !f.largeTotalAcked) {
+            errs.items = `Estimated total for "${name}" is ${formatKwd(f.total!)} KWD. Please confirm the price basis is correct.`;
           }
           if (errs.items) break;
         }
@@ -821,8 +777,8 @@ export function PartsRequestWizard({
                         How the supplier sells it.
                       </span>
                     </th>
-                    {canEnterPrices && <th className={cn(th, "w-36")}>Estimated Unit Price (KWD)</th>}
-                    {canEnterPrices && <th className={cn(th, "w-28")}>Price Basis</th>}
+                    {canEnterPrices && <th className={cn(th, "w-32")}>Estimated Price (KWD)</th>}
+                    {canEnterPrices && <th className={cn(th, "w-40")}>Price Basis</th>}
                     {canEnterPrices && <th className={cn(th, "w-28")}>Estimated Total</th>}
                     <th className={cn(th, "w-36")}>Remarks</th>
                     <th className={cn(th, "w-16 text-center")}>Action</th>
@@ -905,8 +861,8 @@ export function PartsRequestWizard({
                             {hasDescription && (
                               <div className="mt-1 flex flex-wrap items-center gap-1.5">
                                 <StatusBadge
-                                  label={isExisting ? "Existing Inventory" : "New Material"}
-                                  tone={isExisting ? "green" : "gray"}
+                                  label={isExisting ? "Existing Inventory" : row.unlinkedOverride ? "Not in Inventory (override)" : "Not in Inventory"}
+                                  tone={isExisting ? "green" : "amber"}
                                 />
                                 {isExisting && row.stockStatus && (
                                   <StatusBadge label={stockStatusLabel(row.stockStatus)} tone={stockStatusTone(row.stockStatus)} />
@@ -917,11 +873,6 @@ export function PartsRequestWizard({
                                   </span>
                                 )}
                               </div>
-                            )}
-                            {!isExisting && hasDescription && (
-                              <p className="mt-0.5 text-[11px] text-[#9CA3AF]">
-                                Not linked to inventory yet. Store can register it during receiving if required.
-                              </p>
                             )}
                           </td>
 
@@ -962,72 +913,99 @@ export function PartsRequestWizard({
                             />
                           </td>
 
-                          {/* Purchase Unit — how the supplier sells it.
-                              Starts as the Stock Unit (conversion 1). */}
+                          {/* Purchase Unit — from the material's Inventory unit
+                              setup (read-only); only a Manager override row
+                              for a material not in Inventory picks one plain
+                              unit (no conversion). */}
                           <td className={td}>
-                            <select
-                              aria-label={`Purchase Unit ${i + 1}`}
-                              value={unitSelectValue(row.purchaseUnit, row.purchaseUnitCustom)}
-                              onChange={(e) => handlePurchaseUnitChange(i, e.target.value)}
-                              className={miniInp}
-                            >
-                              <option value="" disabled hidden>
-                                Select unit
-                              </option>
-                              {unitOptionList().map((u) => (
-                                <option key={u} value={u}>
-                                  {unitLabel(u)}
-                                </option>
-                              ))}
-                            </select>
-                            {unitSelectValue(row.purchaseUnit, row.purchaseUnitCustom) === CUSTOM_UNIT_VALUE && (
-                              <input
-                                aria-label={`Custom Purchase Unit ${i + 1}`}
-                                value={row.purchaseUnit}
-                                onChange={(e) => updateRow(i, { purchaseUnit: e.target.value })}
-                                placeholder="e.g. PALLET"
-                                className={cn(miniInp, "mt-1")}
-                              />
+                            {isExisting ? (
+                              <p className={cn(miniInp, "bg-gray-50 font-semibold text-[#111827]")}>{row.purchaseUnit || "—"}</p>
+                            ) : row.unlinkedOverride ? (
+                              <>
+                                <select
+                                  aria-label={`Unit ${i + 1}`}
+                                  value={unitSelectValue(row.unit, row.unitCustom)}
+                                  onChange={(e) =>
+                                    updateRow(
+                                      i,
+                                      e.target.value === CUSTOM_UNIT_VALUE
+                                        ? { unit: "", unitCustom: true, purchaseUnit: "" }
+                                        : { unit: e.target.value, unitCustom: false, purchaseUnit: e.target.value }
+                                    )
+                                  }
+                                  className={miniInp}
+                                >
+                                  <option value="" disabled hidden>
+                                    Select unit
+                                  </option>
+                                  {unitOptionList().map((u) => (
+                                    <option key={u} value={u}>
+                                      {unitLabel(u)}
+                                    </option>
+                                  ))}
+                                </select>
+                                {unitSelectValue(row.unit, row.unitCustom) === CUSTOM_UNIT_VALUE && (
+                                  <input
+                                    aria-label={`Custom Unit ${i + 1}`}
+                                    value={row.unit}
+                                    onChange={(e) => updateRow(i, { unit: e.target.value, purchaseUnit: e.target.value })}
+                                    placeholder="e.g. Bundle"
+                                    className={cn(miniInp, "mt-1")}
+                                  />
+                                )}
+                              </>
+                            ) : (
+                              <p className={cn(miniInp, "border-transparent text-[#9CA3AF]")}>—</p>
                             )}
+                            {/* What the server reads; it re-takes the units from
+                                Inventory for a linked material. */}
                             <input type="hidden" name={`purchase_unit_${i}`} value={row.purchaseUnit} />
+                            <input type="hidden" name={`unit_${i}`} value={row.unit} />
+                            {figures.unitsDiffer && figures.conversion !== null && (
+                              <input type="hidden" name={`conversion_quantity_${i}`} value={figures.conversion} />
+                            )}
+                            {!isExisting && row.unlinkedOverride && (
+                              <input type="hidden" name={`unlinked_override_${i}`} value="1" />
+                            )}
                           </td>
 
                           {canEnterPrices && (
                             <td className={td}>
                               <input
                                 name={`unit_price_${i}`}
-                                aria-label={`Estimated Unit Price ${i + 1}`}
+                                aria-label={`Estimated Price ${i + 1}`}
                                 type="number"
                                 min="0"
                                 step="0.001"
-                                placeholder={`Price per ${(figures.basis === "stock_unit" ? row.unit : row.purchaseUnit) || "unit"}`}
+                                placeholder={
+                                  figures.basis
+                                    ? `Price for 1 ${basisUnit(figures.basis, row.purchaseUnit, row.unit) || "unit"}`
+                                    : "Price, then choose its unit"
+                                }
                                 value={row.unitPrice}
                                 onChange={(e) => updateRow(i, { unitPrice: e.target.value })}
                                 disabled={!hasDescription}
                                 className={miniInp}
                               />
-                              <p className="mt-0.5 text-[10px] text-[#9CA3AF]">Enter price based on selected Price Basis.</p>
+                              {figures.price !== null && figures.basis && (
+                                <p className="mt-0.5 text-[10px] font-semibold text-[#111827]">
+                                  for 1 {basisUnit(figures.basis, row.purchaseUnit, row.unit)}
+                                </p>
+                              )}
                             </td>
                           )}
                           {canEnterPrices && (
                             <td className={td}>
-                              {figures.unitsDiffer ? (
-                                <select
-                                  aria-label={`Price Basis ${i + 1}`}
-                                  value={row.priceBasis}
-                                  onChange={(e) => updateRow(i, { priceBasis: e.target.value as PriceBasis })}
-                                  className={miniInp}
-                                >
-                                  <option value="purchase_unit">{priceBasisLabel("purchase_unit", row.purchaseUnit, row.unit)}</option>
-                                  <option value="stock_unit">{priceBasisLabel("stock_unit", row.purchaseUnit, row.unit)}</option>
-                                </select>
-                              ) : (
-                                // One unit: only one basis exists.
-                                <p className={cn(miniInp, "bg-gray-50 text-[#4B5563]")}>
-                                  {priceBasisLabel("purchase_unit", row.purchaseUnit, row.unit)}
-                                </p>
-                              )}
-                              <input type="hidden" name={`price_basis_${i}`} value={figures.basis} />
+                              <PriceBasisField
+                                name={`price_basis_${i}`}
+                                purchaseUnit={row.purchaseUnit}
+                                stockUnit={row.unit}
+                                unitsDiffer={figures.unitsDiffer}
+                                value={figures.basis}
+                                onChange={(basis) => updateRow(i, { priceBasis: basis })}
+                                needsChoice={figures.price !== null && figures.basis === null}
+                                label={`Price Basis ${i + 1}`}
+                              />
                             </td>
                           )}
                           {canEnterPrices && (
@@ -1035,10 +1013,10 @@ export function PartsRequestWizard({
                               {!hasDescription
                                 ? "—"
                                 : figures.total !== null
-                                  ? `${figures.total.toFixed(3)} KWD`
+                                  ? `${formatKwd(figures.total)} KWD`
                                   : figures.price === null
                                     ? "Not priced yet"
-                                    : "—"}
+                                    : "Choose price basis"}
                             </td>
                           )}
 
@@ -1067,194 +1045,142 @@ export function PartsRequestWizard({
                           </td>
                         </tr>
 
-                        {/* Stock unit / conversion row: Stock Unit, Conversion
-                            Quantity (only when the units differ — always
-                            1 [Purchase Unit] = N [Stock Unit]), Calculated
-                            Stock Quantity and the calculation preview. */}
+                        {/* Inventory unit setup (read-only) or the "not found"
+                            panel, under the row. */}
                         {hasDescription && (
                           <tr className="bg-[#F9FAFB]">
                             <td className={td} />
                             <td className={td} colSpan={columnCount - 1}>
-                              <div className="flex flex-wrap items-start gap-3">
-                                {/* Reversed units: a full-width panel the user must
-                                    answer (Fix automatically / Keep as entered)
-                                    before this row can go to the next step. */}
-                                {figures.reversed && !figures.unitsConfirmed && (
-                                  <div
-                                    role="alert"
-                                    className="basis-full rounded-md border-2 border-amber-400 bg-amber-50 px-3 py-2.5 text-sm text-amber-900"
-                                  >
-                                    <p className="font-black">Units look reversed.</p>
-                                    <div className="mt-1 grid gap-x-6 gap-y-1 sm:grid-cols-2">
-                                      <p>
-                                        You selected: Purchase Unit <strong>{row.purchaseUnit}</strong>, Stock Unit <strong>{row.unit}</strong>
-                                      </p>
-                                      <p>
-                                        Usually this should be: Purchase Unit <strong>{row.unit}</strong>, Stock Unit{" "}
-                                        <strong>{row.unitLocked ? row.unit : row.purchaseUnit}</strong>
-                                      </p>
-                                    </div>
-                                    <p className="mt-1 text-xs">
-                                      {row.unitLocked
-                                        ? `This material is stocked in ${row.unit}, so it is usually purchased in ${row.unit} too (or a pack that contains ${row.unit}).`
-                                        : `Because 1 ${row.unit} contains ${figures.conversion !== null ? fmt(figures.conversion) : "several"} ${row.purchaseUnit}, not the other way round.`}
-                                    </p>
-                                    <div className="mt-2 flex flex-wrap gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => fixUnits(i)}
-                                        className="inline-flex min-h-9 items-center rounded-md bg-[#ED1C24] px-4 py-1.5 text-sm font-bold text-white hover:bg-[#c8181e]"
-                                      >
-                                        Fix automatically
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => updateRow(i, { unitsConfirmedKey: unitPairKey(row.purchaseUnit, row.unit) })}
-                                        className="inline-flex min-h-9 items-center rounded-md border border-amber-400 bg-white px-4 py-1.5 text-sm font-bold text-amber-900 hover:bg-amber-100"
-                                      >
-                                        Keep as entered
-                                      </button>
-                                    </div>
+                              {isExisting ? (
+                                <div className="flex flex-wrap items-start gap-x-6 gap-y-2 text-xs text-[#111827]">
+                                  <div>
+                                    <span className="block text-[11px] font-semibold text-[#4B5563]">Purchase Unit</span>
+                                    <p className="mt-0.5 text-sm font-semibold">{row.purchaseUnit}</p>
                                   </div>
-                                )}
-
-                                {/* Order: Purchase Unit (set in the row above) ->
-                                    Stock Unit -> Conversion Quantity, then the
-                                    preview reads 1 [Purchase Unit] = N [Stock Unit]. */}
-                                <div>
-                                  <span className="block text-[11px] font-semibold text-[#111827]">1. Purchase Unit</span>
-                                  <span className="block text-[10px] text-[#9CA3AF]">How the supplier sells it (set in the row).</span>
-                                  <p className={cn(miniInp, "w-32 bg-gray-50 font-semibold text-[#111827]")}>{row.purchaseUnit || "—"}</p>
-                                </div>
-
-                                <div>
-                                  <span className="block text-[11px] font-semibold text-[#111827]">2. Stock Unit</span>
-                                  <span className="block text-[10px] text-[#9CA3AF]">How inventory counts it after receiving.</span>
-                                  {row.unitLocked ? (
-                                    <div className="flex items-center gap-1.5">
-                                      <p className={cn(miniInp, "w-32 bg-gray-50 font-semibold text-[#111827]")}>{row.unit || "—"}</p>
-                                      {canUnlockRequestUnit && (
-                                        <button
-                                          type="button"
-                                          onClick={() => updateRow(i, { unitLocked: false })}
-                                          className="shrink-0 text-[11px] font-semibold text-[#ED1C24] hover:underline"
-                                        >
-                                          Change
-                                        </button>
-                                      )}
-                                    </div>
-                                  ) : (
-                                    <>
-                                      <select
-                                        aria-label={`Stock Unit ${i + 1}`}
-                                        value={unitSelectValue(row.unit, row.unitCustom)}
-                                        onChange={(e) =>
-                                          updateRow(
-                                            i,
-                                            e.target.value === CUSTOM_UNIT_VALUE
-                                              ? { unit: "", unitCustom: true, stockUnitTouched: true }
-                                              : { unit: e.target.value, unitCustom: false, stockUnitTouched: true }
-                                          )
-                                        }
-                                        className={cn(miniInp, "w-32")}
-                                      >
-                                        <option value="" disabled hidden>
-                                          Select unit
-                                        </option>
-                                        {unitOptionList().map((u) => (
-                                          <option key={u} value={u}>
-                                            {unitLabel(u)}
-                                          </option>
-                                        ))}
-                                      </select>
-                                      {unitSelectValue(row.unit, row.unitCustom) === CUSTOM_UNIT_VALUE && (
-                                        <input
-                                          aria-label={`Custom Stock Unit ${i + 1}`}
-                                          value={row.unit}
-                                          onChange={(e) => updateRow(i, { unit: e.target.value, stockUnitTouched: true })}
-                                          placeholder="e.g. Bundle"
-                                          className={cn(miniInp, "mt-1 w-32")}
-                                        />
-                                      )}
-                                    </>
-                                  )}
-                                  <input type="hidden" name={`unit_${i}`} value={row.unit} />
-                                </div>
-
-                                <div>
-                                  <span className="block text-[11px] font-semibold text-[#111827]">3. Conversion Quantity</span>
-                                  <span className="block text-[10px] text-[#9CA3AF]">
-                                    {figures.blocked
-                                      ? "Fix the units above first."
-                                      : figures.unitsDiffer
-                                        ? `How many ${row.unit || "stock units"} are inside 1 ${row.purchaseUnit || "purchase unit"}.`
-                                        : "Same unit — 1."}
-                                  </span>
-                                  {figures.unitsDiffer ? (
-                                    <input
-                                      name={`conversion_quantity_${i}`}
-                                      aria-label={`Conversion Quantity ${i + 1}`}
-                                      type="number"
-                                      min="0"
-                                      step="0.0001"
-                                      placeholder="e.g. 9"
-                                      value={row.conversionQty}
-                                      onChange={(e) => updateRow(i, { conversionQty: e.target.value })}
-                                      className={cn(miniInp, "w-28")}
-                                    />
-                                  ) : (
-                                    <p className={cn(miniInp, "w-28 bg-gray-50 text-[#4B5563]")}>1</p>
-                                  )}
-                                  {figures.reversed && figures.unitsConfirmed && (
-                                    <>
-                                      <input type="hidden" name={`units_confirmed_${i}`} value="1" />
-                                      <p className="mt-1 text-[11px] font-semibold text-amber-700">Units confirmed manually.</p>
-                                    </>
-                                  )}
-                                </div>
-
-                                <div className="w-48">
-                                  <span className="block text-[11px] font-semibold text-[#111827]">Calculated Stock Quantity</span>
-                                  <span className="block text-[10px] text-[#9CA3AF]">Requested Purchase Qty × Conversion</span>
-                                  <p className={cn(miniInp, "font-bold text-[#111827]")}>
-                                    {figures.stockQty !== null && Number(row.qty) > 0 ? `${fmt(figures.stockQty)} ${row.unit}` : "—"}
-                                  </p>
-                                </div>
-
-                                {/* Calculation preview */}
-                                <div className="min-w-[220px] rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1.5 text-xs leading-relaxed text-[#111827]">
-                                  <p>
-                                    <span className="font-bold">{row.qty || 0} {row.purchaseUnit || "—"}</span> requested
-                                  </p>
-                                  {figures.unitsDiffer && !figures.blocked && (
-                                    <p>
-                                      <span className="font-bold">
-                                        1 {row.purchaseUnit} = {figures.conversion !== null ? fmt(figures.conversion) : "?"} {row.unit}
-                                      </span>
+                                  <div>
+                                    <span className="block text-[11px] font-semibold text-[#4B5563]">Stock Unit</span>
+                                    <p className="mt-0.5 text-sm font-semibold">{row.unit}</p>
+                                  </div>
+                                  <div>
+                                    <span className="block text-[11px] font-semibold text-[#4B5563]">Conversion</span>
+                                    <p className="mt-0.5 text-sm font-semibold">
+                                      {figures.unitsDiffer && figures.conversion !== null
+                                        ? `1 ${row.purchaseUnit} = ${fmt(figures.conversion)} ${row.unit}`
+                                        : "Same unit (1)"}
                                     </p>
-                                  )}
-                                  <p>
-                                    Expected stock after receiving:{" "}
-                                    <span className="font-bold">
-                                      {figures.stockQty !== null ? `${fmt(figures.stockQty)} ${row.unit}` : "—"}
-                                    </span>
-                                  </p>
+                                  </div>
+                                  <div>
+                                    <span className="block text-[11px] font-semibold text-[#4B5563]">Expected Stock After Receiving</span>
+                                    <p className="mt-0.5 text-sm font-bold">
+                                      {figures.stockQty !== null && Number(row.qty) > 0 ? `${fmt(figures.stockQty)} ${row.unit}` : "—"}
+                                    </p>
+                                  </div>
                                   {canEnterPrices && figures.price !== null && (
-                                    <>
+                                    <div className="min-w-[230px] rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1.5 text-xs leading-relaxed">
+                                      <p>Requested: <span className="font-bold">{row.qty || 0} {row.purchaseUnit}</span></p>
+                                      {figures.unitsDiffer && figures.conversion !== null && (
+                                        <p>
+                                          Conversion: <span className="font-bold">1 {row.purchaseUnit} = {fmt(figures.conversion)} {row.unit}</span>
+                                        </p>
+                                      )}
+                                      <p>
+                                        Expected stock after receiving:{" "}
+                                        <span className="font-bold">{figures.stockQty !== null ? `${fmt(figures.stockQty)} ${row.unit}` : "—"}</span>
+                                      </p>
                                       <p>
                                         Price:{" "}
                                         <span className="font-bold">
-                                          {figures.price.toFixed(3)} KWD / {figures.basis === "stock_unit" ? row.unit : row.purchaseUnit}
+                                          {figures.basis
+                                            ? `${formatKwd(figures.price)} KWD for 1 ${basisUnit(figures.basis, row.purchaseUnit, row.unit)}`
+                                            : `${formatKwd(figures.price)} KWD — choose 1 ${row.purchaseUnit} or 1 ${row.unit}`}
                                         </span>
                                       </p>
                                       <p>
-                                        Estimated Total:{" "}
-                                        <span className="font-bold">{figures.total !== null ? `${figures.total.toFixed(3)} KWD` : "—"}</span>
+                                        Estimated Total: <span className="font-bold">{figures.total !== null ? `${formatKwd(figures.total)} KWD` : "—"}</span>
                                       </p>
-                                    </>
+                                    </div>
+                                  )}
+                                  {canEnterPrices && (
+                                    <div className="basis-full">
+                                      <PriceBasisWarnings
+                                        purchaseUnit={row.purchaseUnit}
+                                        stockUnit={row.unit}
+                                        unitsDiffer={figures.unitsDiffer}
+                                        conversion={figures.conversion}
+                                        price={figures.price}
+                                        basis={figures.basis}
+                                        total={figures.total}
+                                        largeTotal={figures.largeTotal}
+                                        acknowledged={figures.largeTotalAcked}
+                                        onAcknowledge={(checked) =>
+                                          updateRow(i, {
+                                            largeTotalAckKey:
+                                              checked && figures.basis && figures.total !== null && figures.price !== null
+                                                ? largeTotalAckKey(figures.price, figures.basis, figures.total)
+                                                : null,
+                                          })
+                                        }
+                                      />
+                                    </div>
+                                  )}
+                                  {row.matchKey && (
+                                    <a
+                                      href={`/store/offline-inventory?material=${encodeURIComponent(row.matchKey)}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="ml-auto self-center font-semibold text-[#2563EB] hover:underline"
+                                    >
+                                      Edit units in Inventory
+                                    </a>
                                   )}
                                 </div>
-                              </div>
+                              ) : (
+                                <>
+                                  <div role="alert" className="rounded-md border-2 border-amber-400 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+                                    <p className="font-black">Material not found in Inventory.</p>
+                                    <p className="mt-0.5">
+                                      Add this material in Inventory first so purchase unit, stock unit, and conversion are recorded
+                                      correctly. Then search for it again here.
+                                    </p>
+                                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                                      <a
+                                        href="/store/offline-inventory/add-material"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex min-h-9 items-center rounded-md bg-[#ED1C24] px-4 py-1.5 text-sm font-bold text-white hover:bg-[#c8181e]"
+                                      >
+                                        Add New Material
+                                      </a>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleMaterialNameChange(i, row.description)}
+                                        className="inline-flex min-h-9 items-center rounded-md border border-amber-400 bg-white px-4 py-1.5 text-sm font-bold text-amber-900 hover:bg-amber-100"
+                                      >
+                                        Search again
+                                      </button>
+                                      <span className="text-xs">Add New Material opens in a new tab, so this request is kept.</span>
+                                    </div>
+                                    {canRequestUnlinked && (
+                                      <label className="mt-2 flex items-center gap-2 border-t border-amber-200 pt-2 text-xs font-semibold">
+                                        <input
+                                          type="checkbox"
+                                          checked={row.unlinkedOverride}
+                                          onChange={(e) => updateRow(i, { unlinkedOverride: e.target.checked })}
+                                          className="h-4 w-4 accent-[#ED1C24]"
+                                        />
+                                        Manager override: request without an Inventory link (one unit, no conversion). Use only for
+                                        emergencies.
+                                      </label>
+                                    )}
+                                  </div>
+                                  {row.unlinkedOverride && (
+                                    <p className="mt-1.5 text-xs text-[#4B5563]">
+                                      Requested: <span className="font-bold">{row.qty || 0} {row.unit || "—"}</span> · Not linked to
+                                      Inventory — the material is registered when it is received.
+                                    </p>
+                                  )}
+                                </>
+                              )}
                             </td>
                           </tr>
                         )}
@@ -1360,8 +1286,8 @@ export function PartsRequestWizard({
                         <li key={i} className="py-3 first:pt-0 last:pb-0">
                           <div className="flex items-center justify-between gap-2">
                             <StatusBadge
-                              label={isExisting ? "Existing Inventory" : "New Material"}
-                              tone={isExisting ? "green" : "gray"}
+                              label={isExisting ? "Existing Inventory" : "Not in Inventory (Manager override)"}
+                              tone={isExisting ? "green" : "amber"}
                             />
                           </div>
                           <p className="mt-1 font-bold text-[#111827]">{it.description}</p>
@@ -1376,8 +1302,8 @@ export function PartsRequestWizard({
                           )}
                           {canEnterPrices && f.price !== null && f.total !== null && (
                             <p className="text-xs text-[#4B5563]">
-                              Estimated Unit Price: {f.price.toFixed(3)} KWD / {f.basis === "stock_unit" ? it.unit : it.purchaseUnit} · Price
-                              Basis: {priceBasisLabel(f.basis, it.purchaseUnit, it.unit)} · Estimated Total: {f.total.toFixed(3)} KWD
+                              Estimated Price: {formatKwd(f.price)} KWD for 1 {basisUnit(f.basis!, it.purchaseUnit, it.unit)} · Estimated
+                              Total: {formatKwd(f.total)} KWD
                             </p>
                           )}
                           {isExisting ? (
@@ -1412,7 +1338,7 @@ export function PartsRequestWizard({
                     <div className="mt-3 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3">
                       <p className="text-sm font-bold text-[#111827]">
                         Estimated Cost Summary:{" "}
-                        {pricedReviewTotals.length > 0 ? `${reviewEstimatedTotal.toFixed(3)} KWD` : "Not available"}
+                        {pricedReviewTotals.length > 0 ? `${formatKwd(reviewEstimatedTotal)} KWD` : "Not available"}
                       </p>
                       {reviewHasUnpriced && pricedReviewTotals.length > 0 && (
                         <p className="mt-1 text-xs text-amber-700">

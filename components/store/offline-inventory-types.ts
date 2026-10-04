@@ -99,6 +99,11 @@ export type BalanceItem = {
   total_issued: number;
   balance: number;
   last_movement_date: string;
+  // Staff-Friendly Default View — when this material was last touched:
+  // the newest of any movement's created/updated time and its settings
+  // row's updated time (covers "added", "moved" and "edited"). Drives the
+  // Recent Materials tab; falls back to last_movement_date.
+  last_updated_at: string;
   // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 2/9 — the
   // "simple last unit cost method": last_unit_cost is the unit_cost of the
   // most recent movement (by movement_date, then created_at) for this
@@ -121,8 +126,29 @@ export type BalanceItem = {
   // it is never stripped for a non-cost viewer.
   minimum_stock_quantity: number | null;
   reorder_quantity: number | null;
+  // Inventory-First Material Request Workflow — the material's unit setup
+  // from the same settings row: how the supplier sells it and how many
+  // `unit` are inside 1 of it. Both null = bought in the stock unit (1:1).
+  purchase_unit: string | null;
+  conversion_quantity: number | null;
   stock_status: StockStatus;
+  // A unit/setup problem worth a second look, whatever the stock status:
+  // missing unit, a half-saved purchase-unit setup, or the same material
+  // name also recorded under another unit. null = nothing detected.
+  unit_issue: string | null;
 };
+
+// "Review Issues" — rows whose balance or setup looks unusual: negative
+// stock, a unit setup issue, a review-required row, or an invalid balance.
+// Shared by Inventory Control and its print report.
+export function isReviewIssue(item: Pick<BalanceItem, "stock_status" | "unit_issue" | "balance">): boolean {
+  return (
+    item.stock_status === "negative" ||
+    item.stock_status === "review_required" ||
+    item.unit_issue !== null ||
+    !Number.isFinite(item.balance)
+  );
+}
 
 // Inventory Clarity, Low Stock, and Bulk Unit Balance Unit 10G.62, Task 4/5
 // — priority order (computed in getOfflineInventoryBalance()): negative

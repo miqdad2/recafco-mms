@@ -16,7 +16,11 @@ import { prisma } from "@/lib/db/prisma";
 import { parsePendingAttachments, saveAttachmentBatch } from "@/lib/files/attachment-form";
 import { MAX_ATTACHMENT_ROWS } from "@/lib/files/attachment-constants";
 import { ACTIVE_JOB_CARD_STATUSES } from "@/lib/work-orders/simplified-status-display";
-import { resolveMaterialMatchByKey } from "@/lib/store/offline-inventory-data";
+import {
+  getMaterialUnitSetupByKey,
+  getOfflineInventoryMaterialByKey,
+  resolveMaterialMatchByKey,
+} from "@/lib/store/offline-inventory-data";
 import { assignTechnicians } from "@/lib/backend/work-orders/service";
 import { assignInternalTeamRoster } from "@/lib/backend/work-orders/worker-roster";
 import { extractBrand, resolveModelAndYear, CODE_TOKEN, NEEDS_REVIEW_LEAF } from "@/lib/assets/asset-excel-mapping";
@@ -222,7 +226,88 @@ function parseMaterialRows(formData: FormData) {
 // manual text with availability_status "unchecked" ("New Material") and is
 // never independently re-searched by name here, so this can never silently
 // re-link a row to a different material than the one the user picked.
-async function parseRequiredPartRows(formData: FormData) {
+//
+// New Job Card Required Materials Inventory Selection and Smart Unit UX:
+// the New Job Card wizard posts req_parts_inventory_first=1. Its rows must
+// be selected from Inventory (an unlinked row is refused), and are saved
+// from the Inventory record itself — the material's own name, part number
+// and Stock Unit, with quantity_required converted to stock units when the
+// row was planned in the material's Purchase Unit — so material issue and
+// closure tracking keep matching the Inventory identity. The quantity and
+// unit as entered, plus the unit setup used, are kept as a snapshot. The
+// older Job Card edit form does not post the marker and is parsed exactly
+// as before. Nothing here writes an inventory movement or a material.
+type ParsedRequiredPartRow = {
+  description: string;
+  part_number: string | null;
+  quantity_required: number;
+  unit_of_measure: string;
+  notes: string | null;
+  availability_status: string;
+  part_id: string | null;
+  inventory_material_key?: string | null;
+  ss_rec_code?: string | null;
+  entered_quantity?: number | null;
+  entered_unit?: string | null;
+  purchase_unit?: string | null;
+  conversion_quantity?: number | null;
+};
+
+class RequiredPartRowError extends Error {}
+
+async function parseInventoryFirstRequiredPartRow(formData: FormData, index: number): Promise<ParsedRequiredPartRow | null> {
+  const typedName = rowValue(formData, "req_part_description", index);
+  if (!typedName) return null;
+  const matchedKey = rowValue(formData, "req_part_material_key", index) || null;
+  const material = matchedKey ? await getOfflineInventoryMaterialByKey(matchedKey) : null;
+  if (!material) {
+    throw new RequiredPartRowError(
+      `"${typedName}" is not in Inventory. Add this material in Inventory first, then select it in Required Materials.`
+    );
+  }
+  const setup = await getMaterialUnitSetupByKey(material.key);
+  const enteredQty = numberValue(rowValue(formData, "req_part_quantity", index));
+  const enteredUnit = rowValue(formData, "req_part_entered_unit", index) || material.unit;
+  const isPurchaseUnit =
+    setup.purchase_unit !== null &&
+    setup.conversion_quantity !== null &&
+    enteredUnit.toLowerCase() === setup.purchase_unit.toLowerCase() &&
+    enteredUnit.toLowerCase() !== material.unit.toLowerCase();
+  if (!isPurchaseUnit && enteredUnit.toLowerCase() !== material.unit.toLowerCase()) {
+    throw new RequiredPartRowError(`Choose ${material.unit}${setup.purchase_unit ? ` or ${setup.purchase_unit}` : ""} for "${material.display_name}".`);
+  }
+  const stockQty = Math.round(enteredQty * (isPurchaseUnit ? setup.conversion_quantity! : 1) * 1e6) / 1e6;
+
+  const resolution = await resolveMaterialMatchByKey(material.key);
+  let availability_status = "unchecked";
+  if (resolution.matched) {
+    if (resolution.balance <= 0) availability_status = "unavailable";
+    else if (stockQty <= resolution.balance) availability_status = "available";
+    else availability_status = "partial";
+  }
+
+  return {
+    description: material.display_name,
+    part_number: material.manual_part_number ?? (rowValue(formData, "req_part_part_number", index) || null),
+    quantity_required: stockQty,
+    unit_of_measure: material.unit,
+    notes: rowValue(formData, "req_part_notes", index) || null,
+    availability_status,
+    part_id: material.part_id,
+    inventory_material_key: material.key,
+    ss_rec_code: material.ss_rec_code,
+    entered_quantity: enteredQty,
+    entered_unit: isPurchaseUnit ? setup.purchase_unit : material.unit,
+    purchase_unit: setup.purchase_unit,
+    conversion_quantity: setup.conversion_quantity,
+  };
+}
+
+async function parseRequiredPartRows(formData: FormData): Promise<ParsedRequiredPartRow[]> {
+  if (formData.get("req_parts_inventory_first") === "1") {
+    const rows = await Promise.all([0, 1, 2, 3, 4, 5, 6, 7].map((index) => parseInventoryFirstRequiredPartRow(formData, index)));
+    return rows.filter((row): row is ParsedRequiredPartRow => row !== null);
+  }
   const rows = await Promise.all(
     [0, 1, 2, 3, 4, 5, 6, 7].map(async (index) => {
       const description = rowValue(formData, "req_part_description", index);
@@ -254,7 +339,7 @@ async function parseRequiredPartRows(formData: FormData) {
       };
     })
   );
-  return rows.filter(Boolean);
+  return rows.filter((row): row is ParsedRequiredPartRow => row !== null);
 }
 
 // Optional Work Assignment During Job Card Creation Unit 7C, Task 2/6.
@@ -682,9 +767,17 @@ export async function upsertWorkOrderAction(formData: FormData) {
   const laborRows = parseLaborRows(formData);
   const materialRows = parseMaterialRows(formData);
   const attachmentRows = parseAttachmentRows(formData);
-  const requiredPartRows = await parseRequiredPartRows(formData);
-  if (requiredPartRows.some((row) => row && (!Number.isInteger(row.quantity_required) || row.quantity_required <= 0))) {
-    redirect(`${formBackHref}?error=${encodeURIComponent("Quantity must be a whole number greater than 0.")}`);
+  let requiredPartRows: ParsedRequiredPartRow[];
+  try {
+    requiredPartRows = await parseRequiredPartRows(formData);
+  } catch (error) {
+    if (error instanceof RequiredPartRowError) redirect(`${formBackHref}?error=${encodeURIComponent(error.message)}`);
+    throw error;
+  }
+  if (requiredPartRows.some((row) => !Number.isInteger(row.quantity_required) || row.quantity_required <= 0)) {
+    redirect(
+      `${formBackHref}?error=${encodeURIComponent("Quantity must be a whole number greater than 0 (in the stock unit after conversion).")}`
+    );
   }
   // Optional Work Assignment During Job Card Creation Unit 7C. Only ever
   // applied below on a brand-new Job Card that's being started (createStatus

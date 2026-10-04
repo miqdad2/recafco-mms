@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { requirePermission, requireUser } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { canEnterMaterialRequestPrice, canViewCosts, isManagerRole } from "@/lib/security/permissions";
+import { reversedUnitsMessage, unitsLookReversed } from "@/lib/materials/request-pricing";
 import { canCreatePartsRequest } from "@/lib/parts-requests/visibility";
 import { normalizeCategory, ADD_NEW_CATEGORY_VALUE } from "@/components/store/offline-inventory-types";
 import { CUSTOM_UNIT_VALUE, DEFAULT_UNIT } from "@/components/store/general-inventory-units";
@@ -19,6 +20,7 @@ import {
   buildBalanceKey,
   searchOfflineInventoryMaterials,
   upsertInventoryMaterialSettings,
+  getOfflineInventoryMaterialByKey,
   type OfflineInventorySearchMatch,
 } from "@/lib/store/offline-inventory-data";
 import { emitOfflineInventoryRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
@@ -337,6 +339,13 @@ export async function addNewMaterialAction(
           error: "Stock unit is the same as purchase unit. Choose a different stock unit, or untick “Purchase unit is different from stock unit”.",
         };
       }
+      // Inventory-First Material Request Workflow — this unit setup is what
+      // every later Materials Request reads, so a likely reversed pair
+      // ("1 PCS = 9 BOX") is refused unless the user explicitly chose
+      // "Keep as entered" on the form.
+      if (unitsLookReversed(purchaseUnit, inventoryUnit) && String(formData.get("units_confirmed") ?? "") !== "1") {
+        return { ok: false, error: reversedUnitsMessage(purchaseUnit, inventoryUnit) };
+      }
     }
 
     // Task 1/2/8 — Purchase Quantity only has meaning (and is only
@@ -496,15 +505,19 @@ export async function addNewMaterialAction(
     await emitOfflineInventoryRealtimeEvent(REALTIME_EVENTS.OFFLINE_INVENTORY_OPENING_STOCK_ADDED, created.id, context.userId);
 
     // Task 2/3 — only ever writes a settings row when the user actually
-    // configured one of the two fields; never creates an empty row just
-    // because a material was added.
-    if (minimumStock !== null || reorderQty !== null) {
+    // configured something (stock alerts or a purchase unit different from
+    // the stock unit); never creates an empty row just because a material
+    // was added. Inventory-First Material Request Workflow: the unit setup
+    // saved here is what Materials Requests read for this material.
+    if (minimumStock !== null || reorderQty !== null || useConversion) {
       await upsertInventoryMaterialSettings({
         partId: null,
         manualMaterialName: manualName,
         unit: inventoryUnit,
         minimumStockQuantity: minimumStock,
         reorderQuantity: reorderQty,
+        purchaseUnit: useConversion ? purchaseUnit : null,
+        conversionQuantity: useConversion ? conversionQty : null,
         createdBy: context.userId,
       });
     }
@@ -720,10 +733,10 @@ export async function issueOfflineMaterialAction(
       }
 
       if (available <= 0) {
-        throw new Error("No available balance for this material.");
+        throw new Error("Not enough stock available. Receive material first or adjust the requested quantity.");
       }
       if (qty > available) {
-        throw new Error("Issued quantity cannot be greater than current balance.");
+        throw new Error("Not enough stock available. Receive material first or adjust the requested quantity.");
       }
 
       const movement = await tx.offline_inventory_movements.create({
@@ -974,7 +987,8 @@ export async function searchOfflineInventoryMaterialsForPartsRequestAction(
 // Companion to the search action above — fetched once on the wizard's own
 // mount so Data Entry/Technician/etc. never see so much as a flash of the
 // Estimated Unit Price/Estimated Total columns before this resolves.
-// canUnlockRequestUnit additionally reuses isManagerRole — Task 6's "Request
+// canRequestUnlinked (Inventory-First Material Request Workflow: may
+// request a material not in Inventory) reuses isManagerRole — Task 6's "Request
 // / Issue Unit is locked for an existing-inventory match unless an
 // authorized user intentionally changes it" — Super Admin/Maintenance
 // Manager are the one existing "authorized override" role set this codebase
@@ -984,8 +998,63 @@ export async function searchOfflineInventoryMaterialsForPartsRequestAction(
 // (canEnterMaterialRequestPrice — Manager, Super Admin, Data Entry), NOT
 // general cost visibility: the search action above still gates the
 // inventory's own last unit cost on canViewCosts, unchanged.
-export async function getPartsRequestWizardFlagsAction(): Promise<{ canEnterPrices: boolean; canUnlockRequestUnit: boolean }> {
+export async function getPartsRequestWizardFlagsAction(): Promise<{ canEnterPrices: boolean; canRequestUnlinked: boolean }> {
   const context = await requireUser();
-  if (!canCreatePartsRequest(context)) return { canEnterPrices: false, canUnlockRequestUnit: false };
-  return { canEnterPrices: canEnterMaterialRequestPrice(context), canUnlockRequestUnit: isManagerRole(context) };
+  if (!canCreatePartsRequest(context)) return { canEnterPrices: false, canRequestUnlinked: false };
+  return { canEnterPrices: canEnterMaterialRequestPrice(context), canRequestUnlinked: isManagerRole(context) };
+}
+
+// ── Inventory-First Material Request Workflow: edit a material's unit setup ──
+//
+// The "Edit units in Inventory" target for a material that already exists
+// (every material registered before unit setup was stored has none). Same
+// gate as Add New Material. Stock Unit (the material's identity unit) is
+// never changed here — only how it is bought: same as the stock unit (no
+// conversion), or a different purchase unit with stock units per 1 of it.
+// Only affects Materials Requests created afterwards; existing requests
+// keep the conversion they were saved with.
+export type MaterialUnitSetupState = { ok: true } | { ok: false; error: string } | null;
+
+export async function updateMaterialUnitSetupAction(
+  _prev: MaterialUnitSetupState,
+  formData: FormData
+): Promise<MaterialUnitSetupState> {
+  const context = await requireOfflineInventoryManage();
+  try {
+    const key = String(formData.get("material_key") ?? "").trim();
+    const material = await getOfflineInventoryMaterialByKey(key);
+    if (!material) return { ok: false, error: "Material not found in Inventory." };
+
+    const differs = String(formData.get("use_conversion") ?? "") === "on";
+    let purchaseUnit: string | null = null;
+    let conversion: number | null = null;
+    if (differs) {
+      const field = String(formData.get("purchase_unit") ?? "").trim();
+      purchaseUnit = field === CUSTOM_UNIT_VALUE ? String(formData.get("custom_purchase_unit") ?? "").trim() : field;
+      if (!purchaseUnit) return { ok: false, error: "Select purchase unit." };
+      if (purchaseUnit.toLowerCase() === material.unit.toLowerCase()) {
+        return { ok: false, error: "Purchase unit is the same as the stock unit. Untick the option instead." };
+      }
+      conversion = Number(String(formData.get("conversion_quantity") ?? ""));
+      if (!Number.isFinite(conversion) || conversion <= 0) {
+        return { ok: false, error: "Enter how many stock units are inside 1 purchase unit." };
+      }
+      if (unitsLookReversed(purchaseUnit, material.unit) && String(formData.get("units_confirmed") ?? "") !== "1") {
+        return { ok: false, error: reversedUnitsMessage(purchaseUnit, material.unit) };
+      }
+    }
+
+    await upsertInventoryMaterialSettings({
+      partId: material.part_id,
+      manualMaterialName: material.part_id ? null : material.manual_material_name,
+      unit: material.unit,
+      purchaseUnit,
+      conversionQuantity: conversion,
+      createdBy: context.userId,
+    });
+    revalidatePath("/store/offline-inventory");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Failed to save unit setup." };
+  }
 }

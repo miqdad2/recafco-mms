@@ -175,6 +175,14 @@ export type OfflineInventoryBalance = {
 // correctly under the same normalized key below, but which movement's
 // category/location "wins" for display is no longer strictly guaranteed to
 // be the single most-recent one across both variants.
+// Staff-Friendly Default View — a material counts as "recent" when it was
+// added, moved or edited within this many days (see last_updated_at).
+const RECENT_MATERIAL_DAYS = 30;
+
+export function recentMaterialsSince(): string {
+  return new Date(Date.now() - RECENT_MATERIAL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+}
+
 export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBalance> {
   const distinctOrderBy = [
     { part_id: "asc" as const },
@@ -194,6 +202,8 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
       by: ["part_id", "manual_material_name", "unit", "movement_type"],
       where: { deleted_at: null },
       _sum: { quantity: true, total_cost: true },
+      // Newest touch of any movement of this identity (last_updated_at).
+      _max: { created_at: true, updated_at: true },
     }),
     // One row per material identity — its single most recent movement, for
     // display_name/part_number/ss_rec_code/category/last_movement_date.
@@ -236,7 +246,16 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
     // 2 — every configured minimum-stock/reorder-quantity row; the table is
     // one row per material identity (no distinct/orderBy needed).
     prisma.inventory_material_settings.findMany({
-      select: { part_id: true, manual_material_name: true, unit: true, minimum_stock_quantity: true, reorder_quantity: true },
+      select: {
+        part_id: true,
+        manual_material_name: true,
+        unit: true,
+        minimum_stock_quantity: true,
+        reorder_quantity: true,
+        purchase_unit: true,
+        conversion_quantity: true,
+        updated_at: true,
+      },
     }),
   ]);
 
@@ -279,14 +298,30 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
         total_issued:         0,
         balance:              0,
         last_movement_date:   meta.movement_date.toISOString(),
+        // Starts at the settings row's last edit (or the last movement
+        // date); raised below by each movement group's newest timestamp.
+        last_updated_at:      (settings?.updated_at ?? meta.movement_date).toISOString(),
         last_unit_cost:       lastUnitCostByKey.get(key) ?? null,
         stock_value:          0,
         received_value:       0,
         issued_value:         0,
         minimum_stock_quantity: settings?.minimum_stock_quantity !== undefined && settings?.minimum_stock_quantity !== null ? Number(settings.minimum_stock_quantity) : null,
         reorder_quantity:       settings?.reorder_quantity !== undefined && settings?.reorder_quantity !== null ? Number(settings.reorder_quantity) : null,
+        ...(settings ? unitSetupFromSettings(settings) : { purchase_unit: null, conversion_quantity: null }),
         stock_status:           "ok", // finalized below, once every movement has been summed
+        unit_issue:
+          !meta.unit.trim()
+            ? "Missing unit"
+            : settings && (settings.purchase_unit !== null) !== (settings.conversion_quantity !== null)
+              ? "Purchase unit setup is incomplete"
+              : null, // the cross-unit name check is added below
       });
+    }
+
+    const touched = [g._max.created_at, g._max.updated_at].filter((d): d is Date => d !== null);
+    const accum = balanceAccum.get(key)!;
+    for (const d of touched) {
+      if (d.toISOString() > accum.last_updated_at) accum.last_updated_at = d.toISOString();
     }
 
     const item = balanceAccum.get(key)!;
@@ -368,6 +403,11 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
               ? "review_required"
               : "ok";
     item.stock_status = status;
+    // Kept separately from the status: a low/out/negative row still shows
+    // its plain status, and Review Issues can list the unit problem too.
+    if (hasUnitMismatch && item.unit_issue === null) {
+      item.unit_issue = "Same material is also recorded with another unit";
+    }
     // Task 2 — "Low Stock Items" (Needs Attention) now also counts Review
     // Required, matching the task's explicit redefinition of that card/
     // filter (Unit 10G.62 deliberately excluded it; this unit reverses
@@ -447,14 +487,28 @@ export async function getLastUnitCostsForIdentities(
 // Add New Material's own pre-existing duplicate-material guard already
 // prevents two rows from ever being created for the same identity through
 // this one call site.
+//
+// Inventory-First Material Request Workflow: also stores the material's
+// unit setup (purchaseUnit/conversionQuantity — both null = bought in the
+// stock unit). Every value field is optional: undefined leaves that column
+// as it is, so saving the unit setup never wipes a minimum stock level and
+// vice versa.
 export async function upsertInventoryMaterialSettings(opts: {
   partId: string | null;
   manualMaterialName: string | null;
   unit: string;
-  minimumStockQuantity: number | null;
-  reorderQuantity: number | null;
+  minimumStockQuantity?: number | null;
+  reorderQuantity?: number | null;
+  purchaseUnit?: string | null;
+  conversionQuantity?: number | null;
   createdBy: string;
 }): Promise<void> {
+  const values = {
+    ...(opts.minimumStockQuantity !== undefined ? { minimum_stock_quantity: opts.minimumStockQuantity } : {}),
+    ...(opts.reorderQuantity !== undefined ? { reorder_quantity: opts.reorderQuantity } : {}),
+    ...(opts.purchaseUnit !== undefined ? { purchase_unit: opts.purchaseUnit } : {}),
+    ...(opts.conversionQuantity !== undefined ? { conversion_quantity: opts.conversionQuantity } : {}),
+  };
   const where = opts.partId
     ? { part_id: opts.partId }
     : {
@@ -467,11 +521,7 @@ export async function upsertInventoryMaterialSettings(opts: {
   if (existing) {
     await prisma.inventory_material_settings.update({
       where: { id: existing.id },
-      data: {
-        minimum_stock_quantity: opts.minimumStockQuantity,
-        reorder_quantity: opts.reorderQuantity,
-        updated_at: new Date(),
-      },
+      data: { ...values, updated_at: new Date() },
     });
   } else {
     await prisma.inventory_material_settings.create({
@@ -479,8 +529,7 @@ export async function upsertInventoryMaterialSettings(opts: {
         part_id: opts.partId,
         manual_material_name: opts.manualMaterialName,
         unit: opts.unit,
-        minimum_stock_quantity: opts.minimumStockQuantity,
-        reorder_quantity: opts.reorderQuantity,
+        ...values,
         created_by: opts.createdBy,
       },
     });
@@ -633,6 +682,12 @@ export type OfflineInventorySearchMatch = {
   // here — too costly to check per keystroke for a top-N candidate set —
   // so this never returns "review_required", only the other four.
   stock_status: Exclude<StockStatus, "review_required">;
+  // Inventory-First Material Request Workflow — the material's saved unit
+  // setup (inventory_material_settings): how the supplier sells it and how
+  // many `unit` (stock units) are inside 1 of it. Both null = bought in
+  // the stock unit (1:1).
+  purchase_unit: string | null;
+  conversion_quantity: number | null;
 };
 
 // Required Materials Inventory Matching Unit 5, Task 2: Required Materials
@@ -749,7 +804,14 @@ export async function searchOfflineInventoryMaterials(opts: {
             : { part_id: null, manual_material_name: { equals: c.manual_material_name ?? "", mode: "insensitive" as const }, unit: { equals: c.unit, mode: "insensitive" as const } }
         ),
       },
-      select: { part_id: true, manual_material_name: true, unit: true, minimum_stock_quantity: true },
+      select: {
+        part_id: true,
+        manual_material_name: true,
+        unit: true,
+        minimum_stock_quantity: true,
+        purchase_unit: true,
+        conversion_quantity: true,
+      },
     }),
   ]);
 
@@ -765,6 +827,7 @@ export async function searchOfflineInventoryMaterials(opts: {
   const minimumByKey = new Map(
     settingsRows.map((s) => [buildBalanceKey(s), s.minimum_stock_quantity !== null ? Number(s.minimum_stock_quantity) : null])
   );
+  const unitSetupByKey = new Map(settingsRows.map((s) => [buildBalanceKey(s), unitSetupFromSettings(s)]));
 
   // Job Card Materials Request UX and Existing Inventory Selection Fix —
   // same priority order as getOfflineInventoryBalance(): Negative, then Out
@@ -795,6 +858,8 @@ export async function searchOfflineInventoryMaterials(opts: {
         last_movement_date: c.movement_date.toISOString(),
         last_unit_cost: opts.canViewCosts ? lastUnitCostByKey.get(key) ?? null : null,
         stock_status: stockStatusFor(balance, minimumByKey.get(key) ?? null),
+        purchase_unit: unitSetupByKey.get(key)?.purchase_unit ?? null,
+        conversion_quantity: unitSetupByKey.get(key)?.conversion_quantity ?? null,
       };
     })
     .sort((a, b) => a.display_name.localeCompare(b.display_name));
@@ -1052,4 +1117,48 @@ export async function getWorkOrderOptions(): Promise<WorkOrderOption[]> {
     id:                wo.id,
     work_order_number: wo.work_order_number,
   }));
+}
+
+// ── Inventory-First Material Request Workflow ───────────────────────────────
+// A material's unit setup as stored on inventory_material_settings. A
+// half-set row (one column without the other) is treated as no setup.
+export type MaterialUnitSetup = { purchase_unit: string | null; conversion_quantity: number | null };
+
+export function unitSetupFromSettings(row: {
+  purchase_unit: string | null;
+  conversion_quantity: Prisma.Decimal | number | null;
+}): MaterialUnitSetup {
+  const conversion = row.conversion_quantity !== null ? Number(row.conversion_quantity) : null;
+  return row.purchase_unit && conversion !== null && conversion > 0
+    ? { purchase_unit: row.purchase_unit, conversion_quantity: conversion }
+    : { purchase_unit: null, conversion_quantity: null };
+}
+
+// The saved unit setup for one material identity key (buildBalanceKey
+// form: "part:<id>" or "manual:<name>|<unit>"). No settings row = bought
+// in the stock unit.
+export async function getMaterialUnitSetupByKey(key: string | null | undefined): Promise<MaterialUnitSetup> {
+  const trimmedKey = (key ?? "").trim();
+  const none: MaterialUnitSetup = { purchase_unit: null, conversion_quantity: null };
+  if (!trimmedKey) return none;
+  let where: Prisma.inventory_material_settingsWhereInput;
+  if (trimmedKey.startsWith("part:")) {
+    where = { part_id: trimmedKey.slice("part:".length) };
+  } else if (trimmedKey.startsWith("manual:")) {
+    const body = trimmedKey.slice("manual:".length);
+    const sep = body.lastIndexOf("|");
+    if (sep < 0) return none;
+    where = {
+      part_id: null,
+      manual_material_name: { equals: body.slice(0, sep), mode: "insensitive" },
+      unit: { equals: body.slice(sep + 1), mode: "insensitive" },
+    };
+  } else {
+    return none;
+  }
+  const row = await prisma.inventory_material_settings.findFirst({
+    where,
+    select: { purchase_unit: true, conversion_quantity: true },
+  });
+  return row ? unitSetupFromSettings(row) : none;
 }

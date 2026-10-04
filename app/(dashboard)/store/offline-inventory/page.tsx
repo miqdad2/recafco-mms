@@ -9,6 +9,7 @@ import {
   getOfflineInventoryBalance,
   getInventorySpendingSummary,
   getWorkOrderOptions,
+  recentMaterialsSince,
 } from "@/lib/store/offline-inventory-data";
 
 export default async function StoreBalancePage({
@@ -44,7 +45,7 @@ export default async function StoreBalancePage({
   // directly and prepended below rather than silently dropped from the list.
   const issueWorkOrderId = sp.workOrder || null;
 
-  const [{ balanceItems, totalReceived, totalIssued, balance, totalStockValue, lowStockCount }, workOrdersRaw, presetWorkOrder] =
+  const [{ balanceItems, totalReceived, totalIssued, balance, totalStockValue }, workOrdersRaw, presetWorkOrder] =
     await Promise.all([
       getOfflineInventoryBalance(),
       showReceiveMaterial || showIssueMaterial ? getWorkOrderOptions() : Promise.resolve([]),
@@ -99,6 +100,9 @@ export default async function StoreBalancePage({
         topIssuedMaterials: spendingSummary.topIssuedMaterials.map((m) => ({ ...m, issuedValue: 0 })),
       };
 
+  // Staff-Friendly Default View — cutoff for the Recent Materials tab/card.
+  const recentSince = recentMaterialsSince();
+
   return (
     <>
       {/* Store Dashboard + Store Issue + Material Ledger Alignment Task 10:
@@ -126,7 +130,7 @@ export default async function StoreBalancePage({
         isSuperAdmin={isSuperAdmin}
         canViewCosts={canViewCosts}
         totalStockValue={canViewCosts ? totalStockValue : 0}
-        lowStockCount={lowStockCount}
+        recentSince={recentSince}
         spendingSummary={spendingSummaryForClient}
         workOrders={workOrders}
         showAddMaterial={showAddMaterial}

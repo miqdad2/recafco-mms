@@ -66,8 +66,8 @@ function parseGeneralItems(formData: FormData) {
         conversionQuantity: num(field(formData, "conversion_quantity", index)),
         unitPrice: num(field(formData, "unit_price", index)),
         priceBasis: priceBasis || undefined,
-        // "Keep as entered" on a reversed-units warning.
-        unitsConfirmed: formData.get(`units_confirmed_${index}`) === "1",
+        // Manager / Super Admin "request without an Inventory link".
+        unlinkedOverride: formData.get(`unlinked_override_${index}`) === "1",
         supplier: field(formData, "supplier", index) || undefined,
         remarks: field(formData, "remarks", index) || undefined,
         inventoryMaterialKey: field(formData, "material_key", index) || undefined

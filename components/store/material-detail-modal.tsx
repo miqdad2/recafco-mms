@@ -5,6 +5,7 @@ import Link from "next/link";
 import { AlertTriangle, Loader2, X } from "lucide-react";
 
 import { StatusBadge } from "@/components/ui/status-badge";
+import { MaterialUnitSetupEditor } from "@/components/store/material-unit-setup-editor";
 import {
   getMaterialRecentMovementsAction,
   getMaterialCostSummaryAction,
@@ -79,9 +80,12 @@ export function MaterialDetailModal({
   item,
   onClose,
   canViewCosts = false,
+  canManage = false,
 }: {
   item: BalanceItem;
   onClose: () => void;
+  // Inventory-First Material Request Workflow — may edit the Unit Setup.
+  canManage?: boolean;
   canViewCosts?: boolean;
 }) {
   const [rows, setRows] = useState<MaterialMovementRow[] | null>(null);
@@ -168,6 +172,7 @@ export function MaterialDetailModal({
                   <Info label="SS Rec. Code" value={item.ss_rec_code ?? "—"} />
                   <Info label="Last Movement Date" value={fmtDate(item.last_movement_date)} />
                 </div>
+                <MaterialUnitSetupEditor item={item} canEdit={canManage} />
               </section>
 
               {/* Right column — Current Stock (Task 7's "1. Current Stock"

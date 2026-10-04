@@ -35,15 +35,9 @@ import { errorToLogInput, logSystemError } from "@/lib/errors/logging";
 import { prisma } from "@/lib/db/prisma";
 import { OPEN_PR_STATUSES } from "@/lib/display/parts-request-labels";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
-import { canEnterMaterialRequestPrice } from "@/lib/security/permissions";
-import {
-  computeRequestLine,
-  isPriceBasis,
-  pricePerStockUnit,
-  reversedUnitsMessage,
-  unitsLookReversed,
-  type PriceBasis
-} from "@/lib/materials/request-pricing";
+import { canEnterMaterialRequestPrice, isManagerRole } from "@/lib/security/permissions";
+import { getMaterialUnitSetupByKey, getOfflineInventoryMaterialByKey } from "@/lib/store/offline-inventory-data";
+import { computeRequestLine, isPriceBasis, pricePerStockUnit, type PriceBasis } from "@/lib/materials/request-pricing";
 import { normalizeCategory } from "@/components/store/offline-inventory-types";
 import { emitOfflineInventoryRealtimeEvent, emitMaterialsRequestRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 
@@ -68,26 +62,44 @@ function num(value: unknown) {
 // typed and its basis are kept alongside. Same maths as the wizard's
 // preview (lib/materials/request-pricing.ts). Returns the first friendly
 // validation error instead of items when a row is incomplete.
-function parseItems(formData: FormData, mayEnterPrices: boolean) {
+//
+// Inventory-First Material Request Workflow: a row linked to an Inventory
+// material (part_id_ or inventory_material_key_) takes its Stock Unit,
+// Purchase Unit and conversion from Inventory — the posted unit fields are
+// ignored. A row not in Inventory is refused unless a Manager / Super Admin
+// chose the override (mayRequestUnlinked), and is then one plain unit.
+async function parseItems(formData: FormData, mayEnterPrices: boolean, mayRequestUnlinked: boolean) {
   const items = [];
   for (const index of [0, 1, 2, 3, 4, 5, 6, 7]) {
     const description = field(formData, "description", index);
     if (!description) continue;
     const purchaseQty = num(field(formData, "purchase_quantity", index));
-    const purchaseUnit = field(formData, "purchase_unit", index);
-    const stockUnit = field(formData, "unit", index);
-    const conversionRaw = field(formData, "conversion_quantity", index);
     const priceRaw = mayEnterPrices ? field(formData, "unit_price", index) : "";
     const basisRaw = field(formData, "price_basis", index);
 
+    const partId = field(formData, "part_id", index);
+    const materialKey = partId ? `part:${partId}` : field(formData, "inventory_material_key", index);
+    let stockUnit: string;
+    let purchaseUnit: string;
+    let conversion: number | null;
+    if (materialKey) {
+      const material = await getOfflineInventoryMaterialByKey(materialKey);
+      if (!material) return { error: `"${description}" is no longer in Inventory. Search for it again.` };
+      const setup = await getMaterialUnitSetupByKey(material.key);
+      stockUnit = material.unit;
+      purchaseUnit = setup.purchase_unit ?? material.unit;
+      conversion = setup.purchase_unit ? setup.conversion_quantity : null;
+    } else if (mayRequestUnlinked && formData.get(`unlinked_override_${index}`) === "1") {
+      stockUnit = field(formData, "unit", index);
+      purchaseUnit = stockUnit;
+      conversion = null;
+    } else {
+      return { error: `"${description}" is not in Inventory. Add this material in Inventory first, then create the request.` };
+    }
+
     if (!(purchaseQty > 0)) return { error: "Enter requested purchase quantity." };
     if (!Number.isInteger(purchaseQty)) return { error: "Requested Purchase Qty must be a whole number." };
-    if (!purchaseUnit) return { error: "Select purchase unit." };
-    if (!stockUnit) return { error: "Select stock unit." };
-    // Allowed only when the user chose "Keep as entered" for this row.
-    if (unitsLookReversed(purchaseUnit, stockUnit) && formData.get(`units_confirmed_${index}`) !== "1") {
-      return { error: reversedUnitsMessage(purchaseUnit, stockUnit) };
-    }
+    if (!stockUnit) return { error: "Select a unit." };
 
     const price = priceRaw ? num(priceRaw) : null;
     if (price !== null && price < 0) return { error: "Estimated unit price must be 0 or greater." };
@@ -99,7 +111,7 @@ function parseItems(formData: FormData, mayEnterPrices: boolean) {
       purchaseQty,
       purchaseUnit,
       stockUnit,
-      conversion: conversionRaw ? num(conversionRaw) : null,
+      conversion,
       price,
       basis: isPriceBasis(basisRaw) ? basisRaw : null
     });
@@ -164,7 +176,7 @@ export async function createPartsRequestAction(formData: FormData) {
   // ignores a posted price for anyone else so a hand-built request can't
   // save one. The wizard validates the same rules client-side first; these
   // are the server-side backstop.
-  const parsed = parseItems(formData, canEnterMaterialRequestPrice(context));
+  const parsed = await parseItems(formData, canEnterMaterialRequestPrice(context), isManagerRole(context));
   if ("error" in parsed) {
     redirect(`/maintenance/work-orders/${workOrderId}?error=${encodeURIComponent(parsed.error ?? "Check the requested materials.")}`);
   }

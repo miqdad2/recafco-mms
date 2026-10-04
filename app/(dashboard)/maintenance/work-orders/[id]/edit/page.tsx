@@ -67,6 +67,10 @@ export default async function EditWorkOrderPage({ params }: { params: Promise<{ 
   const requiredParts = rawRequiredParts.map((row) => ({
     ...row,
     quantity_required: row.quantity_required.toNumber(),
+    // Snapshot columns added for the New Job Card wizard — plain numbers
+    // for the client form (it does not use them).
+    entered_quantity: row.entered_quantity !== null ? row.entered_quantity.toNumber() : null,
+    conversion_quantity: row.conversion_quantity !== null ? row.conversion_quantity.toNumber() : null,
     created_at: row.created_at.toISOString(),
     updated_at: row.updated_at.toISOString(),
     confirmed_at: row.confirmed_at?.toISOString() ?? null

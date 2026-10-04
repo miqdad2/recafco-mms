@@ -1,7 +1,7 @@
 import { requirePermission } from "@/lib/auth/context";
 import { canViewCosts as canViewCostsPermission } from "@/lib/security/permissions";
 import { getOfflineInventoryBalance } from "@/lib/store/offline-inventory-data";
-import { stockStatusLabel, fmtDate, type StockStatus } from "@/components/store/offline-inventory-types";
+import { isReviewIssue, stockStatusLabel, fmtDate, type StockStatus } from "@/components/store/offline-inventory-types";
 import { ReportPrintShell, type PrintSummaryItem } from "@/components/reports/report-print-shell";
 import { ReportPrintActions } from "@/components/reports/report-print-actions";
 import { ReportPrintFilterBar } from "@/components/reports/report-print-filter-bar";
@@ -32,6 +32,7 @@ const BALANCE_STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "negative", label: "Negative Stock" },
   { value: "review_required", label: "Review Required" },
   { value: "needs_attention", label: "Needs Attention" },
+  { value: "review_issues", label: "Review Issues" },
 ];
 
 // Same 4-status "Needs Attention" bucket store-balance-view.tsx already
@@ -60,6 +61,8 @@ export default async function InventoryControlPrintPage({
   const filteredItems = balance.balanceItems.filter((item) => {
     if (category && item.category !== category) return false;
     if (balanceStatus === "needs_attention" && !NEEDS_ATTENTION_STATUSES.includes(item.stock_status)) return false;
+    // Inventory Control's Review Issues tab prints through this value.
+    if (balanceStatus === "review_issues") return isReviewIssue(item);
     if (balanceStatus && balanceStatus !== "needs_attention" && item.stock_status !== balanceStatus) return false;
     return true;
   });

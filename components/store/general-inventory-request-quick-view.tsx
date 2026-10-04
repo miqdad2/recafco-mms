@@ -7,7 +7,7 @@ import { CheckCircle2, X } from "lucide-react";
 
 import { StatusBadge } from "@/components/ui/status-badge";
 import { receiveGeneralInventoryRequestAction } from "@/app/actions/general-inventory-requests";
-import { round3, type PriceBasis } from "@/lib/materials/request-pricing";
+import { formatKwd, round3, type PriceBasis } from "@/lib/materials/request-pricing";
 
 export type GeneralInventoryRequestQuickViewItem = {
   id: string;
@@ -64,15 +64,13 @@ function requestUnitPricing(item: GeneralInventoryRequestQuickViewItem, q: Retur
     return {
       price: item.enteredUnitPrice,
       unitLabel,
-      basisLabel: `Per ${unitLabel}`,
       total: round3((perStock ? q.requestedQty : item.quantityRequested) * item.enteredUnitPrice)
     };
   }
-  if (item.unitPrice === null) return { price: null, unitLabel: "", basisLabel: null, total: null };
+  if (item.unitPrice === null) return { price: null, unitLabel: "", total: null };
   return {
     price: item.unitPrice,
     unitLabel: q.purchaseUnit,
-    basisLabel: `Per ${q.purchaseUnit}`,
     total: round3(item.quantityRequested * item.unitPrice)
   };
 }
@@ -310,7 +308,7 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
                         <th className="px-3 py-2 text-left">Material</th>
                         <th className="px-3 py-2 text-right">Requested Purchase Qty</th>
                         <th className="px-3 py-2 text-right">Expected Stock After Receiving</th>
-                        {data.canViewPrices && <th className="px-3 py-2 text-right">Estimated Unit Price</th>}
+                        {data.canViewPrices && <th className="px-3 py-2 text-right">Estimated Price</th>}
                         {data.canViewPrices && <th className="px-3 py-2 text-right">Estimated Total</th>}
                       </tr>
                     </thead>
@@ -360,8 +358,8 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
                               <td className="px-3 py-2 text-right tabular-nums text-[#4B5563]">
                                 {pricing.price !== null ? (
                                   <>
-                                    {pricing.price.toFixed(3)} KWD / {pricing.unitLabel}
-                                    <span className="block text-xs">Price Basis: {pricing.basisLabel}</span>
+                                    {/* Always states the unit the price is for. */}
+                                    {formatKwd(pricing.price)} KWD for 1 {pricing.unitLabel}
                                   </>
                                 ) : (
                                   "Not priced yet"
@@ -371,7 +369,7 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
                             {data.canViewPrices && (
                               <td className="px-3 py-2 text-right tabular-nums font-semibold text-[#111827]">
                                 {/* Per the price basis; "—" when unpriced, never 0. */}
-                                {pricing.total !== null ? pricing.total.toFixed(3) : "—"}
+                                {pricing.total !== null ? `${formatKwd(pricing.total)} KWD` : "—"}
                               </td>
                             )}
                           </tr>
@@ -385,7 +383,7 @@ export function GeneralInventoryRequestQuickView({ data }: { data: GeneralInvent
                             Estimated Total{pricedCount > 0 && pricedCount < data.items.length ? " (priced items only)" : ""}
                           </td>
                           <td className="px-3 py-2 text-right text-sm font-bold text-[#111827]">
-                            {pricedCount > 0 ? totalRequestedValue.toFixed(3) : "Not priced yet"}
+                            {pricedCount > 0 ? `${formatKwd(totalRequestedValue)} KWD` : "Not priced yet"}
                           </td>
                         </tr>
                       </tfoot>

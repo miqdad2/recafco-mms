@@ -73,6 +73,38 @@ export function suggestedStockUnit(purchaseUnit: string): string | null {
   return null;
 }
 
+// ── Price Basis Safety ──────────────────────────────────────────────────────
+// "45.000 KWD for 1 BARREL" vs "for 1 LITER" can differ by the conversion
+// factor (×200), so the request forms make the basis an explicit choice
+// whenever the two units differ and ask for confirmation of a large total.
+
+// The unit a price is for under a basis ("BARREL" / "LITER").
+export function basisUnit(basis: PriceBasis, purchaseUnit: string, stockUnit: string): string {
+  return basis === "stock_unit" ? stockUnit : purchaseUnit;
+}
+
+// KWD with thousands separators and 3 decimals: 9000 -> "9,000.000".
+export function formatKwd(n: number): string {
+  return n.toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+}
+
+// A total is "large" when it is at least LARGE_TOTAL_KWD and at least 10×
+// the price typed — the signature of a per-stock-unit price multiplied by a
+// big conversion (45 per LITER × 200 = 9,000). Such a row needs an explicit
+// "the price basis is correct" acknowledgement before submit; it is never
+// blocked outright.
+export const LARGE_TOTAL_KWD = 1000;
+
+export function isLargeEstimatedTotal(total: number | null, price: number | null): boolean {
+  return total !== null && price !== null && price > 0 && total >= LARGE_TOTAL_KWD && total >= price * 10;
+}
+
+// Ties an acknowledgement to the exact figures it was given for, so editing
+// the price, basis or quantity asks again.
+export function largeTotalAckKey(price: number, basis: PriceBasis, total: number): string {
+  return `${price}|${basis}|${total}`;
+}
+
 // "Per BOX" / "Per PCS" — the dropdown and detail-view label for a basis.
 export function priceBasisLabel(basis: PriceBasis, purchaseUnit: string, stockUnit: string): string {
   const unit = basis === "purchase_unit" ? purchaseUnit : stockUnit;
