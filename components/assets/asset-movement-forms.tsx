@@ -1,15 +1,18 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
+import { useActionState, useEffect, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, Plus } from "lucide-react";
 
 import {
   sendAssetToSiteAction,
   receiveAssetBackAction,
   type AssetMovementActionState,
 } from "@/app/actions/asset-movements";
+import { createAssetLocationAction } from "@/app/actions/asset-locations";
 import { useLargeFormModal } from "@/components/ui/large-form-modal";
+import { assetLocationOptionLabel, type AssetLocationOption } from "@/lib/assets/asset-location-types";
 
 const inp =
   "w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm placeholder:text-[#9CA3AF] focus:outline-none focus:ring-1 focus:ring-[#ED1C24] disabled:bg-gray-50 disabled:text-[#9CA3AF]";
@@ -32,13 +35,61 @@ function ErrorBanner({ state }: { state: AssetMovementActionState }) {
 
 // Task 2 — Send to Site form. Sent By is always the current user (set
 // server-side in the action, never a form field).
-export function SendToSiteForm({ assetId, dismissHref }: { assetId: string; dismissHref: string }) {
+// Site Locations — "To Location / Site" is a dropdown of the active
+// approved locations (`locations`), not free text. `canManageLocations`
+// (Manager / Super Admin) adds the Manage locations link and the inline
+// "+ Add Location" quick add, which selects the new location on save.
+export function SendToSiteForm({
+  assetId,
+  dismissHref,
+  locations,
+  canManageLocations,
+}: {
+  assetId: string;
+  dismissHref: string;
+  locations: AssetLocationOption[];
+  canManageLocations: boolean;
+}) {
   const router = useRouter();
   const modal = useLargeFormModal();
   const [state, formAction, isPending] = useActionState<AssetMovementActionState, FormData>(
     sendAssetToSiteAction,
     null
   );
+  // Locations added through the quick add, on top of the server's list.
+  const [addedLocations, setAddedLocations] = useState<AssetLocationOption[]>([]);
+  const [locationId, setLocationId] = useState("");
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickName, setQuickName] = useState("");
+  const [quickCode, setQuickCode] = useState("");
+  const [quickError, setQuickError] = useState<string | null>(null);
+  const [isAdding, startAdding] = useTransition();
+
+  const options = [...locations, ...addedLocations.filter((a) => !locations.some((l) => l.id === a.id))].sort((a, b) =>
+    a.name.localeCompare(b.name)
+  );
+
+  // The quick-add fields carry no `name`, so they are never part of the
+  // Send to Site submission; the location is created by its own action.
+  function saveQuickLocation() {
+    setQuickError(null);
+    const data = new FormData();
+    data.set("name", quickName);
+    data.set("code", quickCode);
+    startAdding(async () => {
+      const result = await createAssetLocationAction(null, data);
+      if (result?.ok && result.location) {
+        const created = result.location;
+        setAddedLocations((current) => [...current, created]);
+        setLocationId(created.id);
+        setQuickAddOpen(false);
+        setQuickName("");
+        setQuickCode("");
+      } else {
+        setQuickError(result?.ok === false ? result.error : "Could not add the location. Please try again.");
+      }
+    });
+  }
 
   useEffect(() => {
     if (state?.ok) router.push(dismissHref);
@@ -54,15 +105,109 @@ export function SendToSiteForm({ assetId, dismissHref }: { assetId: string; dism
         <label htmlFor="sts-to-location" className={lbl}>
           To Location / Site <span className="text-[#ED1C24]">*</span>
         </label>
-        <input
-          id="sts-to-location"
-          type="text"
-          name="to_location"
-          required
-          placeholder="e.g. Site A — Shuwaikh Project"
-          className={inp}
-          disabled={isPending}
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            id="sts-to-location"
+            name="asset_location_id"
+            required
+            value={locationId}
+            onChange={(e) => setLocationId(e.target.value)}
+            className={`${inp} min-w-0 flex-1`}
+            disabled={isPending}
+          >
+            <option value="">Select location / site</option>
+            {options.map((option) => (
+              <option key={option.id} value={option.id}>
+                {assetLocationOptionLabel(option)}
+              </option>
+            ))}
+          </select>
+          {canManageLocations && !quickAddOpen && (
+            <button
+              type="button"
+              onClick={() => setQuickAddOpen(true)}
+              disabled={isPending}
+              className="inline-flex min-h-[38px] items-center gap-1 whitespace-nowrap rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-xs font-bold text-[#111827] hover:bg-gray-50"
+            >
+              <Plus className="h-3.5 w-3.5" aria-hidden />
+              Add Location
+            </button>
+          )}
+        </div>
+        <p className="mt-1 text-xs text-[#6B7280]">
+          {options.length === 0 ? "No active locations yet. " : ""}
+          Locations are managed from Site Locations.
+          {canManageLocations && (
+            <>
+              {" "}
+              <Link href="/asset-locations" target="_blank" className="font-bold text-[#ED1C24] hover:underline">
+                Manage locations
+              </Link>
+            </>
+          )}
+        </p>
+
+        {canManageLocations && quickAddOpen && (
+          <div className="mt-2 space-y-3 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3">
+            <p className="text-xs font-black uppercase tracking-wide text-[#4B5563]">Add Location</p>
+            {quickError && (
+              <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
+                {quickError}
+              </p>
+            )}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label htmlFor="sts-quick-name" className={lbl}>
+                  Location / Site Name <span className="text-[#ED1C24]">*</span>
+                </label>
+                <input
+                  id="sts-quick-name"
+                  type="text"
+                  value={quickName}
+                  onChange={(e) => setQuickName(e.target.value)}
+                  maxLength={120}
+                  placeholder="e.g. Salmi 1604"
+                  className={inp}
+                  disabled={isAdding}
+                />
+              </div>
+              <div>
+                <label htmlFor="sts-quick-code" className={lbl}>Location Code</label>
+                <input
+                  id="sts-quick-code"
+                  type="text"
+                  value={quickCode}
+                  onChange={(e) => setQuickCode(e.target.value)}
+                  maxLength={40}
+                  placeholder="Optional"
+                  className={inp}
+                  disabled={isAdding}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setQuickAddOpen(false);
+                  setQuickError(null);
+                }}
+                disabled={isAdding}
+                className="rounded-md border border-[#E5E7EB] bg-white px-3 py-1.5 text-xs font-bold text-[#4B5563] hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveQuickLocation}
+                disabled={isAdding || quickName.trim() === ""}
+                className="rounded-md bg-[#111827] px-3 py-1.5 text-xs font-bold text-white hover:bg-[#2b2b2b] disabled:opacity-60"
+              >
+                {isAdding ? "Saving…" : "Save Location"}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">

@@ -1,6 +1,9 @@
 import { FormDocumentHeader } from "@/components/forms/form-document-header";
 import { writeAuditLog } from "@/lib/audit/log";
+import { redirect } from "next/navigation";
+
 import { requirePermission } from "@/lib/auth/context";
+import { canPrintAssets } from "@/lib/security/permissions";
 import { createQrSvg, internalQrTarget } from "@/lib/qr/svg";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateTime } from "@/lib/utils";
@@ -8,6 +11,8 @@ import { formatDateTime } from "@/lib/utils";
 export default async function PrintAssetHistoryPage({ params }: { params: Promise<{ id: string }> }) {
   const context = await requirePermission("assets.view");
   const { id } = await params;
+  // Printing is not part of view-only access (Maintenance Data Entry).
+  if (!canPrintAssets(context)) redirect(`/assets/${id}?error=asset-permission-denied`);
   const [asset, rawWorkOrders, rawMaterials] = await Promise.all([
     prisma.assets.findUnique({
       where: { id },

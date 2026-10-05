@@ -20,7 +20,16 @@ import { SignedFileList } from "@/components/files/signed-file-list";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { SendToSiteForm, ReceiveBackForm } from "@/components/assets/asset-movement-forms";
+import { getActiveAssetLocationOptions } from "@/lib/assets/asset-locations";
 import { requirePermission } from "@/lib/auth/context";
+import {
+  ASSET_MANAGE_DENIED_MESSAGE,
+  canCreateJobCardFromAsset,
+  canManageAssetLocations,
+  canManageAssets,
+  canMoveAssets,
+  canPrintAssets,
+} from "@/lib/security/permissions";
 import { displayStatus } from "@/lib/display/work-order-labels";
 import { displayPartsRequestStatus, partsRequestStatusTone } from "@/lib/display/parts-request-labels";
 import { createSignedFileUrl } from "@/lib/files/signed-url";
@@ -177,17 +186,15 @@ export default async function AssetDetailPage({
   };
 
   // Permissions
+  // Maintenance Data Entry is view-only in Assets & Equipment: every flag
+  // below is false for that role (see lib/security/permissions.ts).
+  const canEdit = canManageAssets(context);
   const canUploadFiles =
-    context.role?.slug === "super_admin" ||
-    (context.permissions.includes("assets.manage") && context.permissions.includes("files.upload"));
-  const canManage =
-    context.role?.slug === "super_admin" || context.permissions.includes("work_orders.manage");
-  const canEdit =
-    context.role?.slug === "super_admin" || context.permissions.includes("assets.manage");
-  // Asset Site Movement / Deployment Tracking Unit 10G.65, Task 10: reuses
-  // the existing assets.manage permission (already held by Manager/Super
-  // Admin/Data Entry) — no new role or permission added this unit.
-  const canManageMovements = canEdit;
+    context.role?.slug === "super_admin" || (canEdit && context.permissions.includes("files.upload"));
+  // "Create Job Card" / "New" buttons on this page.
+  const canManage = canCreateJobCardFromAsset(context);
+  const canManageMovements = canMoveAssets(context);
+  const canPrint = canPrintAssets(context);
 
   const movementUserNames = await getUserNamesByIds([
     ...movementHistory.map((m) => m.sent_by_user_id),
@@ -196,6 +203,8 @@ export default async function AssetDetailPage({
 
   const showSendToSiteModal = sp.send_to_site === "1" && canManageMovements && !activeMovement;
   const showReceiveBackModal = sp.receive_back === "1" && canManageMovements && !!activeMovement;
+  // Asset Location Master — the Send to Site dropdown's active locations.
+  const sendToSiteLocations = showSendToSiteModal ? await getActiveAssetLocationOptions() : [];
   const movementDismissHref = `/assets/${id}?tab=movements`;
 
   // New Job Card Modal Wizard Refactor: opened via ?new_job_card=1 as an
@@ -333,7 +342,12 @@ export default async function AssetDetailPage({
           subtitle={`Record ${asset.asset_name} being sent to a work site or project location.`}
           closeHref={movementDismissHref}
         >
-          <SendToSiteForm assetId={asset.id} dismissHref={movementDismissHref} />
+          <SendToSiteForm
+            assetId={asset.id}
+            dismissHref={movementDismissHref}
+            locations={sendToSiteLocations}
+            canManageLocations={canManageAssetLocations(context)}
+          />
         </LargeFormModal>
       )}
       {showReceiveBackModal && activeMovement && (
@@ -366,6 +380,11 @@ export default async function AssetDetailPage({
         <div className="mb-3">
           <BackLink href="/assets" label="Back to Assets & Equipment" variant="text" />
         </div>
+        {(sp.error === "asset-permission-denied" || sp.error === "upload-permission") && (
+          <p role="alert" className="mb-3 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
+            {ASSET_MANAGE_DENIED_MESSAGE}
+          </p>
+        )}
 
         <div className="flex flex-col gap-4 border-l-4 border-[#ED1C24] pl-4 sm:flex-row sm:items-start sm:justify-between">
           {/* Identity — Task 2: Asset code, Make / Asset Name, Asset Type, Status. */}
@@ -429,13 +448,15 @@ export default async function AssetDetailPage({
                 Edit
               </Link>
             )}
-            <Link
-              href={`/assets/${asset.id}/history/print`}
-              className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-semibold text-[#111827] transition hover:bg-gray-50"
-            >
-              <Printer className="h-4 w-4" aria-hidden="true" />
-              Print
-            </Link>
+            {canPrint && (
+              <Link
+                href={`/assets/${asset.id}/history/print`}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-semibold text-[#111827] transition hover:bg-gray-50"
+              >
+                <Printer className="h-4 w-4" aria-hidden="true" />
+                Print
+              </Link>
+            )}
           </div>
         </div>
 
@@ -1159,13 +1180,15 @@ export default async function AssetDetailPage({
                   Contracts covering maintenance and servicing for this asset.
                 </p>
               </div>
-              <Link
-                href={`/assets/service-contracts?asset_id=${asset.id}&open=new`}
-                className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
-              >
-                <Plus className="h-4 w-4" aria-hidden="true" />
-                Add Service Contract
-              </Link>
+              {canEdit && (
+                <Link
+                  href={`/assets/service-contracts?asset_id=${asset.id}&open=new`}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
+                >
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                  Add Service Contract
+                </Link>
+              )}
             </div>
 
             {assetContracts.length === 0 ? (
@@ -1175,17 +1198,21 @@ export default async function AssetDetailPage({
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-[#374151]">No service contracts yet</p>
-                  <p className="mt-0.5 text-xs text-[#6B7280]">
-                    Add a service contract to track coverage and renewal for this asset.
-                  </p>
+                  {canEdit && (
+                    <p className="mt-0.5 text-xs text-[#6B7280]">
+                      Add a service contract to track coverage and renewal for this asset.
+                    </p>
+                  )}
                 </div>
-                <Link
-                  href={`/assets/service-contracts?asset_id=${asset.id}&open=new`}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
-                >
-                  <Plus className="h-4 w-4" aria-hidden="true" />
-                  Add Service Contract
-                </Link>
+                {canEdit && (
+                  <Link
+                    href={`/assets/service-contracts?asset_id=${asset.id}&open=new`}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#c8181e]"
+                  >
+                    <Plus className="h-4 w-4" aria-hidden="true" />
+                    Add Service Contract
+                  </Link>
+                )}
               </div>
             ) : (
               <div className="overflow-hidden rounded-md border border-[#E5E7EB] bg-white shadow-sm">

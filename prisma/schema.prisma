@@ -153,10 +153,33 @@ model asset_movements {
   remarks              String?
   created_at           DateTime  @default(now()) @db.Timestamptz(6)
   updated_at           DateTime  @default(now()) @db.Timestamptz(6)
+  // Asset Location Master: the selected location; to_location above stays
+  // the name snapshot. NULL on every movement typed before the master existed.
+  asset_location_id    String?   @db.Uuid
   assets               assets    @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
+  asset_locations      asset_locations? @relation(fields: [asset_location_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([asset_id], map: "idx_asset_movements_asset_id")
   @@index([status], map: "idx_asset_movements_status")
+  @@index([asset_location_id], map: "idx_asset_movements_asset_location_id")
+}
+
+// Asset Location Master and Send-to-Site Dropdown — the approved sites /
+// projects for asset deployment. Case-insensitive uniqueness of name and
+// code is enforced by expression indexes in the migration (not expressible
+// here). created_by/updated_by are plain scalar columns, no relation.
+model asset_locations {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name            String
+  code            String?
+  type            String            @default("OTHER")
+  remarks         String?
+  is_active       Boolean           @default(true)
+  created_at      DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime          @default(now()) @db.Timestamptz(6)
+  created_by      String?           @db.Uuid
+  updated_by      String?           @db.Uuid
+  asset_movements asset_movements[]
 }
 
 model offline_inventory_movements {

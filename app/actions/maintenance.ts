@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
-import { requirePermission } from "@/lib/auth/context";
+import { requireAssetManage, requirePermission, requireUser } from "@/lib/auth/context";
+import { ASSET_MANAGE_DENIED_MESSAGE, canManageAssets } from "@/lib/security/permissions";
 import { writeAuditLog } from "@/lib/audit/log";
 import { logSystemError } from "@/lib/errors/logging";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
@@ -454,7 +455,7 @@ function parseAttachmentRows(formData: FormData) {
 }
 
 export async function upsertAssetAction(formData: FormData) {
-  const context = await requirePermission("assets.manage");
+  const context = await requireAssetManage();
   const parsed = assetSchema.safeParse(Object.fromEntries(formData));
 
   if (!parsed.success) redirect("/assets?error=invalid-input");
@@ -583,7 +584,8 @@ export type AddAssetTypeResult =
 // place asset types live, per Task 8's "do not create a confusing new
 // permission/data system".
 export async function addAssetTypeAction(rawName: string): Promise<AddAssetTypeResult> {
-  const context = await requirePermission("assets.manage");
+  const context = await requireUser();
+  if (!canManageAssets(context)) return { ok: false, error: ASSET_MANAGE_DENIED_MESSAGE };
   const canManageTypes = context.role?.slug === "super_admin" || context.role?.slug === "maintenance_manager";
   if (!canManageTypes) {
     return { ok: false, error: "You do not have permission to add asset types." };

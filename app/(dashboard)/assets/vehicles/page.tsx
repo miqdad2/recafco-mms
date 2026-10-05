@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
+import { canCreateJobCardFromAsset } from "@/lib/security/permissions";
 import { prisma } from "@/lib/db/prisma";
 import { VEHICLE_CATEGORIES } from "@/lib/assets/categories";
 import {
@@ -103,8 +104,8 @@ export default async function VehiclesPage({
   searchParams?: Promise<SearchParams>;
 }) {
   const context = await requirePermission("assets.view");
-  const canManage =
-    context.role?.slug === "super_admin" || context.permissions.includes("work_orders.manage");
+  // "Create Job Card" from a vehicle row — off for view-only Data Entry.
+  const canManage = canCreateJobCardFromAsset(context);
 
   const params = (await searchParams) ?? {};
   const query = single(params.q)?.trim().replace(/[%,()]/g, " ").slice(0, 80) ?? "";

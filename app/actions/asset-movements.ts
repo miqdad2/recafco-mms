@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 
-import { requirePermission } from "@/lib/auth/context";
+import { requireUser } from "@/lib/auth/context";
+import { ASSET_MANAGE_DENIED_MESSAGE, canMoveAssets } from "@/lib/security/permissions";
 import { prisma } from "@/lib/db/prisma";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { writeAuditLog } from "@/lib/audit/log";
@@ -41,14 +42,25 @@ export async function sendAssetToSiteAction(
   _prev: AssetMovementActionState,
   formData: FormData
 ): Promise<AssetMovementActionState> {
-  const context = await requirePermission("assets.manage");
+  const context = await requireUser();
+  if (!canMoveAssets(context)) return { ok: false, error: ASSET_MANAGE_DENIED_MESSAGE };
 
   try {
     const assetId = String(formData.get("asset_id") ?? "");
     if (!assetId) return { ok: false, error: "Missing asset." };
 
-    const toLocation = toNullable(formData.get("to_location"));
-    if (!toLocation) return { ok: false, error: "To Location / Site is required." };
+    // Site Locations — the site comes from the approved list, never
+    // free text. Its name is saved as the movement's to_location snapshot
+    // alongside the id, so a later rename does not rewrite history.
+    const locationId = toNullable(formData.get("asset_location_id"));
+    if (!locationId) return { ok: false, error: "Select a location / site." };
+    const location = await prisma.asset_locations.findUnique({
+      where: { id: locationId },
+      select: { id: true, name: true, is_active: true },
+    });
+    if (!location) return { ok: false, error: "The selected location no longer exists. Select another one." };
+    if (!location.is_active) return { ok: false, error: `"${location.name}" is inactive. Select an active location.` };
+    const toLocation = location.name;
 
     const sentDate = parseRequiredDate(formData.get("sent_date"), "Sent Date");
     const expectedReturnDate = parseOptionalDate(formData.get("expected_return_date"));
@@ -74,6 +86,7 @@ export async function sendAssetToSiteAction(
           status: "ACTIVE",
           from_location: asset.location,
           to_location: toLocation,
+          asset_location_id: location.id,
           sent_date: sentDate,
           expected_return_date: expectedReturnDate,
           responsible_person: responsiblePerson,
@@ -91,7 +104,7 @@ export async function sendAssetToSiteAction(
       entityType: "asset",
       entityId: assetId,
       summary: `Asset sent to site: ${toLocation}`,
-      metadata: { to_location: toLocation, sent_date: sentDate.toISOString(), expected_return_date: expectedReturnDate?.toISOString() ?? null },
+      metadata: { to_location: toLocation, asset_location_id: location.id, sent_date: sentDate.toISOString(), expected_return_date: expectedReturnDate?.toISOString() ?? null },
     });
 
     revalidatePath(`/assets/${assetId}`);
@@ -113,7 +126,8 @@ export async function receiveAssetBackAction(
   _prev: AssetMovementActionState,
   formData: FormData
 ): Promise<AssetMovementActionState> {
-  const context = await requirePermission("assets.manage");
+  const context = await requireUser();
+  if (!canMoveAssets(context)) return { ok: false, error: ASSET_MANAGE_DENIED_MESSAGE };
 
   try {
     const assetId = String(formData.get("asset_id") ?? "");

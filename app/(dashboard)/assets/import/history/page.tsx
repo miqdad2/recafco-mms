@@ -3,7 +3,7 @@ import { ArrowLeft } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
-import { requirePermission } from "@/lib/auth/context";
+import { requireAssetManage } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 
 type ImportMeta = {
@@ -14,7 +14,7 @@ type ImportMeta = {
 };
 
 export default async function AssetImportHistoryPage() {
-  await requirePermission("assets.manage");
+  await requireAssetManage();
 
   const logs = await prisma.audit_logs.findMany({
     where: { action: "asset.import" },

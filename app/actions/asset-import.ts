@@ -2,7 +2,8 @@
 import "server-only";
 import ExcelJS from "exceljs";
 import { prisma } from "@/lib/db/prisma";
-import { requirePermission } from "@/lib/auth/context";
+import { requireUser } from "@/lib/auth/context";
+import { ASSET_MANAGE_DENIED_MESSAGE, canImportAssets } from "@/lib/security/permissions";
 import { writeAuditLog } from "@/lib/audit/log";
 import { logSystemError } from "@/lib/errors/logging";
 import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
@@ -75,7 +76,8 @@ const EMPTY_PREVIEW: Omit<AssetImportPreview, "error"> = {
 };
 
 export async function parseAssetExcelForImportAction(formData: FormData): Promise<AssetImportPreview> {
-  await requirePermission("assets.manage");
+  const context = await requireUser();
+  if (!canImportAssets(context)) return { ...EMPTY_PREVIEW, error: ASSET_MANAGE_DENIED_MESSAGE };
 
   const file = formData.get("file") as File | null;
   if (!file || file.size === 0) return { ...EMPTY_PREVIEW, error: "Please choose an Excel file to upload." };
@@ -181,14 +183,15 @@ export type AssetImportResult = {
 // requires its own typed confirmation before calling it (Task 3's "do not
 // accidentally delete assets on normal upload click").
 export async function replaceAssetRegisterAction(rows: AssetImportPreviewRow[]): Promise<AssetImportResult> {
-  const context = await requirePermission("assets.manage");
+  const context = await requireUser();
+  if (!canImportAssets(context)) throw new Error(ASSET_MANAGE_DENIED_MESSAGE);
 
   // Unit 10H.2 production-readiness review: this transaction below does not
   // just replace assets — it wipes ALL work orders, purchase requests,
   // parts requests, purchase orders, service contracts, notifications, and
   // realtime events system-wide (not scoped to the assets being replaced).
-  // `assets.manage` alone (held by maintenance_data_entry) is far too broad
-  // a gate for that; only Super Admin may run it.
+  // Being allowed to import assets is far too broad a gate for that; only
+  // Super Admin may run it.
   if (context.role?.slug !== "super_admin") {
     throw new Error("Only a Super Admin can replace the asset register. Use \"Add these assets\" instead, or ask a Super Admin to run this.");
   }
@@ -319,7 +322,8 @@ export async function replaceAssetRegisterAction(rows: AssetImportPreviewRow[]):
 // the button that runs on a normal upload click (Task 3 — "do not
 // accidentally delete assets on normal upload click").
 export async function addAssetsFromExcelAction(rows: AssetImportPreviewRow[]): Promise<AssetImportResult> {
-  const context = await requirePermission("assets.manage");
+  const context = await requireUser();
+  if (!canImportAssets(context)) throw new Error(ASSET_MANAGE_DENIED_MESSAGE);
 
   const [existingCodes, existingPlates, existingChassis, existingCategories] = await Promise.all([
     prisma.assets.findMany({ where: { deleted_at: null }, select: { asset_code: true } }),

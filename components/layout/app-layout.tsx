@@ -19,7 +19,7 @@ import { ActionToast } from "@/components/ui/action-toast";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requireUser, type CurrentUserContext } from "@/lib/auth/context";
-import { canManageJobCardIndirectCostSetting } from "@/lib/security/permissions";
+import { canManageAssetLocations, canManageAssets, canManageJobCardIndirectCostSetting } from "@/lib/security/permissions";
 import { initials } from "@/lib/utils";
 import type { PermissionKey } from "@/types/database";
 
@@ -37,7 +37,7 @@ type NavItem = {
   // or IT Admin/Maintenance Manager only when canViewCosts also passes. When
   // set, canSee() below calls that function instead of the plain
   // permission-slug check.
-  customGate?: "jobCardIndirectCost";
+  customGate?: "jobCardIndirectCost" | "assetLocations";
 };
 
 type NavGroup = {
@@ -97,6 +97,7 @@ const navigationGroups: NavGroup[] = [
       { href: "/admin/users",                   label: "Users",               iconKey: "Users",      permission: "admin.users.manage" },
       { href: "/admin/settings",                label: "Settings",            iconKey: "Settings",   permission: "admin.settings.manage" },
       { href: "/admin/settings/asset-categories", label: "Asset Categories", iconKey: "Layers",     permission: "assets.manage" },
+      { href: "/asset-locations",               label: "Site Locations",      iconKey: "MapPin",     customGate: "assetLocations" },
       { href: "/admin/audit-logs",              label: "Audit Logs",          iconKey: "Activity",   permission: "admin.audit_logs.view" },
       { href: "/admin/system-health",           label: "System Health",       iconKey: "HeartPulse", permission: "admin.system_health.view" }
     ]
@@ -140,6 +141,8 @@ const maintenanceManagerNavigationGroups: NavGroup[] = [
       // plain permission string, so it never shows for a Manager who lacks
       // canViewCosts even though every Manager sees this same array.
       { href: "/admin/settings/job-card-cost", label: "Job Card Indirect Cost", iconKey: "Wallet", customGate: "jobCardIndirectCost" },
+      // Site Locations (Send to Site dropdown) — Manager / Super Admin only (canManageAssetLocations).
+      { href: "/asset-locations",         label: "Site Locations",      iconKey: "MapPin",    customGate: "assetLocations" },
       { href: "/notifications",           label: "Notifications",       iconKey: "Bell",      permission: "notifications.view" }
     ]
   }
@@ -310,7 +313,11 @@ const normalUserNavigationGroups: NavGroup[] = [
 function canSee(context: CurrentUserContext, item: NavItem) {
   if (item.superAdminOnly) return context.role?.slug === "super_admin";
   if (item.customGate === "jobCardIndirectCost") return canManageJobCardIndirectCostSetting(context);
+  if (item.customGate === "assetLocations") return canManageAssetLocations(context);
   const permission = item.permission;
+  // Asset management links follow the Assets module's own rule (Maintenance
+  // Data Entry holds assets.manage but is view-only there).
+  if (permission === "assets.manage") return canManageAssets(context);
   return !permission || context.role?.slug === "super_admin" || context.permissions.includes(permission);
 }
 

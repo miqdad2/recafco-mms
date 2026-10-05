@@ -64,3 +64,61 @@ export function canManageJobCardIndirectCostSetting(context: CurrentUserContext)
   }
   return false;
 }
+
+// Assets & Equipment Data Entry View-Only Access — the Assets module's own
+// permission vocabulary. Maintenance Data Entry's role still holds
+// assets.manage / work_orders.manage (other modules rely on them), so the
+// raw permission is not enough here: inside Assets & Equipment that role is
+// view-only, and every page, button and server action asks these helpers
+// instead. Super Admin always passes; Manager and the other roles keep
+// exactly what their permissions already gave them.
+export const ASSET_MANAGE_DENIED_MESSAGE = "You do not have permission to manage assets.";
+
+function isAssetViewOnlyRole(context: CurrentUserContext) {
+  return context.role?.slug === "maintenance_data_entry";
+}
+
+export function canViewAssets(context: CurrentUserContext): boolean {
+  return context.role?.slug === "super_admin" || context.permissions.includes("assets.view");
+}
+
+// Create / edit assets, manage categories, upload asset documents.
+export function canManageAssets(context: CurrentUserContext): boolean {
+  if (context.role?.slug === "super_admin") return true;
+  if (isAssetViewOnlyRole(context)) return false;
+  return context.permissions.includes("assets.manage");
+}
+
+// Excel import ("Add these assets"). Replacing the whole register stays
+// Super Admin only, checked in replaceAssetRegisterAction itself.
+export function canImportAssets(context: CurrentUserContext): boolean {
+  return canManageAssets(context);
+}
+
+// Send to Site / Receive Back.
+export function canMoveAssets(context: CurrentUserContext): boolean {
+  return canManageAssets(context);
+}
+
+// "Create Job Card" from inside Assets & Equipment. Data Entry still
+// creates Job Cards from the Job Cards module — only this entry point is off.
+export function canCreateJobCardFromAsset(context: CurrentUserContext): boolean {
+  if (context.role?.slug === "super_admin") return true;
+  if (isAssetViewOnlyRole(context)) return false;
+  return context.permissions.includes("work_orders.manage");
+}
+
+// Asset detail / history print.
+export function canPrintAssets(context: CurrentUserContext): boolean {
+  return canViewAssets(context) && !isAssetViewOnlyRole(context);
+}
+
+// Site Locations (asset_locations) — who may add / edit / deactivate / delete the
+// approved Send to Site locations: Super Admin and Maintenance Manager
+// only. Deliberately a role check, not assets.manage: Data Entry (view-only
+// in Assets) and Viewer/Auditor must never reach it.
+export const ASSET_LOCATION_DENIED_MESSAGE = "You do not have permission to manage site locations.";
+
+export function canManageAssetLocations(context: CurrentUserContext): boolean {
+  return isManagerRole(context);
+}

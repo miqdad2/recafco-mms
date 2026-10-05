@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 
 import { hashSessionToken, getSessionToken } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
+import { canManageAssets } from "@/lib/security/permissions";
 import type { PermissionKey, RoleSlug } from "@/types/database";
 
 type CurrentUserRow = {
@@ -184,6 +185,19 @@ export async function requireUser(opts?: { skipPasswordChangeCheck?: boolean }) 
     redirect("/change-password");
   }
 
+  return context;
+}
+
+// Page / form-action gate for managing assets (see canManageAssets in
+// lib/security/permissions.ts — Maintenance Data Entry is view-only in
+// Assets & Equipment). Sends the user back to the register with the
+// permission message; actions that return a state object check
+// canManageAssets themselves and return the message instead.
+export async function requireAssetManage() {
+  const context = await requireUser();
+  if (!canManageAssets(context)) {
+    redirect("/assets?error=asset-permission-denied");
+  }
   return context;
 }
 

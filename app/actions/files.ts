@@ -7,6 +7,7 @@ import { z } from "zod";
 
 import { writeAuditLog } from "@/lib/audit/log";
 import { requireUser } from "@/lib/auth/context";
+import { canManageAssets } from "@/lib/security/permissions";
 import { getFileSecuritySettings } from "@/lib/files/settings";
 import { savePrivateFile, deletePrivateFileIfExists } from "@/lib/files/local-storage";
 import {
@@ -353,7 +354,7 @@ export async function uploadAssetFileAction(formData: FormData) {
   const auditBase = { bucket: "asset-files", entity_id: assetId, ...meta };
 
   if (
-    !canByPermission(context.permissions, context.role?.slug, "assets.manage") ||
+    !canManageAssets(context) ||
     !canByPermission(context.permissions, context.role?.slug, "files.upload")
   ) {
     await writeAuditLog({

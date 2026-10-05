@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-import { requirePermission } from "@/lib/auth/context";
+import { requireAssetManage } from "@/lib/auth/context";
 import { writeAuditLog } from "@/lib/audit/log";
 import { logSystemError } from "@/lib/errors/logging";
 
@@ -13,7 +13,7 @@ const CATEGORY_PAGE = "/admin/settings/asset-categories";
 const nameSchema = z.string().trim().min(1).max(80);
 
 export async function createMainCategoryAction(formData: FormData) {
-  const context = await requirePermission("assets.manage");
+  const context = await requireAssetManage();
   const name = nameSchema.safeParse(formData.get("name"));
   if (!name.success) redirect(`${CATEGORY_PAGE}?error=invalid-name`);
 
@@ -57,7 +57,7 @@ export async function createMainCategoryAction(formData: FormData) {
 }
 
 export async function createSubcategoryAction(formData: FormData) {
-  const context = await requirePermission("assets.manage");
+  const context = await requireAssetManage();
   const name = nameSchema.safeParse(formData.get("name"));
   const parentId = z.string().uuid().safeParse(formData.get("parent_id"));
   if (!name.success || !parentId.success) redirect(`${CATEGORY_PAGE}?error=invalid-input`);
@@ -104,7 +104,7 @@ export async function createSubcategoryAction(formData: FormData) {
 }
 
 export async function toggleCategoryActiveAction(formData: FormData) {
-  const context = await requirePermission("assets.manage");
+  const context = await requireAssetManage();
   const id = z.string().uuid().safeParse(formData.get("id"));
   if (!id.success) redirect(`${CATEGORY_PAGE}?error=invalid-id`);
 
@@ -138,7 +138,7 @@ export async function toggleCategoryActiveAction(formData: FormData) {
 }
 
 export async function renameCategoryAction(formData: FormData) {
-  const context = await requirePermission("assets.manage");
+  const context = await requireAssetManage();
   const id = z.string().uuid().safeParse(formData.get("id"));
   const name = nameSchema.safeParse(formData.get("name"));
   if (!id.success || !name.success) redirect(`${CATEGORY_PAGE}?error=invalid-input`);

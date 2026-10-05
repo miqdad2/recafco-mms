@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { History, ArrowRight } from "lucide-react";
 
-import { requirePermission } from "@/lib/auth/context";
+import { requireAssetManage } from "@/lib/auth/context";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
 import { AssetImportForm } from "@/components/assets/asset-import-form";
@@ -39,7 +39,7 @@ function ImportStepsGuide() {
 }
 
 export default async function AssetImportPage() {
-  const context = await requirePermission("assets.manage");
+  const context = await requireAssetManage();
   const canReplace = context.role?.slug === "super_admin";
 
   return (

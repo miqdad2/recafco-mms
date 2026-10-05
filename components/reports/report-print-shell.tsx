@@ -38,9 +38,12 @@ export function ReportPrintShell({
   filters,
   summary,
   notes,
+  orientation = "portrait",
   children,
 }: {
   reportTitle: string;
+  /** A4 orientation. "landscape" is for wide tables (Site Location Assets); every other report keeps the default. */
+  orientation?: "portrait" | "landscape";
   generatedBy: string;
   generatedAtIso: string;
   /** Division / Date Range / Status / etc. — whatever this report's own filter bar resolved to. */
@@ -55,7 +58,7 @@ export function ReportPrintShell({
     <div className="min-h-screen bg-[#F3F5F8] px-4 py-6 text-[#111827] print:min-h-0 print:bg-white print:p-0">
       <style>{`
         @media print {
-          @page { size: A4 portrait; margin: 10mm; }
+          @page { size: A4 ${orientation}; margin: 10mm; }
           .screen-only, .no-print { display: none !important; }
           aside, header, nav { display: none !important; }
           main { margin: 0 !important; padding: 0 !important; }
@@ -72,11 +75,12 @@ export function ReportPrintShell({
           .print-table-heading { break-after: avoid; page-break-after: avoid; }
           .print-table thead { display: table-header-group; }
           .print-table tr { page-break-inside: avoid; break-inside: avoid; }
+          .print-table tr.print-group-row { break-after: avoid; page-break-after: avoid; }
           .signature-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
         }
       `}</style>
 
-      <article className="print-sheet mx-auto w-full max-w-[210mm] border border-[#E5E7EB] bg-white p-6 text-[10.5px] leading-snug shadow-sm">
+      <article className={`print-sheet mx-auto w-full ${orientation === "landscape" ? "max-w-[297mm]" : "max-w-[210mm]"} border border-[#E5E7EB] bg-white p-6 text-[10.5px] leading-snug shadow-sm`}>
         <div className="avoid-break">
           <FormDocumentHeader
             variant="print"

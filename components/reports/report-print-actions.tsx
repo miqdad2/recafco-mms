@@ -16,11 +16,19 @@ import { ArrowLeft, Printer } from "lucide-react";
 const btnClass =
   "inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3.5 py-1.5 text-sm font-bold text-[#111827] transition hover:bg-gray-50";
 
-export function ReportPrintActions() {
+// `backHref` / `backLabel` are for a print view that has its own screen
+// report page to return to (Site Location Assets); the default is unchanged.
+export function ReportPrintActions({
+  backHref = "/reports",
+  backLabel = "Back to Reports",
+}: {
+  backHref?: string;
+  backLabel?: string;
+} = {}) {
   return (
     <div className="no-print mb-4 flex flex-wrap items-center gap-2">
-      <Link href="/reports" className={btnClass}>
-        <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back to Reports
+      <Link href={backHref} className={btnClass}>
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" /> {backLabel}
       </Link>
       <button
         type="button"

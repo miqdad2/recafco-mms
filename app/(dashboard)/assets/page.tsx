@@ -13,6 +13,8 @@ import { AssetImportForm } from "@/components/assets/asset-import-form";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { SendToSiteForm, ReceiveBackForm } from "@/components/assets/asset-movement-forms";
 import { requirePermission } from "@/lib/auth/context";
+import { getActiveAssetLocationOptions } from "@/lib/assets/asset-locations";
+import { ASSET_MANAGE_DENIED_MESSAGE, canManageAssetLocations, canManageAssets } from "@/lib/security/permissions";
 import { prisma } from "@/lib/db/prisma";
 import { getActiveMovementsByAsset } from "@/lib/assets/movements-data";
 import { getMovementBadge, ALL_ASSET_TYPES_KEY } from "@/lib/assets/movement-status";
@@ -28,6 +30,8 @@ type AssetsPageProps = {
     // redirect after either action reopens the same popup.
     asset_type?: string;
     send_to_site?: string; receive_back?: string;
+    // Set when a management page/action refused the user (requireAssetManage).
+    error?: string;
   }>;
 };
 
@@ -416,8 +420,8 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
 
   // Assets & Equipment Data Entry Access Alignment: purely permission-based
   // (assets.manage), matching every other asset route/action in the app.
-  const canManage =
-    context.role?.slug === "super_admin" || context.permissions.includes("assets.manage");
+  // Maintenance Data Entry is view-only here (canManageAssets).
+  const canManage = canManageAssets(context);
 
   // New Asset Popup and Add Asset Type Unit 10G.38: "+ New Asset" opens this
   // page's own LargeFormModal via ?new_asset=1 instead of navigating to
@@ -449,6 +453,8 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
   const sendToSiteTarget =
     canManage && params?.send_to_site ? assetsForTypeCards.find((a) => a.id === params.send_to_site) ?? null : null;
   const showSendToSiteModal = !!sendToSiteTarget && !activeMovementsByAsset.has(sendToSiteTarget.id);
+  // Asset Location Master — the Send to Site dropdown's active locations.
+  const sendToSiteLocations = showSendToSiteModal ? await getActiveAssetLocationOptions() : [];
 
   const receiveBackTarget =
     canManage && params?.receive_back ? assetsForTypeCards.find((a) => a.id === params.receive_back) ?? null : null;
@@ -490,6 +496,11 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
       />
 
       <div className="p-4 lg:p-6 space-y-4">
+        {params?.error === "asset-permission-denied" && (
+          <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
+            {ASSET_MANAGE_DENIED_MESSAGE}
+          </p>
+        )}
 
         {/* Task 2 — Total Assets | At Site | Overdue Return | Active
             Maintenance. Only "Total Assets" links anywhere (to View All
@@ -647,7 +658,12 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
           subtitle={`Record ${sendToSiteTarget.asset_name} being sent to a work site or project location.`}
           closeHref={movementModalDismissHref}
         >
-          <SendToSiteForm assetId={sendToSiteTarget.id} dismissHref={movementModalDismissHref} />
+          <SendToSiteForm
+            assetId={sendToSiteTarget.id}
+            dismissHref={movementModalDismissHref}
+            locations={sendToSiteLocations}
+            canManageLocations={canManageAssetLocations(context)}
+          />
         </LargeFormModal>
       )}
       {showReceiveBackModal && receiveBackTarget && receiveBackMovement && (

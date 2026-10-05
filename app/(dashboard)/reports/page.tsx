@@ -5,6 +5,7 @@ import {
   ClipboardList,
   FileText,
   Gauge,
+  MapPin,
   Package,
   ShoppingCart,
   Wrench,
@@ -107,6 +108,14 @@ export default async function ReportsLandingPage() {
               icon={Gauge}
               title="Asset Register Report"
               description="Full asset list with status, expiry dates, service due, and inspection data."
+              printReady
+            />
+
+            <ReportCard
+              href="/reports/site-location-assets"
+              icon={MapPin}
+              title="Site Location Assets"
+              description="View assets currently sent to each site/location and print by selected location."
               printReady
             />
 

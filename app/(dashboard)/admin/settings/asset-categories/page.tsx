@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ChevronRight, FolderOpen, Layers, Plus, ToggleLeft, ToggleRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/page-header";
-import { requirePermission } from "@/lib/auth/context";
+import { requireAssetManage } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import {
   createMainCategoryAction,
@@ -26,7 +26,7 @@ export default async function AssetCategoriesPage({
 }: {
   searchParams?: Promise<{ error?: string }>;
 }) {
-  await requirePermission("assets.manage");
+  await requireAssetManage();
   const params = await searchParams;
   const errorMsg = params?.error ? (ERROR_MESSAGES[params.error] ?? "An error occurred.") : null;
 

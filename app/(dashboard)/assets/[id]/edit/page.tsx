@@ -2,11 +2,11 @@ import { SimpleAssetForm } from "@/components/assets/simple-asset-form";
 import { BackLink } from "@/components/ui/back-link";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
-import { requirePermission } from "@/lib/auth/context";
+import { requireAssetManage } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 
 export default async function EditAssetPage({ params }: { params: Promise<{ id: string }> }) {
-  const context = await requirePermission("assets.manage");
+  const context = await requireAssetManage();
   // New Asset Popup and Add Asset Type Unit 10G.38, Task 8: Super Admin and
   // Maintenance Manager may add new asset types; every other role keeps
   // dropdown-selection only.
