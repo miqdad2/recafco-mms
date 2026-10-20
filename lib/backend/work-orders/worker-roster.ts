@@ -55,9 +55,10 @@ export async function getInternalTeamRoster(workOrderId: string): Promise<Worker
   }));
 }
 
-// Replace-all (soft): any previously "active" row not present in the new
-// selection is marked "removed", never hard-deleted — a future work-session/
-// timer unit needs this table's id to stay valid history even after a
+// Reconcile (soft): workers kept in the new selection keep their existing
+// assignment row, a "finished" worker is never re-created, and any "active"
+// row no longer selected is marked "removed", never hard-deleted — work
+// sessions FK to this table's id, so it must stay valid history even after a
 // roster correction. Blocked once the Job Card is Closed, for everyone —
 // Unit 4 removed every post-closure correction path and this unit does not
 // reopen one (Task 6).
@@ -79,6 +80,10 @@ export async function assignInternalTeamRoster(context: CurrentUserContext, inpu
   }
 
   const result = await withBackendTransaction(context.userId, async (tx) => {
+    // Serialize concurrent roster saves for the same Job Card so the
+    // replace-all below cannot interleave and leave duplicate active rows.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`roster:${input.workOrderId}`}, 0))`;
+
     const wo = await tx.work_orders.findUnique({
       where: { id: input.workOrderId },
       select: { id: true, work_order_number: true, status: true, created_by: true },
@@ -97,26 +102,78 @@ export async function assignInternalTeamRoster(context: CurrentUserContext, inpu
     }
     const workerById = new Map(workers.map((w) => [w.id, w]));
 
-    await tx.workOrderWorkerAssignment.updateMany({
-      where: { work_order_id: input.workOrderId, status: "active" },
-      data: { status: "removed", updated_at: new Date() },
+    // Reconcile instead of replace-all: a worker who stays on the roster keeps
+    // the SAME assignment row, because work sessions FK to its id and the
+    // labor summary only reads active/finished assignments — a replaced row
+    // would orphan the worker's recorded hours. A "finished" worker is never
+    // re-created (that listed them twice); only genuinely dropped active
+    // rows become "removed".
+    const existing = await tx.workOrderWorkerAssignment.findMany({
+      where: { work_order_id: input.workOrderId, status: { in: ["active", "finished"] } },
+      select: { id: true, worker_id: true, status: true },
     });
+    const activeByWorker = new Map(existing.filter((r) => r.status === "active").map((r) => [r.worker_id, r]));
+    const finishedWorkerIds = new Set(existing.filter((r) => r.status === "finished").map((r) => r.worker_id));
+    const pickedIds = new Set(uniqueIds);
+
+    const droppedIds = existing.filter((r) => r.status === "active" && !pickedIds.has(r.worker_id)).map((r) => r.id);
+    if (droppedIds.length > 0) {
+      await tx.workOrderWorkerAssignment.updateMany({
+        where: { id: { in: droppedIds } },
+        data: { status: "removed", updated_at: new Date() },
+      });
+    }
+
+    // A rate snapshot is only refreshed while the assignment has no recorded
+    // sessions; once work exists it stays frozen.
+    const keptIds = picks.map(({ id }) => activeByWorker.get(id)?.id).filter((v): v is string => Boolean(v));
+    const withSessions = new Set(
+      keptIds.length
+        ? (
+            await tx.workOrderWorkSession.findMany({
+              where: { worker_assignment_id: { in: keptIds } },
+              select: { worker_assignment_id: true },
+              distinct: ["worker_assignment_id"],
+            })
+          ).map((s) => s.worker_assignment_id)
+        : []
+    );
 
     // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 2/4:
-    // per-worker estimate, keyed by worker_profiles.id in the input (the new
-    // assignment row's own id doesn't exist until this createMany runs). A
-    // key with no matching pick (stale/unrelated) is simply never read here.
-    await tx.workOrderWorkerAssignment.createMany({
-      data: picks.map(({ id, role }) => ({
-        work_order_id: input.workOrderId,
-        worker_id: id,
-        worker_role: role,
-        hourly_rate_snapshot: workerById.get(id)!.hourly_rate,
-        assigned_by: context.userId,
-        notes: input.notes?.trim() || null,
-        estimated_hours: input.estimatedHoursByWorkerId?.[id] ?? null,
-      })),
-    });
+    // per-worker estimate, keyed by worker_profiles.id in the input (a new
+    // assignment row's own id doesn't exist yet). A key with no matching pick
+    // (stale/unrelated) is simply never read here.
+    const notes = input.notes?.trim() || null;
+    const toCreate = [];
+    for (const { id, role } of picks) {
+      const estimated_hours = input.estimatedHoursByWorkerId?.[id] ?? null;
+      const kept = activeByWorker.get(id);
+      if (kept) {
+        await tx.workOrderWorkerAssignment.update({
+          where: { id: kept.id },
+          data: {
+            worker_role: role,
+            notes,
+            estimated_hours,
+            updated_at: new Date(),
+            ...(withSessions.has(kept.id) ? {} : { hourly_rate_snapshot: workerById.get(id)!.hourly_rate }),
+          },
+        });
+      } else if (!finishedWorkerIds.has(id)) {
+        toCreate.push({
+          work_order_id: input.workOrderId,
+          worker_id: id,
+          worker_role: role,
+          hourly_rate_snapshot: workerById.get(id)!.hourly_rate,
+          assigned_by: context.userId,
+          notes,
+          estimated_hours,
+        });
+      }
+    }
+    if (toCreate.length > 0) {
+      await tx.workOrderWorkerAssignment.createMany({ data: toCreate });
+    }
 
     return {
       workOrderId: wo.id,

@@ -1808,6 +1808,7 @@ function InternalTeamWizardFields({
         emptyMessage="No active supervisor found."
         preferredSkillCategory={workerTeam}
       />
+      <p className="-mt-2 text-xs text-[#9CA3AF]">A supervisor can oversee multiple Job Cards.</p>
 
       <WorkerPickerField
         label="Technicians"

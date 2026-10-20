@@ -21,6 +21,7 @@ import { isSalaryPending } from "@/lib/backend/workers/salary";
 export type CombinedWorker = WorkerProfileRow & {
   status: WorkerActivityStatus | "Inactive";
   current_job_card: WorkerCurrentJobCard | null;
+  active_assignment_count: number;
   today_hours: number;
   month_hours: number;
   month_amount: number;
@@ -105,6 +106,9 @@ export function WorkerCard({ worker, canViewCosts, canManageWorkerProfiles, isMa
               <div className="mt-1">
                 <StatusBadge label={jcDisplayStatus} tone={simplifiedStatusTone(jcDisplayStatus)} />
               </div>
+            ) : null}
+            {worker.active_assignment_count > 1 ? (
+              <p className="mt-1 text-[11px] font-semibold text-[#6B7280]">Assigned to {worker.active_assignment_count} Job Cards</p>
             ) : null}
           </div>
         ) : (
