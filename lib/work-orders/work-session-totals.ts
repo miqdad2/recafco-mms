@@ -453,35 +453,70 @@ export type SessionRow = {
   correction_reason: string | null;
   entered_by_name: string | null;
   edited_by_name: string | null;
+  // Job Card Deletion and Worker Time Correction: the first recorded values
+  // (null when the period was never changed) and any correction waiting for
+  // Manager review.
+  original_started_at: string | null;
+  original_ended_at: string | null;
+  original_duration_minutes: number | null;
+  pending_correction: {
+    corrected_started_at: string;
+    corrected_ended_at: string;
+    corrected_duration_minutes: number;
+    requested_by_name: string;
+  } | null;
 };
 
 // "View Sessions" — full session history for one worker assignment,
 // including cancelled rows (so a correction trail stays visible), newest
-// first.
-export async function getSessionsForAssignment(workerAssignmentId: string): Promise<SessionRow[]> {
+// first. `includeCosts: false` zeroes the rate/amount fields so they never
+// leave the server for a viewer without cost permission.
+export async function getSessionsForAssignment(
+  workerAssignmentId: string,
+  opts: { includeCosts: boolean } = { includeCosts: true }
+): Promise<SessionRow[]> {
   const rows = await prisma.workOrderWorkSession.findMany({
     where: { worker_assignment_id: workerAssignmentId },
     include: {
       profiles_entered_by: { select: { full_name: true } },
       profiles_edited_by: { select: { full_name: true } },
+      time_corrections: {
+        where: { status: "Pending" },
+        include: { profiles_requested_by: { select: { full_name: true } } },
+        take: 1,
+      },
     },
     orderBy: { started_at: "desc" },
   });
-  return rows.map((r) => ({
-    id: r.id,
-    started_at: r.started_at.toISOString(),
-    paused_at: r.paused_at?.toISOString() ?? null,
-    stopped_at: r.stopped_at?.toISOString() ?? null,
-    status: r.status,
-    duration_minutes: r.duration_minutes,
-    hourly_rate_snapshot: Number(r.hourly_rate_snapshot),
-    calculated_amount: Number(r.calculated_amount),
-    is_manual_entry: r.is_manual_entry,
-    notes: r.notes,
-    correction_reason: r.correction_reason,
-    entered_by_name: r.profiles_entered_by?.full_name ?? null,
-    edited_by_name: r.profiles_edited_by?.full_name ?? null,
-  }));
+  return rows.map((r) => {
+    const pending = r.time_corrections[0] ?? null;
+    return {
+      id: r.id,
+      started_at: r.started_at.toISOString(),
+      paused_at: r.paused_at?.toISOString() ?? null,
+      stopped_at: r.stopped_at?.toISOString() ?? null,
+      status: r.status,
+      duration_minutes: r.duration_minutes,
+      hourly_rate_snapshot: opts.includeCosts ? Number(r.hourly_rate_snapshot) : 0,
+      calculated_amount: opts.includeCosts ? Number(r.calculated_amount) : 0,
+      is_manual_entry: r.is_manual_entry,
+      notes: r.notes,
+      correction_reason: r.correction_reason,
+      entered_by_name: r.profiles_entered_by?.full_name ?? null,
+      edited_by_name: r.profiles_edited_by?.full_name ?? null,
+      original_started_at: r.original_started_at?.toISOString() ?? null,
+      original_ended_at: r.original_ended_at?.toISOString() ?? null,
+      original_duration_minutes: r.original_duration_minutes,
+      pending_correction: pending
+        ? {
+            corrected_started_at: pending.corrected_started_at.toISOString(),
+            corrected_ended_at: pending.corrected_ended_at.toISOString(),
+            corrected_duration_minutes: pending.corrected_duration_minutes,
+            requested_by_name: pending.profiles_requested_by.full_name,
+          }
+        : null,
+    };
+  });
 }
 
 // Future Manager dashboard/reports foundation (Task 8) — not wired to any

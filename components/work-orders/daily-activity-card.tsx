@@ -1,6 +1,7 @@
 import Link from "next/link";
 import {
   AlertTriangle,
+  Archive,
   CheckCircle2,
   ChevronRight,
   Clock,
@@ -16,6 +17,8 @@ import {
 
 import { StatusBadge } from "@/components/ui/status-badge";
 import { WorkerSessionRow } from "@/components/work-orders/worker-session-row";
+import { JobCardDatesSection } from "@/components/work-orders/job-card-dates-section";
+import type { JobCardDates } from "@/lib/work-orders/job-card-dates";
 import { ReviewApproveClosureButton } from "@/components/work-orders/review-approve-closure-button";
 import type { WorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import type { MaterialFulfillment } from "@/lib/work-orders/material-fulfillment";
@@ -49,8 +52,9 @@ export type DailyActivityNextAction = { message: string; buttonLabel: string | n
 // Mirrors app/(dashboard)/maintenance/daily-activity/page.tsx's own
 // PriorityBucket union exactly (kept in sync manually, same convention as
 // the role-slug checks duplicated elsewhere in this app) — used only to
-// pick the list row's left accent color. Unit 10G.54 added "waiting-approval".
-type PriorityBucket = "working" | "paused" | "materials" | "closure" | "waiting-approval" | "assigned-idle" | "unassigned";
+// pick the list row's left accent color. Unit 10G.54 added "waiting-approval";
+// Daily Activity Status Accuracy Unit added "closed" (Closed Today filter).
+type PriorityBucket = "working" | "paused" | "materials" | "closure" | "waiting-approval" | "assigned-idle" | "unassigned" | "closed";
 
 export type DailyActivityCardData = {
   id: string;
@@ -58,6 +62,9 @@ export type DailyActivityCardData = {
   status: string;
   displayStatus: string;
   displayStatusTone: "green" | "amber" | "red" | "blue" | "gray";
+  // Daily Activity Status Accuracy Unit, Issue 4: one short plain-language
+  // sentence for displayStatus (e.g. "Work has been paused.").
+  statusDescription: string;
   isUnusualActiveSession: boolean;
   assetLabel: string | null;
   issue: string;
@@ -108,6 +115,20 @@ export type DailyActivityCardData = {
   detailHref: string;
   // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 7.
   estimatedHours: number | null;
+  // Manual Worker Time Entry — minutes by source and entries waiting for the
+  // Manager (never money), lifecycle dates, and whether this viewer may
+  // enter time manually (Data Entry; server re-checks).
+  timeSummary: {
+    automaticMinutes: number;
+    manualMinutes: number;
+    correctedPeriods: number;
+    pendingManualEntries: number;
+    pendingCorrections: number;
+    pendingByAssignment: Record<string, { start: string; end: string; minutes: number }[]>;
+    manualMinutesByAssignment: Record<string, number>;
+  } | null;
+  dates: JobCardDates | null;
+  canRequestManualTime: boolean;
 };
 
 // Anchor target inside the panel that the Next Action button scrolls to for
@@ -157,6 +178,7 @@ const PRIORITY_CARD_STYLE: Record<PriorityBucket, PriorityCardStyle> = {
   // "Needs Assignment" / default — white with a light blue accent, same
   // neutral treatment this page has always used for "nothing urgent yet."
   unassigned:         { bg: "bg-white",     hoverBg: "hover:bg-blue-50",    borderLeft: "border-l-[#93C5FD]", label: "text-blue-700" },
+  closed:             { bg: "bg-gray-50",   hoverBg: "hover:bg-gray-100",   borderLeft: "border-l-[#64748B]", label: "text-slate-700" },
 };
 
 // Job Card Card UI Polish Unit 10G.55A, Task 3/4: one small, already-
@@ -172,6 +194,7 @@ const PRIORITY_ICON: Record<PriorityBucket, LucideIcon> = {
   "waiting-approval": Hourglass,
   "assigned-idle": Clock,
   unassigned: Users,
+  closed: Archive,
 };
 
 const chipToneClass: Record<DailyActivityChip["tone"], string> = {
@@ -283,7 +306,9 @@ export function DailyActivityListRow({
       </div>
 
       {/* Footer — created date/time, small and muted (Task 1/6). */}
-      <p className="mt-1 truncate text-[10px] text-[#9CA3AF]">Created: {card.createdLabel}</p>
+      <p className="mt-1 truncate text-[11px] font-semibold text-[#4B5563]">
+        <span className="font-bold text-[#374151]">Created:</span> {card.createdLabel}
+      </p>
     </button>
   );
 }
@@ -529,6 +554,7 @@ export function DailyActivitySelectedPanel({
               </span>
             ) : null}
           </div>
+          <p className="mt-1 text-xs font-semibold text-[#4B5563]">{card.statusDescription}</p>
           <p className="mt-1 text-sm text-[#374151]">{card.issue}</p>
           {/* Task 6 — "Created: Today, 1:55 PM" in the selected panel header. */}
           <p className="mt-0.5 text-xs text-[#6B7280]">
@@ -537,6 +563,27 @@ export function DailyActivitySelectedPanel({
           </p>
         </div>
       </div>
+
+      {/* Manual Worker Time Entry / Job Card dates — Created, Work Start,
+          Work End from recorded timestamps (same rules as the detail page
+          and print), Kuwait time. */}
+      {card.dates ? (
+        <div className="mt-2.5">
+          <JobCardDatesSection dates={card.dates} compact />
+        </div>
+      ) : null}
+      {card.timeSummary && card.timeSummary.pendingManualEntries + card.timeSummary.pendingCorrections > 0 ? (
+        <p role="status" className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+          Worker time waiting for Manager review: {card.timeSummary.pendingManualEntries} manual{" "}
+          {card.timeSummary.pendingManualEntries === 1 ? "entry" : "entries"}, {card.timeSummary.pendingCorrections}{" "}
+          {card.timeSummary.pendingCorrections === 1 ? "correction" : "corrections"}. It is not counted until approved, and closure waits for it.
+          {card.isManager ? (
+            <Link href={`${detailHref}?tab=assignment`} className="ml-1 underline">
+              Review in Job Card
+            </Link>
+          ) : null}
+        </p>
+      ) : null}
 
       {/* No-Confusion Material + Status Panel Unit 10G.56, Task 1/8 — Status
           Summary: 3 compact rows answering "materials completed or
@@ -683,6 +730,11 @@ export function DailyActivitySelectedPanel({
                 isManager={card.isManager}
                 canViewCosts={card.canViewCosts}
                 todayHours={w.today_hours}
+                jobCardNumber={card.workOrderNumber}
+                canRequestManualTime={card.canRequestManualTime && card.canManageSessions}
+                pendingManualEntries={card.timeSummary?.pendingByAssignment[w.worker_assignment_id] ?? []}
+                manualMinutes={card.timeSummary?.manualMinutesByAssignment[w.worker_assignment_id] ?? 0}
+                canRequestCorrection={card.canRequestManualTime && card.canManageSessions}
               />
             ))}
           </div>

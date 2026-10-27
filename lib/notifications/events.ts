@@ -76,6 +76,16 @@ export const notificationEvents: NotificationEventDefinition[] = [
   { eventKey: "job_card.assigned", category: "Work Orders", priority: "high", critical: true },
   { eventKey: "job_card.in_progress", category: "Work Orders", priority: "low", critical: false },
   { eventKey: "job_card.closed", category: "Work Orders", priority: "normal", critical: false },
+  // Job Card Deletion Requests and Worker Time Corrections — the request
+  // goes to the Maintenance Manager, the decision back to the requester.
+  // Callers pass their own title/message (lib/backend/work-orders/
+  // job-card-deletion.ts, work-time-corrections.ts).
+  { eventKey: "job_card.deletion_requested", category: "Approvals", priority: "high", critical: true },
+  { eventKey: "job_card.deletion_approved", category: "Approvals", priority: "normal", critical: false },
+  { eventKey: "job_card.deletion_rejected", category: "Approvals", priority: "normal", critical: false },
+  { eventKey: "job_card.time_correction_requested", category: "Approvals", priority: "high", critical: true },
+  { eventKey: "job_card.time_correction_approved", category: "Approvals", priority: "normal", critical: false },
+  { eventKey: "job_card.time_correction_rejected", category: "Approvals", priority: "normal", critical: false },
   { eventKey: "material_request.created", category: "Parts Requests", priority: "normal", critical: false },
   { eventKey: "material_request.approved", category: "Parts Requests", priority: "high", critical: true },
   { eventKey: "material_request.waiting_stock", category: "Store / Inventory", priority: "high", critical: true },

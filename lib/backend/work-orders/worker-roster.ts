@@ -8,7 +8,7 @@ import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { writeAuditLog } from "@/lib/audit/log";
 import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
 import { dedupeRecipients } from "@/lib/backend/notifications/safe-notifications";
-import { getActiveUserIdsByRoleSlugs } from "@/lib/backend/work-orders/repository";
+import { getActiveUserIdsByRoleSlugs, lockOpenJobCardForActivity } from "@/lib/backend/work-orders/repository";
 import { emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import type { InternalTeamRosterInput } from "@/lib/backend/workers/validators";
 
@@ -84,11 +84,8 @@ export async function assignInternalTeamRoster(context: CurrentUserContext, inpu
     // replace-all below cannot interleave and leave duplicate active rows.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`roster:${input.workOrderId}`}, 0))`;
 
-    const wo = await tx.work_orders.findUnique({
-      where: { id: input.workOrderId },
-      select: { id: true, work_order_number: true, status: true, created_by: true },
-    });
-    if (!wo) throw new AppError("Job Card was not found.", { code: "NOT_FOUND" });
+    // Job Card Deletion: activity lock + deleted Job Card refused.
+    const wo = await lockOpenJobCardForActivity(tx, input.workOrderId);
     if (wo.status === "Closed") {
       throw new AppError("This Job Card is closed. Assignment can no longer be changed.", { code: "WORKFLOW_ERROR" });
     }

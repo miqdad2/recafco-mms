@@ -5,6 +5,13 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+// Final Integration Review: every shared date/time display names
+// Asia/Kuwait explicitly, so the output never depends on the time zone of
+// the Windows server (server-rendered pages) or of the viewer's browser.
+// Kuwait is UTC+3 with no daylight saving; a @db.Date value (UTC midnight)
+// therefore always shows its own calendar date.
+const KUWAIT_TIME_ZONE = "Asia/Kuwait";
+
 export function formatDateTime(value: string | null | undefined) {
   if (!value) {
     return "Not recorded";
@@ -12,7 +19,8 @@ export function formatDateTime(value: string | null | undefined) {
 
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
-    timeStyle: "short"
+    timeStyle: "short",
+    timeZone: KUWAIT_TIME_ZONE
   }).format(new Date(value));
 }
 
@@ -25,7 +33,7 @@ export function formatDate(value: string | Date | null | undefined) {
     return "Not recorded";
   }
 
-  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(value));
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: KUWAIT_TIME_ZONE }).format(new Date(value));
 }
 
 // Materials Requests Requested Date & Time Column Cleanup: an exact,
@@ -46,6 +54,7 @@ export function formatExactDateTime(value: Date | string | null | undefined) {
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
+    timeZone: KUWAIT_TIME_ZONE,
   }).format(new Date(value));
 
   return formatted.replace(/\b(am|pm)\b/i, (m) => m.toUpperCase());

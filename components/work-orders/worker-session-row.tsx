@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useRef, useState } from "react";
-import { CheckCircle2, Loader2, Pause, Play } from "lucide-react";
+import { CheckCircle2, Clock, Loader2, Pause, Play } from "lucide-react";
 
 import {
   startWorkSessionAction,
@@ -12,6 +12,8 @@ import {
 import { StatusBadge } from "@/components/ui/status-badge";
 import { LiveTimer } from "@/components/work-orders/live-timer";
 import { ManualTimeEntryModal } from "@/components/work-orders/manual-time-entry-modal";
+import { ManualWorkTimeForm } from "@/components/work-orders/manual-work-time-form";
+import { formatDurationMinutes, formatKuwaitDateTime } from "@/lib/format/kuwait-time";
 import { SessionHistoryModal } from "@/components/work-orders/session-history-modal";
 import { dispatchActionToast } from "@/lib/action-messages";
 import type { WorkerLaborRow } from "@/lib/work-orders/work-session-totals";
@@ -110,6 +112,18 @@ export function WorkerSessionRow({
   // a "today" figure) is completely unaffected — only rendered when a host
   // page passes it.
   todayHours,
+  // Worker Time Correction (all optional — Daily Activity's call site is
+  // unchanged): Data Entry's Correct Time inside View Sessions, and the
+  // row's "Time Manually Corrected" / "Correction waiting" indicators.
+  canRequestCorrection = false,
+  jobCardNumber,
+  corrections,
+  // Manual Worker Time Entry (all optional): Data Entry's "Enter Time
+  // Manually" (sent to the Manager), this worker's entries still waiting,
+  // and how much of the recorded time was entered manually.
+  canRequestManualTime = false,
+  pendingManualEntries = [],
+  manualMinutes = 0,
 }: {
   workOrderId: string;
   worker: WorkerLaborRow;
@@ -117,7 +131,14 @@ export function WorkerSessionRow({
   isManager: boolean;
   canViewCosts: boolean;
   todayHours?: number;
+  canRequestCorrection?: boolean;
+  jobCardNumber?: string | null;
+  corrections?: { pending: number; approved: number };
+  canRequestManualTime?: boolean;
+  pendingManualEntries?: { start: string; end: string; minutes: number }[];
+  manualMinutes?: number;
 }) {
+  const [showManualTime, setShowManualTime] = useState(false);
   const [showManualEntry, setShowManualEntry] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 2: the single
@@ -141,8 +162,12 @@ export function WorkerSessionRow({
             {worker.worker_role}
             {canViewCosts ? ` — ${worker.hourly_rate_snapshot.toFixed(3)} KWD/hr` : ""}
           </p>
-          <div className="mt-1">
+          <div className="mt-1 flex flex-wrap gap-1">
             <StatusBadge label={simpleState} tone={simpleWorkerStateTone(simpleState)} />
+            {corrections?.approved ? <StatusBadge label="Time Manually Corrected" tone="blue" /> : null}
+            {corrections?.pending ? <StatusBadge label="Correction waiting" tone="amber" /> : null}
+            {manualMinutes > 0 ? <StatusBadge label="Manually Entered time" tone="blue" /> : null}
+            {pendingManualEntries.length ? <StatusBadge label="Manual time waiting for Manager" tone="amber" /> : null}
           </div>
         </div>
 
@@ -227,6 +252,28 @@ export function WorkerSessionRow({
                 toastTitle="Work Session Started"
                 className={btnStart}
               />
+              {canRequestManualTime && (
+                <button type="button" onClick={() => setShowManualTime(true)} className={btnSecondary}>
+                  <Clock className="h-3.5 w-3.5" aria-hidden />
+                  Enter Time Manually
+                </button>
+              )}
+              {/* Manual Worker Time Entry: a worker whose time was recorded
+                  without the timer (approved manual entry) stays "Not
+                  Started" until someone explicitly marks the work finished —
+                  never automatically, and never while their manual time is
+                  still waiting (the server refuses that too). */}
+              {hasHistory && pendingManualEntries.length === 0 && (
+                <SessionActionForm
+                  action={finishWorkSessionAction}
+                  workOrderId={workOrderId}
+                  workerAssignmentId={worker.worker_assignment_id}
+                  label="Mark Work Finished"
+                  icon={CheckCircle2}
+                  toastTitle="Worker Finished"
+                  className={btnFinish}
+                />
+              )}
               {hasHistory && (
                 <>
                   {/* Daily Activity Timer Reliability and Remove Data Entry
@@ -295,6 +342,12 @@ export function WorkerSessionRow({
               <button type="button" onClick={() => setShowHistory(true)} className={btnSecondary}>
                 View Sessions
               </button>
+              {canRequestManualTime && (
+                <button type="button" onClick={() => setShowManualTime(true)} className={btnSecondary}>
+                  <Clock className="h-3.5 w-3.5" aria-hidden />
+                  Enter Time Manually
+                </button>
+              )}
             </>
           ) : null}
 
@@ -316,6 +369,25 @@ export function WorkerSessionRow({
         </div>
       </div>
 
+      {pendingManualEntries.length ? (
+        <ul className="mt-2 space-y-1 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900" aria-label="Manual time waiting for Manager review">
+          {pendingManualEntries.map((e) => (
+            <li key={e.start}>
+              <span className="font-bold">Waiting for Manager:</span> {formatKuwaitDateTime(e.start)} → {formatKuwaitDateTime(e.end)} ({formatDurationMinutes(e.minutes)}) — not counted yet
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {showManualTime && (
+        <ManualWorkTimeForm
+          workerAssignmentId={worker.worker_assignment_id}
+          workerName={worker.worker_name}
+          jobCardNumber={jobCardNumber ?? null}
+          hasRecordedTime={hasHistory}
+          onClose={() => setShowManualTime(false)}
+        />
+      )}
       {showManualEntry && (
         <ManualTimeEntryModal
           workOrderId={workOrderId}
@@ -331,6 +403,8 @@ export function WorkerSessionRow({
           isManager={isManager}
           canViewCosts={canViewCosts}
           onClose={() => setShowHistory(false)}
+          canRequestCorrection={canRequestCorrection && canManageSessions}
+          jobCardNumber={jobCardNumber}
         />
       )}
     </div>

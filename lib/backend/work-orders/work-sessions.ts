@@ -7,7 +7,10 @@ import { withBackendTransaction, type BackendTransaction } from "@/lib/backend/s
 import { writeAuditLog } from "@/lib/audit/log";
 import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
 import { dedupeRecipients } from "@/lib/backend/notifications/safe-notifications";
-import { getActiveUserIdsByRoleSlugs } from "@/lib/backend/work-orders/repository";
+import { getActiveUserIdsByRoleSlugs, lockOpenJobCardForActivity } from "@/lib/backend/work-orders/repository";
+import { loadOtherPeriods, lockWorkerTime } from "@/lib/backend/work-orders/work-time-corrections";
+import { parseKuwaitInputValue } from "@/lib/format/kuwait-time";
+import { checkWorkPeriod } from "@/lib/work-orders/work-time-correction-rules";
 import { emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import type {
   StartWorkSessionInput,
@@ -59,11 +62,9 @@ function computeAmount(durationMinutes: number, hourlyRate: number): number {
 }
 
 async function loadOpenWorkOrder(tx: BackendTransaction, workOrderId: string) {
-  const wo = await tx.work_orders.findUnique({
-    where: { id: workOrderId },
-    select: { id: true, work_order_number: true, status: true, created_by: true },
-  });
-  if (!wo) throw new AppError("Job Card was not found.", { code: "NOT_FOUND" });
+  // Job Card Deletion: takes the per-Job-Card activity lock and refuses a
+  // deleted Job Card, so a timer can never start on a card being deleted.
+  const wo = await lockOpenJobCardForActivity(tx, workOrderId);
   if (wo.status === "Closed") {
     throw new AppError("This Job Card is closed. Work sessions can no longer be changed.", { code: "WORKFLOW_ERROR" });
   }
@@ -322,6 +323,24 @@ export async function finishWorkSession(context: CurrentUserContext, input: Paus
       where: { worker_assignment_id: input.workerAssignmentId, status: "Active" },
     });
 
+    // Manual Worker Time Entry: Finish is also how a worker whose time was
+    // entered manually (no timer) is marked done — but only on verified time:
+    // never with no recorded time at all, and never while this worker's
+    // manual time is still waiting for the Manager (submitting it does not
+    // finish the worker; approval of it is what makes it recorded time).
+    if (!active) {
+      const [recorded, pendingManual] = await Promise.all([
+        tx.workOrderWorkSession.count({ where: { worker_assignment_id: input.workerAssignmentId, status: { not: "Cancelled" } } }),
+        tx.workSessionTimeCorrection.count({ where: { worker_assignment_id: input.workerAssignmentId, entry_kind: "manual_entry", status: "Pending" } }),
+      ]);
+      if (pendingManual > 0) {
+        throw new AppError("This worker's manually entered time is waiting for Manager review. Mark the work finished after it is approved.", { code: "WORKFLOW_ERROR" });
+      }
+      if (recorded === 0) {
+        throw new AppError("No work time is recorded for this worker yet. Start the timer, or enter the time manually first.", { code: "WORKFLOW_ERROR" });
+      }
+    }
+
     let durationMinutes = 0;
     let calculatedAmount = 0;
     let sessionId = "";
@@ -385,11 +404,10 @@ export async function finishWorkSession(context: CurrentUserContext, input: Paus
 export async function addManualTimeEntry(context: CurrentUserContext, input: ManualTimeEntryInput) {
   assertIsManager(context);
 
-  const startedAt = new Date(input.startedAt);
-  const stoppedAt = new Date(input.stoppedAt);
-  if (!(stoppedAt.getTime() > startedAt.getTime())) {
-    throw new AppError("Stop time must be after start time.", { code: "VALIDATION_ERROR" });
-  }
+  // Final Integration Review: the form sends Kuwait wall-clock times; parse
+  // them explicitly as Asia/Kuwait, never in the server's own time zone.
+  const startedAt = parseKuwaitInputValue(input.startedAt);
+  const stoppedAt = parseKuwaitInputValue(input.stoppedAt);
 
   const result = await withBackendTransaction(context.userId, async (tx) => {
     const wo = await loadOpenWorkOrder(tx, input.workOrderId);
@@ -405,6 +423,21 @@ export async function addManualTimeEntry(context: CurrentUserContext, input: Man
         { code: "WORKFLOW_ERROR" }
       );
     }
+
+    // Same checks as every hand-entered period: order, not in the future,
+    // no overlap with this worker's other periods (any Job Card), and an
+    // explicit confirmation for an unusually long period.
+    await lockWorkerTime(tx, assignment.worker_id);
+    const now = new Date();
+    const check = checkWorkPeriod({
+      start: startedAt,
+      end: stoppedAt,
+      now,
+      otherPeriods: await loadOtherPeriods(tx, assignment.worker_id, null, now),
+      longPeriodConfirmed: input.confirmLongPeriod === true,
+    });
+    if (!check.ok) throw new AppError(check.message, { code: "VALIDATION_ERROR" });
+    if (!startedAt || !stoppedAt) throw new AppError("Enter valid start and end times.", { code: "VALIDATION_ERROR" });
 
     const durationMinutes = diffMinutes(startedAt, stoppedAt);
     const calculatedAmount = computeAmount(durationMinutes, Number(assignment.hourly_rate_snapshot));
@@ -456,13 +489,18 @@ export async function addManualTimeEntry(context: CurrentUserContext, input: Man
 export async function editWorkSession(context: CurrentUserContext, input: EditWorkSessionInput) {
   assertIsManager(context);
 
-  const startedAt = new Date(input.startedAt);
-  const stoppedAt = new Date(input.stoppedAt);
-  if (!(stoppedAt.getTime() > startedAt.getTime())) {
-    throw new AppError("Stop time must be after start time.", { code: "VALIDATION_ERROR" });
+  // Final Integration Review: Kuwait wall-clock times, parsed explicitly.
+  const parsedStart = parseKuwaitInputValue(input.startedAt);
+  const parsedStop = parseKuwaitInputValue(input.stoppedAt);
+  if (!parsedStart || !parsedStop) {
+    throw new AppError("Enter valid start and end dates and times.", { code: "VALIDATION_ERROR" });
   }
+  const startedAt = parsedStart;
+  const stoppedAt = parsedStop;
+  const reason = input.correctionReason.trim();
 
   const result = await withBackendTransaction(context.userId, async (tx) => {
+    await tx.$queryRaw`SELECT id FROM work_order_work_sessions WHERE id = ${input.sessionId}::uuid FOR UPDATE`;
     const existing = await tx.workOrderWorkSession.findUnique({
       where: { id: input.sessionId },
       include: { worker_profiles: { select: { name: true } } },
@@ -472,8 +510,8 @@ export async function editWorkSession(context: CurrentUserContext, input: EditWo
       throw new AppError("Stop or pause this session before editing it.", { code: "WORKFLOW_ERROR" });
     }
 
-    const wo = await tx.work_orders.findUnique({
-      where: { id: existing.work_order_id },
+    const wo = await tx.work_orders.findFirst({
+      where: { id: existing.work_order_id, deleted_at: null },
       select: { id: true, work_order_number: true, status: true, created_by: true },
     });
     if (!wo) throw new AppError("Job Card was not found.", { code: "NOT_FOUND" });
@@ -495,18 +533,82 @@ export async function editWorkSession(context: CurrentUserContext, input: EditWo
       calculatedAmount: Number(existing.calculated_amount),
     };
 
+    // Final Integration Review: the Manager's direct correction follows the
+    // same rules as a Data Entry correction — order, not in the future, no
+    // overlap with the worker's other periods, long periods confirmed — and
+    // waits for any pending Data Entry correction of this period to be
+    // decided first (approving that one later would overwrite this edit).
+    await lockWorkerTime(tx, existing.worker_id);
+    const pendingCorrection = await tx.workSessionTimeCorrection.findFirst({
+      where: { work_session_id: existing.id, status: "Pending" },
+      select: { id: true },
+    });
+    if (pendingCorrection) {
+      throw new AppError(
+        "A time correction for this work period is waiting for review. Approve or reject it in Time Corrections first.",
+        { code: "CONFLICT" }
+      );
+    }
+    const now = new Date();
+    const check = checkWorkPeriod({
+      start: startedAt,
+      end: stoppedAt,
+      now,
+      otherPeriods: await loadOtherPeriods(tx, existing.worker_id, existing.id, now),
+      longPeriodConfirmed: input.confirmLongPeriod === true,
+    });
+    if (!check.ok) throw new AppError(check.message, { code: "VALIDATION_ERROR" });
+
     const durationMinutes = diffMinutes(startedAt, stoppedAt);
     const calculatedAmount = computeAmount(durationMinutes, Number(existing.hourly_rate_snapshot));
+
+    // Correction history: one row per Manager correction, so the Time
+    // Corrections panel lists it beside Data Entry corrections — the values
+    // before THIS edit, the new values, reason, who and when. Requested and
+    // decided by the same Manager (a direct correction needs no second
+    // approval; that rule only applies to Data Entry requests).
+    const previousEnd = existing.stopped_at ?? existing.paused_at;
+    if (previousEnd) {
+      await tx.workSessionTimeCorrection.create({
+        data: {
+          work_session_id: existing.id,
+          work_order_id: existing.work_order_id,
+          worker_id: existing.worker_id,
+          original_started_at: existing.started_at,
+          original_ended_at: previousEnd,
+          original_duration_minutes: existing.duration_minutes,
+          corrected_started_at: startedAt,
+          corrected_ended_at: stoppedAt,
+          corrected_duration_minutes: durationMinutes,
+          reason,
+          status: "Approved",
+          requested_by: context.userId,
+          requested_at: now,
+          reviewed_by: context.userId,
+          reviewed_at: now,
+          review_remarks: "Corrected directly by the Manager.",
+        },
+      });
+    }
 
     const updated = await tx.workOrderWorkSession.update({
       where: { id: input.sessionId },
       data: {
+        // Job Card Deletion and Worker Time Correction: the first recorded
+        // values are kept (written only while still empty).
+        ...(existing.original_started_at
+          ? {}
+          : {
+              original_started_at: existing.started_at,
+              original_ended_at: existing.stopped_at ?? existing.paused_at,
+              original_duration_minutes: existing.duration_minutes,
+            }),
         started_at: startedAt,
         stopped_at: existing.status === "Completed" ? stoppedAt : existing.stopped_at,
         paused_at: existing.status === "Paused" ? stoppedAt : existing.paused_at,
         duration_minutes: durationMinutes,
         calculated_amount: calculatedAmount,
-        correction_reason: input.correctionReason.trim(),
+        correction_reason: reason,
         edited_by: context.userId,
       },
     });
@@ -565,8 +667,8 @@ export async function cancelWorkSession(context: CurrentUserContext, input: Canc
       throw new AppError("This work session is already cancelled.", { code: "WORKFLOW_ERROR" });
     }
 
-    const wo = await tx.work_orders.findUnique({
-      where: { id: existing.work_order_id },
+    const wo = await tx.work_orders.findFirst({
+      where: { id: existing.work_order_id, deleted_at: null },
       select: { id: true, work_order_number: true, status: true, created_by: true },
     });
     if (!wo) throw new AppError("Job Card was not found.", { code: "NOT_FOUND" });

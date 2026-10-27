@@ -34,6 +34,10 @@ export interface LiveDashboardHeaderProps {
   profileName: string;
   subtitle: string;
   className?: string;
+  // Data Entry Dashboard Visual Refinement: opt-in typography polish (a
+  // touch smaller, tighter heading; larger, darker supporting line), passed
+  // only by the Data Entry dashboard so other roles' header is unchanged.
+  refined?: boolean;
 }
 
 const TYPING_SPEED_MS = 45;
@@ -45,7 +49,7 @@ function greetingForHour(hour: number): string {
   return "Good evening";
 }
 
-export function LiveDashboardHeader({ profileName, subtitle, className = "" }: LiveDashboardHeaderProps) {
+export function LiveDashboardHeader({ profileName, subtitle, className = "", refined = false }: LiveDashboardHeaderProps) {
   const [mounted, setMounted] = useState(false);
   const [greeting, setGreeting] = useState<string | null>(null);
   const [typedLength, setTypedLength] = useState(0);
@@ -97,11 +101,25 @@ export function LiveDashboardHeader({ profileName, subtitle, className = "" }: L
 
   return (
     <div className={`border-b border-[#DDE2EA] bg-white px-4 py-4 sm:px-6 sm:py-6 ${className}`}>
-      <div className="min-w-0 border-l-4 border-[#ED1C24] pl-4">
-        <h1 className="text-2xl font-black tracking-tight text-[#111827] sm:text-3xl">
+      <div className={`min-w-0 border-l-4 border-[#ED1C24] ${refined ? "py-0.5 pl-4 sm:pl-5" : "pl-4"}`}>
+        <h1
+          className={
+            refined
+              ? "text-2xl font-extrabold leading-tight tracking-tight text-[#111827] sm:text-[28px]"
+              : "text-2xl font-black tracking-tight text-[#111827] sm:text-3xl"
+          }
+        >
           {displayedGreeting}
         </h1>
-        <p className="mt-2 hidden max-w-3xl text-sm leading-6 text-[#4B5563] sm:block">{subtitle}</p>
+        <p
+          className={
+            refined
+              ? "mt-1.5 hidden max-w-3xl text-[15px] leading-6 text-[#4B5563] sm:block"
+              : "mt-2 hidden max-w-3xl text-sm leading-6 text-[#4B5563] sm:block"
+          }
+        >
+          {subtitle}
+        </p>
       </div>
     </div>
   );

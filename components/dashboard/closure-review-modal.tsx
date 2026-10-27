@@ -16,6 +16,7 @@ import { dispatchActionToast } from "@/lib/action-messages";
 import type { SessionRow } from "@/lib/work-orders/work-session-totals";
 import { computeHoursVariance, hoursVarianceTone, deriveSimpleWorkerState, simpleWorkerStateTone } from "@/lib/work-orders/hours-variance";
 import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { formatDurationMinutes } from "@/lib/format/kuwait-time";
 
 // Closure Requests Review Popup Unit 10G.2.
 //
@@ -448,6 +449,15 @@ export function ClosureReviewModal({
               Total workers: <strong className="text-[#111827]">{detail.workersCount}</strong>
             </p>
           </div>
+          {/* Manual Worker Time Entry — source of the hours before closing. */}
+          <p className="mt-1 text-[11px] text-[#4B5563]">
+            Timer recorded: <strong className="text-[#111827]">{formatDurationMinutes(detail.timeSources.automaticMinutes)}</strong>
+            {" · "}Manually entered (approved): <strong className="text-[#111827]">{formatDurationMinutes(detail.timeSources.manualMinutes)}</strong>
+            {detail.timeSources.correctedPeriods ? <> · Corrected periods: <strong className="text-[#111827]">{detail.timeSources.correctedPeriods}</strong></> : null}
+            {detail.timeSources.pending ? (
+              <span className="ml-1 font-bold text-amber-700">· {detail.timeSources.pending} waiting for review — approve or reject before closing</span>
+            ) : null}
+          </p>
           {detail.workers.length === 0 ? (
             <p className="mt-1 text-xs text-[#9CA3AF]">No workers recorded on this Job Card.</p>
           ) : (

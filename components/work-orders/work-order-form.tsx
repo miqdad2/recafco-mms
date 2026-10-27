@@ -5,6 +5,7 @@ import { FormSection } from "@/components/ui/form-section";
 import { FormDocumentHeader } from "@/components/forms/form-document-header";
 import Link from "next/link";
 import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/maintenance-types";
+import { toKuwaitInputValue } from "@/lib/format/kuwait-time";
 
 const maintenanceTypes = MAINTENANCE_TYPES;
 // Worker Team / Division Option Cleanup: narrowed to the 4 options offered
@@ -40,8 +41,11 @@ type FullAssetOption = {
 };
 type FormRecord = Record<string, string | number | null | undefined>;
 
+// Final Integration Review: pre-fill the stored instant as Kuwait wall-clock
+// time (it was the UTC wall-clock — value.slice(0, 16) of an ISO string —
+// which then saved back shifted). The server parses it as Kuwait time.
 function dateTimeLocal(value: string | number | null | undefined) {
-  return typeof value === "string" ? value.slice(0, 16) : "";
+  return typeof value === "string" && value ? toKuwaitInputValue(value) : "";
 }
 
 export function WorkOrderForm({

@@ -29,6 +29,7 @@ export default async function NewWorkOrderPage({
 
   return (
     <WorkOrderWizard
+      currentUserId={context.userId}
       assets={assets}
       preselectedAssetId={preselectedAssetId}
       dismissHref="/maintenance/work-orders"

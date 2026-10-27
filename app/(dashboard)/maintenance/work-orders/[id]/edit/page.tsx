@@ -26,10 +26,14 @@ export default async function EditWorkOrderPage({ params }: { params: Promise<{ 
 
   const workOrder = rawWorkOrder ? {
     ...rawWorkOrder,
-    date_of_order: rawWorkOrder.date_of_order.toISOString(),
+    // <input type="date"> only accepts yyyy-mm-dd; a full ISO timestamp left
+    // the field blank, so the required Date of order blocked every save and
+    // Next service date was silently cleared on save. Both are @db.Date
+    // (stored as UTC midnight), so the first 10 characters are the date.
+    date_of_order: rawWorkOrder.date_of_order.toISOString().slice(0, 10),
     starting_datetime: rawWorkOrder.starting_datetime?.toISOString() ?? null,
     ending_datetime: rawWorkOrder.ending_datetime?.toISOString() ?? null,
-    next_service_date: rawWorkOrder.next_service_date?.toISOString() ?? null,
+    next_service_date: rawWorkOrder.next_service_date?.toISOString().slice(0, 10) ?? null,
     created_at: rawWorkOrder.created_at.toISOString(),
     updated_at: rawWorkOrder.updated_at.toISOString(),
     deleted_at: rawWorkOrder.deleted_at?.toISOString() ?? null,

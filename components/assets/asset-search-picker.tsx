@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { CheckCircle2, Search } from "lucide-react";
 
 import { StatusBadge } from "@/components/ui/status-badge";
 import { cn } from "@/lib/utils";
@@ -70,7 +70,7 @@ export function AssetSearchPicker({
   assets,
   value,
   onChange,
-  placeholder = "Search asset code, name, plate number, brand, or model…",
+  placeholder = "Type asset code, name, plate number, brand or model…",
   disabled = false,
   required = false,
 }: {
@@ -146,12 +146,17 @@ export function AssetSearchPicker({
       <div className="relative">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9CA3AF]" aria-hidden="true" />
         <input
-          type="text"
+          type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter in the search box never submits the surrounding form.
+            if (e.key === "Enter") e.preventDefault();
+          }}
           placeholder={placeholder}
           disabled={disabled}
-          className="focus-ring w-full rounded-md border border-[#E5E7EB] bg-white py-2 pl-9 pr-3 text-sm"
+          autoComplete="off"
+          className="focus-ring min-h-11 w-full rounded-md border border-[#D1D5DB] bg-white py-2 pl-9 pr-3 text-base sm:text-sm"
           aria-label="Search assets, vehicles, and machines"
         />
       </div>
@@ -164,7 +169,7 @@ export function AssetSearchPicker({
             onClick={() => setFilter(f.value)}
             disabled={disabled}
             className={cn(
-              "rounded-full border px-3 py-1 text-xs font-semibold transition",
+              "focus-ring min-h-9 rounded-full border px-3 py-1 text-sm font-semibold transition",
               filter === f.value
                 ? "border-[#111827] bg-[#111827] text-white"
                 : "border-[#E5E7EB] bg-white text-[#4B5563] hover:border-[#111827]"
@@ -192,7 +197,22 @@ export function AssetSearchPicker({
 
       <div className="max-h-80 overflow-y-auto rounded-md border border-[#E5E7EB]">
         {displayList.length === 0 ? (
-          <p className="p-4 text-center text-sm text-[#9CA3AF]">No assets match your search.</p>
+          <div className="p-4 text-center text-sm text-[#4B5563]" role="status">
+            <p className="font-semibold text-[#111827]">
+              {q ? `No asset matches "${query.trim()}"${filter !== "all" ? ` in ${filter}` : ""}.` : `No ${filter} assets.`}
+            </p>
+            <p className="mt-1">Check the spelling, or try the asset code or plate number{filter !== "all" ? `, or choose All above` : ""}.</p>
+            <button
+              type="button"
+              onClick={() => {
+                setQuery("");
+                setFilter("all");
+              }}
+              className="focus-ring mt-3 inline-flex min-h-11 items-center rounded-md border border-[#D1D5DB] bg-white px-4 text-sm font-bold text-[#111827] hover:bg-gray-50"
+            >
+              Clear search
+            </button>
+          </div>
         ) : (
           <ul className="divide-y divide-[#E5E7EB]">
             {displayList.map((a) => (
@@ -201,17 +221,17 @@ export function AssetSearchPicker({
                   type="button"
                   onClick={() => handleSelect(a.id)}
                   disabled={disabled}
-                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="focus-ring flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3 text-left hover:bg-[#FEF2F2] focus-visible:bg-[#FEF2F2] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-bold text-[#111827]">
+                    <p className="text-sm font-bold text-[#111827] [overflow-wrap:anywhere]">
                       {a.asset_code} — {a.asset_name}
                     </p>
-                    <p className="mt-0.5 truncate text-xs text-[#6B7280]">{detailLine(a)}</p>
+                    <p className="mt-0.5 text-sm text-[#4B5563]">{detailLine(a) || "No other details"}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <StatusBadge label={a.status} tone={statusTone(a.status)} />
-                    <span className="rounded-md bg-[#ED1C24] px-3 py-1.5 text-xs font-bold text-white">Select</span>
+                    <span className="rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-bold text-white">Select</span>
                   </div>
                 </button>
               </li>
@@ -221,7 +241,7 @@ export function AssetSearchPicker({
       </div>
 
       {required && !value && (
-        <p className="text-xs text-[#9CA3AF]">Search and select an asset, vehicle, or machine above to continue.</p>
+        <p className="text-sm text-[#6B7280]">No asset selected yet — press Select on one of the assets above.</p>
       )}
     </div>
   );
@@ -239,12 +259,15 @@ function SelectedAssetSummary({
   return (
     <div className="rounded-lg border border-green-200 bg-green-50 p-4">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-[10px] font-black uppercase tracking-widest text-green-700">Selected Asset / Vehicle</p>
+        <p className="flex items-center gap-1.5 text-sm font-black text-green-800">
+          <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
+          Selected asset
+        </p>
         <button
           type="button"
           onClick={onChangeClick}
           disabled={disabled}
-          className="shrink-0 rounded-md border border-[#E5E7EB] bg-white px-3 py-1 text-xs font-bold text-[#111827] hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+          className="focus-ring inline-flex min-h-11 shrink-0 items-center rounded-md border border-[#D1D5DB] bg-white px-4 text-sm font-bold text-[#111827] hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
         >
           Change Asset
         </button>

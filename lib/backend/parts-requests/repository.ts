@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { BackendTransaction } from "@/lib/backend/shared/transaction";
+import { lockJobCardActivity } from "@/lib/backend/work-orders/repository";
 import { AppError } from "@/lib/errors/app-error";
 
 // Materials Request statuses that still represent open, in-flight work
@@ -88,9 +89,14 @@ export async function lockPartsRequestForUpdate(tx: BackendTransaction, id: stri
   return rows[0] ?? null;
 }
 
+// Job Card Deletion: takes the per-Job-Card activity lock (see
+// lib/backend/work-orders/repository.ts lockJobCardActivity) and treats a
+// deleted Job Card as not found, so no Materials Request is ever created on
+// a Job Card while or after it is deleted.
 export async function findWorkOrderForPartsRequest(tx: BackendTransaction, workOrderId: string) {
-  return tx.work_orders.findUnique({
-    where: { id: workOrderId },
+  await lockJobCardActivity(tx, workOrderId);
+  return tx.work_orders.findFirst({
+    where: { id: workOrderId, deleted_at: null },
     select: {
       id: true,
       asset_id: true,

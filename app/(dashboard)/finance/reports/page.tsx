@@ -10,6 +10,7 @@ export default async function FinanceReportsPage() {
       select: { estimated_total: true, status: true }
     }),
     prisma.work_orders.findMany({
+      where: { deleted_at: null },
       select: { total_work_order_cost: true, status: true }
     })
   ]);

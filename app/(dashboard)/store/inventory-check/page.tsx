@@ -56,6 +56,7 @@ export default async function InventoryCheckPage({
   const workOrders = await prisma.work_orders.findMany({
     where: {
       status: "Approved",
+      deleted_at: null,
       work_order_required_parts: {
         some: { availability_status: { in: ["unchecked", "partial", "unavailable"] } }
       }

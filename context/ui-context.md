@@ -76,8 +76,8 @@ Current animations:
 - system-map-fade-up
 - system-map-line
 - system-map-connector-pulse
-- page-loading-spin
-- page-loading-bar
+- page-loading-spin / page-loading-spin-reverse (route loading screen rings: `.page-loading-ring-outer` 2.2 s clockwise, `.page-loading-ring-middle` 4.5 s counter-clockwise; the logo never rotates)
+- page-loading-bar (indeterminate 1.6 s; static centred segment under reduced motion)
 
 ## Component Library
 

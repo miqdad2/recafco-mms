@@ -19,11 +19,11 @@ export default async function PrintAssetHistoryPage({ params }: { params: Promis
       include: { departments: { select: { name: true } } }
     }),
     prisma.work_orders.findMany({
-      where: { asset_id: id },
+      where: { asset_id: id, deleted_at: null },
       orderBy: { date_of_order: "desc" }
     }),
     prisma.work_order_materials.findMany({
-      where: { work_orders: { asset_id: id } }
+      where: { work_orders: { asset_id: id, deleted_at: null } }
     })
   ]);
   if (!asset) return <div className="p-8">Asset not found.</div>;

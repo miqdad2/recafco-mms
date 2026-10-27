@@ -11,6 +11,8 @@ import { displaySimplifiedStatus } from "@/lib/work-orders/simplified-status-dis
 import { deriveSimpleWorkerState } from "@/lib/work-orders/hours-variance";
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete } from "@/lib/work-orders/material-fulfillment";
 import { getJobCardCostSummary } from "@/lib/work-orders/job-card-cost-summary";
+import { getJobCardDates } from "@/lib/work-orders/job-card-dates-data";
+import { jobCardDateText } from "@/components/work-orders/job-card-dates-section";
 
 const formatKwd = (value: number) => `${value.toFixed(3)} KWD`;
 
@@ -93,7 +95,10 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
   // query for them), so every cost section below is gated on this one
   // value: no rate, unit cost, indirect cost or total exists in this
   // render at all for Data Entry / Viewer / no-cost users.
-  const costSummary = await getJobCardCostSummary(context, id, materialFulfillment);
+  const [costSummary, jobCardDates] = await Promise.all([
+    getJobCardCostSummary(context, id, materialFulfillment),
+    getJobCardDates(prisma, rawWo),
+  ]);
 
   const decidedByIds = [...new Set(rawApprovals.map((a) => a.decided_by).filter((v): v is string => Boolean(v)))];
   const decidedByProfiles = decidedByIds.length
@@ -146,7 +151,13 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
       // "Not Started"'s sibling below, not as a separate technical status.
       const sessionStatus = activeSession ? "Active" : sessions.length ? sessions[sessions.length - 1].status : "Not Started";
       const simpleState = deriveSimpleWorkerState(a.status, sessionStatus);
-      const notes = simpleState === "Working" ? "In Progress" : simpleState;
+      // Worker Time Correction: hours above already use the approved
+      // corrected time; the note says so on paper.
+      const timeCorrected = sessions.some((s) => s.original_started_at !== null);
+      // Manual Worker Time Entry: periods entered without the timer (Data
+      // Entry with Manager approval, or a Manager directly) are marked too.
+      const manuallyEntered = sessions.some((s) => s.is_manual_entry);
+      const notes = `${simpleState === "Working" ? "In Progress" : simpleState}${manuallyEntered ? " · Time manually entered" : ""}${timeCorrected ? " · Time manually corrected" : ""}`;
 
       workerRows.push({
         name: a.worker_profiles.name,
@@ -259,8 +270,13 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
     ...(rawWo.running_hours ? ([["Running Hours", rawWo.running_hours.toFixed(2)]] as Array<[string, string]>) : []),
     ...(rawWo.kilometers ? ([["Kilometers", rawWo.kilometers.toFixed(2)]] as Array<[string, string]>) : []),
     ...(rawWo.worker_type ? ([["Worker Type", rawWo.worker_type]] as Array<[string, string]>) : []),
-    ...(rawWo.starting_datetime ? ([["Start", formatDateTime(rawWo.starting_datetime.toISOString())]] as Array<[string, string]>) : []),
-    ...(rawWo.ending_datetime ? ([["End", formatDateTime(rawWo.ending_datetime.toISOString())]] as Array<[string, string]>) : [])
+    // Job Card Dates — the same values as the detail page (getJobCardDates),
+    // Kuwait time. The old form's typed Start/End are folded into Work Start
+    // / Work End there (used only when no recorded event exists).
+    ["Created Date & Time", jobCardDateText(jobCardDates.created)],
+    ["Work Start Date & Time", jobCardDateText(jobCardDates.workStart)],
+    ["Work End Date & Time", jobCardDateText(jobCardDates.workEnd)],
+    ...(jobCardDates.closed ? ([["Closed (Manager approved)", jobCardDateText(jobCardDates.closed)]] as Array<[string, string]>) : [])
   ];
 
   const nextServiceRows: Array<[string, string]> = [
@@ -432,8 +448,11 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
             max-width: 100% !important;
           }
           .signature-spacer { break-inside: auto; page-break-inside: auto; }
-          .signature-spacer-normal { height: 35mm; max-height: 35mm; }
-          .signature-spacer-small { height: 15mm; max-height: 15mm; }
+          /* Job Card Dates added up to 4 cells (one more grid row, about
+             8mm) to Job Card Details; both spacers give that height back so
+             the page-1 fit is unchanged. */
+          .signature-spacer-normal { height: 27mm; max-height: 27mm; }
+          .signature-spacer-small { height: 7mm; max-height: 7mm; }
           .print-signatures { break-inside: avoid; page-break-inside: avoid; }
           .avoid-break { page-break-inside: avoid; break-inside: avoid; }
           .print-table-heading { break-after: avoid; page-break-after: avoid; }

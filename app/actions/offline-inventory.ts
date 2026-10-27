@@ -26,6 +26,7 @@ import {
 import { emitOfflineInventoryRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { syncPartsRequestStatusAfterFullIssueInTx } from "@/lib/backend/parts-requests/service";
+import { lockOpenJobCardForActivity } from "@/lib/backend/work-orders/repository";
 
 export type OfflineMovementState =
   // Add New Material Category Flexibility Cleanup Task 7: `category` is only
@@ -564,6 +565,10 @@ export async function receiveOfflineMaterialAction(
     if (!category) {
       return { ok: false, error: "Category is required." };
     }
+    // Job Card Deletion: never link a store movement to a deleted Job Card.
+    if (woIdRaw && !(await prisma.work_orders.findFirst({ where: { id: woIdRaw, deleted_at: null }, select: { id: true } }))) {
+      return { ok: false, error: "The linked Job Card was not found or has been deleted." };
+    }
 
     if (refNum) {
       const dupe = await findDuplicateMovement({
@@ -712,6 +717,8 @@ export async function issueOfflineMaterialAction(
 
     const created = await withBackendTransaction(context.userId, async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+      // Job Card Deletion: activity lock + deleted Job Card refused.
+      if (woIdRaw) await lockOpenJobCardForActivity(tx, woIdRaw);
 
       const movements = await tx.offline_inventory_movements.findMany({
         where: partId

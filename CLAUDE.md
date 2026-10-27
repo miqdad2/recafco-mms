@@ -71,6 +71,12 @@ Verified baseline:
 
 Do not claim that the previous live operational data was recovered.
 
+Migrations added 2026-10-26 (48 total): `20261026000000_job_card_submission_idempotency` (nullable unique `work_orders.client_submission_id`, idempotent New Job Card creation) and `20261027000000_job_card_deletion_and_time_corrections` (`job_card_deletion_requests`, `work_session_time_corrections`, three nullable `original_*` columns on `work_order_work_sessions`). Both are applied to the local dev DB (13:15:58 via `prisma migrate deploy`); the code requires both. Any other database (production): back up, then `npx prisma migrate deploy` BEFORE the new code starts. Use only `migrate deploy` — `schema.prisma` does not mirror every DB foreign key/default (pre-existing drift), so `migrate dev` / `db push` would try to drop real constraints. Third migration 2026-10-27: `20261027010000_manual_work_time_entries` (`work_session_time_corrections.entry_kind` correction|manual_entry, `worker_assignment_id`, session/original_* nullable for manual entries only — enforced by `work_session_time_corrections_shape_check`). Applied to the local dev DB 2026-10-27 after a pg_dump backup; required by the code; production needs all three, in order, via `migrate deploy`. The next migration's folder name must sort after `20261027010000` (the 20261027* ones are future-dated relative to their creation and already applied, so do not rename them).
+
+Migration `20261027000000_job_card_deletion_and_time_corrections` (additive: `job_card_deletion_requests`, `work_session_time_corrections`, nullable `original_*` columns on `work_order_work_sessions`) is required by the Job Card deletion-request, Job Card dates and worker time-correction code. Both migrations are applied on the local DB (2026-10-26 13:15); any other database needs them before deploying this code.
+
+Job Card deletion is a Manager-approved soft delete (`work_orders.deleted_at`); never hard delete. Writes that add work, stock or requests to a Job Card take `lockJobCardActivity()` (`lib/backend/work-orders/repository.ts`) and must refuse deleted cards. An approved worker time correction rewrites the work period row and keeps the first recorded values in `original_*`.
+
 ## Authentication Model
 
 Active tables:

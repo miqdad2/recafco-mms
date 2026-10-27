@@ -1108,6 +1108,9 @@ export async function findExistingCategoryMatch(name: string): Promise<string | 
 
 export async function getWorkOrderOptions(): Promise<WorkOrderOption[]> {
   const workOrdersRaw = await prisma.work_orders.findMany({
+    // Deleted Job Cards are never offered for Issue / Receive Material (the
+    // server refuses them too).
+    where: { deleted_at: null },
     select: { id: true, work_order_number: true },
     orderBy: { created_at: "desc" },
     take: 100,

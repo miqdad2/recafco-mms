@@ -22,8 +22,19 @@ import { ArrowLeft, LayoutDashboard, Activity, ClipboardList, type LucideIcon } 
 
 export type PageNavSecondaryLink = { label: string; href: string; icon?: LucideIcon };
 
-const navBtnClass =
-  "inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1.5 text-xs font-bold text-[#4B5563] transition hover:border-[#2563EB] hover:text-[#2563EB]";
+// Colored, raised buttons (not plain white outlines) so they read as
+// clickable at a glance; one color per destination, same everywhere this bar
+// is used. 44px tall on phones (mobile touch target), compact from sm: up.
+const navBtnBase =
+  "focus-ring inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-bold shadow-sm transition hover:shadow active:translate-y-px motion-reduce:transition-none motion-reduce:active:translate-y-0 sm:min-h-9";
+const NAV_BTN_TONE = {
+  back: "border-[#2b2b2b] bg-[#2b2b2b] text-white hover:bg-[#111827]",
+  dashboard: "border-blue-200 bg-blue-50 text-blue-800 hover:border-blue-300 hover:bg-blue-100",
+  dailyActivity: "border-green-200 bg-green-50 text-green-800 hover:border-green-300 hover:bg-green-100",
+  jobCards: "border-red-200 bg-red-50 text-[#B91C1C] hover:border-red-300 hover:bg-red-100",
+  secondary: "border-amber-200 bg-amber-50 text-amber-800 hover:border-amber-300 hover:bg-amber-100",
+} as const;
+const navBtnClass = (tone: keyof typeof NAV_BTN_TONE) => `${navBtnBase} ${NAV_BTN_TONE[tone]}`;
 
 export function PageNavigationActions({
   showBack = true,
@@ -61,25 +72,25 @@ export function PageNavigationActions({
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {showBack ? (
-        <button type="button" onClick={handleBack} className={navBtnClass}>
+        <button type="button" onClick={handleBack} className={navBtnClass("back")}>
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" /> Back
         </button>
       ) : null}
-      <Link href={dashboardHref} className={navBtnClass}>
+      <Link href={dashboardHref} className={navBtnClass("dashboard")}>
         <LayoutDashboard className="h-3.5 w-3.5" aria-hidden="true" /> Dashboard
       </Link>
       {showDailyActivity ? (
-        <Link href="/maintenance/daily-activity" className={navBtnClass}>
+        <Link href="/maintenance/daily-activity" className={navBtnClass("dailyActivity")}>
           <Activity className="h-3.5 w-3.5" aria-hidden="true" /> Daily Activity
         </Link>
       ) : null}
       {showJobCards ? (
-        <Link href="/maintenance/work-orders" className={navBtnClass}>
+        <Link href="/maintenance/work-orders" className={navBtnClass("jobCards")}>
           <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" /> Job Cards
         </Link>
       ) : null}
       {secondaryLinks.map((link) => (
-        <Link key={link.href} href={link.href} className={navBtnClass}>
+        <Link key={link.href} href={link.href} className={navBtnClass("secondary")}>
           {link.icon ? <link.icon className="h-3.5 w-3.5" aria-hidden="true" /> : null}
           {link.label}
         </Link>

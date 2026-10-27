@@ -11,6 +11,7 @@ import { getWorkOrderLaborSummariesBulk } from "@/lib/work-orders/work-session-t
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
 import { buildBalanceKey, getLastUnitCostsForIdentities } from "@/lib/store/offline-inventory-data";
 import { getJobCardIndirectCostSetting } from "@/lib/work-orders/job-card-indirect-cost";
+import { getWorkTimeSourceSummaries } from "@/lib/backend/work-orders/work-time-corrections";
 
 // Closure Requests Review Popup Unit 10G.2, Task 10.
 //
@@ -145,6 +146,8 @@ export type ClosureReviewDetail = {
   workers: ClosureReviewWorker[];
   workersCount: number;
   totalHours: number;
+  // Manual Worker Time Entry — where the hours came from (minutes, no money).
+  timeSources: { automaticMinutes: number; manualMinutes: number; correctedPeriods: number; pending: number };
   totalAmount: number | null;
   // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 8:
   // work_orders.estimated_labor_hours — visible regardless of canViewCosts.
@@ -335,6 +338,15 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
     })),
     workersCount: laborSummary.workers.length,
     totalHours: laborSummary.total_hours,
+    timeSources: await getWorkTimeSourceSummaries(prisma, [workOrderId]).then((m) => {
+      const t = m.get(workOrderId);
+      return {
+        automaticMinutes: t?.automaticMinutes ?? 0,
+        manualMinutes: t?.manualMinutes ?? 0,
+        correctedPeriods: t?.correctedPeriods ?? 0,
+        pending: (t?.pendingManualEntries ?? 0) + (t?.pendingCorrections ?? 0),
+      };
+    }),
     totalAmount: canViewCosts ? laborSummary.total_amount : null,
     // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 6: falls
     // back to the sum of worker estimates only when the Job Card's own

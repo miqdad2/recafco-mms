@@ -325,6 +325,7 @@ export default async function AssetDetailPage({
           preselected. */}
       {showNewJobCardModal && (
         <WorkOrderWizard
+          currentUserId={context.userId}
           assets={newJobCardAssets}
           preselectedAssetId={asset.id}
           dismissHref={newJobCardDismissHref}

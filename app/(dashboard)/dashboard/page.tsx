@@ -24,6 +24,13 @@ import type { LucideIcon } from "lucide-react";
 import type { Prisma } from "@prisma/client";
 
 import { StatCard } from "@/components/dashboard/stat-card";
+import {
+  deSummaryCardClass,
+  deSummaryIconClass,
+  deSummaryLabelClass,
+  deSummaryTopRowClass,
+  deSummaryValueClass,
+} from "@/components/dashboard/data-entry-summary-card-styles";
 import { LiveDashboardHeader } from "@/components/dashboard/live-dashboard-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requireUser } from "@/lib/auth/context";
@@ -253,6 +260,34 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <p className="text-[10px] font-black uppercase tracking-widest text-[#9CA3AF]">{children}</p>;
 }
 
+// Data Entry Dashboard Visual Refinement — Data Entry-only section label
+// (SectionLabel above stays as-is for the other role dashboards): slightly
+// larger, darker gray for readable contrast.
+function DataEntrySectionLabel({ children }: { children: React.ReactNode }) {
+  return <h2 className="text-xs font-bold uppercase tracking-wider text-[#6B7280]">{children}</h2>;
+}
+
+// Shared header for Needs Attention Today / Recent Job Cards: title +
+// subtitle left, "View all" right, baseline-aligned, comfortable tap area.
+function DataEntryListHeader({ title, subtitle, viewAllHref, muted = false }: { title: string; subtitle: string; viewAllHref: string; muted?: boolean }) {
+  return (
+    <div className="flex items-end justify-between gap-3">
+      <div className="min-w-0">
+        <h2 className={`text-base font-extrabold leading-tight ${muted ? "text-[#374151]" : "text-[#111827]"}`}>{title}</h2>
+        <p className="mt-0.5 text-[13px] leading-snug text-[#6B7280]">{subtitle}</p>
+      </div>
+      <Link
+        href={viewAllHref}
+        className="-my-1 inline-flex min-h-9 shrink-0 items-center gap-1 rounded-md px-2 text-[13px] font-bold text-[#ED1C24] transition-colors hover:bg-red-50 hover:text-[#c9151c] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ED1C24] motion-reduce:transition-none"
+      >
+        View all <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+      </Link>
+    </div>
+  );
+}
+
+const DE_LIST_PANEL_CLASS = "divide-y divide-[#EEF2F6] overflow-hidden rounded-lg border border-[#E5E7EB] bg-white shadow-[0_1px_2px_rgba(16,24,40,0.05)]";
+
 // Dashboard Card Sizing and Section Alignment Polish Unit 9E.5, Task 1: sized
 // up moderately from Unit 9E.4's very compact version — card height now
 // lands around 60-64px (px-3 py-2.5 + a text stack of roughly that height),
@@ -267,8 +302,13 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 // which now passes size="md" — a moderately taller/bolder card (~64px vs.
 // ~56px), not a new parallel component, so both rows keep sharing one card
 // system (Unit 9E.5's own stated goal) while only the Manager row grows.
+//
+// Data Entry Dashboard Visual Refinement: `size="lg"` (Data Entry's row only)
+// renders the shared deSummary* card (components/dashboard/data-entry-summary-
+// card-styles.ts) — same href/label/value/icon/tone/title, presentation only.
+// "sm"/"md" are untouched.
 function TodaySummaryCard({ href, label, value, icon: Icon, tone, size = "sm", title, scroll }: {
-  href: string; label: string; value: number | string; icon: LucideIcon; tone: "red" | "amber" | "green" | "blue" | "gray"; size?: "sm" | "md";
+  href: string; label: string; value: number | string; icon: LucideIcon; tone: "red" | "amber" | "green" | "blue" | "gray"; size?: "sm" | "md" | "lg";
   // Manager Dashboard KPI Click Behavior Clarification Unit 10E.4, Task 5:
   // an optional native-title tooltip, distinct from a Quick Action tile's
   // always-visible helper line — used for KPI cards whose wording alone
@@ -287,6 +327,19 @@ function TodaySummaryCard({ href, label, value, icon: Icon, tone, size = "sm", t
     blue: "bg-[#2563EB]",
     gray: "bg-[#6B7280]",
   }[tone];
+  if (size === "lg") {
+    return (
+      <Link href={href} title={title} scroll={scroll} className={deSummaryCardClass}>
+        <span className={deSummaryTopRowClass}>
+          <span className={deSummaryValueClass}>{value}</span>
+          <span className={`${deSummaryIconClass} ${toneClass}`}>
+            <Icon className="h-[18px] w-[18px]" aria-hidden="true" />
+          </span>
+        </span>
+        <span className={deSummaryLabelClass}>{label}</span>
+      </Link>
+    );
+  }
   const isMd = size === "md";
   return (
     <Link
@@ -335,6 +388,40 @@ function QuickActionTile({ href, title, helper, icon: Icon, iconBg, iconColor, a
   href: string; title: string; helper: string; icon: LucideIcon; iconBg: string; iconColor: string; accent?: boolean; primary?: boolean; size?: "sm" | "lg";
 }) {
   const isLg = size === "lg";
+  // Data Entry Dashboard Visual Refinement: "lg" (Data Entry's two tiles
+  // only) — equal-height tiles, rounded-lg, 48px icon box, matching circular
+  // arrow, visible keyboard focus ring. Same href/title/helper/icon; the
+  // primary tile keeps solid RECAFCO red, the accent tile stays white with
+  // the red left bar.
+  if (isLg) {
+    return (
+      <Link
+        href={href}
+        className={`group flex min-h-[88px] items-center gap-4 rounded-lg border border-l-4 px-5 py-4 shadow-[0_1px_2px_rgba(16,24,40,0.05)] transition-[background-color,border-color,box-shadow] duration-150 hover:shadow-[0_4px_12px_rgba(16,24,40,0.10)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 motion-reduce:transition-none ${
+          primary
+            ? "border-[#ED1C24] bg-[#ED1C24] hover:border-[#c8181e] hover:bg-[#c8181e] focus-visible:ring-[#ED1C24]"
+            : accent
+              ? "border-[#E5E7EB] border-l-[#ED1C24] bg-white hover:border-[#F3B4B6] hover:border-l-[#ED1C24] focus-visible:ring-[#ED1C24]"
+              : "border-[#E5E7EB] border-l-transparent bg-white hover:border-[#C7D2FE] focus-visible:ring-[#2563EB]"
+        }`}
+      >
+        <span className={`inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg ${primary ? "bg-white/15 ring-1 ring-white/25" : iconBg}`}>
+          <Icon className={`h-6 w-6 ${primary ? "text-white" : iconColor}`} aria-hidden="true" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className={`block truncate text-lg font-extrabold leading-tight ${primary ? "text-white" : "text-[#111827]"}`}>{title}</span>
+          <span className={`mt-1 block truncate text-sm leading-snug ${primary ? "text-white/85" : "text-[#4B5563]"}`}>{helper}</span>
+        </span>
+        <span
+          className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-transform duration-150 group-hover:translate-x-0.5 motion-reduce:transition-none motion-reduce:group-hover:translate-x-0 ${
+            primary ? "bg-white/15 text-white" : "bg-[#F3F4F6] text-[#4B5563] group-hover:bg-red-50 group-hover:text-[#ED1C24]"
+          }`}
+        >
+          <ArrowRight className="h-[18px] w-[18px]" aria-hidden="true" />
+        </span>
+      </Link>
+    );
+  }
   return (
     <Link
       href={href}
@@ -387,24 +474,34 @@ type NeedsAttentionItem = {
   actionHref: string;
 };
 
+// Data Entry Dashboard Visual Refinement: Job Card number (bold, dark) and
+// asset (lighter, own span) visually separated; issue on its own line with
+// breathing room; badge + action right-aligned with a fixed-width action
+// pill so every row's buttons line up. Below sm: the badge/action block
+// drops under the text instead of squeezing it. Same link, same content.
+const DE_ROW_ACTION_CLASS =
+  "inline-flex min-h-8 min-w-[72px] shrink-0 items-center justify-center rounded-md border border-[#D1D5DB] bg-white px-3 text-xs font-bold text-[#111827] transition-colors group-hover:border-[#ED1C24] group-hover:text-[#ED1C24] motion-reduce:transition-none";
+const DE_ROW_LINK_CLASS =
+  "group flex flex-col gap-2 px-4 py-3 transition-colors hover:bg-[#F8FAFC] focus-visible:bg-[#F8FAFC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#ED1C24] motion-reduce:transition-none sm:flex-row sm:items-center sm:gap-4";
+
 function NeedsAttentionRow({ item }: { item: NeedsAttentionItem }) {
   return (
-    <Link
-      href={item.actionHref}
-      className="group flex items-center gap-2.5 px-3.5 py-2.5 transition hover:bg-[#F8FAFC]"
-    >
+    <Link href={item.actionHref} className={DE_ROW_LINK_CLASS}>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold text-[#111827] group-hover:text-[#ED1C24]">
-          {item.workOrderNumber ?? <span className="text-xs italic text-[#9CA3AF]">Draft</span>}
-          {item.assetLabel && <span className="ml-2 text-xs font-normal text-[#6B7280]">· {item.assetLabel}</span>}
+        {/* flex-wrap: when space is tight the asset moves to its own line
+            instead of being cut off; it only truncates if it alone is
+            wider than the row. */}
+        <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="shrink-0 text-sm font-bold tabular-nums text-[#111827] group-hover:text-[#ED1C24]">
+            {item.workOrderNumber ?? <span className="text-xs font-semibold italic text-[#6B7280]">Draft</span>}
+          </span>
+          {item.assetLabel && <span className="min-w-0 max-w-full truncate text-[13px] text-[#4B5563]">{item.assetLabel}</span>}
         </p>
-        <p className="truncate text-xs text-[#6B7280]">{item.issue}</p>
+        <p className="mt-1 truncate text-[13px] text-[#6B7280]">{item.issue}</p>
       </div>
-      <div className="flex shrink-0 items-center gap-1.5">
+      <div className="flex shrink-0 items-center justify-between gap-2 sm:justify-end">
         <StatusBadge label={item.badgeLabel} tone={item.badgeTone} />
-        <span className="shrink-0 rounded border border-[#E5E7EB] px-2 py-1 text-xs font-bold text-[#111827] transition group-hover:border-[#ED1C24] group-hover:text-[#ED1C24]">
-          {item.actionLabel}
-        </span>
+        <span className={DE_ROW_ACTION_CLASS}>{item.actionLabel}</span>
       </div>
     </Link>
   );
@@ -518,6 +615,27 @@ function NuJobCardRow({ row, compact = false }: { row: NuJobCardRow; compact?: b
   const subtitle = [row.asset_name, row.issue_summary].filter(Boolean).join(" · ");
   const showMaterialsBadge =
     row.materials_request_status && !JOB_CARD_STATUS_ALREADY_SHOWS_MATERIALS.includes(row.status);
+  // Data Entry Dashboard Visual Refinement: the compact preview (Data
+  // Entry's Recent Job Cards only) shares Needs Attention Today's row
+  // styling — same number/asset hierarchy, badge + fixed-width View pill.
+  // Same link and content; the non-compact row below is unchanged.
+  if (compact) {
+    const simplified = displaySimplifiedStatus(row.status);
+    return (
+      <Link href={`?preview=${row.id}`} className={DE_ROW_LINK_CLASS}>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-bold tabular-nums text-[#111827] group-hover:text-[#ED1C24]">
+            {row.work_order_number ?? <span className="text-xs font-semibold italic text-[#6B7280]">Draft</span>}
+          </p>
+          {row.asset_name && <p className="mt-1 truncate text-[13px] text-[#4B5563]">{row.asset_name}</p>}
+        </div>
+        <div className="flex shrink-0 items-center justify-between gap-2 sm:justify-end">
+          <StatusBadge label={simplified} tone={simplifiedStatusTone(simplified)} />
+          <span className={DE_ROW_ACTION_CLASS}>View</span>
+        </div>
+      </Link>
+    );
+  }
   return (
     <Link
       href={`?preview=${row.id}`}
@@ -2115,6 +2233,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       <LiveDashboardHeader
         profileName={firstName}
         subtitle="Here's what needs your attention today."
+        refined={isNormalUser}
       />
       <div className="space-y-4 p-4 pb-8 sm:p-5">
 
@@ -2161,13 +2280,19 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 `title` prop (same mechanism Manager's own KPI row already
                 uses for cards whose wording alone doesn't make the
                 distinction obvious). */}
-            <section className="space-y-1.5">
-              <SectionLabel>Today Summary</SectionLabel>
-              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
-                <TodaySummaryCard href="/maintenance/daily-activity" label="Active Job Cards" value={nuQueue.activeCount} icon={ClipboardList} tone="blue" />
-                <TodaySummaryCard href="/maintenance/daily-activity?status=materials-pending" label="Materials Pending" value={nuMaterialsPendingCount} icon={ShoppingCart} tone={nuMaterialsPendingCount > 0 ? "red" : "green"} />
-                <TodaySummaryCard href="/maintenance/daily-activity?status=working" label="Working Now" title="Workers currently working" value={nuWorkingNowCount} icon={PlayCircle} tone="green" />
-                <TodaySummaryCard href="/maintenance/daily-activity?status=paused" label="Paused Workers" value={nuPausedCount} icon={PauseCircle} tone="amber" />
+            {/* Data Entry Dashboard Visual Refinement: all six cards share
+                one style (size="lg" + the two modal cards use the same
+                classes). 2 per row on phones, 3 on tablet / small desktop,
+                all 6 in one row from xl: — at lg: (1024px minus the 256px
+                sidebar) six columns were ~110px wide and clipped "Waiting
+                Manager Approval". Same cards, order, values and links. */}
+            <section className="space-y-2.5">
+              <DataEntrySectionLabel>Today Summary</DataEntrySectionLabel>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+                <TodaySummaryCard size="lg" href="/maintenance/daily-activity" label="Active Job Cards" value={nuQueue.activeCount} icon={ClipboardList} tone="blue" />
+                <TodaySummaryCard size="lg" href="/maintenance/daily-activity?status=materials-pending" label="Materials Pending" value={nuMaterialsPendingCount} icon={ShoppingCart} tone={nuMaterialsPendingCount > 0 ? "red" : "green"} />
+                <TodaySummaryCard size="lg" href="/maintenance/daily-activity?status=working" label="Working Now" title="Workers currently working" value={nuWorkingNowCount} icon={PlayCircle} tone="green" />
+                <TodaySummaryCard size="lg" href="/maintenance/daily-activity?status=paused" label="Paused Workers" value={nuPausedCount} icon={PauseCircle} tone="amber" />
                 <WaitingManagerApprovalCard count={nuQueue.closureRequestedCount} jobCards={nuClosureRequestedForModal} />
                 <DataEntryClosedRecentlyCard count={nuQueue.closedRecentCount} />
               </div>
@@ -2191,9 +2316,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 phone width (Task 4's mobile requirement), side-by-side
                 50/50 from `sm:` up (tablet and desktop both satisfied by the
                 same breakpoint, since there are only ever these two tiles). */}
-            <section className="space-y-1.5">
-              <SectionLabel>Quick Actions</SectionLabel>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <section className="space-y-2.5">
+              <DataEntrySectionLabel>Quick Actions</DataEntrySectionLabel>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <QuickActionTile
                   primary
                   size="lg"
@@ -2224,20 +2349,16 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                 clear focus (dark/bold heading); Recent Job Cards uses the
                 identical structure in muted gray, so it's still visibly
                 secondary despite lining up with Needs Attention. */}
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,65%)_minmax(0,35%)]">
-              <section className="space-y-1.5">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h2 className="text-sm font-black leading-tight text-[#111827]">Needs Attention Today</h2>
-                    <p className="text-[11px] leading-tight text-[#6B7280]">Handle these first.</p>
-                  </div>
-                  <Link href="/maintenance/daily-activity" className="shrink-0 text-xs font-bold text-[#ED1C24] hover:text-[#c9151c]">
-                    View all →
-                  </Link>
-                </div>
-                <div className="divide-y divide-[#EEF2F6] overflow-hidden rounded-md border border-[#DDE2EA] bg-white shadow-sm">
+            {/* Data Entry Dashboard Visual Refinement: side by side from xl:
+                (~60/40) instead of lg: (65/35) — at lg: the right column was
+                ~250px and cut Job Card numbers to "REC/M…"; below xl: the two
+                lists stack full-width, same order. */}
+            <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+              <section className="min-w-0 space-y-2.5">
+                <DataEntryListHeader title="Needs Attention Today" subtitle="Handle these first." viewAllHref="/maintenance/daily-activity" />
+                <div className={DE_LIST_PANEL_CLASS}>
                   {nuNeedsAttention.length === 0 ? (
-                    <p className="px-4 py-6 text-center text-sm text-[#4B5563]">Nothing needs your attention right now.</p>
+                    <p className="px-4 py-8 text-center text-sm text-[#4B5563]">Nothing needs your attention right now.</p>
                   ) : (
                     nuNeedsAttention.map((item) => <NeedsAttentionRow key={item.id} item={item} />)
                   )}
@@ -2247,23 +2368,15 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               {/* Task 5 — Recent Job Cards: same header structure as Needs
                   Attention Today (so both columns align), muted gray to
                   stay visibly secondary; a 2-row compact preview. */}
-              <section className="space-y-1.5">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h2 className="text-sm font-black leading-tight text-[#9CA3AF]">Recent Job Cards</h2>
-                    <p className="text-[11px] leading-tight text-[#B0B7C3]">Quick preview.</p>
-                  </div>
-                  <Link href="/maintenance/work-orders" className="shrink-0 text-xs font-bold text-[#ED1C24] hover:text-[#c9151c]">
-                    View all →
-                  </Link>
-                </div>
-                <div className="divide-y divide-[#EEF2F6] overflow-hidden rounded-md border border-[#E5E7EB] bg-white">
+              <section className="min-w-0 space-y-2.5">
+                <DataEntryListHeader title="Recent Job Cards" subtitle="Quick preview." viewAllHref="/maintenance/work-orders" muted />
+                <div className={DE_LIST_PANEL_CLASS}>
                   {nuRecent.length === 0 ? (
-                    <div className="flex flex-col items-center gap-2 px-4 py-6 text-center">
+                    <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
                       <p className="text-sm font-semibold text-[#111827]">No Job Cards yet.</p>
                       <Link
                         href="?new_job_card=1"
-                        className="mt-1 rounded-md bg-[#ED1C24] px-4 py-2 text-xs font-bold text-white transition hover:bg-red-700"
+                        className="mt-1 inline-flex min-h-9 items-center rounded-md bg-[#ED1C24] px-4 text-xs font-bold text-white transition-colors hover:bg-[#c8181e] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ED1C24] focus-visible:ring-offset-2"
                       >
                         Create Job Card
                       </Link>
@@ -2894,6 +3007,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           popups above — closing strips the param and returns to /dashboard. */}
       {showNewJobCardModal && (
         <WorkOrderWizard
+          currentUserId={context.userId}
           assets={newJobCardAssets}
           preselectedAssetId={sp.asset_id ?? null}
           dismissHref="/dashboard"

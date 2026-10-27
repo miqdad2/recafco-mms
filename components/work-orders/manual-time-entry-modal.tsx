@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useActionState } from "react";
+import { useEffect, useActionState, useState } from "react";
 import { AlertCircle, Loader2, X } from "lucide-react";
 
 import { addManualTimeEntryAction, type WorkSessionState } from "@/app/actions/work-sessions";
 import { dispatchActionToast } from "@/lib/action-messages";
+import { LongPeriodConfirm } from "@/components/work-orders/long-period-confirm";
+import { parseKuwaitInputValue } from "@/lib/format/kuwait-time";
+import { isUnusuallyLongPeriod, periodMinutes } from "@/lib/work-orders/work-time-correction-rules";
 
 const inp =
   "w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#ED1C24] disabled:bg-gray-50 disabled:text-[#9CA3AF]";
@@ -22,6 +25,15 @@ export function ManualTimeEntryModal({
   onClose: () => void;
 }) {
   const [state, formAction, isPending] = useActionState<WorkSessionState, FormData>(addManualTimeEntryAction, null);
+  // Final Integration Review: times are Kuwait wall-clock (the server parses
+  // them as Asia/Kuwait); an unusually long entry needs an explicit tick.
+  const [start, setStart] = useState("");
+  const [stop, setStop] = useState("");
+  const [confirmLong, setConfirmLong] = useState(false);
+  const startDate = parseKuwaitInputValue(start);
+  const stopDate = parseKuwaitInputValue(stop);
+  const enteredMinutes = startDate && stopDate && stopDate > startDate ? periodMinutes(startDate, stopDate) : null;
+  const isLong = enteredMinutes !== null && isUnusuallyLongPeriod(enteredMinutes);
 
   useEffect(() => {
     if (state?.ok) {
@@ -58,19 +70,23 @@ export function ManualTimeEntryModal({
 
             <div>
               <label htmlFor="mte-start" className={lbl}>Start date/time <span className="text-[#ED1C24]">*</span></label>
-              <input id="mte-start" name="started_at" type="datetime-local" required className={inp} disabled={isPending} />
+              <input id="mte-start" name="started_at" type="datetime-local" required value={start} onChange={(e) => setStart(e.target.value)} className={inp} disabled={isPending} />
             </div>
             <div>
               <label htmlFor="mte-stop" className={lbl}>Stop date/time <span className="text-[#ED1C24]">*</span></label>
-              <input id="mte-stop" name="stopped_at" type="datetime-local" required className={inp} disabled={isPending} />
+              <input id="mte-stop" name="stopped_at" type="datetime-local" required value={stop} onChange={(e) => setStop(e.target.value)} className={inp} disabled={isPending} />
+              <p className="mt-1 text-xs text-[#6B7280]">Kuwait time. For work past midnight, choose the next day as the stop date.</p>
             </div>
+            {isLong && enteredMinutes !== null ? (
+              <LongPeriodConfirm id="mte-confirm-long" minutes={enteredMinutes} checked={confirmLong} onChange={setConfirmLong} disabled={isPending} />
+            ) : null}
             <div>
               <label htmlFor="mte-notes" className={lbl}>Notes</label>
               <textarea id="mte-notes" name="notes" rows={2} placeholder="Optional — e.g. reported by supervisor" className={`${inp} resize-none`} disabled={isPending} />
             </div>
 
             <div className="flex items-center gap-2 border-t border-[#F3F4F6] pt-4">
-              <button type="submit" disabled={isPending} className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#ED1C24] py-2.5 text-sm font-bold text-white transition hover:bg-red-700 disabled:opacity-60">
+              <button type="submit" disabled={isPending || (isLong && !confirmLong)} className="flex flex-1 items-center justify-center gap-2 rounded-md bg-[#ED1C24] py-2.5 text-sm font-bold text-white transition hover:bg-red-700 disabled:opacity-60">
                 {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
                 {isPending ? "Saving…" : "Add Entry"}
               </button>

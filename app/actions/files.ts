@@ -6,11 +6,12 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 
 import { writeAuditLog } from "@/lib/audit/log";
-import { requireUser } from "@/lib/auth/context";
+import { getCurrentUserContext, requireUser } from "@/lib/auth/context";
 import { canManageAssets } from "@/lib/security/permissions";
 import { getFileSecuritySettings } from "@/lib/files/settings";
 import { savePrivateFile, deletePrivateFileIfExists } from "@/lib/files/local-storage";
 import {
+  MAX_PRIVATE_FILE_SIZE,
   safeStorageName,
   validatePrivateFileWithOptions,
   type PrivateFileBucket,
@@ -20,6 +21,18 @@ import { prisma } from "@/lib/db/prisma";
 import { logSystemError } from "@/lib/errors/logging";
 
 const uuid = z.string().uuid();
+
+// New Job Card wizard usability: the real per-file upload limit (Admin
+// Settings → max upload size) so the Attachments step can state it and flag
+// an oversized file before anything is sent. Read-only. Never redirects —
+// a form in progress must not be navigated away from — so a signed-out
+// caller just gets the built-in default; the save itself still checks.
+export async function getUploadLimitsAction(): Promise<{ maxFileBytes: number }> {
+  const context = await getCurrentUserContext().catch(() => null);
+  if (!context) return { maxFileBytes: MAX_PRIVATE_FILE_SIZE };
+  const settings = await getFileSecuritySettings();
+  return { maxFileBytes: settings.maxUploadSizeBytes };
+}
 const text = z.string().trim().min(2).max(80);
 const purchaseFileType = z.enum(["quotation", "invoice", "delivery_note"]);
 
@@ -122,7 +135,7 @@ async function canUploadWorkOrder(workOrderId: string) {
   // Entity existence check — prevents uploads to non-existent records.
   let wo: { id: string } | null = null;
   try {
-    wo = await prisma.work_orders.findUnique({ where: { id: workOrderId }, select: { id: true } });
+    wo = await prisma.work_orders.findFirst({ where: { id: workOrderId, deleted_at: null }, select: { id: true } });
   } catch (error) {
     // fail-closed: deny on DB error — but a DB failure denying every upload
     // silently gave IT no way to tell "genuinely not found" apart from "DB

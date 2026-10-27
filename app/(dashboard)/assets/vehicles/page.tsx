@@ -249,6 +249,7 @@ export default async function VehiclesPage({
           preselected. */}
       {showNewJobCardModal && (
         <WorkOrderWizard
+          currentUserId={context.userId}
           assets={newJobCardAssets}
           preselectedAssetId={newJobCardAssetId}
           dismissHref={newJobCardDismissHref}

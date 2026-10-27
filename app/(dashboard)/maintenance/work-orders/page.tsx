@@ -61,6 +61,9 @@ import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
 import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
+import { canReviewJobCardDeletion, listDeletedJobCards, listPendingJobCardDeletionRequests } from "@/lib/backend/work-orders/job-card-deletion";
+import { ManagerDeletionRequests } from "@/components/work-orders/manager-deletion-requests";
+import { DeletedJobCardsHistory } from "@/components/work-orders/deleted-job-cards-history";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -231,6 +234,9 @@ type SP = {
   created?: string;
   new_job_card?: string;
   asset_id?: string;
+  // Final Integration Review: "1" shows the read-only Deleted Job Cards
+  // history (deletion reviewers only).
+  deleted?: string;
 };
 
 type PageProps = {
@@ -1265,6 +1271,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
       <>
         {showNewJobCardModal && (
           <WorkOrderWizard
+            currentUserId={context.userId}
             assets={newJobCardAssets}
             preselectedAssetId={sp.asset_id ?? null}
             dismissHref={buildHref({ ...sp, new_job_card: undefined, asset_id: undefined })}
@@ -1347,12 +1354,23 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
     );
   }
 
+  // Final Integration Review — Manager / Super Admin only: pending Job Card
+  // deletion requests (with Approve / Reject) and, on ?deleted=1, the
+  // read-only Deleted Job Cards history. Both reads re-check the role and
+  // apply the visibility filter; nothing is queried for other roles.
+  const canReviewDeletions = canReviewJobCardDeletion(context);
+  const showDeletedHistory = canReviewDeletions && sp.deleted === "1";
+  const [pendingDeletionRequests, deletedJobCards] = canReviewDeletions
+    ? await Promise.all([listPendingJobCardDeletionRequests(context), showDeletedHistory ? listDeletedJobCards(context) : Promise.resolve([])])
+    : [[], []];
+
   return (
     <>
       <AutoRefresh intervalMs={15000} />
       <RealtimeRefresh watch={["job_card.", "work_order.", "materials_request.", "store_materials."]} />
       {showNewJobCardModal ? (
         <WorkOrderWizard
+          currentUserId={context.userId}
           assets={newJobCardAssets}
           preselectedAssetId={sp.asset_id ?? null}
           dismissHref={buildHref({ ...sp, new_job_card: undefined, asset_id: undefined })}
@@ -1456,6 +1474,15 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
             detail="Closed job cards"
           />
         </section>
+
+        {canReviewDeletions ? (
+          <ManagerDeletionRequests
+            pending={pendingDeletionRequests}
+            deletedHref={buildHref({ ...sp, deleted: showDeletedHistory ? undefined : "1" })}
+            showingDeleted={showDeletedHistory}
+          />
+        ) : null}
+        {showDeletedHistory ? <DeletedJobCardsHistory rows={deletedJobCards} /> : null}
 
         {/* ── Filters ───────────────────────────────────────────────────────── */}
         <FilterSection sp={sp} />

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { Prisma } from "@prisma/client";
-import { Activity, Briefcase, CheckCircle2, Hourglass, PauseCircle, PlayCircle, Search } from "lucide-react";
+import { Archive, Briefcase, CheckCircle2, Hourglass, PauseCircle, PlayCircle, Search } from "lucide-react";
 
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
@@ -15,7 +15,15 @@ import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/sec
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
-import { ACTIVE_JOB_CARD_STATUSES, CLOSURE_REQUESTED_STATUS, displaySimplifiedStatus, simplifiedStatusTone } from "@/lib/work-orders/simplified-status";
+import { ACTIVE_JOB_CARD_STATUSES, CLOSURE_REQUESTED_STATUS } from "@/lib/work-orders/simplified-status";
+import {
+  classifyDailyActivity,
+  kuwaitDayRange,
+  matchesDailyActivityFilter,
+  parseDailyActivityStatusFilter,
+  summarizeDailyActivity,
+  type DailyActivityStatusFilter,
+} from "@/lib/work-orders/daily-activity-status";
 import {
   getMaterialFulfillmentForWorkOrders,
   anyMaterialsIncomplete,
@@ -23,6 +31,8 @@ import {
   type MaterialFulfillment,
 } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummariesBulk, type DailyActivityLaborSummary } from "@/lib/work-orders/work-session-totals";
+import { canRequestTimeCorrection, getWorkTimeSourceSummaries } from "@/lib/backend/work-orders/work-time-corrections";
+import { getJobCardDatesBulk } from "@/lib/work-orders/job-card-dates-data";
 import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
 
 // Daily Activity / Active Job Cards Work Tracking Unit 9.
@@ -40,9 +50,15 @@ import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness
 // across every Job Card on the page, (3) one bulk work-session read across
 // every Job Card on the page — see getMaterialFulfillmentForWorkOrders() and
 // getWorkOrderLaborSummariesBulk() (both new, additive, in the existing
-// lib/work-orders/* modules), capped at PAGE_SIZE Job Cards.
+// lib/work-orders/* modules).
+//
+// Daily Activity Status Accuracy Unit: the derived fields are now computed
+// for every Job Card in scope (up to COMPUTE_LIMIT), not just the first
+// PAGE_SIZE, so the summary counts are exact; only the rendered list is
+// capped at PAGE_SIZE.
 
 const PAGE_SIZE = 50;
+const COMPUTE_LIMIT = 500;
 
 type SearchParamsShape = {
   q?: string;
@@ -51,10 +67,31 @@ type SearchParamsShape = {
   materials?: string;
 };
 
-// Unit 10G.54, Task 4: "waiting-approval" added alongside the existing
-// filters, none of which change meaning or behavior.
-const STATUS_FILTERS = ["all", "working", "paused", "not-started", "materials-pending", "ready-closure", "waiting-approval"] as const;
-type StatusFilter = (typeof STATUS_FILTERS)[number];
+type StatusFilter = DailyActivityStatusFilter;
+
+// Empty-state copy per status filter — says what is genuinely empty instead
+// of the old blanket "No active Job Cards to track."
+const EMPTY_STATE_COPY: Record<StatusFilter, { title: string; message: string }> = {
+  all: { title: "No open Job Cards", message: "There are no open Job Cards right now." },
+  working: { title: "Nobody is working right now", message: "No Job Card has a worker currently working." },
+  paused: { title: "No paused Job Cards", message: "No Job Card has paused work right now." },
+  "ready-closure": { title: "Nothing ready to close", message: "No Job Card has finished work waiting for a closure request." },
+  "waiting-approval": { title: "Nothing waiting for approval", message: "No closure requests are waiting for a manager." },
+  closed: { title: "No Job Cards closed today", message: "No Job Card has been closed today (Kuwait time)." },
+  "materials-pending": { title: "No materials pending", message: "No open Job Card is waiting for materials." },
+  "not-started": { title: "No Job Cards waiting to start", message: "Every open Job Card has started work." },
+};
+
+const STATUS_FILTER_LABEL: Record<StatusFilter, string> = {
+  all: "Open Job Cards",
+  working: "Working Now",
+  paused: "Paused",
+  "ready-closure": "Ready to Close",
+  "waiting-approval": "Waiting for Approval",
+  closed: "Closed Today",
+  "materials-pending": "Materials Pending",
+  "not-started": "Not Started",
+};
 
 const TEAM_FILTERS = ["Auto", "Mechanical", "Electrical", "Other"] as const;
 
@@ -75,16 +112,16 @@ const MATERIALS_FILTERS = ["all", "Materials Pending", "Ready to Issue", "Partia
 // the Job Card detail page's own formatDateTimeValue is always the full
 // date, never "Today"/"Yesterday"), so this is a new, narrowly-scoped
 // helper, used only for createdLabel below.
+// Manual Worker Time Entry / Job Card dates: Kuwait calendar day and time,
+// explicitly (it used the server's own zone and day boundary before).
 function formatCreatedLabel(v: Date | null | undefined): string {
   if (!v) return "-";
-  const now = new Date();
-  const isSameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  const time = v.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-  if (isSameDay(v, now)) return `Today, ${time}`;
-  if (isSameDay(v, yesterday)) return `Yesterday, ${time}`;
-  return `${v.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}, ${time}`;
+  const { start: todayStart } = kuwaitDayRange(new Date());
+  const yesterdayStart = new Date(todayStart.getTime() - 24 * 3600_000);
+  const time = v.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "Asia/Kuwait" });
+  if (v >= todayStart) return `Today, ${time}`;
+  if (v >= yesterdayStart) return `Yesterday, ${time}`;
+  return `${v.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "Asia/Kuwait" })}, ${time}`;
 }
 
 // Task 2 — a Job Card reads as "new" for exactly one hour after creation;
@@ -142,7 +179,10 @@ function closureChipFor(status: string, closureReady: boolean): DailyActivityChi
 // (see priorityBucket below), since its materials/worker state will always
 // otherwise evaluate as "closure" (ready) once a request has actually been
 // submitted, and it is no longer something Data Entry can act on.
-type PriorityBucket = "working" | "paused" | "materials" | "closure" | "waiting-approval" | "assigned-idle" | "unassigned";
+//
+// Daily Activity Status Accuracy Unit: "closed" added for the Closed Today
+// filter — always sorts last and is checked first in the ladder.
+type PriorityBucket = "working" | "paused" | "materials" | "closure" | "waiting-approval" | "assigned-idle" | "unassigned" | "closed";
 const PRIORITY_RANK: Record<PriorityBucket, number> = {
   working: 0,
   paused: 1,
@@ -151,6 +191,7 @@ const PRIORITY_RANK: Record<PriorityBucket, number> = {
   "waiting-approval": 4,
   "assigned-idle": 5,
   unassigned: 6,
+  closed: 7,
 };
 // Daily Activity Status Color Cards Unit 10G.55, Task 2: this map now also
 // doubles as the list row's one clear action/status line (card.priorityLabel
@@ -166,6 +207,7 @@ const PRIORITY_LABEL: Record<PriorityBucket, string> = {
   "waiting-approval": "Waiting for Manager approval",
   "assigned-idle": "Work not started",
   unassigned: "No workers assigned yet",
+  closed: "Job Card closed",
 };
 
 export default async function DailyActivityPage({
@@ -176,7 +218,7 @@ export default async function DailyActivityPage({
   const context = await requirePermission("work_orders.view");
   const sp = (await searchParams) ?? {};
   const search = (sp.q ?? "").trim().slice(0, 80);
-  const statusFilter: StatusFilter = STATUS_FILTERS.includes((sp.status ?? "all") as StatusFilter) ? ((sp.status ?? "all") as StatusFilter) : "all";
+  const statusFilter: StatusFilter = parseDailyActivityStatusFilter(sp.status);
   const teamFilter = TEAM_FILTERS.includes((sp.team ?? "") as (typeof TEAM_FILTERS)[number]) ? sp.team! : "";
   const materialsFilter = MATERIALS_FILTERS.includes((sp.materials ?? "all") as (typeof MATERIALS_FILTERS)[number]) ? (sp.materials ?? "all") : "all";
 
@@ -199,6 +241,9 @@ export default async function DailyActivityPage({
   // Compact Control Board Unit 9C, Task 6: same gate the Job Card detail
   // page's own Print button uses.
   const canPrint = hasPermission(context, "work_orders.print");
+  // Manual Worker Time Entry: Data Entry (with work_orders.assign) or Super
+  // Admin — the same rule the server applies (canRequestTimeCorrection).
+  const canRequestManualTime = canRequestTimeCorrection(context);
 
   const visibilityFilter = getWorkOrderVisibilityFilter(context);
 
@@ -259,34 +304,61 @@ export default async function DailyActivityPage({
     ],
   };
 
-  const [totalActiveCount, jobCardRows] = await Promise.all([
-    prisma.work_orders.count({ where }),
-    prisma.work_orders.findMany({
-      where,
-      orderBy: { updated_at: "desc" },
-      take: PAGE_SIZE,
-      select: {
-        id: true,
-        work_order_number: true,
-        status: true,
-        operator_complaint: true,
-        description_of_work: true,
-        worker_type: true,
-        created_at: true,
-        ordered_by: true,
-        estimated_labor_hours: true,
-        assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
-        departments: { select: { name: true } },
-        work_order_assignments: { select: { id: true } },
-        parts_requests: { select: { id: true, status: true } },
+  // Daily Activity Status Accuracy Unit — Closed Today. Closed date uses the
+  // same source as the Closed Job Cards report (app/actions/closed-job-cards.ts):
+  // the `approvals` row with status "Closed" written by both closure paths,
+  // falling back to updated_at only for a legacy Closed row with no such
+  // approval. "Today" is the Kuwait calendar day.
+  const { start: kuwaitTodayStart, end: kuwaitTodayEnd } = kuwaitDayRange(new Date());
+  const closedTodayWhere: Prisma.work_ordersWhereInput = {
+    AND: [
+      visibilityFilter,
+      { deleted_at: null },
+      { status: "Closed" },
+      {
+        OR: [
+          { approvals: { some: { status: "Closed", decided_at: { gte: kuwaitTodayStart, lt: kuwaitTodayEnd } } } },
+          { approvals: { none: { status: "Closed" } }, updated_at: { gte: kuwaitTodayStart, lt: kuwaitTodayEnd } },
+        ],
       },
-    }),
+      ...searchConditions,
+      ...teamConditions,
+    ],
+  };
+
+  const jobCardSelect = {
+    id: true,
+    work_order_number: true,
+    status: true,
+    operator_complaint: true,
+    description_of_work: true,
+    worker_type: true,
+    created_at: true,
+    ordered_by: true,
+    estimated_labor_hours: true,
+    starting_datetime: true,
+    ending_datetime: true,
+    assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
+    departments: { select: { name: true } },
+    work_order_assignments: { select: { id: true } },
+    parts_requests: { select: { id: true, status: true } },
+  } satisfies Prisma.work_ordersSelect;
+
+  const [totalActiveCount, activeRows, closedTodayRows] = await Promise.all([
+    prisma.work_orders.count({ where }),
+    prisma.work_orders.findMany({ where, orderBy: { updated_at: "desc" }, take: COMPUTE_LIMIT, select: jobCardSelect }),
+    prisma.work_orders.findMany({ where: closedTodayWhere, orderBy: { updated_at: "desc" }, take: COMPUTE_LIMIT, select: jobCardSelect }),
   ]);
+  const jobCardRows = [...activeRows, ...closedTodayRows];
 
   const jobCardIds = jobCardRows.map((w) => w.id);
-  const [fulfillmentMap, laborMap] = await Promise.all([
+  const [fulfillmentMap, laborMap, timeSourceMap, datesMap] = await Promise.all([
     getMaterialFulfillmentForWorkOrders(prisma, jobCardIds),
     getWorkOrderLaborSummariesBulk(prisma, jobCardIds),
+    // Manual Worker Time Entry: minutes by source + entries waiting for the
+    // Manager (no money), and the Created / Work Start / Work End dates.
+    getWorkTimeSourceSummaries(prisma, jobCardIds),
+    getJobCardDatesBulk(prisma, jobCardRows),
   ]);
 
   const emptyLaborSummary: DailyActivityLaborSummary = {
@@ -369,12 +441,20 @@ export default async function DailyActivityPage({
     // block, not just an actively-running session). Completion-note
     // requirement is handled at request time on the Job Card itself (Task
     // 9's own note, Unit 9).
-    const closureReady = pendingMaterialsRequestsCount === 0 && !materialsIncomplete && workersClosureCheck.ready;
+    //
+    // Manual Worker Time Entry: manual time or corrections still waiting for
+    // the Manager also block (the server refuses the closure request too).
+    const timeSource = timeSourceMap.get(wo.id) ?? null;
+    const pendingTimeReviews = (timeSource?.pendingManualEntries ?? 0) + (timeSource?.pendingCorrections ?? 0);
+    const closureReady = pendingMaterialsRequestsCount === 0 && !materialsIncomplete && workersClosureCheck.ready && pendingTimeReviews === 0;
     const closureChip = closureChipFor(wo.status, closureReady);
     const closureReasons: string[] = [];
     if (pendingMaterialsRequestsCount > 0) closureReasons.push("Materials pending");
     if (materialsIncomplete) closureReasons.push("Required materials not fully issued");
     closureReasons.push(...workersClosureCheck.reasons);
+    if (pendingTimeReviews > 0) {
+      closureReasons.push(`Worker time waiting for Manager review (${pendingTimeReviews}).`);
+    }
 
     // Daily Activity Closure Requested Visibility Unit 10G.54, Task 6: once
     // a closure request is pending, Data Entry should not keep changing
@@ -383,6 +463,15 @@ export default async function DailyActivityPage({
     // controls) is gated on this being false, until a Manager either closes
     // it or workflow later adds a send-back/correction path.
     const isClosureRequested = wo.status === CLOSURE_REQUESTED_STATUS;
+    // Daily Activity Status Accuracy Unit: Closed Today rows are read-only
+    // here — no materials, assignment, session, or closure action.
+    const isClosed = wo.status === "Closed";
+    const activity = classifyDailyActivity({
+      status: wo.status,
+      workers: laborSummary.workers.map((w) => ({ assignmentStatus: w.assignment_status, sessionStatus: w.status })),
+      closureReady,
+      materialsPending: materialsChip.label === "Materials Pending",
+    });
 
     // Unified Material Processing Flow Unit 10G.23 — replaces the old
     // three-way "Issue Material" / "Issue Available" / "Receive Materials"
@@ -396,7 +485,7 @@ export default async function DailyActivityPage({
     // permission) since Process Materials can do both a receive and an
     // issue in the same click.
     const canProcessMaterials = canIssueMaterials && canReceiveMaterials;
-    const showProcessMaterials = fulfillment.length > 0 && materialsIncomplete && canProcessMaterials && !isClosureRequested;
+    const showProcessMaterials = fulfillment.length > 0 && materialsIncomplete && canProcessMaterials && !isClosureRequested && !isClosed;
     const materialsActionHref = activeMaterialsRequest ? `/store/parts-requests/${activeMaterialsRequest.id}` : `${detailHref}#parts`;
     const materialsActionLabel = showProcessMaterials
       ? "Process Materials"
@@ -433,19 +522,26 @@ export default async function DailyActivityPage({
     // outright — its materials/worker state will otherwise always evaluate
     // as "closure" (ready), which is exactly the stale "Ready for Closure"
     // read this unit fixes.
-    const priorityBucket: PriorityBucket = isClosureRequested
-      ? "waiting-approval"
-      : workTimeChip.label === "Working"
-        ? "working"
-        : workTimeChip.label === "Paused"
-          ? "paused"
-          : materialsChip.label === "Materials Pending"
-            ? "materials"
-            : closureReady
-              ? "closure"
-              : hasAssignment
-                ? "assigned-idle"
-                : "unassigned";
+    //
+    // Daily Activity Status Accuracy Unit: Closed wins first, and "closure"
+    // now uses the same Ready to Close rule as the summary card/filter
+    // (activity.isReadyToClose — needs at least one Finished worker), so a
+    // never-started Job Card no longer reads "Ready to request closure".
+    const priorityBucket: PriorityBucket = isClosed
+      ? "closed"
+      : isClosureRequested
+        ? "waiting-approval"
+        : workTimeChip.label === "Working"
+          ? "working"
+          : workTimeChip.label === "Paused"
+            ? "paused"
+            : materialsChip.label === "Materials Pending"
+              ? "materials"
+              : activity.isReadyToClose
+                ? "closure"
+                : hasAssignment
+                  ? "assigned-idle"
+                  : "unassigned";
 
     // Compact Control Board Final UI Polish Unit 9D, Task 7 — exactly one
     // Next Action per card, in the same priority order as Unit 9B, with
@@ -468,8 +564,9 @@ export default async function DailyActivityPage({
     // Unit 10G.54, Task 6: exact wording — a short "next action" clause
     // plus the fuller explanatory sentence, no button (there is nothing
     // left for Data Entry to do until a Manager acts).
-    const nextAction: { message: string; buttonLabel: string | null; href: string | null } =
-      isClosureRequested
+    const nextAction: { message: string; buttonLabel: string | null; href: string | null } = isClosed
+      ? { message: "Job Card closed.", buttonLabel: null, href: null }
+      : isClosureRequested
         ? {
             message:
               "Waiting for Manager approval. This Job Card has been submitted for closure approval. The Maintenance Manager will review and close it.",
@@ -529,6 +626,10 @@ export default async function DailyActivityPage({
       materialAlert,
       isUnusualActiveSession,
       isClosureRequested,
+      isClosed,
+      activity,
+      timeSource,
+      dates: datesMap.get(wo.id) ?? null,
       issue,
       assetLabel,
       workTeam,
@@ -547,35 +648,39 @@ export default async function DailyActivityPage({
   // state still reads "ready" (that's exactly why it could be requested),
   // but it must no longer show under "Ready for Closure" once actually
   // requested (its own "waiting-approval" filter below is where it belongs).
-  const filtered = computed.filter((c) => {
-    if (statusFilter === "working" && c.workTimeChip.label !== "Working") return false;
-    if (statusFilter === "paused" && c.workTimeChip.label !== "Paused") return false;
-    if (statusFilter === "not-started" && c.workTimeChip.label !== "Not Started") return false;
-    if (statusFilter === "materials-pending" && c.materialsChip.label !== "Materials Pending") return false;
-    if (statusFilter === "ready-closure" && (!c.closureReady || c.isClosureRequested)) return false;
-    if (statusFilter === "waiting-approval" && !c.isClosureRequested) return false;
-    if (materialsFilter !== "all" && c.materialsChip.label !== materialsFilter) return false;
-    return true;
-  });
+  //
+  // Daily Activity Status Accuracy Unit: one scope, two uses. `scoped` is
+  // every Job Card matching search + team + materials (but NOT the status
+  // filter); the summary counts are computed over `scoped`, and the list is
+  // `scoped` narrowed by the SAME matchesDailyActivityFilter() rule — so a
+  // summary card's number is always exactly the number of rows its filter
+  // shows. Closed Today rows only ever match the "closed" filter.
+  const scoped = computed.filter((c) => materialsFilter === "all" || c.materialsChip.label === materialsFilter);
+  const filtered = scoped.filter((c) => matchesDailyActivityFilter(c.activity, statusFilter));
 
   // Task 3 — most important first: sort by priority bucket, then fall back
   // to the existing updated_at-desc order (already the fetch order) for
   // ties within the same bucket — a stable sort, so this only ever
   // re-groups, never shuffles, cards that share a priority.
   const sorted = [...filtered].sort((a, b) => PRIORITY_RANK[a.priorityBucket] - PRIORITY_RANK[b.priorityBucket]);
+  const visible = sorted.slice(0, PAGE_SIZE);
 
-  // ── Task 2 — summary cards. Computed from the loaded (capped) batch, not
-  // an exhaustive company-wide scan — "Active Job Cards" uses the real
-  // count() so that one number stays accurate even beyond the page cap;
-  // everything else is a fast in-memory reduce over what's already loaded. ─
-  const workersWorkingNow = computed.reduce((n, c) => n + c.laborSummary.workers.filter((w) => w.status === "Active").length, 0);
-  const pausedWorkers = computed.reduce((n, c) => n + c.laborSummary.workers.filter((w) => w.status === "Paused").length, 0);
+  // ── Task 2 — summary cards: distinct Job Card counts over `scoped` (see
+  // above). Worker headcounts are a secondary line only. The old Paused
+  // card summed raw "Paused" session rows per worker, which also counted
+  // workers already Finished from a paused state — see
+  // lib/work-orders/daily-activity-status.ts. ─────────────────────────────
+  const summary = summarizeDailyActivity(scoped.map((c) => c.activity));
   const totalLaborAmountToday = computed.reduce((n, c) => n + c.laborSummary.today_amount, 0);
-  // Unit 10G.54, Task 3/5: excludes an already-Closure-Requested Job Card —
-  // same reasoning as the "ready-closure" filter fix above.
-  const readyForClosureCount = computed.filter((c) => c.closureReady && !c.isClosureRequested).length;
-  const waitingApprovalCount = computed.filter((c) => c.isClosureRequested).length;
-  const hasAnyFilter = Boolean(search || statusFilter !== "all" || teamFilter || materialsFilter !== "all");
+  const hasScopeFilter = Boolean(search || teamFilter || materialsFilter !== "all");
+  const hasAnyFilter = hasScopeFilter || statusFilter !== "all";
+  const scopeFilterLabels = [
+    search ? `Search “${search}”` : null,
+    teamFilter ? `Work Team: ${teamFilter}` : null,
+    materialsFilter !== "all" ? `Materials: ${materialsFilter}` : null,
+  ].filter((v): v is string => Boolean(v));
+  const computeLimited = totalActiveCount > activeRows.length;
+  const emptyCopy = EMPTY_STATE_COPY[statusFilter];
 
   // Task 2 — summary cards double as filter shortcuts. Preserves the
   // search/team/materials filters already in effect, only ever changes
@@ -597,14 +702,17 @@ export default async function DailyActivityPage({
   // every field above), nothing new is computed in this step besides
   // resolving the display-status label/tone that the old per-card JSX used
   // to compute inline.
-  const boardCards: DailyActivityCardData[] = sorted.map((c) => {
-    const displayStatus = displaySimplifiedStatus(c.wo.status);
+  const boardCards: DailyActivityCardData[] = visible.map((c) => {
     return {
       id: c.wo.id,
       workOrderNumber: c.wo.work_order_number,
       status: c.wo.status,
-      displayStatus,
-      displayStatusTone: simplifiedStatusTone(displayStatus),
+      // Daily Activity Status Accuracy Unit, Issue 4: plain-language display
+      // label + one-line description (e.g. "Paused — Work has been paused.");
+      // display only, the stored status is untouched.
+      displayStatus: c.activity.plainStatus.label,
+      displayStatusTone: c.activity.plainStatus.tone,
+      statusDescription: c.activity.plainStatus.description,
       isUnusualActiveSession: c.isUnusualActiveSession,
       assetLabel: c.assetLabel,
       issue: c.issue,
@@ -637,20 +745,34 @@ export default async function DailyActivityPage({
       // only on the underlying materials/worker/assignment state, which
       // still reads "ready"/"assignable" even after the request is already
       // in, since none of that state itself changes at request time.
-      showAssignWorkers: !c.hasAssignment && canEditAssignment && !c.isClosureRequested,
-      showRequestClosure: c.closureReady && canRequestClosureRole && !c.isClosureRequested,
+      showAssignWorkers: !c.hasAssignment && canEditAssignment && !c.isClosureRequested && !c.isClosed,
+      showRequestClosure: c.closureReady && canRequestClosureRole && !c.isClosureRequested && !c.isClosed,
       // Review Closure & Approve — strictly the real Closure Requested
       // status (never "ready for closure") plus the same Manager/Super
       // Admin role check getClosureReviewDetailAction/approveJobCardClosure
       // enforce server-side; no new permission.
       showReviewClosure: c.isClosureRequested && isManagerRole,
       laborSummary: c.laborSummary,
-      canManageSessions: canManageSessions && c.wo.status !== "Closed" && !c.isClosureRequested,
+      canManageSessions: canManageSessions && !c.isClosed && !c.isClosureRequested,
       isManager: isManagerRole,
       canViewCosts,
       detailHref: c.detailHref,
       // Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 7.
       estimatedHours: c.estimatedHours,
+      // Manual Worker Time Entry — minutes only (no rates/cost) and dates.
+      timeSummary: c.timeSource
+        ? {
+            automaticMinutes: c.timeSource.automaticMinutes,
+            manualMinutes: c.timeSource.manualMinutes,
+            correctedPeriods: c.timeSource.correctedPeriods,
+            pendingManualEntries: c.timeSource.pendingManualEntries,
+            pendingCorrections: c.timeSource.pendingCorrections,
+            pendingByAssignment: c.timeSource.pendingByAssignment,
+            manualMinutesByAssignment: c.timeSource.manualMinutesByAssignment,
+          }
+        : null,
+      dates: c.dates,
+      canRequestManualTime: canRequestManualTime && !c.isClosed && !c.isClosureRequested,
     };
   });
 
@@ -690,29 +812,77 @@ export default async function DailyActivityPage({
             Reports). The remaining 4 cards now get 2x2 on mobile/tablet and
             one full-width row on desktop, with roomier spacing/sizing at
             lg to fill the space the removed card left behind. */}
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-5 lg:gap-3">
-          <SummaryCardLink href={statusHref("all")} label="Active Job Cards" value={totalActiveCount} icon={Briefcase} tone="blue" active={statusFilter === "all"} />
-          <SummaryCardLink href={statusHref("working")} label="Working Now" value={workersWorkingNow} icon={PlayCircle} tone="green" active={statusFilter === "working"} />
-          <SummaryCardLink href={statusHref("paused")} label="Paused" value={pausedWorkers} icon={PauseCircle} tone="amber" active={statusFilter === "paused"} />
-          <SummaryCardLink href={statusHref("ready-closure")} label="Ready for Closure" value={readyForClosureCount} icon={CheckCircle2} tone="green" active={statusFilter === "ready-closure"} />
-          {/* Unit 10G.54, Task 3: amber (not green) — a submitted-but-not-yet-
-              decided request, distinct from "Ready for Closure"'s green. */}
-          <SummaryCardLink href={statusHref("waiting-approval")} label="Waiting Manager Approval" value={waitingApprovalCount} icon={Hourglass} tone="amber" active={statusFilter === "waiting-approval"} />
-          {canViewCosts ? (
-            <SummaryCard label="Labor Cost Today" value={`${totalLaborAmountToday.toFixed(3)} KWD`} icon={Activity} tone="gray" />
-          ) : null}
+        {/* Daily Activity Status Accuracy Unit, Issue 2/3/5: six Job Card
+            count cards, each a link into the matching filter below (same
+            matchesDailyActivityFilter() rule, same scope). 2 per row on
+            phones, 3 on tablet/small desktop, all 6 in one row on xl. Labor
+            Cost Today (cost-gated) moved to a slim line underneath so the
+            six cards stay a clean grid. */}
+        {scopeFilterLabels.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900" role="status">
+            <span className="font-bold">Counts include only:</span>
+            <span>{scopeFilterLabels.join(" · ")}</span>
+            <Link href="/maintenance/daily-activity" className="ml-auto inline-flex min-h-8 items-center rounded-md border border-blue-300 bg-white px-3 font-bold text-blue-800 transition hover:bg-blue-100">
+              Reset filters
+            </Link>
+          </div>
+        ) : null}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:gap-3 xl:grid-cols-6">
+          <SummaryCardLink href={statusHref("all")} label="Open Job Cards" value={summary.open} icon={Briefcase} tone="blue" active={statusFilter === "all"} />
+          <SummaryCardLink
+            href={statusHref("working")}
+            label="Working Now"
+            value={summary.working}
+            detail={`${summary.workersWorking} worker${summary.workersWorking === 1 ? "" : "s"} working`}
+            icon={PlayCircle}
+            tone="green"
+            active={statusFilter === "working"}
+          />
+          <SummaryCardLink
+            href={statusHref("paused")}
+            label="Paused"
+            value={summary.paused}
+            detail={`${summary.workersPaused} worker${summary.workersPaused === 1 ? "" : "s"} paused`}
+            icon={PauseCircle}
+            tone="amber"
+            active={statusFilter === "paused"}
+          />
+          <SummaryCardLink href={statusHref("ready-closure")} label="Ready to Close" value={summary.readyToClose} detail="Work finished" icon={CheckCircle2} tone="teal" active={statusFilter === "ready-closure"} />
+          <SummaryCardLink
+            href={statusHref("waiting-approval")}
+            label="Waiting for Approval"
+            value={summary.waitingApproval}
+            detail="Sent to manager"
+            icon={Hourglass}
+            tone="yellow"
+            active={statusFilter === "waiting-approval"}
+          />
+          <SummaryCardLink href={statusHref("closed")} label="Closed Job Cards" value={summary.closed} detail="Closed today" icon={Archive} tone="gray" active={statusFilter === "closed"} />
         </div>
+        {canViewCosts || computeLimited ? (
+          <p className="flex flex-wrap gap-x-4 px-0.5 text-xs text-[#6B7280]">
+            {canViewCosts ? (
+              <span>
+                Labor cost today: <strong className="text-[#111827]">{totalLaborAmountToday.toFixed(3)} KWD</strong>
+              </span>
+            ) : null}
+            {computeLimited ? <span>Counts cover the latest {activeRows.length} of {totalActiveCount} open Job Cards. Narrow with search or Work Team.</span> : null}
+          </p>
+        ) : null}
 
         {/* Filters (Task 5) — one tight row: quick status chips, search,
             Work Team/Materials dropdowns, Reset. Wraps on narrow screens
-            rather than stacking into separate rows. */}
+            rather than stacking into separate rows. Status Accuracy Unit:
+            chip labels now match the summary cards exactly; Closed Today
+            added. */}
         <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-[#DDE2EA] bg-white p-2 shadow-sm">
           <FilterChip href={statusHref("all")} label="All Active" active={statusFilter === "all"} />
           <FilterChip href={statusHref("working")} label="Working Now" active={statusFilter === "working"} />
           <FilterChip href={statusHref("paused")} label="Paused" active={statusFilter === "paused"} />
+          <FilterChip href={statusHref("ready-closure")} label="Ready to Close" active={statusFilter === "ready-closure"} />
+          <FilterChip href={statusHref("waiting-approval")} label="Waiting for Approval" active={statusFilter === "waiting-approval"} />
+          <FilterChip href={statusHref("closed")} label="Closed Today" active={statusFilter === "closed"} />
           <FilterChip href={statusHref("materials-pending")} label="Materials Pending" active={statusFilter === "materials-pending"} urgent />
-          <FilterChip href={statusHref("ready-closure")} label="Ready for Closure" active={statusFilter === "ready-closure"} />
-          <FilterChip href={statusHref("waiting-approval")} label="Waiting Manager Approval" active={statusFilter === "waiting-approval"} />
           <FilterChip href={statusHref("not-started")} label="Not Started" active={statusFilter === "not-started"} />
 
           <form className="flex flex-1 flex-wrap items-center gap-1.5">
@@ -761,22 +931,32 @@ export default async function DailyActivityPage({
         {/* Task 4/7 — split control board: compact left list, full-detail
             right panel for only the ONE selected Job Card. Client component
             (selection is local UI state, not URL/DB state). */}
+        {/* Status Accuracy Unit: the empty state names the filter that is
+            actually empty, and only mentions other filters when some are
+            really applied (with a Reset right there). */}
         {boardCards.length === 0 ? (
           <EmptyState
-            title="No active Job Cards to track."
+            title={emptyCopy.title}
             message={
-              jobCardRows.length === 0
-                ? "There are no active Job Cards right now."
-                : "No Job Cards match the current filters. Try clearing them."
+              hasScopeFilter
+                ? `No “${STATUS_FILTER_LABEL[statusFilter]}” Job Cards match ${scopeFilterLabels.join(" · ")}. Reset filters to see everything.`
+                : emptyCopy.message
+            }
+            action={
+              hasAnyFilter ? (
+                <Link href="/maintenance/daily-activity" className="inline-flex min-h-9 items-center rounded-md border border-[#E5E7EB] bg-white px-3 text-xs font-bold text-[#111827] transition hover:bg-gray-50">
+                  Reset filters
+                </Link>
+              ) : undefined
             }
           />
         ) : (
           <DailyActivityBoard cards={boardCards} canPrint={canPrint} />
         )}
 
-        {totalActiveCount > jobCardRows.length ? (
+        {filtered.length > visible.length ? (
           <p className="text-center text-xs text-[#9CA3AF]">
-            Showing the latest {jobCardRows.length} of {totalActiveCount} active Job Cards. Narrow with search or filters to find others.
+            Showing the first {visible.length} of {filtered.length} matching Job Cards. Narrow with search or filters to find others.
           </p>
         ) : null}
       </div>
@@ -786,78 +966,58 @@ export default async function DailyActivityPage({
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function SummaryCard({
-  label,
-  value,
-  icon: Icon,
-  tone,
-}: {
-  label: string;
-  value: number | string;
-  icon: typeof Activity;
-  tone: "green" | "amber" | "red" | "blue" | "gray";
-}) {
-  const toneClass = {
-    green: "bg-[#16A34A]",
-    amber: "bg-[#F59E0B]",
-    red: "bg-[#ED1C24]",
-    blue: "bg-[#2563EB]",
-    gray: "bg-[#111827]",
-  }[tone];
+// Task 4 — a real link into the matching quick filter, with a highlighted
+// ring when that filter is the one active. Uses a blue (not red) ring for
+// "active filter" — Unit 9D's "fewer red highlights unless action/attention
+// is needed" — red on this page is reserved for materials-pending/blocked
+// states, not for "this is the filter you picked."
+//
+// Status Accuracy Unit, Issue 5: large number, short label, optional small
+// detail line; tone colors match the list row's state colors
+// (daily-activity-card.tsx PRIORITY_CARD_STYLE) so a card and its rows read
+// as the same state.
+type SummaryTone = "green" | "amber" | "teal" | "yellow" | "blue" | "gray";
+const SUMMARY_ICON_TONE: Record<SummaryTone, string> = {
+  green: "bg-[#16A34A]",
+  amber: "bg-[#F59E0B]",
+  teal: "bg-[#0D9488]",
+  yellow: "bg-[#EAB308]",
+  blue: "bg-[#2563EB]",
+  gray: "bg-[#64748B]",
+};
 
-  return (
-    <div className="flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-2 py-1.5 lg:gap-2.5 lg:px-4 lg:py-3">
-      <div className={`inline-flex shrink-0 rounded-md p-1 text-white lg:p-1.5 ${toneClass}`}>
-        <Icon className="h-3 w-3 lg:h-4 lg:w-4" aria-hidden="true" />
-      </div>
-      <div className="min-w-0">
-        <p className="truncate text-[9px] font-black uppercase leading-tight text-[#6B7280] lg:text-[10px]">{label}</p>
-        <p className="truncate text-sm font-black leading-tight text-[#111827] lg:text-lg">{value}</p>
-      </div>
-    </div>
-  );
-}
-
-// Task 4 — same compact horizontal visual as SummaryCard, but a real link
-// into the matching quick filter, with a highlighted ring when that filter
-// is the one active. Uses a blue (not red) ring for "active filter" — Unit
-// 9D's "fewer red highlights unless action/attention is needed" — red on
-// this page is reserved for materials-pending/blocked states, not for "this
-// is the filter you picked."
 function SummaryCardLink({
   href,
   label,
   value,
+  detail,
   icon: Icon,
   tone,
   active,
 }: {
   href: string;
   label: string;
-  value: number | string;
-  icon: typeof Activity;
-  tone: "green" | "amber" | "red" | "blue" | "gray";
+  value: number;
+  detail?: string;
+  icon: typeof Briefcase;
+  tone: SummaryTone;
   active: boolean;
 }) {
-  const toneClass = {
-    green: "bg-[#16A34A]",
-    amber: "bg-[#F59E0B]",
-    red: "bg-[#ED1C24]",
-    blue: "bg-[#2563EB]",
-    gray: "bg-[#111827]",
-  }[tone];
-
   return (
     <Link
       href={href}
-      className={`flex items-center gap-1.5 rounded-md border bg-white px-2 py-1.5 transition hover:border-[#2563EB] hover:shadow-sm lg:gap-2.5 lg:px-4 lg:py-3 ${active ? "border-[#2563EB] ring-1 ring-[#93C5FD]" : "border-[#E5E7EB]"}`}
+      aria-current={active ? "true" : undefined}
+      className={`flex min-h-[72px] min-w-0 items-center gap-2.5 rounded-lg border px-3 py-2.5 transition hover:border-[#2563EB] hover:shadow-sm lg:px-4 lg:py-3 ${
+        active ? "border-[#2563EB] bg-blue-50/60 ring-2 ring-[#93C5FD]" : "border-[#E5E7EB] bg-white"
+      }`}
     >
-      <div className={`inline-flex shrink-0 rounded-md p-1 text-white lg:p-1.5 ${toneClass}`}>
-        <Icon className="h-3 w-3 lg:h-4 lg:w-4" aria-hidden="true" />
+      <div className={`inline-flex shrink-0 rounded-md p-1.5 text-white ${SUMMARY_ICON_TONE[tone]}`}>
+        <Icon className="h-4 w-4 lg:h-5 lg:w-5" aria-hidden="true" />
       </div>
       <div className="min-w-0">
-        <p className="truncate text-[9px] font-black uppercase leading-tight text-[#6B7280] lg:text-[10px]">{label}</p>
-        <p className="truncate text-sm font-black leading-tight text-[#111827] lg:text-lg">{value}</p>
+        <p className="text-2xl font-black leading-none text-[#111827] lg:text-3xl">{value}</p>
+        <p className="mt-1 truncate text-xs font-bold leading-tight text-[#374151]">{label}</p>
+        {detail ? <p className="truncate text-[11px] leading-tight text-[#6B7280]">{detail}</p> : null}
       </div>
     </Link>
   );

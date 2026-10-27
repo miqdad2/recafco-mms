@@ -12,6 +12,7 @@ import { dispatchActionToast } from "@/lib/action-messages";
 import { createClientId } from "@/lib/client/safe-id";
 import type { DailyActivityCardData } from "@/components/work-orders/daily-activity-card";
 import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { formatDurationMinutes } from "@/lib/format/kuwait-time";
 
 // Daily Activity Closure Request Modal with Attachments Unit 10F.6, extended
 // by Closure Request Modal Optional Note and Multiple Custom Attachments
@@ -104,6 +105,10 @@ export function DailyActivityClosureModal({
     }))
   );
   const allWorkersFinished = workersCheck.ready;
+  // Manual Worker Time Entry — minutes by source (never money) and anything
+  // still waiting for the Manager; the server refuses closure while waiting.
+  const time = card.timeSummary;
+  const pendingTime = time ? time.pendingManualEntries + time.pendingCorrections : 0;
   const isReady = card.closureChip.label === "Ready";
   const blockers = card.closureReasons;
 
@@ -211,12 +216,42 @@ export function DailyActivityClosureModal({
           </div>
         </div>
 
+        {/* Manual Worker Time Entry — small worker-time summary */}
+        {time ? (
+          <div className="rounded-md border border-[#E5E7EB] p-3" aria-label="Worker time">
+            <p className="mb-1.5 text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Worker Time</p>
+            <dl className="grid grid-cols-1 gap-x-3 gap-y-1 text-xs sm:grid-cols-3">
+              <div>
+                <dt className="text-[#6B7280]">Timer recorded</dt>
+                <dd className="text-sm font-bold text-[#111827]">{formatDurationMinutes(time.automaticMinutes)}</dd>
+              </div>
+              <div>
+                <dt className="text-[#6B7280]">Manual time (approved)</dt>
+                <dd className="text-sm font-bold text-[#111827]">{formatDurationMinutes(time.manualMinutes)}</dd>
+              </div>
+              <div>
+                <dt className="text-[#6B7280]">Waiting for Manager</dt>
+                <dd className={`text-sm font-bold ${pendingTime ? "text-amber-700" : "text-[#111827]"}`}>
+                  {time.pendingManualEntries} manual · {time.pendingCorrections} {time.pendingCorrections === 1 ? "correction" : "corrections"}
+                </dd>
+              </div>
+            </dl>
+            {pendingTime > 0 ? (
+              <p className="mt-2 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs font-semibold text-amber-800">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                The Manager must approve or reject the waiting worker time before closure can be requested.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
         {/* Readiness checklist / blockers */}
         <div className="rounded-md border border-[#E5E7EB] p-3">
           <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Closure Readiness</p>
           <ul className="space-y-1.5">
             <ChecklistRow ok={materialsReady} label="Materials completed" />
             <ChecklistRow ok={allWorkersFinished} label="All workers finished" />
+            <ChecklistRow ok={pendingTime === 0} label="No worker time waiting for Manager review" />
           </ul>
           {/* Task 9 — named, specific worker call-outs (not just the generic
               blockers line below) so a Manager/Data Entry knows exactly who

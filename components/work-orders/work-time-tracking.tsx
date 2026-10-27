@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { Clock, PauseCircle, PlayCircle, Users } from "lucide-react";
 
+import { TimeCorrectionsPanel } from "@/components/work-orders/time-corrections-panel";
 import { WorkerSessionRow } from "@/components/work-orders/worker-session-row";
 import { StatusBadge } from "@/components/ui/status-badge";
+import type { TimeCorrectionView } from "@/lib/backend/work-orders/work-time-corrections";
 import type { WorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours-variance";
 
@@ -35,6 +37,12 @@ export function WorkTimeTracking({
   // role that reaches this section (Data Entry included) — hours are not a
   // cost/pay field.
   estimatedTotalHours,
+  // Worker Time Correction (optional): corrections on this Job Card, Data
+  // Entry's Correct Time, and the Manager's review.
+  jobCardNumber,
+  corrections = [],
+  canRequestCorrection = false,
+  canReviewCorrections = false,
 }: {
   workOrderId: string;
   summary: WorkOrderLaborSummary;
@@ -43,6 +51,10 @@ export function WorkTimeTracking({
   canViewCosts: boolean;
   canAssign: boolean;
   estimatedTotalHours: number | null;
+  jobCardNumber?: string | null;
+  corrections?: TimeCorrectionView[];
+  canRequestCorrection?: boolean;
+  canReviewCorrections?: boolean;
 }) {
   if (summary.workers.length === 0) {
     return (
@@ -154,21 +166,41 @@ export function WorkTimeTracking({
       </div>
 
       <div className="mt-4 space-y-3">
-        {summary.workers.map((w) => (
-          <WorkerSessionRow
-            key={w.worker_assignment_id}
-            workOrderId={workOrderId}
-            worker={w}
-            canManageSessions={canManageSessions}
-            isManager={isManager}
-            canViewCosts={canViewCosts}
-          />
-        ))}
+        {summary.workers.map((w) => {
+          const mine = corrections.filter((c) => c.workerAssignmentId === w.worker_assignment_id);
+          // Manual Worker Time Entry: corrections and manual entries share
+          // one list; each feeds its own row indicators.
+          const myCorrections = mine.filter((c) => c.kind === "correction");
+          const myManual = mine.filter((c) => c.kind === "manual_entry");
+          return (
+            <WorkerSessionRow
+              key={w.worker_assignment_id}
+              workOrderId={workOrderId}
+              worker={w}
+              canManageSessions={canManageSessions}
+              isManager={isManager}
+              canViewCosts={canViewCosts}
+              canRequestCorrection={canRequestCorrection}
+              jobCardNumber={jobCardNumber}
+              corrections={{
+                pending: myCorrections.filter((c) => c.status === "Pending").length,
+                approved: myCorrections.filter((c) => c.status === "Approved").length,
+              }}
+              canRequestManualTime={canRequestCorrection}
+              pendingManualEntries={myManual
+                .filter((c) => c.status === "Pending")
+                .map((c) => ({ start: c.correctedStart, end: c.correctedEnd, minutes: c.correctedMinutes }))}
+              manualMinutes={myManual.filter((c) => c.status === "Approved").reduce((n, c) => n + c.correctedMinutes, 0)}
+            />
+          );
+        })}
       </div>
 
       {!canManageSessions && (
         <p className="mt-3 text-xs text-[#9CA3AF]">This Job Card is closed — work sessions are read-only.</p>
       )}
+
+      <TimeCorrectionsPanel corrections={corrections} canReview={canReviewCorrections} />
     </section>
   );
 }

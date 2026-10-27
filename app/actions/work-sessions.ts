@@ -3,7 +3,10 @@
 import { revalidatePath } from "next/cache";
 
 import { requireUser } from "@/lib/auth/context";
+import { prisma } from "@/lib/db/prisma";
 import { safeErrorMessage } from "@/lib/errors/error-handler";
+import { canViewCosts } from "@/lib/security/permissions";
+import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import {
   startWorkSession,
   pauseWorkSession,
@@ -120,6 +123,7 @@ export async function addManualTimeEntryAction(
       startedAt: formData.get("started_at"),
       stoppedAt: formData.get("stopped_at"),
       notes: formData.get("notes") || undefined,
+      confirmLongPeriod: formData.get("confirm_long_period") === "on",
     });
     const result = await addManualTimeEntry(context, parsed);
     revalidateJobCard(result.workOrderId);
@@ -140,6 +144,7 @@ export async function editWorkSessionAction(
       startedAt: formData.get("started_at"),
       stoppedAt: formData.get("stopped_at"),
       correctionReason: formData.get("correction_reason"),
+      confirmLongPeriod: formData.get("confirm_long_period") === "on",
     });
     const result = await editWorkSession(context, parsed);
     revalidateJobCard(result.workOrderId);
@@ -150,13 +155,23 @@ export async function editWorkSessionAction(
 }
 
 // "View Sessions" — called directly from the client (not a form action).
-// Gated on plain requireUser(), matching the read-only, low-sensitivity
-// nature of session history (mirrors the Job Card detail page it's launched
-// from, which is itself already permission-gated).
+// Job Card Deletion and Worker Time Correction: now also checks that the
+// worker assignment's Job Card is visible to the caller (same
+// getWorkOrderVisibilityFilter as the Job Card page) and returns rate/amount
+// only to cost viewers — previously any signed-in user could read every
+// period's pay for any assignment id, hidden only in the browser.
 export async function getSessionsForAssignmentAction(workerAssignmentId: string): Promise<SessionRow[]> {
-  await requireUser();
+  const context = await requireUser();
   try {
-    return await getSessionsForAssignment(workerAssignmentId);
+    const visible = await prisma.workOrderWorkerAssignment.findFirst({
+      where: {
+        id: workerAssignmentId,
+        work_orders: { AND: [{ deleted_at: null }, getWorkOrderVisibilityFilter(context)] },
+      },
+      select: { id: true },
+    });
+    if (!visible) return [];
+    return await getSessionsForAssignment(workerAssignmentId, { includeCosts: canViewCosts(context) });
   } catch {
     return [];
   }

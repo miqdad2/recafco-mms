@@ -4,8 +4,12 @@ import { useEffect, useState, useActionState } from "react";
 import { AlertCircle, Loader2, X } from "lucide-react";
 
 import { getSessionsForAssignmentAction, editWorkSessionAction, cancelWorkSessionAction, type WorkSessionState } from "@/app/actions/work-sessions";
+import { CorrectTimeForm } from "@/components/work-orders/correct-time-form";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { dispatchActionToast } from "@/lib/action-messages";
+import { formatDurationMinutes, formatKuwaitDateTime, parseKuwaitInputValue, toKuwaitInputValue } from "@/lib/format/kuwait-time";
+import { LongPeriodConfirm } from "@/components/work-orders/long-period-confirm";
+import { isUnusuallyLongPeriod, periodMinutes, workPeriodSource } from "@/lib/work-orders/work-time-correction-rules";
 import type { SessionRow } from "@/lib/work-orders/work-session-totals";
 
 const inp =
@@ -19,11 +23,6 @@ function statusTone(status: string): "green" | "amber" | "blue" | "red" | "gray"
   return "gray";
 }
 
-function toLocalInputValue(iso: string): string {
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 
 function EditSessionForm({
   session,
@@ -41,6 +40,15 @@ function EditSessionForm({
   onDone: () => void;
 }) {
   const [state, formAction, isPending] = useActionState<WorkSessionState, FormData>(editWorkSessionAction, null);
+  // Final Integration Review: Kuwait wall-clock in, Kuwait wall-clock out —
+  // never the browser's or the server's own time zone.
+  const [start, setStart] = useState(() => toKuwaitInputValue(session.started_at));
+  const [stop, setStop] = useState(() => toKuwaitInputValue(session.stopped_at ?? session.paused_at ?? session.started_at));
+  const [confirmLong, setConfirmLong] = useState(false);
+  const startDate = parseKuwaitInputValue(start);
+  const stopDate = parseKuwaitInputValue(stop);
+  const enteredMinutes = startDate && stopDate && stopDate > startDate ? periodMinutes(startDate, stopDate) : null;
+  const isLong = enteredMinutes !== null && isUnusuallyLongPeriod(enteredMinutes);
 
   useEffect(() => {
     if (state?.ok) {
@@ -78,10 +86,10 @@ function EditSessionForm({
             </>
           )}
           <dt className="text-[#9CA3AF]">Original start</dt>
-          <dd className="text-[#111827]">{new Date(session.started_at).toLocaleString("en-GB")}</dd>
+          <dd className="text-[#111827]">{formatKuwaitDateTime(session.started_at)}</dd>
           <dt className="text-[#9CA3AF]">Original end</dt>
           <dd className="text-[#111827]">
-            {session.stopped_at || session.paused_at ? new Date(session.stopped_at ?? session.paused_at!).toLocaleString("en-GB") : "(in progress)"}
+            {session.stopped_at || session.paused_at ? formatKuwaitDateTime(session.stopped_at ?? session.paused_at!) : "(in progress)"}
           </dd>
           <dt className="text-[#9CA3AF]">Original duration</dt>
           <dd className="text-[#111827]">{session.duration_minutes} min</dd>
@@ -104,26 +112,31 @@ function EditSessionForm({
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className="mb-0.5 block text-[10px] font-bold text-[#4B5563]">Start</label>
-          <input type="datetime-local" name="started_at" defaultValue={toLocalInputValue(session.started_at)} required className={inp} disabled={isPending} />
+          <input type="datetime-local" name="started_at" value={start} onChange={(e) => setStart(e.target.value)} required className={inp} disabled={isPending} />
         </div>
         <div>
           <label className="mb-0.5 block text-[10px] font-bold text-[#4B5563]">Stop</label>
           <input
             type="datetime-local"
             name="stopped_at"
-            defaultValue={toLocalInputValue(session.stopped_at ?? session.paused_at ?? session.started_at)}
+            value={stop}
+            onChange={(e) => setStop(e.target.value)}
             required
             className={inp}
             disabled={isPending}
           />
         </div>
       </div>
+      <p className="text-[10px] text-[#6B7280]">Kuwait time. For work past midnight, choose the next day as the stop date.</p>
+      {isLong && enteredMinutes !== null ? (
+        <LongPeriodConfirm id={`edit-confirm-long-${session.id}`} minutes={enteredMinutes} checked={confirmLong} onChange={setConfirmLong} disabled={isPending} />
+      ) : null}
       <div>
         <label className="mb-0.5 block text-[10px] font-bold text-[#4B5563]">Correction reason (required)</label>
         <input type="text" name="correction_reason" required minLength={5} placeholder="Why is this being corrected?" className={inp} disabled={isPending} />
       </div>
       <div className="flex gap-2">
-        <button type="submit" disabled={isPending} className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-2.5 py-1 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-60">
+        <button type="submit" disabled={isPending || (isLong && !confirmLong)} className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-2.5 py-1 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-60">
           {isPending && <Loader2 className="h-3 w-3 animate-spin" />}
           Save Correction
         </button>
@@ -174,12 +187,16 @@ export function SessionHistoryModal({
   initialEditSessionId,
   jobCardNumber,
   assetLabel,
+  canRequestCorrection = false,
 }: {
   workerAssignmentId: string;
   workerName: string;
   isManager: boolean;
   canViewCosts: boolean;
   onClose: () => void;
+  // Worker Time Correction: Data Entry's "Correct Time" (sent to the Manager
+  // for approval) on finished work periods. Off unless the caller passes it.
+  canRequestCorrection?: boolean;
   // Manager Worker Time Correction Enhancement Unit 10C.1, Task 2 — when set,
   // the correction form for this exact session opens immediately instead of
   // requiring the Manager to find and click "Edit / Correct" in the list.
@@ -193,6 +210,7 @@ export function SessionHistoryModal({
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [editingId, setEditingId] = useState<string | null>(initialEditSessionId ?? null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [correctingId, setCorrectingId] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
@@ -208,6 +226,7 @@ export function SessionHistoryModal({
   function afterChange() {
     setEditingId(null);
     setCancellingId(null);
+    setCorrectingId(null);
     setReloadToken((n) => n + 1);
   }
 
@@ -237,17 +256,24 @@ export function SessionHistoryModal({
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <p className="font-semibold text-[#111827]">
-                          {new Date(s.started_at).toLocaleString("en-GB")}
+                          {formatKuwaitDateTime(s.started_at)}
                           {s.stopped_at || s.paused_at
-                            ? ` → ${new Date(s.stopped_at ?? s.paused_at!).toLocaleString("en-GB")}`
+                            ? ` → ${formatKuwaitDateTime(s.stopped_at ?? s.paused_at!)}`
                             : " → (in progress)"}
                         </p>
                         <p className="text-xs text-[#6B7280]">
-                          {s.duration_minutes} min{s.is_manual_entry ? " — manual entry" : ""}
+                          {formatDurationMinutes(s.duration_minutes)}
+                          {s.is_manual_entry && s.entered_by_name ? ` — entered by ${s.entered_by_name}` : ""}
                           {canViewCosts ? ` — ${s.calculated_amount.toFixed(3)} KWD` : ""}
                         </p>
                       </div>
-                      <StatusBadge label={s.status} tone={statusTone(s.status)} />
+                      <div className="flex flex-wrap items-center gap-1">
+                        {(() => {
+                          const source = workPeriodSource(s);
+                          return <StatusBadge label={source} tone={source === "System Recorded" ? "gray" : "blue"} />;
+                        })()}
+                        <StatusBadge label={s.status} tone={statusTone(s.status)} />
+                      </div>
                     </div>
                     {s.notes && <p className="mt-1 text-xs text-[#4B5563]">Note: {s.notes}</p>}
                     {s.correction_reason && (
@@ -255,6 +281,40 @@ export function SessionHistoryModal({
                         Corrected{s.edited_by_name ? ` by ${s.edited_by_name}` : ""}: {s.correction_reason}
                       </p>
                     )}
+                    {s.original_started_at ? (
+                      <p className="mt-1 text-xs text-[#4B5563]">
+                        System recorded: {formatKuwaitDateTime(s.original_started_at)} → {formatKuwaitDateTime(s.original_ended_at)} (
+                        {formatDurationMinutes(s.original_duration_minutes ?? 0)})
+                      </p>
+                    ) : null}
+                    {s.pending_correction ? (
+                      <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+                        <p className="font-bold">Time correction waiting for Manager review</p>
+                        <p className="mt-0.5">
+                          Corrected: {formatKuwaitDateTime(s.pending_correction.corrected_started_at)} →{" "}
+                          {formatKuwaitDateTime(s.pending_correction.corrected_ended_at)} (
+                          {formatDurationMinutes(s.pending_correction.corrected_duration_minutes)}) — sent by {s.pending_correction.requested_by_name}
+                        </p>
+                        <p className="mt-0.5">The system time above is used until the Manager approves.</p>
+                      </div>
+                    ) : null}
+                    {canRequestCorrection && s.status === "Active" ? (
+                      <p className="mt-2 text-xs font-semibold text-amber-700">Pause or finish the work before correcting this time.</p>
+                    ) : null}
+                    {canRequestCorrection && (s.status === "Completed" || s.status === "Paused") && !s.pending_correction && correctingId !== s.id ? (
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          onClick={() => setCorrectingId(s.id)}
+                          className="min-h-11 rounded-md border border-[#E5E7EB] bg-white px-3 text-sm font-bold text-[#111827] hover:bg-gray-50 sm:min-h-9 sm:text-xs"
+                        >
+                          Correct Time
+                        </button>
+                      </div>
+                    ) : null}
+                    {canRequestCorrection && correctingId === s.id ? (
+                      <CorrectTimeForm session={s} workerName={workerName} jobCardNumber={jobCardNumber} onDone={afterChange} />
+                    ) : null}
 
                     {isManager && s.status === "Active" && (
                       // Task 4 — an explicit message instead of silently

@@ -11,6 +11,14 @@ import {
   type ClosedJobCardListRow,
   type ClosedJobCardDetail,
 } from "@/app/actions/closed-job-cards";
+import {
+  deSummaryCardClass,
+  deSummaryDetailClass,
+  deSummaryIconClass,
+  deSummaryLabelClass,
+  deSummaryTopRowClass,
+  deSummaryValueClass,
+} from "@/components/dashboard/data-entry-summary-card-styles";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours-variance";
@@ -74,18 +82,22 @@ export function DataEntryClosedRecentlyCard({ count }: { count: number }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex items-center gap-2.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2.5 text-left transition hover:border-[#2563EB] hover:shadow-sm"
+        className={deSummaryCardClass}
       >
-        <span className="inline-flex shrink-0 rounded-md bg-[#16A34A] p-2 text-white">
-          <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+        {/* Data Entry Dashboard Visual Refinement — same shared card styling
+            as the other five Today Summary cards; content/behavior unchanged. */}
+        <span className={deSummaryTopRowClass}>
+          <span className={deSummaryValueClass}>{count}</span>
+          <span className={`${deSummaryIconClass} bg-[#16A34A]`}>
+            <CheckCircle2 className="h-[18px] w-[18px]" aria-hidden="true" />
+          </span>
         </span>
+        {/* Data Entry Today Summary Label Clarity Unit 10G.12, Task 3:
+            "Closed Recently" -> "Closed" — label only, same count/logic,
+            same "Closed in last 14 days" subtitle right below. */}
         <span className="min-w-0">
-          {/* Data Entry Today Summary Label Clarity Unit 10G.12, Task 3:
-              "Closed Recently" -> "Closed" — label only, same count/logic,
-              same "Closed in last 14 days" subtitle right below. */}
-          <span className="block truncate text-[10px] font-black uppercase leading-tight text-[#6B7280]">Closed</span>
-          <span className="block text-lg font-black leading-tight text-[#111827]">{count}</span>
-          <span className="block truncate text-[10px] text-[#9CA3AF]">Closed in last 14 days</span>
+          <span className={deSummaryLabelClass}>Closed</span>
+          <span className={deSummaryDetailClass}>Closed in last 14 days</span>
         </span>
       </button>
       {open ? (

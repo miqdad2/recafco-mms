@@ -45,6 +45,21 @@ import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals"
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
 import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
 import { WorkTimeTracking } from "@/components/work-orders/work-time-tracking";
+import { JobCardDatesSection } from "@/components/work-orders/job-card-dates-section";
+import { RequestDeletionButton } from "@/components/work-orders/request-deletion-button";
+import { DeletionRequestPanel } from "@/components/work-orders/deletion-request-panel";
+import { getJobCardDates } from "@/lib/work-orders/job-card-dates-data";
+import {
+  canRequestJobCardDeletion,
+  canReviewJobCardDeletion,
+  getJobCardDeletionStatus,
+} from "@/lib/backend/work-orders/job-card-deletion";
+import {
+  canRequestTimeCorrection,
+  canReviewTimeCorrection,
+  getTimeCorrectionsForWorkOrder,
+} from "@/lib/backend/work-orders/work-time-corrections";
+import { formatKuwaitDateTime } from "@/lib/format/kuwait-time";
 import { JobCardTabHashRedirect } from "@/components/work-orders/job-card-tab-hash-redirect";
 import {
   displaySimplifiedStatus,
@@ -349,6 +364,18 @@ export default async function WorkOrderDetailPage({
     getWorkOrderLaborSummary(prisma, wo.id),
   ]);
 
+  // Job Card Dates, Deletion Requests and Worker Time Corrections — all
+  // read-only here; the actions re-check everything server-side.
+  const canRequestDeletion = canRequestJobCardDeletion(context);
+  const canReviewDeletion = canReviewJobCardDeletion(context);
+  const [jobCardDates, deletionStatus, timeCorrections] = await Promise.all([
+    getJobCardDates(prisma, wo),
+    canRequestDeletion || canReviewDeletion ? getJobCardDeletionStatus(context, wo.id) : Promise.resolve(null),
+    getTimeCorrectionsForWorkOrder(prisma, wo.id, { userId: context.userId, canViewCosts: canViewCostsForContext(context) }),
+  ]);
+  const pendingTimeCorrections = timeCorrections.filter((c) => c.status === "Pending").length;
+  const jobCardAssetLabel = wo.assets ? `${wo.assets.asset_code} — ${wo.assets.asset_name}` : null;
+
   const actorIds = [
     wo.created_by,
     wo.updated_by,
@@ -519,6 +546,8 @@ export default async function WorkOrderDetailPage({
   if (pendingMaterialsRequestsCount > 0) closureBlockers.push("A Materials Request is still pending — receive it first.");
   if (materialsIncomplete) closureBlockers.push("Required materials have not been fully issued yet.");
   closureBlockers.push(...workersClosureCheck.reasons);
+  // Mirrors assertNoPendingTimeCorrections in the closure approval.
+  if (pendingTimeCorrections > 0) closureBlockers.push("A worker time correction is waiting for Manager review.");
   const closureReady = closureBlockers.length === 0;
 
   // Status chips for the hero header (Task 2, Premium Job Card Detail Page
@@ -745,6 +774,19 @@ export default async function WorkOrderDetailPage({
                 <Button>Edit</Button>
               </Link>
             ) : null}
+            {/* Job Card Deletion: Data Entry's request action. Hidden on a
+                closed Job Card; on any other Job Card that cannot be
+                deleted, the dialog explains why instead of sending. */}
+            {canRequestDeletion && deletionStatus && wo.status !== "Closed" ? (
+              <RequestDeletionButton
+                workOrderId={wo.id}
+                jobCardNumber={wo.work_order_number}
+                assetLabel={jobCardAssetLabel}
+                eligible={deletionStatus.eligibility.eligible}
+                reasons={deletionStatus.eligibility.reasons}
+                pending={deletionStatus.pending !== null}
+              />
+            ) : null}
           </>
         }
       />
@@ -967,6 +1009,32 @@ export default async function WorkOrderDetailPage({
             <p className="mt-1 text-sm leading-5 text-[#4B5563]">
               {wo.work_order_number ?? "This Job Card"} reviewed successfully. Next step: Waiting Supervisor / Manager Review.
             </p>
+          </div>
+        ) : null}
+
+        {/* ── Job Card delete request (global — shown on every tab) ───────── */}
+        {deletionStatus?.pending ? (
+          <DeletionRequestPanel
+            request={{
+              id: deletionStatus.pending.id,
+              reason: deletionStatus.pending.reason,
+              requestedByName: deletionStatus.pending.profiles_requested_by.full_name,
+              requestedAt: deletionStatus.pending.requested_at.toISOString(),
+              statusAtRequest: deletionStatus.pending.status_at_request,
+            }}
+            jobCardNumber={wo.work_order_number}
+            assetLabel={jobCardAssetLabel}
+            currentStatusLabel={displaySimplifiedStatus(wo.status)}
+            activity={deletionStatus.activity}
+            blockedReasons={deletionStatus.eligibility.eligible ? [] : deletionStatus.eligibility.reasons}
+            canReview={canReviewDeletion && deletionStatus.pending.requested_by !== context.userId}
+          />
+        ) : deletionStatus?.lastRejected && canRequestDeletion ? (
+          <div className="rounded-md border border-[#E5E7EB] bg-gray-50 p-3 text-sm text-[#4B5563]">
+            <span className="font-bold text-[#111827]">Delete request not approved</span> by{" "}
+            {deletionStatus.lastRejected.profiles_decided_by?.full_name ?? "the Manager"} on{" "}
+            {formatKuwaitDateTime(deletionStatus.lastRejected.decided_at)}
+            {deletionStatus.lastRejected.decision_remarks ? ` — ${deletionStatus.lastRejected.decision_remarks}` : ""}
           </div>
         ) : null}
 
@@ -1259,6 +1327,7 @@ export default async function WorkOrderDetailPage({
                 ) : null}
               </dl>
             </section>
+            <JobCardDatesSection dates={jobCardDates} />
           </aside>
         </div>
         )}
@@ -1348,7 +1417,7 @@ export default async function WorkOrderDetailPage({
                             ) : null}
                             {a.external_expected_visit_date ? (
                               <p className="text-[#4B5563]">
-                                Expected visit: {new Date(a.external_expected_visit_date).toLocaleDateString("en-GB")}
+                                Expected visit: {new Date(a.external_expected_visit_date).toLocaleDateString("en-GB", { timeZone: "Asia/Kuwait" })}
                               </p>
                             ) : null}
                             {a.notes ? <p className="mt-1 text-xs text-[#9CA3AF]">{a.notes}</p> : null}
@@ -1395,6 +1464,10 @@ export default async function WorkOrderDetailPage({
                 wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null,
                 laborSummary.workers.map((w) => w.estimated_hours)
               )}
+              jobCardNumber={wo.work_order_number}
+              corrections={timeCorrections}
+              canRequestCorrection={canRequestTimeCorrection(context)}
+              canReviewCorrections={canReviewTimeCorrection(context)}
             />
         </div>
         )}
@@ -2392,6 +2465,31 @@ function jobCardAuditEntry(log: AuditLogRow, actorName: (id?: string | null) => 
         detail: metaGet(log.metadata, "correctionReason") ?? "Session cancelled by Manager.",
         actor, tone: "red", label: "Time Tracking",
       };
+    // Worker Time Corrections and Job Card Deletion Requests.
+    case "work_order.time_correction_requested":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: `Time correction sent — ${metaGet(log.metadata, "worker_name") ?? "worker"}`,
+        detail: `${metaGet(log.metadata, "original_duration_minutes") ?? "?"} min recorded → ${metaGet(log.metadata, "corrected_duration_minutes") ?? "?"} min corrected. ${metaGet(log.metadata, "reason") ?? ""}`.trim(),
+        actor, tone: "amber", label: "Time Tracking",
+      };
+    case "work_order.time_correction_approved":
+    case "work_order.time_correction_rejected":
+      return {
+        id: `audit-${log.id}`, at: log.created_at,
+        title: `Time correction ${log.action.endsWith("approved") ? "approved" : "rejected"} — ${metaGet(log.metadata, "worker_name") ?? "worker"}`,
+        detail: metaGet(log.metadata, "remarks") ?? (log.action.endsWith("approved") ? "Corrected time now used." : "Recorded time kept."),
+        actor, tone: log.action.endsWith("approved") ? "green" : "red", label: "Time Tracking",
+      };
+    case "work_order.deletion_requested":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Delete requested",
+        detail: metaGet(log.metadata, "reason") ?? "Request to delete this Job Card.", actor, tone: "red", label: "Job Card",
+      };
+    case "work_order.deletion_rejected":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Delete request rejected",
+        detail: metaGet(log.metadata, "remarks") ?? "Job Card kept.", actor, tone: "gray", label: "Job Card",
+      };
     default:
       return null; // work_order.create/update/assign, file.upload — covered elsewhere or System Audit only
   }
@@ -2596,7 +2694,7 @@ function formatDateValue(value: Date | string | null | undefined) {
   if (!value) return "Not recorded";
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "Asia/Kuwait" });
 }
 
 function formatDateTimeValue(value: Date | string | null | undefined) {
@@ -2609,6 +2707,8 @@ function formatDateTimeValue(value: Date | string | null | undefined) {
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    // Final Integration Review: explicit Kuwait time, never the server's zone.
+    timeZone: "Asia/Kuwait",
   });
 }
 

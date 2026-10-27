@@ -26,6 +26,8 @@ export const manualTimeEntrySchema = z
     startedAt: z.string().trim().min(1),
     stoppedAt: z.string().trim().min(1),
     notes: z.string().trim().max(500).optional(),
+    // Kuwait wall-clock times; an unusually long period needs this ticked.
+    confirmLongPeriod: z.boolean().optional(),
   })
   .refine((v) => new Date(v.stoppedAt).getTime() > new Date(v.startedAt).getTime(), {
     message: "Stop time must be after start time.",
@@ -39,6 +41,7 @@ export const editWorkSessionSchema = z
     startedAt: z.string().trim().min(1),
     stoppedAt: z.string().trim().min(1),
     correctionReason: z.string().trim().min(5).max(500),
+    confirmLongPeriod: z.boolean().optional(),
   })
   .refine((v) => new Date(v.stoppedAt).getTime() > new Date(v.startedAt).getTime(), {
     message: "Stop time must be after start time.",

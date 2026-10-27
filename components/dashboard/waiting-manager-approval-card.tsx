@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Clock3 } from "lucide-react";
 
+import { deSummaryCardClass, deSummaryIconClass, deSummaryLabelClass, deSummaryTopRowClass, deSummaryValueClass } from "@/components/dashboard/data-entry-summary-card-styles";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { StatusBadge } from "@/components/ui/status-badge";
 
@@ -116,15 +117,17 @@ export function WaitingManagerApprovalCard({ count, jobCards }: { count: number;
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex items-center gap-2.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2.5 text-left transition hover:border-[#2563EB] hover:shadow-sm"
+        className={deSummaryCardClass}
       >
-        <span className="inline-flex shrink-0 rounded-md bg-amber-500 p-2 text-white">
-          <Clock3 className="h-4 w-4" aria-hidden="true" />
+        {/* Data Entry Dashboard Visual Refinement — same shared card styling
+            as the other five Today Summary cards; content/behavior unchanged. */}
+        <span className={deSummaryTopRowClass}>
+          <span className={deSummaryValueClass}>{count}</span>
+          <span className={`${deSummaryIconClass} bg-amber-500`}>
+            <Clock3 className="h-[18px] w-[18px]" aria-hidden="true" />
+          </span>
         </span>
-        <span className="min-w-0">
-          <span className="block truncate text-[10px] font-black uppercase leading-tight text-[#6B7280]">Waiting Manager Approval</span>
-          <span className="block text-lg font-black leading-tight text-[#111827]">{count}</span>
-        </span>
+        <span className={deSummaryLabelClass}>Waiting Manager Approval</span>
       </button>
       {open ? <WaitingManagerApprovalModal jobCards={jobCards} totalCount={count} onClose={() => setOpen(false)} /> : null}
     </>

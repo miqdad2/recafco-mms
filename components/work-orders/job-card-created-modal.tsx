@@ -24,6 +24,23 @@ export type JobCardCreatedModalProps = {
   hasAssignment?: boolean;
   hasRequiredMaterials?: boolean;
   dismissHref: string;
+  // Job Card Creation 500 / Success Popup Fix — all optional, used only when
+  // the New Job Card wizard shows this popup itself (no redirect). The Job
+  // Cards page's ?success=job-card-created usage passes none of them and is
+  // unchanged.
+  // Close / navigate without the router.replace(dismissHref) step.
+  onClose?: () => void;
+  // "Create Another Job Card" restarts the wizard (fresh form + new
+  // submission id) instead of linking to /maintenance/work-orders/new.
+  onCreateAnother?: () => void;
+  // What the user entered but is NOT stored (assignment, Materials Request,
+  // attachments). Non-empty = partial success: warning icon, these lines,
+  // and "Open Job Card to Complete" as the main button.
+  missingDetails?: string[];
+  // Plain notes under the description (e.g. "already saved by your earlier attempt").
+  notes?: string[];
+  // The request that created it may still be adding its follow-up details.
+  checkingDetails?: boolean;
 };
 
 // Approval Workflow Unit 4 — Closure Approval Only: mirrors the current
@@ -49,10 +66,19 @@ export function JobCardCreatedModal({
   hasAssignment = false,
   hasRequiredMaterials = false,
   dismissHref,
+  onClose,
+  onCreateAnother,
+  missingDetails = [],
+  notes = [],
+  checkingDetails = false,
 }: JobCardCreatedModalProps) {
   const router = useRouter();
-  const dismiss = () => router.replace(dismissHref, { scroll: false });
+  const dismiss = onClose ?? (() => router.replace(dismissHref, { scroll: false }));
+  // In the wizard, links just navigate (the wizard unmounts with the page);
+  // on the Job Cards page they also clear ?success= as before.
+  const linkDismiss = onClose ? undefined : dismiss;
   const canViewFull = !!jobCardId;
+  const partial = missingDetails.length > 0;
 
   // Save Draft Success Popup Submit Option Cleanup Task 2/3/6: this same
   // modal renders for both outcomes of the create wizard — saved as Draft
@@ -66,7 +92,13 @@ export function JobCardCreatedModal({
   // started — it only creates/activates the Job Card. Worker time only ever
   // starts from Daily Activity/Work Time Tracking, so this title (and every
   // other string in this modal) avoids "Start"/"Started" for that reason.
-  const modalTitle = isDraft ? "Job Card Draft Saved" : "Job Card Created Successfully";
+  const modalTitle = partial
+    ? isDraft
+      ? "Draft Saved — Some Details Were Not Saved"
+      : "Job Card Created — Some Details Were Not Saved"
+    : isDraft
+      ? "Job Card Draft Saved"
+      : "Job Card Created Successfully";
   const modalMessage = isDraft ? "has been saved as draft." : "is now Active.";
 
   // Unit 10F.2, Task 4: for the just-created (Active) case, the correct next
@@ -86,7 +118,7 @@ export function JobCardCreatedModal({
       ? "Track worker time from Daily Activity."
       : "Assign workers from the Job Card or Daily Activity.";
 
-  const warnings: string[] = [];
+  const warnings: string[] = [...missingDetails];
   if (attachmentWarning) warnings.push("Job Card created, but some attachments failed to upload.");
   if (materialsRequestWarning) {
     warnings.push('Job Card created, but the Materials Request could not be created automatically. Use "Request Materials" from the Job Card to add it.');
@@ -133,8 +165,15 @@ export function JobCardCreatedModal({
   // calls the exact same submitWorkOrderAction with the exact same hidden
   // fields, only the label changed, since this literally just moves the
   // record Draft -> Active (never starts a worker timer either).
+  const createAnotherAction: WorkflowSuccessAction = onCreateAnother
+    ? { kind: "button", label: "Create Another Job Card", onClick: onCreateAnother }
+    : { kind: "link", label: "Create Another Job Card", href: "/maintenance/work-orders/new", onClick: linkDismiss };
+  const dailyActivityHref = jobCardNumber ? `/maintenance/daily-activity?q=${encodeURIComponent(jobCardNumber)}` : "/maintenance/daily-activity";
+
   const primaryAction: WorkflowSuccessAction | undefined =
-    isDraft && canViewFull
+    partial && canViewFull
+      ? { kind: "link", label: "Open Job Card to Complete", href: `/maintenance/work-orders/${jobCardId}`, onClick: linkDismiss }
+      : isDraft && canViewFull
       ? {
           kind: "form",
           label: "Activate Job Card",
@@ -150,8 +189,8 @@ export function JobCardCreatedModal({
             // known; no new query support was added for this.
             kind: "link",
             label: "Open in Daily Activity",
-            href: jobCardNumber ? `/maintenance/daily-activity?q=${encodeURIComponent(jobCardNumber)}` : "/maintenance/daily-activity",
-            onClick: dismiss,
+            href: dailyActivityHref,
+            onClick: linkDismiss,
           }
         : undefined;
 
@@ -159,9 +198,19 @@ export function JobCardCreatedModal({
     <WorkflowSuccessModal
       headingId="jc-created-heading"
       title={modalTitle}
+      iconVariant={partial ? "warning" : "success"}
       description={
         <>
-          Job Card <span className="font-bold text-[#111827]">{jobCardNumber ?? "—"}</span> {modalMessage}
+          Job Card <span className="font-bold text-[#111827]">{jobCardNumber ?? "—"}</span>{" "}
+          {partial ? "is saved. Open it to add what is missing — do not create it again." : modalMessage}
+          {checkingDetails ? (
+            <span className="mt-2 block font-semibold text-[#4B5563]">Checking the assignment, materials and attachments…</span>
+          ) : null}
+          {notes.map((n) => (
+            <span key={n} className="mt-2 block text-xs text-[#6B7280]">
+              {n}
+            </span>
+          ))}
         </>
       }
       warnings={warnings}
@@ -178,16 +227,15 @@ export function JobCardCreatedModal({
         // same destination, no behavior change. Draft keeps its previous
         // two secondary buttons unchanged (Task 7).
         isDraft
-          ? [
-              { kind: "link", label: "Create Another Job Card", href: "/maintenance/work-orders/new", onClick: dismiss },
-              { kind: "link", label: "Go to Job Cards", href: "/maintenance/work-orders", onClick: dismiss },
-            ]
-          : [
-              ...(canViewFull
-                ? [{ kind: "link" as const, label: "View Job Card Details", href: `/maintenance/work-orders/${jobCardId}`, onClick: dismiss }]
-                : []),
-              { kind: "link", label: "Create Another Job Card", href: "/maintenance/work-orders/new", onClick: dismiss },
-            ]
+          ? [createAnotherAction, { kind: "link", label: "Go to Job Cards", href: "/maintenance/work-orders", onClick: linkDismiss }]
+          : partial
+            ? [{ kind: "link", label: "Open in Daily Activity", href: dailyActivityHref, onClick: linkDismiss }, createAnotherAction]
+            : [
+                ...(canViewFull
+                  ? [{ kind: "link" as const, label: "View Job Card Details", href: `/maintenance/work-orders/${jobCardId}`, onClick: linkDismiss }]
+                  : []),
+                createAnotherAction,
+              ]
       }
       closeLabel={isDraft ? undefined : "Go to Job Cards"}
       closeAction={dismiss}

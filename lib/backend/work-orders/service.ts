@@ -24,6 +24,7 @@ import { CLOSURE_REQUESTED_STATUS } from "@/lib/work-orders/simplified-status-di
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { assertNoPendingTimeCorrections } from "@/lib/backend/work-orders/work-time-corrections";
 
 type WorkflowResult = {
   workOrderId: string;
@@ -1073,6 +1074,7 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
     );
 
     await assertWorkersReadyForClosure(tx, workOrderId);
+    await assertNoPendingTimeCorrections(tx, workOrderId);
 
     const row = await updateWorkOrderStatus(tx, workOrderId, CLOSURE_REQUESTED_STATUS, context.userId);
     await tx.approvals.create({
@@ -1132,6 +1134,9 @@ export async function approveJobCardClosure(context: CurrentUserContext, workOrd
     // time, so an Approve click can never close a Job Card a worker has
     // since gone back to working on.
     await assertWorkersReadyForClosure(tx, workOrderId);
+    // Worker Time Correction: closing freezes work time, so a correction
+    // still waiting for review must be decided first.
+    await assertNoPendingTimeCorrections(tx, workOrderId);
 
     const row = await updateWorkOrderStatus(tx, workOrderId, "Closed", context.userId);
     await tx.approvals.create({
@@ -1198,6 +1203,7 @@ export async function closeWorkOrder(context: CurrentUserContext, workOrderId: s
     );
 
     await assertWorkersReadyForClosure(tx, workOrderId);
+    await assertNoPendingTimeCorrections(tx, workOrderId);
 
     return transitionWorkOrderInTransaction(tx, context, workOrderId, "Closed");
   });

@@ -32,10 +32,20 @@ const nextConfig: NextConfig = {
   // per-file "File is too large" validation error still applies correctly
   // to a single oversized file either way; this fixes the specific,
   // realistic default-configuration crash this unit reports.
+  //
+  // Job Card Creation Reliability: because this app has a proxy.ts, Next.js
+  // also buffers every request body for the proxy and CUTS IT OFF at
+  // proxyClientMaxBodySize (default 10 MB) — whatever bodySizeLimit says.
+  // So the 60 MB above was never actually reachable: a Job Card with a few
+  // phone photos (> 10 MB together) arrived truncated and the save crashed.
+  // Set to the same 60 MB so the documented limit is the real one; the New
+  // Job Card wizard and POST /api/job-cards check it too
+  // (JOB_CARD_MAX_REQUEST_BYTES).
   experimental: {
     serverActions: {
       bodySizeLimit: "60mb"
-    }
+    },
+    proxyClientMaxBodySize: "60mb"
   },
   async headers() {
     return [
