@@ -279,8 +279,8 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
     // Job Card Start / End Date — typed calendar dates, always printed
     // ("Not entered" when blank); separate from the recorded Work Start /
     // Work End below.
-    ["Job Card Start Date", formatJobCardDate(rawWo.job_card_start_date)],
-    ["Job Card End Date", formatJobCardDate(rawWo.job_card_end_date)],
+    ["Job Card Open Date", formatJobCardDate(rawWo.job_card_start_date)],
+    ["Job Card Closed Date", formatJobCardDate(rawWo.job_card_end_date)],
     ...(department?.name ? ([["Department", department.name]] as Array<[string, string]>) : []),
     ["Asset", asset ? `${asset.asset_code} - ${asset.asset_name}` : "Not recorded"],
     ...(rawWo.asset_category ? ([["Asset Type", rawWo.asset_category]] as Array<[string, string]>) : []),

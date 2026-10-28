@@ -1237,8 +1237,8 @@ export default async function WorkOrderDetailPage({
                       {/* Job Card Start / End Date — typed calendar dates,
                           always shown ("Not entered" when blank); not the
                           recorded Work Start / Work End in Job Card Dates. */}
-                      <InfoBlock label="Job Card Start Date" value={formatJobCardDate(wo.job_card_start_date)} />
-                      <InfoBlock label="Job Card End Date" value={formatJobCardDate(wo.job_card_end_date)} />
+                      <InfoBlock label="Job Card Open Date" value={formatJobCardDate(wo.job_card_start_date)} />
+                      <InfoBlock label="Job Card Closed Date" value={formatJobCardDate(wo.job_card_end_date)} />
                       <InfoBlock label="Created on" value={formatDateTimeValue(wo.created_at)} />
                       {wo.ordered_by ? <InfoBlock label="Reported by" value={wo.ordered_by} /> : null}
                       {wo.job_location ? <InfoBlock label="Job location" value={wo.job_location} /> : null}

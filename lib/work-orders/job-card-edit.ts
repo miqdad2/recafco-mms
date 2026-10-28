@@ -1,6 +1,6 @@
 // Job Card Start / End Date and Job Card edit rules (client-safe, pure).
 //
-// Job Card Start Date and Job Card End Date are plain calendar dates that
+// Job Card Open Date and Job Card Closed Date are plain calendar dates that
 // Data Entry types on the Job Card (work_orders.job_card_start_date /
 // job_card_end_date, @db.Date). They are NOT worker time: nothing here or
 // in the worker timer, manual time, correction, labor-hour or cost code
@@ -35,10 +35,10 @@ export function isIsoDate(value: string): boolean {
 export type JobCardDateRangeProblem = { field: "job_card_start_date" | "job_card_end_date"; message: string };
 
 export const JOB_CARD_DATE_MESSAGES = {
-  invalidStart: "Please enter a valid Job Card Start Date.",
-  invalidEnd: "Please enter a valid Job Card End Date.",
-  endWithoutStart: "Please enter the Job Card Start Date before the End Date.",
-  endBeforeStart: "Job Card End Date cannot be earlier than the Start Date.",
+  invalidStart: "Please enter a valid Job Card Open Date.",
+  invalidEnd: "Please enter a valid Job Card Closed Date.",
+  endWithoutStart: "Please enter the Job Card Open Date before the Closed Date.",
+  endBeforeStart: "Job Card Closed Date cannot be earlier than the Open Date.",
 } as const;
 
 /**
@@ -103,8 +103,8 @@ export const JOB_CARD_EDIT_AUDIT_FIELDS = [
   ["serial_number", "Serial number"],
   ["plate_number", "Plate number"],
   ["date_of_order", "Date of order"],
-  ["job_card_start_date", "Job Card Start Date"],
-  ["job_card_end_date", "Job Card End Date"],
+  ["job_card_start_date", "Job Card Open Date"],
+  ["job_card_end_date", "Job Card Closed Date"],
   ["job_location", "Job location"],
   ["starting_datetime", "Starting date/time"],
   ["ending_datetime", "Ending date/time"],
@@ -144,13 +144,22 @@ export function diffJobCardEdit(before: JobCardEditSnapshot, after: JobCardEditS
   return changes;
 }
 
-/** Reads metadata.changes back from an audit row; anything malformed is skipped. */
+const CURRENT_AUDIT_LABELS = new Map<string, string>(JOB_CARD_EDIT_AUDIT_FIELDS);
+
+/**
+ * Reads metadata.changes back from an audit row; anything malformed is
+ * skipped. A known field is shown with its current label (e.g. rows saved
+ * as "Job Card Start Date" read as "Job Card Open Date"); the stored audit
+ * row itself is never changed.
+ */
 export function readJobCardEditChanges(metadata: unknown): JobCardEditChange[] {
   if (!metadata || typeof metadata !== "object") return [];
   const raw = (metadata as { changes?: unknown }).changes;
   if (!Array.isArray(raw)) return [];
-  return raw.filter(
-    (c): c is JobCardEditChange =>
-      !!c && typeof c === "object" && typeof c.label === "string" && typeof c.from === "string" && typeof c.to === "string"
-  );
+  return raw
+    .filter(
+      (c): c is JobCardEditChange =>
+        !!c && typeof c === "object" && typeof c.label === "string" && typeof c.from === "string" && typeof c.to === "string"
+    )
+    .map((c) => ({ ...c, label: CURRENT_AUDIT_LABELS.get(c.field) ?? c.label }));
 }

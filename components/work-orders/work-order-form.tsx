@@ -461,11 +461,19 @@ export function WorkOrderForm({
         <Field label="Serial number" name="serial_number" defaultValue={workOrder?.serial_number} />
         <Field label="Plate number" name="plate_number" defaultValue={workOrder?.plate_number} />
         <Field label="Date of order" name="date_of_order" type="date" defaultValue={workOrder?.date_of_order ?? new Date().toISOString().slice(0, 10)} required />
-        {/* Job Card Start / End Date — optional calendar dates for the Job
-            Card itself, not worker time. Checked on save: End Date needs a
-            Start Date and cannot be earlier than it. */}
-        <Field label="Job Card Start Date (optional)" name="job_card_start_date" type="date" defaultValue={workOrder?.job_card_start_date ?? ""} />
-        <Field label="Job Card End Date (optional)" name="job_card_end_date" type="date" defaultValue={workOrder?.job_card_end_date ?? ""} />
+        {/* Job Card Open / Closed Date (job_card_start_date /
+            job_card_end_date) — optional calendar dates for the Job Card
+            itself, not worker time, and not the Manager's closure approval.
+            Checked on save: Closed Date needs an Open Date and cannot be
+            earlier than it. */}
+        <div>
+          <Field label="Job Card Open Date (optional)" name="job_card_start_date" type="date" defaultValue={workOrder?.job_card_start_date ?? ""} />
+          <p className="mt-1 text-xs text-[#6B7280]">The date this Job Card is opened. You can add or change it later.</p>
+        </div>
+        <div>
+          <Field label="Job Card Closed Date (optional)" name="job_card_end_date" type="date" defaultValue={workOrder?.job_card_end_date ?? ""} />
+          <p className="mt-1 text-xs text-[#6B7280]">The date recorded for closing this Job Card. It cannot be before the Open Date.</p>
+        </div>
         <Field label="Job location" name="job_location" defaultValue={workOrder?.job_location} />
       </FormSection>
 

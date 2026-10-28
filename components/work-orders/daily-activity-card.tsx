@@ -600,11 +600,11 @@ export function DailyActivitySelectedPanel({
           <dd className="font-semibold text-[#111827]">{card.requestDates.dateOfOrder}</dd>
         </div>
         <div className="flex gap-1">
-          <dt>Job Card Start Date:</dt>
+          <dt>Job Card Open Date:</dt>
           <dd className={`font-semibold ${card.requestDates.start === NOT_ENTERED ? "text-[#9CA3AF]" : "text-[#111827]"}`}>{card.requestDates.start}</dd>
         </div>
         <div className="flex gap-1">
-          <dt>Job Card End Date:</dt>
+          <dt>Job Card Closed Date:</dt>
           <dd className={`font-semibold ${card.requestDates.end === NOT_ENTERED ? "text-[#9CA3AF]" : "text-[#111827]"}`}>{card.requestDates.end}</dd>
         </div>
       </dl>

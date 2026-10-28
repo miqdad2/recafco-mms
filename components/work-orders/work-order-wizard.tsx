@@ -1693,7 +1693,7 @@ function WizardBody({
                   only from the worker timer / approved manual time. */}
               <div>
                 <label className="block">
-                  <FieldLabel label="Job Card Start Date" hint="optional" />
+                  <FieldLabel label="Job Card Open Date" hint="optional" />
                   <input
                     name="job_card_start_date"
                     data-field="job_card_start_date"
@@ -1704,13 +1704,13 @@ function WizardBody({
                     className={`${inp}${fieldCls("job_card_start_date")}`}
                   />
                 </label>
-                <p className={helpCls}>The day work on this Job Card starts. You can add or change it later.</p>
+                <p className={helpCls}>The date this Job Card is opened. You can add or change it later.</p>
                 <FieldError message={errors.job_card_start_date} />
               </div>
 
               <div>
                 <label className="block">
-                  <FieldLabel label="Job Card End Date" hint="optional" />
+                  <FieldLabel label="Job Card Closed Date" hint="optional" />
                   <input
                     name="job_card_end_date"
                     data-field="job_card_end_date"
@@ -1722,7 +1722,7 @@ function WizardBody({
                     className={`${inp}${fieldCls("job_card_end_date")}`}
                   />
                 </label>
-                <p className={helpCls}>The day the work is finished. It cannot be before the Start Date.</p>
+                <p className={helpCls}>The date recorded for closing this Job Card. It cannot be before the Open Date.</p>
                 <FieldError message={errors.job_card_end_date} />
               </div>
 
@@ -2508,8 +2508,8 @@ function WizardBody({
                 <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
                   <ReviewRow label="Order taken by" value={reviewData.ordered_by} />
                   <ReviewRow label="Date of order" value={reviewData.date_of_order} />
-                  <ReviewRow label="Job Card Start Date" value={reviewData.job_card_start_date ?? NOT_ENTERED} />
-                  <ReviewRow label="Job Card End Date" value={reviewData.job_card_end_date ?? NOT_ENTERED} />
+                  <ReviewRow label="Job Card Open Date" value={reviewData.job_card_start_date ?? NOT_ENTERED} />
+                  <ReviewRow label="Job Card Closed Date" value={reviewData.job_card_end_date ?? NOT_ENTERED} />
                   <ReviewRow label="Maintenance type" value={reviewData.maintenance_type} />
                   <ReviewRow label="Job location" value={reviewData.job_location} />
                   {/* Smart Meter Field Unit 10G.60, Task 8 — only whichever

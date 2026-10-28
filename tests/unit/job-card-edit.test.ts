@@ -1,4 +1,4 @@
-// Job Card Start / End Date rules, editable statuses and the edit audit
+// Job Card Open / Closed Date rules, editable statuses and the edit audit
 // diff — run with `npm run test:unit`. The wizard, the shared form schema,
 // the edit action, the detail page, print and Daily Activity all use these.
 import assert from "node:assert/strict";
@@ -23,7 +23,7 @@ function snapshot(overrides: Partial<JobCardEditSnapshot> = {}): JobCardEditSnap
   return { ...base, ...overrides };
 }
 
-describe("Job Card Start / End Date range", () => {
+describe("Job Card Open / Closed Date range", () => {
   it("both dates are optional", () => {
     assert.equal(checkJobCardDateRange("", ""), null);
     assert.equal(checkJobCardDateRange(null, undefined), null);
@@ -123,14 +123,14 @@ describe("Job Card edit audit diff", () => {
       job_card_end_date: "29 Oct 2026",
     });
     assert.deepEqual(diffJobCardEdit(before, after), [
-      { field: "job_card_start_date", label: "Job Card Start Date", from: "Not entered", to: "27 Oct 2026" },
-      { field: "job_card_end_date", label: "Job Card End Date", from: "Not entered", to: "29 Oct 2026" },
+      { field: "job_card_start_date", label: "Job Card Open Date", from: "Not entered", to: "27 Oct 2026" },
+      { field: "job_card_end_date", label: "Job Card Closed Date", from: "Not entered", to: "29 Oct 2026" },
     ]);
   });
 
   it("clearing a date is recorded as → Not entered", () => {
     const changes = diffJobCardEdit(snapshot({ job_card_end_date: "29 Oct 2026" }), snapshot());
-    assert.deepEqual(changes, [{ field: "job_card_end_date", label: "Job Card End Date", from: "29 Oct 2026", to: "Not entered" }]);
+    assert.deepEqual(changes, [{ field: "job_card_end_date", label: "Job Card Closed Date", from: "29 Oct 2026", to: "Not entered" }]);
   });
 
   it("an unchanged save records nothing; blank and null are the same", () => {
@@ -146,9 +146,22 @@ describe("Job Card edit audit diff", () => {
   });
 
   it("reads changes back from audit metadata and skips anything malformed", () => {
-    const good = { field: "job_card_start_date", label: "Job Card Start Date", from: "Not entered", to: "27 Oct 2026" };
+    const good = { field: "job_card_start_date", label: "Job Card Open Date", from: "Not entered", to: "27 Oct 2026" };
     assert.deepEqual(readJobCardEditChanges({ changes: [good, { label: 1 }, null] }), [good]);
     assert.deepEqual(readJobCardEditChanges({ status: "(preserved)" }), []);
     assert.deepEqual(readJobCardEditChanges(null), []);
+  });
+
+  it("shows history saved under the old date labels with the current labels", () => {
+    const stored = [
+      { field: "job_card_start_date", label: "Job Card Start Date", from: "Not entered", to: "27 Oct 2026" },
+      { field: "job_card_end_date", label: "Job Card End Date", from: "Not entered", to: "29 Oct 2026" },
+      { field: "retired_field", label: "Old label", from: "a", to: "b" },
+    ];
+    assert.deepEqual(
+      readJobCardEditChanges({ changes: stored }).map((c) => c.label),
+      ["Job Card Open Date", "Job Card Closed Date", "Old label"]
+    );
+    assert.equal(stored[0].label, "Job Card Start Date");
   });
 });

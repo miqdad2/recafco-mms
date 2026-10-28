@@ -197,8 +197,8 @@ export function JobCardCreatedSuccessDialog({
               <InfoRow icon={Hammer} label="Maintenance Type" value={jobCard.maintenanceType ?? muted("—")} />
               <InfoRow icon={CalendarDays} label="Order Date" value={dateValue(jobCard.dateOfOrder)} />
               <InfoRow icon={Users} label="Team / Division" value={jobCard.workerTeam ?? muted("—")} />
-              <InfoRow icon={CalendarDays} label="Job Card Start Date" value={dateValue(jobCard.jobCardStartDate)} />
-              <InfoRow icon={CalendarDays} label="Job Card End Date" value={dateValue(jobCard.jobCardEndDate)} />
+              <InfoRow icon={CalendarDays} label="Job Card Open Date" value={dateValue(jobCard.jobCardStartDate)} />
+              <InfoRow icon={CalendarDays} label="Job Card Closed Date" value={dateValue(jobCard.jobCardEndDate)} />
               {jobCard.createdAt ? (
                 <InfoRow icon={Clock} label="Created On (system)" wide value={formatKuwaitDateTime(jobCard.createdAt)} />
               ) : null}

@@ -6165,3 +6165,7 @@ UI/navigation only; no backend, permission, schema or data change.
 - Untouched: parent "Back to …" links on sub-pages (forms, report pages, admin user detail) and every in-page/table/modal action.
 
 Checks: typecheck, lint, unit 151/151, build pass. Not browser-verified (no browser tools in that session).
+
+## 2026-10-28 — Job Card date labels renamed (terminology only)
+
+"Job Card Start Date" → "Job Card Open Date", "Job Card End Date" → "Job Card Closed Date" on the New Job Card wizard (step 2 + review), Edit Job Card form (helper text added), Job Card detail, Daily Activity card, Job Cards list, creation success popup, Job Card print, validation messages (`JOB_CARD_DATE_MESSAGES`) and edit-history labels. Same columns (`job_card_start_date` / `job_card_end_date`), same rules (optional; Closed needs Open and cannot be earlier), no migration. Edit history rows saved with the old labels are shown with the new ones on read (`readJobCardEditChanges`); stored audit rows are unchanged. Closure review screens do not show these dates. Not changed: worker "Start Date"/"End Date" (manual time), "Work Start/End Date & Time", the "Closed Date" column in the Work Orders / Asset History print reports (a different value). Checks: typecheck, lint, unit 152/152, build. Not browser-verified.

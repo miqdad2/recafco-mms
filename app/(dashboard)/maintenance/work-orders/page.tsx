@@ -1551,8 +1551,8 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                   <th>Materials</th>
                   <th>Status</th>
                   <th>Assignment</th>
-                  <th>Job Card Start Date</th>
-                  <th>Job Card End Date</th>
+                  <th>Job Card Open Date</th>
+                  <th>Job Card Closed Date</th>
                   <th className="text-right">Action</th>
                 </tr>
               </thead>
