@@ -5,9 +5,10 @@ import { AlertCircle, Loader2, X } from "lucide-react";
 
 import { getSessionsForAssignmentAction, editWorkSessionAction, cancelWorkSessionAction, type WorkSessionState } from "@/app/actions/work-sessions";
 import { CorrectTimeForm } from "@/components/work-orders/correct-time-form";
+import { ManualWorkTimeForm } from "@/components/work-orders/manual-work-time-form";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { dispatchActionToast } from "@/lib/action-messages";
-import { formatDurationMinutes, formatKuwaitDateTime, parseKuwaitInputValue, toKuwaitInputValue } from "@/lib/format/kuwait-time";
+import { formatDurationMinutes, formatKuwaitDateTime, formatKuwaitMoment, parseKuwaitInputValue, toKuwaitInputValue } from "@/lib/format/kuwait-time";
 import { LongPeriodConfirm } from "@/components/work-orders/long-period-confirm";
 import { isUnusuallyLongPeriod, periodMinutes, workPeriodSource } from "@/lib/work-orders/work-time-correction-rules";
 import type { SessionRow } from "@/lib/work-orders/work-session-totals";
@@ -211,6 +212,9 @@ export function SessionHistoryModal({
   const [editingId, setEditingId] = useState<string | null>(initialEditSessionId ?? null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [correctingId, setCorrectingId] = useState<string | null>(null);
+  // Change Manual Time (manual entries): Data Entry, or the Manager.
+  const [changingManual, setChangingManual] = useState<SessionRow | null>(null);
+  const canChangeManual = canRequestCorrection || isManager;
   const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
@@ -227,6 +231,7 @@ export function SessionHistoryModal({
     setEditingId(null);
     setCancellingId(null);
     setCorrectingId(null);
+    setChangingManual(null);
     setReloadToken((n) => n + 1);
   }
 
@@ -256,14 +261,15 @@ export function SessionHistoryModal({
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <p className="font-semibold text-[#111827]">
-                          {formatKuwaitDateTime(s.started_at)}
+                          {formatKuwaitMoment(s.started_at, s.start_time_known)}
                           {s.stopped_at || s.paused_at
-                            ? ` → ${formatKuwaitDateTime(s.stopped_at ?? s.paused_at!)}`
+                            ? ` → ${formatKuwaitMoment(s.stopped_at ?? s.paused_at!, s.end_time_known)}`
                             : " → (in progress)"}
                         </p>
                         <p className="text-xs text-[#6B7280]">
+                          {s.period_is_span ? "Hours worked: " : ""}
                           {formatDurationMinutes(s.duration_minutes)}
-                          {s.is_manual_entry && s.entered_by_name ? ` — entered by ${s.entered_by_name}` : ""}
+                          {s.is_manual_entry && s.entered_by_name ? ` — entered by ${s.entered_by_name} on ${formatKuwaitDateTime(s.created_at)}` : ""}
                           {canViewCosts ? ` — ${s.calculated_amount.toFixed(3)} KWD` : ""}
                         </p>
                       </div>
@@ -276,6 +282,13 @@ export function SessionHistoryModal({
                       </div>
                     </div>
                     {s.notes && <p className="mt-1 text-xs text-[#4B5563]">Note: {s.notes}</p>}
+                    {s.possible_conflicts.length ? (
+                      // Hours over dates cannot be checked hour by hour — a
+                      // note for the Manager's review, not an error.
+                      <p className="mt-1 text-xs text-[#1D4ED8]">
+                        Other work of this worker is recorded in these dates (Job Card {[...new Set(s.possible_conflicts)].join(", ")}). Please check the hours do not overlap.
+                      </p>
+                    ) : null}
                     {s.correction_reason && (
                       <p className="mt-1 text-xs text-amber-700">
                         Corrected{s.edited_by_name ? ` by ${s.edited_by_name}` : ""}: {s.correction_reason}
@@ -289,7 +302,7 @@ export function SessionHistoryModal({
                     ) : null}
                     {s.pending_correction ? (
                       <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
-                        <p className="font-bold">Time correction waiting for Manager review</p>
+                        <p className="font-bold">Older correction waiting for the Manager&apos;s decision</p>
                         <p className="mt-0.5">
                           Corrected: {formatKuwaitDateTime(s.pending_correction.corrected_started_at)} →{" "}
                           {formatKuwaitDateTime(s.pending_correction.corrected_ended_at)} (
@@ -301,7 +314,18 @@ export function SessionHistoryModal({
                     {canRequestCorrection && s.status === "Active" ? (
                       <p className="mt-2 text-xs font-semibold text-amber-700">Pause or finish the work before correcting this time.</p>
                     ) : null}
-                    {canRequestCorrection && (s.status === "Completed" || s.status === "Paused") && !s.pending_correction && correctingId !== s.id ? (
+                    {canChangeManual && s.is_manual_entry && s.status === "Completed" && !s.pending_correction ? (
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          onClick={() => setChangingManual(s)}
+                          className="min-h-11 rounded-md border border-[#E5E7EB] bg-white px-3 text-sm font-bold text-[#111827] hover:bg-gray-50 sm:min-h-9 sm:text-xs"
+                        >
+                          Change Manual Time
+                        </button>
+                      </div>
+                    ) : null}
+                    {canRequestCorrection && !s.is_manual_entry && (s.status === "Completed" || s.status === "Paused") && !s.pending_correction && correctingId !== s.id ? (
                       <div className="mt-2">
                         <button
                           type="button"
@@ -324,9 +348,12 @@ export function SessionHistoryModal({
                     )}
                     {isManager && s.status !== "Active" && s.status !== "Cancelled" && editingId !== s.id && cancellingId !== s.id && (
                       <div className="mt-2 flex gap-2">
-                        <button type="button" onClick={() => setEditingId(s.id)} className="rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1 text-xs font-bold text-[#4B5563] hover:bg-gray-50">
-                          Edit / Correct
-                        </button>
+                        {/* Hours over dates: changed with Change Manual Time above. */}
+                        {!s.period_is_span ? (
+                          <button type="button" onClick={() => setEditingId(s.id)} className="rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1 text-xs font-bold text-[#4B5563] hover:bg-gray-50">
+                            Edit / Correct
+                          </button>
+                        ) : null}
                         <button type="button" onClick={() => setCancellingId(s.id)} className="rounded-md border border-red-200 bg-white px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-50">
                           Cancel Session
                         </button>
@@ -350,6 +377,24 @@ export function SessionHistoryModal({
           </div>
         </div>
       </div>
+      {changingManual ? (
+        <ManualWorkTimeForm
+          workerAssignmentId={workerAssignmentId}
+          workerName={workerName}
+          jobCardNumber={jobCardNumber ?? null}
+          hasRecordedTime
+          existing={{
+            sessionId: changingManual.id,
+            startedAt: changingManual.started_at,
+            stoppedAt: changingManual.stopped_at ?? changingManual.started_at,
+            startTimeKnown: changingManual.start_time_known,
+            endTimeKnown: changingManual.end_time_known,
+            minutes: changingManual.duration_minutes,
+          }}
+          onClose={() => setChangingManual(null)}
+          onSaved={afterChange}
+        />
+      ) : null}
     </>
   );
 }

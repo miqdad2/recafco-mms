@@ -7,7 +7,7 @@ import { assertActiveUser, assertBackendPermission } from "@/lib/backend/securit
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { writeAuditLog } from "@/lib/audit/log";
 import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
-import { dedupeRecipients } from "@/lib/backend/notifications/safe-notifications";
+import { dedupeRecipients, resolveRecipientsSafely } from "@/lib/backend/notifications/safe-notifications";
 import { getActiveUserIdsByRoleSlugs, lockOpenJobCardForActivity } from "@/lib/backend/work-orders/repository";
 import { emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import type { InternalTeamRosterInput } from "@/lib/backend/workers/validators";
@@ -180,10 +180,12 @@ export async function assignInternalTeamRoster(context: CurrentUserContext, inpu
     };
   });
 
-  const recipients = await withBackendTransaction(context.userId, async (tx) => {
-    const roleIds = await getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager"]);
-    return dedupeRecipients([result.createdBy, ...roleIds], context.userId);
-  });
+  const recipients = await resolveRecipientsSafely("workerRoster.notify.recipients", () =>
+    withBackendTransaction(context.userId, async (tx) => {
+      const roleIds = await getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager"]);
+      return dedupeRecipients([result.createdBy, ...roleIds], context.userId);
+    })
+  );
 
   await Promise.all([
     recipients.length

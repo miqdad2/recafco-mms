@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { writeAuditLog } from "@/lib/audit/log";
-import { getCurrentUserContext } from "@/lib/auth/context";
+import { getCurrentUserContext, type CurrentUserContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { readPrivateFile } from "@/lib/files/local-storage";
 import { PRIVATE_FILE_BUCKETS, type PrivateFileBucket } from "@/lib/files/validation";
+import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import type { PermissionKey } from "@/types/database";
 
 // ── Authorization note ────────────────────────────────────────────────────────
@@ -58,18 +59,22 @@ function isUuid(s: string) {
  * work-order-files: users with work_orders.view see any work order;
  * technicians with only technician.jobs.view see only their assigned work orders.
  */
-async function canAccessWorkOrder(
-  entityId: string,
-  userId: string,
-  permissions: PermissionKey[]
-): Promise<boolean> {
+async function canAccessWorkOrder(entityId: string, context: CurrentUserContext): Promise<boolean> {
+  const { userId, permissions } = context;
+  // Same Job Card visibility as the Job Card pages: work_orders.view alone
+  // does not open the files of a Job Card the user cannot see (e.g. a
+  // Technician's unassigned Job Cards).
   if (permissions.includes("work_orders.view")) {
-    const wo = await prisma.work_orders.findFirst({ where: { id: entityId }, select: { id: true } });
-    return !!wo;
+    const wo = await prisma.work_orders.findFirst({
+      where: { AND: [{ id: entityId }, { deleted_at: null }, getWorkOrderVisibilityFilter(context)] },
+      select: { id: true },
+    });
+    if (wo) return true;
   }
   if (permissions.includes("technician.jobs.view")) {
     const assignment = await prisma.work_order_assignments.findFirst({
-      where: { work_order_id: entityId, technician_id: userId },
+      // A deleted Job Card's files are not served (same as its page).
+      where: { work_order_id: entityId, technician_id: userId, work_orders: { deleted_at: null } },
       select: { id: true }
     });
     return !!assignment;
@@ -143,7 +148,7 @@ export async function GET(request: Request, { params }: FileRouteProps) {
 
     try {
       if (bucket === "work-order-files") {
-        entityAccess = await canAccessWorkOrder(entityId, context.userId, context.permissions);
+        entityAccess = await canAccessWorkOrder(entityId, context);
       } else if (bucket === "asset-files") {
         entityAccess = await canAccessAsset(entityId, context.permissions);
       } else if (bucket === "purchase-files") {

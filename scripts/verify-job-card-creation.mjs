@@ -171,7 +171,13 @@ async function status(cookie, submissionId) {
 }
 
 const countBySubmission = (id) => prisma.work_orders.count({ where: { client_submission_id: id } });
-const pngFile = (name, bytes) => new File([new Uint8Array(bytes)], name, { type: "image/png" });
+// A PNG of the given size: real PNG signature, then filler (uploads are
+// checked against their contents, not only the declared type).
+const pngFile = (name, bytes) => {
+  const data = new Uint8Array(bytes);
+  data.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  return new File([data], name, { type: "image/png" });
+};
 
 // ── Checks ───────────────────────────────────────────────────────────────────
 

@@ -31,7 +31,7 @@ export async function getJobCardDates(
   const [sessions, assignments, startLog, endLog, closedApproval] = await Promise.all([
     db.workOrderWorkSession.findMany({
       where: { work_order_id: workOrder.id, status: { not: "Cancelled" } },
-      select: { started_at: true, paused_at: true, stopped_at: true, status: true },
+      select: { started_at: true, paused_at: true, stopped_at: true, status: true, start_time_known: true, end_time_known: true },
     }),
     db.workOrderWorkerAssignment.findMany({
       where: { work_order_id: workOrder.id, status: { in: ["active", "finished"] } },
@@ -63,6 +63,8 @@ export async function getJobCardDates(
       startedAt: s.started_at.toISOString(),
       endedAt: (s.stopped_at ?? s.paused_at)?.toISOString() ?? null,
       status: s.status,
+      startTimeKnown: s.start_time_known,
+      endTimeKnown: s.end_time_known,
     })),
     workerAssignmentStatuses: assignments.map((a) => a.status),
     statusStartAt: startLog?.created_at.toISOString() ?? null,
@@ -90,7 +92,7 @@ export async function getJobCardDatesBulk(
   const [sessions, assignments, startLogs, endLogs, closedApprovals] = await Promise.all([
     db.workOrderWorkSession.findMany({
       where: { work_order_id: { in: ids }, status: { not: "Cancelled" } },
-      select: { work_order_id: true, started_at: true, paused_at: true, stopped_at: true, status: true },
+      select: { work_order_id: true, started_at: true, paused_at: true, stopped_at: true, status: true, start_time_known: true, end_time_known: true },
     }),
     db.workOrderWorkerAssignment.findMany({
       where: { work_order_id: { in: ids }, status: { in: ["active", "finished"] } },
@@ -118,7 +120,7 @@ export async function getJobCardDatesBulk(
         status: w.status,
         sessions: sessions
           .filter((s) => s.work_order_id === w.id)
-          .map((s) => ({ startedAt: s.started_at.toISOString(), endedAt: (s.stopped_at ?? s.paused_at)?.toISOString() ?? null, status: s.status })),
+          .map((s) => ({ startedAt: s.started_at.toISOString(), endedAt: (s.stopped_at ?? s.paused_at)?.toISOString() ?? null, status: s.status, startTimeKnown: s.start_time_known, endTimeKnown: s.end_time_known })),
         workerAssignmentStatuses: assignments.filter((a) => a.work_order_id === w.id).map((a) => a.status),
         statusStartAt: pick(startLogs.filter((l) => l.entity_id === w.id).map((l) => ({ at: l.created_at })), "min"),
         statusEndAt: pick(endLogs.filter((l) => l.entity_id === w.id).map((l) => ({ at: l.created_at })), "max"),

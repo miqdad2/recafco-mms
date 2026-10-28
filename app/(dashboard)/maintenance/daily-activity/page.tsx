@@ -1,11 +1,15 @@
 import Link from "next/link";
 import type { Prisma } from "@prisma/client";
-import { Archive, Briefcase, CheckCircle2, Hourglass, PauseCircle, PlayCircle, Search } from "lucide-react";
+import { Archive, Briefcase, CheckCircle2, Hourglass, PauseCircle, PlayCircle, Plus, Search } from "lucide-react";
 
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { DailyActivityBoard } from "@/components/work-orders/daily-activity-board";
-import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
+import { PageBackButton } from "@/components/layout/page-back-button";
+import { headerPrimaryBtn } from "@/components/layout/header-actions";
+import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
+import { getAssetPickerOptions } from "@/lib/assets/picker-options";
+import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import { WORKERS_SECTION_ID, type DailyActivityCardData, type DailyActivityChip } from "@/components/work-orders/daily-activity-card";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
@@ -13,6 +17,7 @@ import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/security/permissions";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import { formatJobCardDate, isJobCardEditable } from "@/lib/work-orders/job-card-edit";
 import { canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
 import { canReceiveIssueMaterials } from "@/lib/parts-requests/visibility";
 import { ACTIVE_JOB_CARD_STATUSES, CLOSURE_REQUESTED_STATUS } from "@/lib/work-orders/simplified-status";
@@ -34,6 +39,7 @@ import { getWorkOrderLaborSummariesBulk, type DailyActivityLaborSummary } from "
 import { canRequestTimeCorrection, getWorkTimeSourceSummaries } from "@/lib/backend/work-orders/work-time-corrections";
 import { getJobCardDatesBulk } from "@/lib/work-orders/job-card-dates-data";
 import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { ON_TEAM_ASSIGNMENT_STATUSES } from "@/lib/backend/workers/constants";
 
 // Daily Activity / Active Job Cards Work Tracking Unit 9.
 //
@@ -65,7 +71,21 @@ type SearchParamsShape = {
   status?: string;
   team?: string;
   materials?: string;
+  // "1" opens the existing New Job Card wizard over this page (same
+  // ?new_job_card=1 convention as the Job Cards list).
+  new_job_card?: string;
 };
+
+// This page's own filters, kept when the New Job Card wizard opens/closes.
+function dailyActivityHref(sp: SearchParamsShape, extra: Record<string, string> = {}) {
+  const params = new URLSearchParams();
+  for (const key of ["q", "status", "team", "materials"] as const) {
+    if (sp[key]) params.set(key, sp[key]!);
+  }
+  for (const [key, value] of Object.entries(extra)) params.set(key, value);
+  const qs = params.toString();
+  return qs ? `/maintenance/daily-activity?${qs}` : "/maintenance/daily-activity";
+}
 
 type StatusFilter = DailyActivityStatusFilter;
 
@@ -241,6 +261,20 @@ export default async function DailyActivityPage({
   // Compact Control Board Unit 9C, Task 6: same gate the Job Card detail
   // page's own Print button uses.
   const canPrint = hasPermission(context, "work_orders.print");
+  // Same permission the Job Card edit page and upsertWorkOrderAction require.
+  const canEditJobCards = hasPermission(context, "work_orders.manage");
+  // Create New Job Card — the same gate and wizard data as the Job Cards
+  // list (canCreateJobCard / canAssignAtCreation there); the wizard and the
+  // creation API are reused unchanged and re-check everything server-side.
+  const canCreateJobCard = canEditJobCards;
+  const showNewJobCardModal = sp.new_job_card === "1" && canCreateJobCard;
+  const canAssignAtCreation = hasPermission(context, "work_orders.assign");
+  const [newJobCardAssets, newJobCardActiveWorkers] = showNewJobCardModal
+    ? await Promise.all([
+        getAssetPickerOptions(),
+        canAssignAtCreation ? getActiveWorkerProfilesForAssignment() : Promise.resolve([]),
+      ])
+    : [[], []];
   // Manual Worker Time Entry: Data Entry (with work_orders.assign) or Super
   // Admin — the same rule the server applies (canRequestTimeCorrection).
   const canRequestManualTime = canRequestTimeCorrection(context);
@@ -269,7 +303,7 @@ export default async function DailyActivityPage({
             { assets: { plate_number: { contains: search, mode: "insensitive" } } },
             {
               work_order_worker_assignments: {
-                some: { status: "active", worker_profiles: { name: { contains: search, mode: "insensitive" } } },
+                some: { status: { in: ON_TEAM_ASSIGNMENT_STATUSES }, worker_profiles: { name: { contains: search, mode: "insensitive" } } },
               },
             },
           ],
@@ -338,6 +372,9 @@ export default async function DailyActivityPage({
     estimated_labor_hours: true,
     starting_datetime: true,
     ending_datetime: true,
+    date_of_order: true,
+    job_card_start_date: true,
+    job_card_end_date: true,
     assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
     departments: { select: { name: true } },
     work_order_assignments: { select: { id: true } },
@@ -410,6 +447,7 @@ export default async function DailyActivityPage({
         workerName: w.worker_name,
         assignmentStatus: w.assignment_status,
         sessionStatus: w.status,
+        manualMinutes: w.manual_minutes,
       }))
     );
 
@@ -453,7 +491,7 @@ export default async function DailyActivityPage({
     if (materialsIncomplete) closureReasons.push("Required materials not fully issued");
     closureReasons.push(...workersClosureCheck.reasons);
     if (pendingTimeReviews > 0) {
-      closureReasons.push(`Worker time waiting for Manager review (${pendingTimeReviews}).`);
+      closureReasons.push(`Older worker time entries waiting for the Manager's decision (${pendingTimeReviews}).`);
     }
 
     // Daily Activity Closure Requested Visibility Unit 10G.54, Task 6: once
@@ -468,7 +506,7 @@ export default async function DailyActivityPage({
     const isClosed = wo.status === "Closed";
     const activity = classifyDailyActivity({
       status: wo.status,
-      workers: laborSummary.workers.map((w) => ({ assignmentStatus: w.assignment_status, sessionStatus: w.status })),
+      workers: laborSummary.workers.map((w) => ({ assignmentStatus: w.assignment_status, sessionStatus: w.status, manualMinutes: w.manual_minutes })),
       closureReady,
       materialsPending: materialsChip.label === "Materials Pending",
     });
@@ -773,13 +811,34 @@ export default async function DailyActivityPage({
         : null,
       dates: c.dates,
       canRequestManualTime: canRequestManualTime && !c.isClosed && !c.isClosureRequested,
+      // Job Card Start / End Date (typed calendar dates, not worker time)
+      // and the Edit Job Card button — the edit page and its save action
+      // re-check permission, visibility and status.
+      requestDates: {
+        dateOfOrder: formatJobCardDate(c.wo.date_of_order),
+        start: formatJobCardDate(c.wo.job_card_start_date),
+        end: formatJobCardDate(c.wo.job_card_end_date),
+      },
+      canEditJobCard: canEditJobCards && isJobCardEditable(c.wo.status),
     };
   });
 
   return (
     <>
-      <AutoRefresh intervalMs={20000} />
+      {/* Paused while the New Job Card wizard is open (auto-refresh.tsx:
+          not for pages with unsaved form state). */}
+      <AutoRefresh intervalMs={20000} enabled={!showNewJobCardModal} />
       <RealtimeRefresh watch={["job_card.", "work_order.", "materials_request.", "offline_inventory.", "material_ledger."]} />
+      {showNewJobCardModal ? (
+        <WorkOrderWizard
+          currentUserId={context.userId}
+          assets={newJobCardAssets}
+          preselectedAssetId={null}
+          dismissHref={dailyActivityHref(sp)}
+          activeWorkers={newJobCardActiveWorkers}
+          canAssignAtCreation={canAssignAtCreation}
+        />
+      ) : null}
 
       {/* Compact Control Board Unit 9C, Task 1: a slim, page-local header
           instead of the shared <PageHeader/> — that component's fixed
@@ -795,10 +854,17 @@ export default async function DailyActivityPage({
               Monitor active Job Cards, workers, materials, and closure readiness. Open a Job Card for full details.
             </p>
           </div>
-          {/* Manager Closed Job Cards Summary and Global Navigation
-              Improvements Unit 10E, Task 8/9: already ON Daily Activity, so
-              that button is suppressed here — Back/Dashboard/Job Cards only. */}
-          <PageNavigationActions showDailyActivity={false} secondaryLinks={[{ label: "Materials Requests", href: "/store/parts-requests" }]} />
+          {/* Back + Create New Job Card only — other modules are in the
+              sidebar. Create opens the existing New Job Card wizard here. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <PageBackButton />
+            {canCreateJobCard ? (
+              <Link href={dailyActivityHref(sp, { new_job_card: "1" })} scroll={false} className={headerPrimaryBtn}>
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Create New Job Card
+              </Link>
+            ) : null}
+          </div>
         </div>
       </div>
 

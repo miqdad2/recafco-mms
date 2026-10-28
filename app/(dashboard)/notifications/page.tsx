@@ -4,7 +4,7 @@ import { Archive, CheckCheck, Search } from "lucide-react";
 import { archiveNotificationAction, markAllNotificationsReadAction, markNotificationReadAction } from "@/app/actions/notifications";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/page-header";
-import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
+import { PageBackButton } from "@/components/layout/page-back-button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { getUserNotificationSummary, getUserNotifications } from "@/lib/notifications/service";
@@ -74,7 +74,7 @@ export default async function NotificationsPage({ searchParams }: NotificationsP
         description="Review workflow alerts, approvals, assignments, and system messages."
         actions={
           <>
-            <PageNavigationActions />
+            <PageBackButton />
             <form action={submitMarkAllRead}>
               <Button type="submit" variant="secondary">
                 <CheckCheck className="h-4 w-4" aria-hidden="true" />

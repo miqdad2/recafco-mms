@@ -907,6 +907,10 @@ model work_orders {
   serial_number                   String?
   plate_number                    String?
   date_of_order                   DateTime                      @default(dbgenerated("CURRENT_DATE")) @db.Date
+  // Job Card Start / End Date — typed calendar dates, not worker time
+  // (lib/work-orders/job-card-edit.ts). DB check: end needs start, end >= start.
+  job_card_start_date             DateTime?                     @db.Date
+  job_card_end_date               DateTime?                     @db.Date
   job_location                    String?
   starting_datetime               DateTime?                     @db.Timestamptz(6)
   ending_datetime                 DateTime?                     @db.Timestamptz(6)
@@ -1465,6 +1469,14 @@ model WorkOrderWorkSession {
   original_started_at       DateTime? @db.Timestamptz(6)
   original_ended_at         DateTime? @db.Timestamptz(6)
   original_duration_minutes Int?
+  // Worker Time single closure approval (migration 20261027030000): how a
+  // manual period was entered. *_time_known false = only the date was given.
+  // period_is_span true = started_at → stopped_at is the date range the work
+  // happened in; the worked time is duration_minutes (Actual Hours Worked),
+  // never end minus start.
+  start_time_known          Boolean   @default(true)
+  end_time_known            Boolean   @default(true)
+  period_is_span            Boolean   @default(false)
   created_at                DateTime  @default(now()) @db.Timestamptz(6)
   updated_at                DateTime  @default(now()) @db.Timestamptz(6)
 
@@ -1546,6 +1558,8 @@ model WorkSessionTimeCorrection {
   reviewed_by                String?   @db.Uuid
   reviewed_at                DateTime? @db.Timestamptz(6)
   review_remarks             String?
+  // Repeated submission (double click / retry) returns the first save.
+  client_submission_id       String?   @unique @db.Uuid
   created_at                 DateTime  @default(now()) @db.Timestamptz(6)
   updated_at                 DateTime  @default(now()) @db.Timestamptz(6)
 

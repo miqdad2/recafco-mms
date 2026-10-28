@@ -26,3 +26,9 @@ export type WorkerType = (typeof WORKER_TYPES)[number];
 // division..." placeholder.
 export const SKILL_CATEGORIES = ["Mechanical", "Electrical", "Auto", "General", "Other", "Not specified"] as const;
 export type SkillCategory = (typeof SKILL_CATEGORIES)[number];
+
+// A worker is on a Job Card's team while the assignment is "active" (still
+// working) or "finished" (Finish Work pressed); "removed" is history only.
+// Use this for "who is / was assigned" — not for timer state, which needs
+// "active".
+export const ON_TEAM_ASSIGNMENT_STATUSES: string[] = ["active", "finished"];

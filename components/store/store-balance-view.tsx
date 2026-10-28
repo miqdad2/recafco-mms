@@ -26,7 +26,8 @@ import {
 } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
-import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
+import { PageBackButton } from "@/components/layout/page-back-button";
+import { headerPrimaryBtn, headerSecondaryBtn } from "@/components/layout/header-actions";
 import { MaterialDetailModal } from "@/components/store/material-detail-modal";
 import { AddNewMaterialForm } from "@/components/store/add-new-material-form";
 import { ReceiveMaterialForm } from "@/components/store/receive-material-form";
@@ -640,18 +641,18 @@ export function StoreBalanceView({
         description="Track maintenance materials, received quantities, issued quantities, and current balance."
         actions={
           <>
-            <PageNavigationActions secondaryLinks={[{ label: "Materials Requests", href: "/store/parts-requests" }]} />
-            {/* Inventory Control UI/UX Compact Dashboard Unit 10G.64, Task
-                6 — Add New Material / View Movement History moved into the
-                header's own compact action bar (same buttons, no more two
-                large description cards taking vertical space in the body). */}
+            {/* Back, Add New Material, View Movement History, Print Report —
+                other modules are in the sidebar. Add New Material shows only
+                to users who can manage inventory (canManage); movements and
+                the print report need parts.view, same as this page. */}
+            <PageBackButton />
             {canManage && (
-              <Link href="?addMaterial=1" className={primaryBtn}>
+              <Link href="?addMaterial=1" className={headerPrimaryBtn}>
                 <PlusCircle className="h-4 w-4" aria-hidden />
                 Add New Material
               </Link>
             )}
-            <Link href="/store/offline-inventory/movements" className={secondaryBtn}>
+            <Link href="/store/offline-inventory/movements" className={headerSecondaryBtn}>
               <Activity className="h-4 w-4" aria-hidden />
               View Movement History
             </Link>
@@ -660,7 +661,7 @@ export function StoreBalanceView({
                 (its own Category/Balance Status filters), same pattern as
                 every other report's "Print Report" link added in 10G.69/70.
                 Opens pre-filtered to the active tab and category. */}
-            <Link href={printHref} className={secondaryBtn}>
+            <Link href={printHref} className={headerSecondaryBtn}>
               <Printer className="h-4 w-4" aria-hidden />
               Print Report
             </Link>

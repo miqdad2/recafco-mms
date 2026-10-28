@@ -4,7 +4,7 @@ import { AlertTriangle, Car, ShieldAlert } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
 import { PageHeader } from "@/components/ui/page-header";
-import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
+import { PageBackButton } from "@/components/layout/page-back-button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission } from "@/lib/auth/context";
 import { canCreateJobCardFromAsset } from "@/lib/security/permissions";
@@ -265,7 +265,7 @@ export default async function VehiclesPage({
             items={[{ label: "Assets & Equipment", href: "/assets" }, { label: "Vehicles & Mobile Equipment" }]}
           />
         }
-        actions={<PageNavigationActions secondaryLinks={[{ label: "Assets & Equipment", href: "/assets" }]} />}
+        actions={<PageBackButton fallbackHref="/assets" />}
       />
 
       <div className="space-y-4 p-4 lg:p-6">

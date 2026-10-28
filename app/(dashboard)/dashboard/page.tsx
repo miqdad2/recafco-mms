@@ -69,7 +69,8 @@ import {
   anyMaterialsIncomplete,
   summarizeMaterialAvailability,
 } from "@/lib/work-orders/material-fulfillment";
-import { getWorkOrderLaborSummariesBulk, getLaborPeriodTotals } from "@/lib/work-orders/work-session-totals";
+import { getWorkOrderLaborSummariesBulk, getLaborPeriodTotals, getPausedWorkSummary } from "@/lib/work-orders/work-session-totals";
+import { isCurrentlyPaused } from "@/lib/work-orders/paused-work";
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
 import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
@@ -86,6 +87,7 @@ import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
 import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
+import { ON_TEAM_ASSIGNMENT_STATUSES } from "@/lib/backend/workers/constants";
 
 // ── Types ─────────────────────────────────────────────────────────────
 type WoRow = {
@@ -1048,7 +1050,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   let nuNeedsAttention: NeedsAttentionItem[] = [];
   let nuMaterialsPendingCount = 0;
   let nuWorkingNowCount = 0;
-  let nuPausedCount = 0;
+  // Paused Workers: distinct currently paused workers over every visible
+  // open Job Card (lib/work-orders/paused-work.ts — the same definition the
+  // Daily Activity Paused filter uses), not a count of sampled Job Cards.
+  const nuPausedCount = isNormalUser ? (await getPausedWorkSummary(prisma, visibilityFilter)).pausedWorkers : 0;
   if (isNormalUser && nuActiveSample.length) {
     const activeIds = nuActiveSample.map((w) => w.id);
     const [fulfillmentMap, laborMap] = await Promise.all([
@@ -1074,7 +1079,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       );
       const hasAssignment = Boolean(laborSummary?.workers.length) || wo.work_order_assignments.length > 0;
       const hasActiveSession = laborSummary?.has_active_session ?? false;
-      const anyWorkerPaused = laborSummary?.workers.some((w) => w.status === "Paused") ?? false;
+      const anyWorkerPaused = laborSummary?.workers.some((w) => isCurrentlyPaused(w.assignment_status, w.status)) ?? false;
       const materialsBlocking = pendingMaterialsRequestsCount > 0 || materialsIncomplete;
       // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 4: this
       // bucket used to read "Ready to Request Closure" for a Job Card with
@@ -1091,12 +1096,12 @@ export default async function DashboardPage({ searchParams }: PageProps) {
             workerName: w.worker_name,
             assignmentStatus: w.assignment_status,
             sessionStatus: w.status,
+            manualMinutes: w.manual_minutes,
           }))
         ).ready;
 
       if (materialsBlocking) nuMaterialsPendingCount += 1;
       if (hasActiveSession) nuWorkingNowCount += 1;
-      if (anyWorkerPaused && !hasActiveSession) nuPausedCount += 1;
 
       const assetLabel = wo.assets ? `${wo.assets.asset_name}${wo.assets.plate_number ? ` (${wo.assets.plate_number})` : ""}` : null;
       const issue = wo.operator_complaint || wo.description_of_work || "No issue description";
@@ -1430,7 +1435,8 @@ export default async function DashboardPage({ searchParams }: PageProps) {
 
   let mgMaterialsPendingCount = 0;
   let mgWorkingNowCount = 0;
-  let mgPausedCount = 0;
+  // Paused Workers (Manager): same shared definition and query as Data Entry.
+  const mgPausedCount = isManager ? (await getPausedWorkSummary(prisma, mgBase)).pausedWorkers : 0;
 
   type MgAttentionCandidate = NeedsAttentionItem & { rank: number; sortKey: string };
   const mgAttentionCandidates: MgAttentionCandidate[] = [];
@@ -1540,12 +1546,11 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     const activeMaterialsRequest = wo.parts_requests.find((r) => ["Requested", "Approved", "Waiting Stock", "Partially Issued"].includes(r.status));
     const hasAssignment = Boolean(laborSummary?.workers.length) || wo.work_order_assignments.length > 0;
     const hasActiveSession = laborSummary?.has_active_session ?? false;
-    const anyWorkerPaused = laborSummary?.workers.some((w) => w.status === "Paused") ?? false;
+    const anyWorkerPaused = laborSummary?.workers.some((w) => isCurrentlyPaused(w.assignment_status, w.status)) ?? false;
     const materialsBlocking = pendingMaterialsRequestsCount > 0 || materialsIncomplete;
 
     if (materialsBlocking) mgMaterialsPendingCount += 1;
     if (hasActiveSession) mgWorkingNowCount += 1;
-    if (anyWorkerPaused && !hasActiveSession) mgPausedCount += 1;
 
     if (laborSummary) {
       const weekHours = Math.round((laborSummary.week_minutes / 60) * 100) / 100;
@@ -2003,7 +2008,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
               select: {
                 work_order_required_parts: true,
                 work_order_attachments: true,
-                work_order_worker_assignments: { where: { status: "active" } },
+                work_order_worker_assignments: { where: { status: { in: ON_TEAM_ASSIGNMENT_STATUSES } } },
                 work_order_work_sessions: { where: { status: "Active" } },
               },
             },
@@ -2454,7 +2459,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                   tone={mgClosureRequestedCount > 0 ? "amber" : "green"}
                 />
                 <TodaySummaryCard size="md" href="/maintenance/daily-activity?status=working" label="Working Now" value={mgWorkingNowCount} icon={PlayCircle} tone="green" />
-                <TodaySummaryCard size="md" href="/maintenance/daily-activity?status=paused" label="Paused" value={mgPausedCount} icon={PauseCircle} tone="amber" />
+                <TodaySummaryCard size="md" href="/maintenance/daily-activity?status=paused" label="Paused Workers" value={mgPausedCount} icon={PauseCircle} tone="amber" />
                 <TodaySummaryCard size="md" href="/maintenance/daily-activity?status=materials-pending" label="Materials Pending" value={mgMaterialsPendingCount} icon={ShoppingCart} tone={mgMaterialsPendingCount > 0 ? "red" : "green"} />
                 {/* Task 1/2 — Closed Job Cards KPI: click opens the Closed
                     Job Cards modal (Task 2/3/4) instead of navigating. */}
@@ -2609,7 +2614,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
                       Working {mgWorkingNowCount}
                     </span>
                     <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-[#B45309]">
-                      Paused {mgPausedCount}
+                      Paused workers {mgPausedCount}
                     </span>
                   </div>
 

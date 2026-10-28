@@ -18,6 +18,13 @@ export type JobCardCreatedSummary = {
   maintenanceType: string | null;
   // yyyy-mm-dd
   dateOfOrder: string | null;
+  // Job Card Start / End Date as saved (yyyy-mm-dd), null when not entered.
+  // Typed calendar dates — not worker timer times.
+  jobCardStartDate: string | null;
+  jobCardEndDate: string | null;
+  // System time the Job Card row was created (ISO), shown separately from
+  // the three Job Card dates; null only if the saved row could not be read.
+  createdAt: string | null;
   workerTeam: string | null;
   // Names actually saved on the Job Card (Internal Team roster, or the
   // freelancer / company) — empty when nothing is assigned.

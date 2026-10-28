@@ -48,7 +48,7 @@ test("Realtime: Manager dashboard reflects a new closure request", async ({ brow
     const wizard = dataEntryPage.locator('div[role="dialog"][aria-labelledby="new-job-card-heading"]');
     await expect(wizard).toBeVisible();
 
-    await wizard.getByPlaceholder(/Search asset code, name, plate number/i).fill(FIXTURE_ASSET_CODE);
+    await wizard.getByLabel("Search assets, vehicles, and machines").fill(FIXTURE_ASSET_CODE);
     await wizard.getByRole("button", { name: new RegExp(FIXTURE_ASSET_CODE) }).first().click();
     await wizard.getByRole("button", { name: "Next" }).click();
 

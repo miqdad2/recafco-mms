@@ -12,19 +12,20 @@ import {
   installCriticalPopupHandler,
   seedOpeningStock,
   getOfflineInventoryBalance,
+  getJobCardMovements,
 } from "./helpers";
 
 /**
- * RECAFCO MMS — Unit 10G.14, Task 12: mixed required-materials scenario.
- * One line has enough existing Offline Inventory stock (should go straight
- * to Issue Material, never Receive), the other is a brand-new/unavailable
- * material (should require Receive Materials first). Covers the exact bug
- * this unit fixed: the Receive Materials modal previously listed BOTH lines
- * regardless of whether a line already had enough stock.
+ * RECAFCO MMS — mixed required-materials scenario on the current,
+ * register-first workflow. One line has enough Offline Inventory stock (must
+ * be issued directly, never received); the other is a registered material
+ * with no stock (must be received first, then issued). Both are processed by
+ * the single "Process Materials" action that replaced the separate Receive /
+ * Issue dialogs. Covers the original bug too: the Job Card must never read
+ * as "Materials Completed" while one line still needs receiving.
  *
- * Uses freshly-seeded, uniquely-named fixtures (not the shared "engine
- * filter"/"engine oil" materials other specs use) so this test's stock
- * assertions are deterministic regardless of what other E2E runs have done.
+ * Uses freshly-seeded, uniquely-named fixtures so the stock assertions are
+ * deterministic regardless of what other E2E runs have done.
  */
 
 const EXISTING_MATERIAL_NAME = `E2E-MMS-Filter-${RUN_ID}`;
@@ -32,15 +33,19 @@ const NEW_MATERIAL_NAME = `E2E-MMS-Oil-${RUN_ID}`;
 const EXISTING_STOCK_QTY = 110;
 const REQUIRED_EXISTING_QTY = 5;
 const REQUIRED_NEW_QTY = 1;
-const NEW_MATERIAL_UNIT = "liter";
+const NEW_MATERIAL_UNIT = "LITER";
+const TOTAL_REQUIRED = REQUIRED_EXISTING_QTY + REQUIRED_NEW_QTY;
 
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async () => {
   await seedOpeningStock(EXISTING_MATERIAL_NAME, EXISTING_STOCK_QTY, "PCS");
+  // Registered in Inventory with no stock — the same zero-quantity opening
+  // entry Inventory's "Add New Material" (register only) writes.
+  await seedOpeningStock(NEW_MATERIAL_NAME, 0, NEW_MATERIAL_UNIT);
 });
 
-test("Mixed materials: existing stock issues directly, new material requires receive first", async ({ browser }) => {
+test("Mixed materials: existing stock issues directly, registered material without stock is received first", async ({ browser }) => {
   test.setTimeout(180_000);
 
   const dataEntryPage = await browser.newPage();
@@ -50,11 +55,11 @@ test("Mixed materials: existing stock issues directly, new material requires rec
   const wizard = dataEntryPage.locator('div[role="dialog"][aria-labelledby="new-job-card-heading"]');
   let jobCardNumber = "";
 
-  await test.step("Create Job Card with both an existing-stock and a new material", async () => {
+  await test.step("Create Job Card with an existing-stock and a no-stock registered material", async () => {
     await dataEntryPage.goto("/dashboard?new_job_card=1");
     await expect(wizard).toBeVisible();
 
-    await wizard.getByPlaceholder(/Search asset code, name, plate number/i).fill(FIXTURE_ASSET_CODE);
+    await wizard.getByLabel("Search assets, vehicles, and machines").fill(FIXTURE_ASSET_CODE);
     await wizard.getByRole("button", { name: new RegExp(FIXTURE_ASSET_CODE) }).first().click();
     await wizard.getByRole("button", { name: "Next" }).click();
 
@@ -65,31 +70,22 @@ test("Mixed materials: existing stock issues directly, new material requires rec
     await wizard.getByRole("button", { name: "Next" }).click();
 
     await wizard.locator('input[name="worker_type"][value="Mechanical"]').check({ force: true });
-    // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 1:
-    // estimated_labor_hours is now a hidden field auto-computed from the
-    // per-worker "Estimated hours" input below — nothing to fill here.
-    await wizard.getByLabel("Assign work now").check();
+    await wizard.getByLabel(/Assign work(ers)? now/).check();
     await wizard.getByRole("button", { name: "Internal Team" }).click();
-    const helperSearch = wizard.getByPlaceholder(/Search helpers \/ labor/i);
-    await helperSearch.fill(FIXTURE_WORKER_NAME);
-    await wizard.getByRole("button", { name: new RegExp(FIXTURE_WORKER_NAME, "i") }).first().click();
-    const workerEstHours = wizard.getByLabel("Estimated hours");
-    if (await workerEstHours.count()) await workerEstHours.fill("1");
+    await wizard.getByRole("combobox", { name: "Find a helper" }).fill(FIXTURE_WORKER_NAME);
+    await wizard.getByRole("option", { name: new RegExp(FIXTURE_WORKER_NAME, "i") }).first().click();
+    await wizard.getByLabel(`Expected hours for ${FIXTURE_WORKER_NAME}`).fill("1");
     await wizard.getByRole("button", { name: "Next" }).click();
 
-    // Required Materials — row 0: the existing-stock material (select the
-    // Offline Inventory suggestion so it's linked by identity, not just text).
+    // Required Materials — both lines are picked from Inventory (the wizard
+    // only accepts registered materials).
     await wizard.locator('input[name="req_part_description_0"]').fill(EXISTING_MATERIAL_NAME);
-    const suggestion = wizard.getByRole("button", { name: new RegExp(EXISTING_MATERIAL_NAME) }).first();
-    await expect(suggestion).toBeVisible({ timeout: 10_000 });
-    await suggestion.click();
+    await wizard.getByRole("option", { name: new RegExp(EXISTING_MATERIAL_NAME) }).first().click();
     await wizard.locator('input[name="req_part_quantity_0"]').fill(String(REQUIRED_EXISTING_QTY));
 
-    // Row 1: a brand-new material, never seen before — typed manually
-    // (never selecting a suggestion), unit overridden to "liter".
-    await wizard.getByRole("button", { name: "Add Row" }).click();
+    await wizard.getByRole("button", { name: "Add Material" }).click();
     await wizard.locator('input[name="req_part_description_1"]').fill(NEW_MATERIAL_NAME);
-    await wizard.locator('input[name="req_part_uom_1"]').fill(NEW_MATERIAL_UNIT);
+    await wizard.getByRole("option", { name: new RegExp(NEW_MATERIAL_NAME) }).first().click();
     await wizard.locator('input[name="req_part_quantity_1"]').fill(String(REQUIRED_NEW_QTY));
 
     await wizard.getByRole("button", { name: "Next" }).click(); // -> attachments
@@ -103,92 +99,70 @@ test("Mixed materials: existing stock issues directly, new material requires rec
   });
 
   const panel = () => dataEntryPage.locator("#daily-activity-panel");
+  const processDialog = dataEntryPage.getByRole("dialog").filter({ hasText: "Process Materials" });
+  // A Process Materials group: its "<title> (<count>)" heading's container,
+  // which also holds the lines listed under it.
+  const group = (title: string) => processDialog.getByText(new RegExp(title + " \\(\\d+\\)")).locator("xpath=..");
 
-  await test.step("Daily Activity: correct per-line status for each material", async () => {
+  await test.step("Daily Activity: per-line status, materials pending, closure not offered yet", async () => {
     await dataEntryPage.waitForURL(/\/maintenance\/daily-activity/, { timeout: 15_000 });
     const row = dataEntryPage.getByRole("button", { name: new RegExp(jobCardNumber.replace(/\//g, "\\/")) }).first();
     await expect(row).toBeVisible({ timeout: 15_000 });
     await row.click();
 
-    await expect(panel().getByText(EXISTING_MATERIAL_NAME)).toBeVisible();
-    await expect(panel().getByText(NEW_MATERIAL_NAME)).toBeVisible();
-
-    const panelText = (await panel().innerText()) ?? "";
-    expect(panelText).toMatch(/Ready to Issue/);
-    expect(panelText).toMatch(/Needs Receiving/);
-    // The bug this unit fixes: the whole Job Card must never read as if
-    // everything is already received/completed while one line still needs
-    // receiving.
+    // Quantities (5 PCS + 1 LITER), then each line with its own status.
+    await expect(panel().getByText(`Required ${TOTAL_REQUIRED} items · Issued 0 · Remaining ${TOTAL_REQUIRED}`).first()).toBeVisible();
+    await expect(panel().getByRole("listitem").filter({ hasText: EXISTING_MATERIAL_NAME })).toContainText("Ready to Issue");
+    await expect(panel().getByRole("listitem").filter({ hasText: NEW_MATERIAL_NAME })).toContainText("Needs Receiving");
+    // The whole Job Card must never read as completed while a line still
+    // needs receiving.
     await expect(panel().getByText("Materials Completed")).toHaveCount(0);
+    await expect(panel().getByRole("button", { name: "Request Closure" })).toHaveCount(0);
   });
 
-  await test.step("Issue Material modal lists only the existing-stock material", async () => {
-    const issueBtn = panel().getByRole("button", { name: /Issue (Material|Available)/ });
-    await expect(issueBtn).toBeVisible({ timeout: 10_000 });
-    await issueBtn.click();
+  await test.step("Process Materials lists the stocked line as Ready to Issue and the other as Need Receiving", async () => {
+    await panel().getByRole("button", { name: "Process Materials" }).first().click();
+    await expect(processDialog).toBeVisible({ timeout: 10_000 });
+    await expect(group("Ready to Issue").getByText(EXISTING_MATERIAL_NAME)).toBeVisible({ timeout: 10_000 });
+    await expect(group("Ready to Issue").getByText(NEW_MATERIAL_NAME)).toHaveCount(0);
+    await expect(group("Need Receiving").getByText(NEW_MATERIAL_NAME)).toBeVisible();
+    await expect(group("Need Receiving").getByText(EXISTING_MATERIAL_NAME)).toHaveCount(0);
 
-    const issueDialog = dataEntryPage.getByRole("dialog").filter({ hasText: "Issue Material to Job Card" });
-    await expect(issueDialog).toBeVisible({ timeout: 10_000 });
-    await expect(issueDialog.getByText(EXISTING_MATERIAL_NAME)).toBeVisible();
-    await expect(issueDialog.getByText(NEW_MATERIAL_NAME)).toHaveCount(0);
-
-    await issueDialog.getByRole("button", { name: "Issue Material", exact: true }).click();
-    await expect(dataEntryPage.getByText("Material Issued")).toBeVisible({ timeout: 10_000 });
-    await expect(issueDialog).toBeHidden({ timeout: 10_000 });
+    await processDialog.getByRole("button", { name: "Confirm & Process Materials" }).click();
+    await expect(processDialog).toBeHidden({ timeout: 15_000 });
   });
 
-  await test.step("Inventory decreased by the issued amount; new material still needs receiving", async () => {
-    const balance = await getOfflineInventoryBalance(EXISTING_MATERIAL_NAME, "PCS");
-    expect(balance).toBe(EXISTING_STOCK_QTY - REQUIRED_EXISTING_QTY);
-
-    const panelText = (await panel().innerText()) ?? "";
-    expect(panelText).toMatch(/Needs Receiving/);
-    expect(panelText).not.toMatch(/Materials Completed/);
-  });
-
-  await test.step("Receive Materials modal lists only the new material", async () => {
-    const receiveBtn = panel().getByRole("button", { name: "Receive Materials" });
-    await expect(receiveBtn).toBeVisible({ timeout: 10_000 });
-    await receiveBtn.click();
-
-    const receiveDialog = dataEntryPage.locator('div[role="dialog"][aria-labelledby="send-materials-heading"]');
-    await expect(receiveDialog).toBeVisible({ timeout: 10_000 });
-    await expect(receiveDialog.getByText(NEW_MATERIAL_NAME)).toBeVisible();
-    await expect(receiveDialog.getByText(EXISTING_MATERIAL_NAME)).toHaveCount(0);
-
-    await receiveDialog.getByRole("button", { name: "Receive Materials", exact: true }).click();
-    await expect(dataEntryPage.getByText("Material Received")).toBeVisible({ timeout: 10_000 });
-    await expect(receiveDialog).toBeHidden({ timeout: 10_000 });
-  });
-
-  await test.step("New material becomes Ready to Issue, then gets issued", async () => {
-    const panelText = (await panel().innerText()) ?? "";
-    expect(panelText).toMatch(/Ready to Issue/);
-
-    const issueBtn = panel().getByRole("button", { name: /Issue (Material|Available)/ });
-    await expect(issueBtn).toBeVisible({ timeout: 10_000 });
-    await issueBtn.click();
-
-    const issueDialog = dataEntryPage.getByRole("dialog").filter({ hasText: "Issue Material to Job Card" });
-    await expect(issueDialog).toBeVisible({ timeout: 10_000 });
-    await expect(issueDialog.getByText(NEW_MATERIAL_NAME)).toBeVisible();
-    await issueDialog.getByRole("button", { name: "Issue Material", exact: true }).click();
-    await expect(dataEntryPage.getByText("Material Issued")).toBeVisible({ timeout: 10_000 });
+  await test.step("Stock movements: stocked line issued only; new line received then issued; balances exact", async () => {
+    const moves = await getJobCardMovements(jobCardNumber);
+    const of = (name: string, type: string) => moves.filter((m) => m.name === name && m.type === type).map((m) => m.quantity);
+    expect(of(EXISTING_MATERIAL_NAME, "RECEIVED")).toEqual([]);
+    expect(of(EXISTING_MATERIAL_NAME, "ISSUED")).toEqual([REQUIRED_EXISTING_QTY]);
+    expect(of(NEW_MATERIAL_NAME, "RECEIVED")).toEqual([REQUIRED_NEW_QTY]);
+    expect(of(NEW_MATERIAL_NAME, "ISSUED")).toEqual([REQUIRED_NEW_QTY]);
+    expect(await getOfflineInventoryBalance(EXISTING_MATERIAL_NAME, "PCS")).toBe(EXISTING_STOCK_QTY - REQUIRED_EXISTING_QTY);
+    expect(await getOfflineInventoryBalance(NEW_MATERIAL_NAME, NEW_MATERIAL_UNIT)).toBe(0);
   });
 
   await test.step("Both materials now completed", async () => {
     await expect(panel().getByText("Materials Completed").first()).toBeVisible({ timeout: 10_000 });
-    await expect(panel().getByRole("button", { name: "Receive Materials" })).toHaveCount(0);
-    await expect(panel().getByRole("button", { name: /Issue (Material|Available)/ })).toHaveCount(0);
+    await expect(panel().getByText(`Required ${TOTAL_REQUIRED} items · Issued ${TOTAL_REQUIRED} · Remaining 0`).first()).toBeVisible();
+    await expect(panel().getByRole("button", { name: "Process Materials" })).toHaveCount(0);
+    // Materials alone are not enough: the assigned worker has not finished.
+    await expect(panel().getByRole("button", { name: "Request Closure" })).toHaveCount(0);
   });
 
-  await test.step("Request closure", async () => {
-    await expect(panel().getByText("Ready", { exact: true })).toBeVisible({ timeout: 10_000 });
-    await panel().getByRole("button", { name: "Request Closure" }).click();
+  await test.step("Worker finishes; Request Closure becomes available and is sent", async () => {
+    await panel().getByRole("button", { name: "Start", exact: true }).click();
+    await expect(panel().getByText("Live").first()).toBeVisible({ timeout: 10_000 });
+    await panel().getByRole("button", { name: "Finish Work" }).click();
+    await expect(panel().getByText("Finished", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+
+    await expect(panel().getByText("Ready for closure request.")).toBeVisible({ timeout: 10_000 });
+    await panel().getByRole("button", { name: "Request Closure" }).first().click();
     const closureDialog = dataEntryPage.getByRole("dialog").filter({ hasText: "Request Job Card Closure" });
     await expect(closureDialog).toBeVisible({ timeout: 10_000 });
     await closureDialog.getByRole("button", { name: "Request Closure", exact: true }).click();
-    await expect(dataEntryPage.getByText("Closure Request Sent")).toBeVisible({ timeout: 15_000 });
+    await expect(dataEntryPage.getByText("Closure request submitted.").first()).toBeVisible({ timeout: 15_000 });
   });
 
   await test.step("Manager: Closure Review shows both materials fully issued", async () => {
@@ -209,9 +183,12 @@ test("Mixed materials: existing stock issues directly, new material requires rec
 
     const reviewModal = managerPage.getByRole("dialog").filter({ hasText: "Closure Review" });
     await expect(reviewModal).toBeVisible({ timeout: 10_000 });
-    await expect(reviewModal.getByText("Materials Completed", { exact: true })).toBeVisible();
-    await expect(reviewModal.getByText(EXISTING_MATERIAL_NAME, { exact: false })).toBeVisible();
-    await expect(reviewModal.getByText(NEW_MATERIAL_NAME, { exact: false })).toBeVisible();
+    await expect(reviewModal.getByText("Materials Completed", { exact: true }).first()).toBeVisible();
+    for (const name of [EXISTING_MATERIAL_NAME, NEW_MATERIAL_NAME]) {
+      const line = reviewModal.getByRole("row").filter({ hasText: name });
+      await expect(line).toBeVisible();
+      await expect(line.getByText("Fully Issued")).toBeVisible();
+    }
 
     await managerPage.close();
   });

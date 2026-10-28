@@ -7,10 +7,11 @@ import { z } from "zod";
 
 import { writeAuditLog } from "@/lib/audit/log";
 import { getCurrentUserContext, requireUser } from "@/lib/auth/context";
-import { canManageAssets } from "@/lib/security/permissions";
+import { canManageAssets, isManagerRole } from "@/lib/security/permissions";
 import { getFileSecuritySettings } from "@/lib/files/settings";
 import { savePrivateFile, deletePrivateFileIfExists } from "@/lib/files/local-storage";
 import {
+  checkFileContent,
   MAX_PRIVATE_FILE_SIZE,
   safeStorageName,
   validatePrivateFileWithOptions,
@@ -207,6 +208,10 @@ async function uploadPrivateFile(bucket: PrivateFileBucket, folder: string, file
   });
   if (validationError) {
     return { error: validationError };
+  }
+  const contentProblem = await checkFileContent(file);
+  if (contentProblem) {
+    return { error: contentProblem };
   }
 
   return { path: await savePrivateFile(bucket, folder, file) };
@@ -577,6 +582,13 @@ export async function deleteWorkOrderAttachmentAction(formData: FormData) {
 
   if (!attachment) redirect(`/maintenance/work-orders/${workOrderId}?error=not-found`);
 
+  // A closed Job Card (or one waiting for the Manager's closure decision)
+  // keeps its evidence: only the Manager / Super Admin may remove a file then.
+  const card = await prisma.work_orders.findUnique({ where: { id: workOrderId }, select: { status: true } });
+  if ((card?.status === "Closed" || card?.status === "Closure Requested") && !isManagerRole(context)) {
+    redirect(`/maintenance/work-orders/${workOrderId}?tab=attachments&error=attachment-locked`);
+  }
+
   await prisma.work_order_attachments.delete({ where: { id: attachmentId } });
   await deletePrivateFileIfExists("work-order-files", attachment.file_path);
 
@@ -591,7 +603,9 @@ export async function deleteWorkOrderAttachmentAction(formData: FormData) {
 
   revalidatePath(`/maintenance/work-orders/${workOrderId}`);
   revalidatePath(`/technician/jobs/${workOrderId}`);
-  redirect(String(formData.get("return_to") || `/maintenance/work-orders/${workOrderId}`));
+  // Only an in-app path; anything else falls back to the Job Card.
+  const returnTo = String(formData.get("return_to") ?? "");
+  redirect(returnTo.startsWith("/") && !returnTo.startsWith("//") && !returnTo.startsWith("/\\") ? returnTo : `/maintenance/work-orders/${workOrderId}`);
 }
 
 // ─── Upload parts request attachment ─────────────────────────────────────────

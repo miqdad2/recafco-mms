@@ -27,6 +27,7 @@ import {
   MAX_ATTACHMENT_ROWS,
 } from "@/lib/files/attachment-constants";
 import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/maintenance-types";
+import { checkJobCardDateRange, formatJobCardDate, NOT_ENTERED } from "@/lib/work-orders/job-card-edit";
 import type { WorkerProfileRow } from "@/lib/backend/workers/service";
 import { stockStatusLabel, stockStatusTone } from "@/components/store/offline-inventory-types";
 
@@ -405,6 +406,9 @@ const DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 type RequestFields = {
   ordered_by: string;
   date_of_order: string;
+  // Optional Job Card calendar dates (not worker time) — YYYY-MM-DD or "".
+  job_card_start_date: string;
+  job_card_end_date: string;
   maintenance_type: string;
   operator_complaint: string;
   description_of_work: string;
@@ -634,12 +638,26 @@ function WizardBody({
   const [fields, setFields] = useState<RequestFields>(() => ({
     ordered_by: "",
     date_of_order: new Date().toISOString().slice(0, 10),
+    job_card_start_date: "",
+    job_card_end_date: "",
     maintenance_type: DEFAULT_MAINTENANCE_TYPE,
     operator_complaint: "",
     description_of_work: "",
     kilometers: "",
     running_hours: "",
   }));
+  // The two Job Card dates are checked together, so changing either one
+  // clears a range message shown on the other.
+  function updateJobCardDate(name: "job_card_start_date" | "job_card_end_date", value: string) {
+    setFields((prev) => ({ ...prev, [name]: value }));
+    setErrors((prev) => {
+      if (!prev.job_card_start_date && !prev.job_card_end_date) return prev;
+      const next = { ...prev };
+      delete next.job_card_start_date;
+      delete next.job_card_end_date;
+      return next;
+    });
+  }
   function updateField(name: keyof RequestFields, value: string) {
     setFields((prev) => ({ ...prev, [name]: value }));
     setErrors((prev) => {
@@ -978,7 +996,10 @@ function WizardBody({
     outcomeUnknownRef.current = true;
     setSelectedAssetId(d.selectedAssetId);
     setLastSyncedAssetId(d.selectedAssetId);
-    setFields(d.fields);
+    // A draft saved before the Job Card Start / End Date fields existed has
+    // no such keys — default them to "not entered".
+    const notEnteredDates = { job_card_start_date: "", job_card_end_date: "" };
+    setFields({ ...notEnteredDates, ...d.fields });
     setJobLocation(d.jobLocation);
     setJobLocationTouched(d.jobLocationTouched);
     setMeterReadingType(d.meterReadingType);
@@ -1016,6 +1037,9 @@ function WizardBody({
       // Same rule as the server: at least 2 characters.
       if (fields.ordered_by.trim().length < 2) errs.ordered_by = "Please enter who took the order (at least 2 letters).";
       if (!fields.date_of_order.trim()) errs.date_of_order = "Please enter the date of order.";
+      // Same rule as the server (lib/work-orders/job-card-edit.ts).
+      const dateProblem = checkJobCardDateRange(fields.job_card_start_date, fields.job_card_end_date);
+      if (dateProblem) errs[dateProblem.field] = dateProblem.message;
       if (showKilometers && fields.kilometers.trim() && !isPlainNumber(fields.kilometers)) {
         errs.kilometers = "Please check the kilometer reading. Use numbers only, without commas or letters — for example 45000 or 45000.5.";
       }
@@ -1386,7 +1410,10 @@ function WizardBody({
   const reviewData: Record<string, string> = Object.fromEntries(
     Object.entries({
       ordered_by: fields.ordered_by,
-      date_of_order: fields.date_of_order,
+      // Same "27 Oct 2026" style as the Start / End dates below and the popup.
+      date_of_order: fields.date_of_order ? formatJobCardDate(fields.date_of_order) : "",
+      job_card_start_date: fields.job_card_start_date ? formatJobCardDate(fields.job_card_start_date) : "",
+      job_card_end_date: fields.job_card_end_date ? formatJobCardDate(fields.job_card_end_date) : "",
       maintenance_type: fields.maintenance_type,
       job_location: jobLocation,
       kilometers: showKilometers ? fields.kilometers : "",
@@ -1659,6 +1686,44 @@ function WizardBody({
                 </label>
                 <p className={helpCls}>Today&apos;s date is filled in. Change it only if the order was given on another day.</p>
                 <FieldError message={errors.date_of_order} />
+              </div>
+
+              {/* Job Card Start / End Date — optional calendar dates for the
+                  Job Card itself. Not worker time: worker hours still come
+                  only from the worker timer / approved manual time. */}
+              <div>
+                <label className="block">
+                  <FieldLabel label="Job Card Start Date" hint="optional" />
+                  <input
+                    name="job_card_start_date"
+                    data-field="job_card_start_date"
+                    type="date"
+                    value={fields.job_card_start_date}
+                    onChange={(e) => updateJobCardDate("job_card_start_date", e.target.value)}
+                    aria-invalid={Boolean(errors.job_card_start_date)}
+                    className={`${inp}${fieldCls("job_card_start_date")}`}
+                  />
+                </label>
+                <p className={helpCls}>The day work on this Job Card starts. You can add or change it later.</p>
+                <FieldError message={errors.job_card_start_date} />
+              </div>
+
+              <div>
+                <label className="block">
+                  <FieldLabel label="Job Card End Date" hint="optional" />
+                  <input
+                    name="job_card_end_date"
+                    data-field="job_card_end_date"
+                    type="date"
+                    value={fields.job_card_end_date}
+                    min={fields.job_card_start_date || undefined}
+                    onChange={(e) => updateJobCardDate("job_card_end_date", e.target.value)}
+                    aria-invalid={Boolean(errors.job_card_end_date)}
+                    className={`${inp}${fieldCls("job_card_end_date")}`}
+                  />
+                </label>
+                <p className={helpCls}>The day the work is finished. It cannot be before the Start Date.</p>
+                <FieldError message={errors.job_card_end_date} />
               </div>
 
               <div>
@@ -2443,6 +2508,8 @@ function WizardBody({
                 <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
                   <ReviewRow label="Order taken by" value={reviewData.ordered_by} />
                   <ReviewRow label="Date of order" value={reviewData.date_of_order} />
+                  <ReviewRow label="Job Card Start Date" value={reviewData.job_card_start_date ?? NOT_ENTERED} />
+                  <ReviewRow label="Job Card End Date" value={reviewData.job_card_end_date ?? NOT_ENTERED} />
                   <ReviewRow label="Maintenance type" value={reviewData.maintenance_type} />
                   <ReviewRow label="Job location" value={reviewData.job_location} />
                   {/* Smart Meter Field Unit 10G.60, Task 8 — only whichever

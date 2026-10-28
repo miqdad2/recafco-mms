@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 
 import { ceoApprovePurchaseAction, ceoRejectPurchaseAction, ceoRequestClarificationAction } from "@/app/actions/ceo-approvals";
-import { Button } from "@/components/ui/button";
+import { PageBackButton } from "@/components/layout/page-back-button";
 import { CostVisibilityGuard } from "@/components/ui/cost-visibility-guard";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
@@ -112,12 +112,8 @@ export default async function CeoApprovalsPage({ searchParams }: { searchParams?
         description="High-value purchase requests reach you only after finance review. Each card shows the full context so you can decide immediately."
         actions={
           <>
-            <Link href="/dashboard">
-              <Button variant="secondary">Dashboard</Button>
-            </Link>
-            <Link href="/purchase/requests">
-              <Button variant="secondary">All purchases</Button>
-            </Link>
+            {/* Dashboard / Purchase are in the CEO sidebar. */}
+            <PageBackButton />
           </>
         }
       />

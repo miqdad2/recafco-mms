@@ -65,7 +65,10 @@ export type DailyActivityPlainStatus = {
 
 export type DailyActivityInput = {
   status: string;
-  workers: { assignmentStatus: string; sessionStatus: string }[];
+  // manualMinutes: hours entered manually on the assignment. A worker with
+  // manual time and no timer running/paused is "Manual Time Recorded" (not
+  // finished yet), not "Not Started".
+  workers: { assignmentStatus: string; sessionStatus: string; manualMinutes?: number }[];
   // The existing closure-readiness result (no pending Materials Request,
   // required materials fully issued, every worker Finished).
   closureReady: boolean;
@@ -89,7 +92,8 @@ export function classifyDailyActivity(input: DailyActivityInput): DailyActivityC
   const states = input.workers.map((w) => deriveSimpleWorkerState(w.assignmentStatus, w.sessionStatus));
   const workingWorkers = states.filter((s) => s === "Working").length;
   const pausedWorkers = states.filter((s) => s === "Paused").length;
-  const notStartedWorkers = states.filter((s) => s === "Not Started").length;
+  const manualOnlyWorkers = input.workers.filter((w, i) => states[i] === "Not Started" && (w.manualMinutes ?? 0) > 0).length;
+  const notStartedWorkers = states.filter((s) => s === "Not Started").length - manualOnlyWorkers;
   const finishedWorkers = states.filter((s) => s === "Finished").length;
 
   const isClosed = input.status === "Closed";
@@ -97,7 +101,11 @@ export function classifyDailyActivity(input: DailyActivityInput): DailyActivityC
   const isOpenForWork = !isClosed && !isWaitingApproval;
 
   const isWorking = !isClosed && workingWorkers > 0;
-  const isPaused = !isClosed && workingWorkers === 0 && pausedWorkers > 0;
+  // Paused filter / count: Job Cards with at least one CURRENTLY paused worker
+  // (lib/work-orders/paused-work.ts — the same definition the dashboards
+  // count), even if another worker on the card is working. The card's own
+  // label still reads "Working Now" in that case (see plainStatus below).
+  const isPaused = !isClosed && pausedWorkers > 0;
   const isReadyToClose = isOpenForWork && input.closureReady && states.length > 0;
   const isNotStarted = isOpenForWork && workingWorkers === 0 && pausedWorkers === 0 && (states.length === 0 || notStartedWorkers > 0);
   const isMaterialsPending = !isClosed && input.materialsPending;
@@ -106,8 +114,10 @@ export function classifyDailyActivity(input: DailyActivityInput): DailyActivityC
   if (isClosed) plainStatus = { label: "Closed", description: "Job Card closed.", tone: "gray" };
   else if (isWaitingApproval) plainStatus = { label: "Waiting for Approval", description: "Closure request sent to manager.", tone: "amber" };
   else if (isWorking) plainStatus = { label: "Working Now", description: "A worker is currently working.", tone: "green" };
-  else if (isPaused) plainStatus = { label: "Paused", description: "Work has been paused.", tone: "amber" };
+  else if (isPaused && workingWorkers === 0) plainStatus = { label: "Paused", description: "Work has been paused.", tone: "amber" };
   else if (isReadyToClose) plainStatus = { label: "Ready to Close", description: "Work is finished.", tone: "blue" };
+  else if (manualOnlyWorkers > 0 && notStartedWorkers === 0)
+    plainStatus = { label: "Manual Time Recorded", description: "Hours were entered manually. Mark the work finished.", tone: "blue" };
   else if (states.length > 0 && notStartedWorkers === 0) plainStatus = { label: "Work Finished", description: "Complete materials before closing.", tone: "blue" };
   else if (finishedWorkers > 0) plainStatus = { label: "Partly Done", description: "Some workers have not started yet.", tone: "gray" };
   else plainStatus = { label: "Not Started", description: "Work has not started.", tone: "gray" };
@@ -121,7 +131,7 @@ export function classifyDailyActivity(input: DailyActivityInput): DailyActivityC
     isNotStarted,
     isMaterialsPending,
     workingWorkers: isClosed ? 0 : workingWorkers,
-    pausedWorkers: isPaused ? pausedWorkers : 0,
+    pausedWorkers: isClosed ? 0 : pausedWorkers,
     plainStatus,
   };
 }

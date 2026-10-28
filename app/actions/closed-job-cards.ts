@@ -11,6 +11,7 @@ import {
 } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummary, getWorkOrderLaborSummariesBulk } from "@/lib/work-orders/work-session-totals";
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
+import { ON_TEAM_ASSIGNMENT_STATUSES } from "@/lib/backend/workers/constants";
 
 // Manager Closed Job Cards Summary and Global Navigation Improvements Unit
 // 10E, Part A.
@@ -180,7 +181,7 @@ export async function getClosedJobCardsListAction(filter: ClosedJobCardsFilter):
                   { assets: { plate_number: { contains: search, mode: "insensitive" as const } } },
                   {
                     work_order_worker_assignments: {
-                      some: { status: "active", worker_profiles: { name: { contains: search, mode: "insensitive" as const } } },
+                      some: { status: { in: ON_TEAM_ASSIGNMENT_STATUSES }, worker_profiles: { name: { contains: search, mode: "insensitive" as const } } },
                     },
                   },
                 ],

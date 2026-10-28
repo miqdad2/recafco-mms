@@ -10,6 +10,9 @@ export const startWorkSessionSchema = z.object({
   workOrderId: z.string().uuid(),
   workerAssignmentId: z.string().uuid(),
   notes: z.string().trim().max(500).optional(),
+  // "Record Additional Work": the user confirmed this is NEW work on an
+  // assignment that already has manually recorded time (see startWorkSession).
+  additionalWork: z.boolean().optional(),
 });
 export type StartWorkSessionInput = z.infer<typeof startWorkSessionSchema>;
 

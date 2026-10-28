@@ -7,6 +7,7 @@ import {
   getMaterialFulfillmentForWorkOrder,
   summarizeMaterialAvailability,
 } from "@/lib/work-orders/material-fulfillment";
+import { ON_TEAM_ASSIGNMENT_STATUSES } from "@/lib/backend/workers/constants";
 
 // Critical Workflow Popup Review Modal Unit 10G.7, Task 4/7.
 //
@@ -87,7 +88,7 @@ export async function getJobCardSummaryAction(workOrderId: string): Promise<JobC
       operator_complaint: true, description_of_work: true, worker_type: true,
       assets: { select: { asset_name: true, plate_number: true } },
       work_order_worker_assignments: {
-        where: { status: "active" },
+        where: { status: { in: ON_TEAM_ASSIGNMENT_STATUSES } },
         select: { worker_role: true, worker_profiles: { select: { name: true } } },
         orderBy: [{ worker_role: "asc" }, { assigned_at: "asc" }],
       },
@@ -107,7 +108,13 @@ export async function getJobCardSummaryAction(workOrderId: string): Promise<JobC
 
   const [requester, activeSession, fulfillment] = await Promise.all([
     wo.created_by ? prisma.profiles.findUnique({ where: { id: wo.created_by }, select: { full_name: true } }) : Promise.resolve(null),
-    prisma.workOrderWorkSession.findFirst({ where: { work_order_id: wo.id, status: { in: ["Active", "Paused"] } }, select: { status: true } }),
+    // Only timer periods of workers still on the job (a period left "Paused"
+    // when the worker was marked Finished is not current); Active first.
+    prisma.workOrderWorkSession.findFirst({
+      where: { work_order_id: wo.id, status: { in: ["Active", "Paused"] }, is_manual_entry: false, worker_assignment: { status: "active" } },
+      orderBy: { status: "asc" },
+      select: { status: true },
+    }),
     getMaterialFulfillmentForWorkOrder(prisma, wo.id),
   ]);
 

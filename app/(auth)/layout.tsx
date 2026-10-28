@@ -1,82 +1,112 @@
-import { BrandLogo } from "@/components/layout/brand-logo";
+import { Boxes, HardHat, ShieldCheck, Wrench } from "lucide-react";
+
+import { AuthLogo } from "@/components/auth/auth-logo";
+
+// Informational only — these are not links on a pre-login screen.
+const highlights = [
+  { icon: Wrench, title: "Job Cards", subtitle: "& Work Orders" },
+  { icon: Boxes, title: "Materials", subtitle: "& Inventory" },
+  { icon: HardHat, title: "Workers", subtitle: "& Maintenance" }
+];
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
-    <main className="min-h-screen bg-[#F5F6F8]">
-      {/* Right Panel Width Polish Unit 10G.47, Task 1: Unit 10G.45 had
-          pushed this ratio to ~71%/29% (1.25fr:0.52fr) chasing "less empty
-          margin around the card" — that overcorrected and left the login
-          side feeling squeezed. Rebalanced to ~59%/41% (1.45fr:1fr), within
-          the requested 58-60%/40-42% split — coincidentally close to where
-          Unit 10G.43 originally had it (1fr:0.72fr ~= 58%/42%) before the
-          intervening units drifted it leftward. Right column's floor
-          bumped 480px -> 500px so the card (max-w-480, Task 2) never gets
-          squeezed by its own section padding even at exactly the lg
-          breakpoint. */}
-      <div className="grid min-h-screen lg:grid-cols-[minmax(0,1.45fr)_minmax(500px,1fr)]">
-        <section className="relative hidden overflow-hidden bg-[#111827] text-white lg:block">
-          {/* Hero background photo — cover/center/no-repeat so it fills the
-              panel at any height without stretching or distorting. Sits
-              behind the navy gradient overlay below, which does the actual
-              work of keeping the white text readable over any part of the
-              image. */}
+    <main className="min-h-screen bg-[#F4F7FB]">
+      {/* Login Redesign: ~60/40 split on desktop. The right column keeps a
+          500px floor so the 480px card never gets squeezed at exactly the
+          lg breakpoint; above ~1250px the 3:2 ratio takes over. */}
+      <div className="grid min-h-screen lg:grid-cols-[minmax(0,1.5fr)_minmax(500px,1fr)]">
+        <section className="relative hidden overflow-hidden bg-[#0B1424] text-white lg:block">
+          {/* The real RECAFCO factory photo. Positioned well right of centre so
+              the lit hall and the RECAFCO sign stay in frame when the
+              4:3 photo is cropped to a taller panel. */}
           <div
-            className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+            className="absolute inset-0 bg-cover bg-no-repeat bg-[position:82%_center]"
             style={{ backgroundImage: "url('/bg_img.jpg')" }}
             aria-hidden="true"
           />
-          {/* Visual Balance Improvement Unit 10G.44, Task 2: overlay opacity
-              trimmed down at every stop (90/82/72 -> 78/66/54) so the
-              factory photo actually reads through instead of going nearly
-              solid navy — text keeps its own drop-shadow below for
-              readability instead of leaning on a near-opaque overlay. */}
-          <div className="absolute inset-0 bg-gradient-to-br from-[#0B1220]/78 via-[#111827]/66 to-[#111827]/54" aria-hidden="true" />
-          <div className="absolute inset-y-0 right-0 w-px bg-white/10" />
-          {/* Left Header Logo Polish Unit 10G.46, Task 1: RECAFCO logo
-              restored here as the page's official brand mark — logo only,
-              no "RECAFCO" / "Maintenance & Asset Management" text beside
-              it (Unit 10G.43 removed exactly that pairing as repetitive
-              with the login card; re-adding the logo alone doesn't undo
-              that). It's a normal-flow flex item above the text block, not
-              absolutely positioned, so it can never overlap the title —
-              the text block's own flex-1 wrapper just centers within
-              whatever vertical space remains below it. Visual Balance
-              Improvement Unit 10G.44, Task 1: that text block still needs
-              its own flex-1 wrapper (not a plain `justify-center` on the
-              outer column) to actually center in the space above the
-              footer — see that unit's note for why. */}
-          <div className="relative flex min-h-screen flex-col px-12 py-12">
-            <BrandLogo variant="dark" size="xl" showText={false} />
-            {/* Final Polish Unit 10G.45, Task 4: a bit of bottom padding on
-                this centering wrapper biases the text block slightly above
-                dead-center (a touch closer to the classic hero-text
-                position) rather than sitting exactly in the vertical
-                middle of the photo. */}
-            <div className="flex flex-1 flex-col justify-center pb-16">
-              <div className="max-w-[600px]">
-                <p className="text-sm font-bold uppercase tracking-wide text-red-200">RECAFCO internal system</p>
-                <h1
-                  className="mt-5 text-4xl font-black leading-[1.15]"
-                  style={{ textShadow: "0 2px 16px rgba(0,0,0,0.5)" }}
-                >
-                  Maintenance Management System
-                </h1>
-                <p
-                  className="mt-6 max-w-[520px] text-base leading-7 text-gray-200"
-                  style={{ textShadow: "0 1px 8px rgba(0,0,0,0.45)" }}
-                >
-                  Secure access for RECAFCO maintenance operations.
-                </p>
-              </div>
+          {/* Navy overlay: heavy on the left where the text sits, light on
+              the right so the lit building reads through, plus a bottom
+              fade that keeps the footer legible over the wet floor. */}
+          <div
+            className="absolute inset-0 bg-gradient-to-r from-[#081226]/85 via-[#0B1730]/40 to-transparent"
+            aria-hidden="true"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-[#060D1C]/80 via-transparent to-[#060D1C]/25" aria-hidden="true" />
+
+          <div className="relative flex min-h-screen flex-col px-12 pb-8 pt-12 xl:px-16 2xl:px-20 2xl:pt-16">
+            <div className="w-fit rounded-2xl bg-white px-3 py-2 shadow-[0_12px_32px_-12px_rgba(0,0,0,0.6)]">
+              <AuthLogo className="w-[124px] 2xl:w-[148px]" priority />
             </div>
 
-            <div className="flex items-center justify-between border-t border-white/10 pt-5 text-xs font-semibold uppercase tracking-wide text-gray-400">
-              <span>RECAFCO internal system</span>
-              <span>Secure access only</span>
+            <div className="flex flex-1 flex-col justify-center py-10">
+              <div className="max-w-[560px]">
+                <p className="flex items-center gap-3 text-sm font-semibold uppercase tracking-[0.14em] text-white/90">
+                  <span className="h-6 w-1 rounded-full bg-[#ED1C24]" aria-hidden="true" />
+                  RECAFCO internal system
+                </p>
+                <p
+                  className="mt-5 text-[44px] font-black leading-[1.04] tracking-[-0.02em] xl:text-5xl 2xl:text-[56px]"
+                  style={{ textShadow: "0 2px 18px rgba(0,0,0,0.45)" }}
+                >
+                  Maintenance
+                  <br />
+                  Management
+                  <br />
+                  <span className="text-[#ED1C24]">System</span>
+                </p>
+                <p
+                  className="mt-6 max-w-[440px] text-[17px] leading-7 text-[#D7DEEA]"
+                  style={{ textShadow: "0 1px 8px rgba(0,0,0,0.45)" }}
+                >
+                  Secure access for RECAFCO maintenance operations, job cards, materials, and work management.
+                </p>
+              </div>
+
+              <ul className="mt-10 grid w-full max-w-[480px] grid-cols-3 gap-4" aria-label="System areas">
+                {highlights.map(({ icon: Icon, title, subtitle }) => (
+                  <li
+                    key={title}
+                    className="flex flex-col items-center rounded-[14px] border border-white/15 bg-[#0B1630]/70 px-3 py-5 text-center backdrop-blur-[2px]"
+                  >
+                    <Icon className="h-8 w-8 text-[#ED1C24]" strokeWidth={1.75} aria-hidden="true" />
+                    <span className="mt-3 text-sm font-semibold leading-5 text-white">{title}</span>
+                    <span className="text-sm leading-5 text-white/85">{subtitle}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="flex items-center gap-6 text-xs font-semibold uppercase tracking-[0.16em] text-[#C3CBD8]">
+              <span className="shrink-0">RECAFCO internal system</span>
+              <span className="h-px flex-1 bg-white/20" aria-hidden="true" />
+              <span className="flex shrink-0 items-center gap-2">
+                <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                Secure access only
+              </span>
             </div>
           </div>
         </section>
-        <section className="flex min-h-screen items-start justify-center bg-[#F5F6F8] px-4 pb-8 pt-12 sm:items-center sm:px-8 sm:py-8">{children}</section>
+
+        <section className="flex min-h-screen flex-col bg-[linear-gradient(160deg,#F7F9FC_0%,#EEF2F7_100%)]">
+          {/* Below lg the photo panel is hidden; tablets get a slim
+              branded photo strip so the page still reads as RECAFCO, while
+              phones go straight to the form (the card carries the logo). */}
+          <div className="relative hidden h-36 overflow-hidden bg-[#0B1424] md:block lg:hidden">
+            <div
+              className="absolute inset-0 bg-cover bg-no-repeat bg-[position:60%_62%]"
+              style={{ backgroundImage: "url('/bg_img.jpg')" }}
+              aria-hidden="true"
+            />
+            <div className="absolute inset-0 bg-gradient-to-r from-[#081226]/90 via-[#0B1730]/60 to-[#0B1730]/20" aria-hidden="true" />
+            <div className="relative flex h-full items-center px-10">
+              <p className="text-2xl font-black leading-tight text-white">
+                Maintenance Management <span className="text-[#ED1C24]">System</span>
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-1 items-start justify-center px-4 py-6 sm:items-center sm:px-8 sm:py-10 lg:[@media(max-height:820px)]:py-5">{children}</div>
+        </section>
       </div>
     </main>
   );

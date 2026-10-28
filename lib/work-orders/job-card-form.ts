@@ -3,6 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import { parseKuwaitInputValue } from "@/lib/format/kuwait-time";
+import { checkJobCardDateRange, isIsoDate, toIsoDateOnly } from "@/lib/work-orders/job-card-edit";
 import {
   getMaterialUnitSetupByKey,
   getOfflineInventoryMaterialByKey,
@@ -58,6 +59,15 @@ const requiredDate = z.preprocess((value) => {
   return Number.isNaN(date.getTime()) ? undefined : date;
 }, z.date());
 
+// Job Card Start / End Date: YYYY-MM-DD from <input type="date">, stored as a
+// plain @db.Date (UTC midnight) — no Kuwait shift, a calendar day has no time.
+// Blank → not entered; anything else that is not a real date fails here.
+const optionalJobCardDate = z.preprocess((value) => {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const v = value.trim();
+  return isIsoDate(v) ? new Date(`${v}T00:00:00.000Z`) : v;
+}, z.date().optional());
+
 export const workOrderSchema = z.object({
   id: optionalUuid,
   ordered_by: z.string().trim().min(2).max(160),
@@ -67,6 +77,8 @@ export const workOrderSchema = z.object({
   serial_number: optionalString,
   plate_number: optionalString,
   date_of_order: requiredDate,
+  job_card_start_date: optionalJobCardDate,
+  job_card_end_date: optionalJobCardDate,
   job_location: optionalString,
   starting_datetime: optionalKuwaitDateTime,
   ending_datetime: optionalKuwaitDateTime,
@@ -90,6 +102,10 @@ export const workOrderSchema = z.object({
   next_service_kilometer: optionalNumber,
   next_service_running_hours: optionalNumber,
   notes: optionalString
+}).superRefine((values, ctx) => {
+  // Same rule as the wizard and the work_orders_job_card_dates_check constraint.
+  const problem = checkJobCardDateRange(toIsoDateOnly(values.job_card_start_date), toIsoDateOnly(values.job_card_end_date));
+  if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [problem.field], message: problem.message });
 });
 
 function rowValue(formData: FormData, name: string, index: number) {

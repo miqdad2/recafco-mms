@@ -1,6 +1,6 @@
 import { CalendarClock } from "lucide-react";
 
-import { formatKuwaitDateTime } from "@/lib/format/kuwait-time";
+import { formatKuwaitDate, formatKuwaitDateTime } from "@/lib/format/kuwait-time";
 import { JOB_CARD_DATE_SOURCE_NOTE, type JobCardDate, type JobCardDates } from "@/lib/work-orders/job-card-dates";
 
 // Job Card Dates — a compact block in the Overview tab's Quick Facts column.
@@ -8,7 +8,8 @@ import { JOB_CARD_DATE_SOURCE_NOTE, type JobCardDate, type JobCardDates } from "
 // the printed Job Card uses). All times are Kuwait time.
 
 export function jobCardDateText(value: JobCardDate): string {
-  return value.recorded ? formatKuwaitDateTime(value.at) : value.label;
+  if (!value.recorded) return value.label;
+  return value.dateOnly ? formatKuwaitDate(value.at) : formatKuwaitDateTime(value.at);
 }
 
 function DateRow({ label, value }: { label: string; value: JobCardDate }) {

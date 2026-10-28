@@ -21,7 +21,8 @@ import type { Prisma } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
-import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
+import { PageBackButton } from "@/components/layout/page-back-button";
+import { headerPrimaryBtn } from "@/components/layout/header-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requirePermission, type CurrentUserContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
@@ -61,9 +62,11 @@ import { WorkOrderWizard } from "@/components/work-orders/work-order-wizard";
 import { getAssetPickerOptions } from "@/lib/assets/picker-options";
 import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
-import { canReviewJobCardDeletion, listDeletedJobCards, listPendingJobCardDeletionRequests } from "@/lib/backend/work-orders/job-card-deletion";
-import { ManagerDeletionRequests } from "@/components/work-orders/manager-deletion-requests";
+import { listDeletedJobCards } from "@/lib/backend/work-orders/job-card-deletion";
 import { DeletedJobCardsHistory } from "@/components/work-orders/deleted-job-cards-history";
+import { formatJobCardDate } from "@/lib/work-orders/job-card-edit";
+import { formatKuwaitDate } from "@/lib/format/kuwait-time";
+import { ON_TEAM_ASSIGNMENT_STATUSES } from "@/lib/backend/workers/constants";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -234,8 +237,8 @@ type SP = {
   created?: string;
   new_job_card?: string;
   asset_id?: string;
-  // Final Integration Review: "1" shows the read-only Deleted Job Cards
-  // history (deletion reviewers only).
+  // "1" shows the read-only Deleted Job Cards history — Super Admin audit
+  // access only; no link to it is shown on this page any more.
   deleted?: string;
 };
 
@@ -458,11 +461,13 @@ function ageInDays(createdAt: Date): number {
   return Math.floor((Date.now() - createdAt.getTime()) / 86_400_000);
 }
 
+// Kuwait time of day ("2:05 PM") — named explicitly so the server's own time
+// zone never shifts the Created Date column.
 function formatTime(v: Date | string | null | undefined): string {
   if (!v) return "";
   const d = v instanceof Date ? v : new Date(String(v));
   if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "Asia/Kuwait" });
 }
 
 // Materials column text — reuses the same Requested/Received grouping as
@@ -623,7 +628,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         <PageHeader
           title="Executive Work Orders"
           description="High-risk work orders, blocked operations, and items needing executive attention."
-          actions={<PageNavigationActions showJobCards={false} />}
+          actions={<PageBackButton />}
         />
         <div className="space-y-4 p-4 lg:p-6">
 
@@ -837,6 +842,11 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           work_order_number: true,
           date_of_order: true,
           created_at: true,
+          // The saved date-only Job Card fields (same columns the New / Edit
+          // Job Card forms write) — never derived from worker sessions or
+          // the closure approval.
+          job_card_start_date: true,
+          job_card_end_date: true,
           ordered_by: true,
           maintenance_type: true,
           worker_type: true,
@@ -862,7 +872,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           // even when a Job Card actually has both.
           _count: {
             select: {
-              work_order_worker_assignments: { where: { status: "active" } },
+              work_order_worker_assignments: { where: { status: { in: ON_TEAM_ASSIGNMENT_STATUSES } } },
               work_order_work_sessions: { where: { status: "Active" } },
             },
           },
@@ -971,7 +981,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
               select: {
                 work_order_required_parts: true,
                 work_order_attachments: true,
-                work_order_worker_assignments: { where: { status: "active" } },
+                work_order_worker_assignments: { where: { status: { in: ON_TEAM_ASSIGNMENT_STATUSES } } },
                 work_order_work_sessions: { where: { status: "Active" } },
               },
             },
@@ -1299,16 +1309,13 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           description="Track job cards, technician work, waiting materials, and repair history."
           actions={
             <>
-              {/* Missing Page Navigation Buttons Fix Unit 10E.3, Task 2:
-                  already on Job Cards, so that button is suppressed here. */}
-              <PageNavigationActions showJobCards={false} secondaryLinks={[{ label: "Materials Requests", href: "/store/parts-requests" }]} />
-              <Link
-                href={buildHref({ ...sp, new_job_card: "1" })}
-                className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
-              >
-                <Plus className="h-4 w-4" aria-hidden="true" />
-                Create Job Card
-              </Link>
+              <PageBackButton />
+              {canCreateJobCard ? (
+                <Link href={buildHref({ ...sp, new_job_card: "1" })} className={headerPrimaryBtn}>
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                  Create New Job Card
+                </Link>
+              ) : null}
             </>
           }
         />
@@ -1354,15 +1361,13 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
     );
   }
 
-  // Final Integration Review — Manager / Super Admin only: pending Job Card
-  // deletion requests (with Approve / Reject) and, on ?deleted=1, the
-  // read-only Deleted Job Cards history. Both reads re-check the role and
-  // apply the visibility filter; nothing is queried for other roles.
-  const canReviewDeletions = canReviewJobCardDeletion(context);
-  const showDeletedHistory = canReviewDeletions && sp.deleted === "1";
-  const [pendingDeletionRequests, deletedJobCards] = canReviewDeletions
-    ? await Promise.all([listPendingJobCardDeletionRequests(context), showDeletedHistory ? listDeletedJobCards(context) : Promise.resolve([])])
-    : [[], []];
+  // Job Card deletion requests are no longer part of the operational
+  // workflow, so the Pending Deletion Requests section and its history link
+  // are gone from this page. The read-only Deleted Job Cards history stays
+  // reachable by Super Admin at ?deleted=1 for audit; nothing is queried for
+  // anyone else and no historical record is touched.
+  const showDeletedHistory = context.role?.slug === "super_admin" && sp.deleted === "1";
+  const deletedJobCards = showDeletedHistory ? await listDeletedJobCards(context) : [];
 
   return (
     <>
@@ -1401,16 +1406,16 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
         description="Search, filter, and track Job Cards."
         actions={
           <>
-            {/* Missing Page Navigation Buttons Fix Unit 10E.3, Task 2:
-                already on Job Cards, so that button is suppressed here. */}
-            <PageNavigationActions showJobCards={false} secondaryLinks={[{ label: "Materials Requests", href: "/store/parts-requests" }]} />
-            <Link
-              href={buildHref({ ...sp, new_job_card: "1" })}
-              className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
-            >
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              Create Job Card
-            </Link>
+            {/* Back + Create New Job Card only — other modules are in the
+                sidebar. The button shows only to users the wizard opens for
+                (canCreateJobCard), so it is never a dead button. */}
+            <PageBackButton />
+            {canCreateJobCard ? (
+              <Link href={buildHref({ ...sp, new_job_card: "1" })} className={headerPrimaryBtn}>
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Create New Job Card
+              </Link>
+            ) : null}
           </>
         }
       />
@@ -1475,13 +1480,6 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           />
         </section>
 
-        {canReviewDeletions ? (
-          <ManagerDeletionRequests
-            pending={pendingDeletionRequests}
-            deletedHref={buildHref({ ...sp, deleted: showDeletedHistory ? undefined : "1" })}
-            showingDeleted={showDeletedHistory}
-          />
-        ) : null}
         {showDeletedHistory ? <DeletedJobCardsHistory rows={deletedJobCards} /> : null}
 
         {/* ── Filters ───────────────────────────────────────────────────────── */}
@@ -1539,17 +1537,23 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[920px] text-left text-sm">
-              <thead className="bg-gray-50 text-xs font-black uppercase text-[#4B5563]">
+            {/* Headers: bold 13px charcoal on a light-gray band, one shared
+                padding/alignment. Cells use px-3 so all 10 columns fit a
+                normal desktop width; narrower screens keep the existing
+                horizontal scroll inside this wrapper. */}
+            <table className="w-full min-w-[1000px] text-left text-sm">
+              <thead className="border-b border-[#E5E7EB] bg-[#F3F4F6] text-[13px] font-bold leading-tight text-[#1F2937] [&_th]:px-3 [&_th]:py-3 [&_th]:align-middle">
                 <tr>
-                  <th className="px-4 py-3">Job Card</th>
-                  <th className="px-4 py-3">Asset / Equipment / Vehicle</th>
-                  <th className="px-4 py-3">Issue</th>
-                  <th className="px-4 py-3">Materials</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Assignment</th>
-                  <th className="px-4 py-3">Created Date</th>
-                  <th className="px-4 py-3 text-right">Action</th>
+                  <th>Created Date</th>
+                  <th>Job Card</th>
+                  <th>Asset / Equipment / Vehicle</th>
+                  <th>Issue</th>
+                  <th>Materials</th>
+                  <th>Status</th>
+                  <th>Assignment</th>
+                  <th>Job Card Start Date</th>
+                  <th>Job Card End Date</th>
+                  <th className="text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#E5E7EB]">
@@ -1615,8 +1619,16 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 
                     return (
                       <QuickViewRow key={wo.id} href={detailHref} className={rowBg}>
+                        {/* Created Date — actual date/time in Kuwait time, no
+                            relative "Created today"/"X days ago" wording. */}
+                        <td className="whitespace-nowrap px-3 py-3">
+                          <p className="text-xs font-semibold text-[#111827]">{formatKuwaitDate(wo.created_at, "-")}</p>
+                          <p className="text-xs text-[#6B7280]">{formatTime(wo.created_at)}</p>
+                          {isOverdue && <p className="text-xs font-bold text-[#DC2626]">Overdue</p>}
+                        </td>
+
                         {/* Repair order */}
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-3">
                           <Link
                             href={detailHref}
                             className="block truncate font-bold text-[#111827] hover:text-[#ED1C24]"
@@ -1628,7 +1640,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                         </td>
 
                         {/* Asset / Equipment / Vehicle */}
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-3">
                           {wo.assets ? (
                             <Link href={`/assets/${wo.assets.id}`} className="group/asset block">
                               <p className="font-semibold text-[#111827] transition group-hover/asset:text-[#ED1C24]">
@@ -1645,7 +1657,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                         </td>
 
                         {/* Issue */}
-                        <td className="max-w-[180px] px-4 py-3">
+                        <td className="max-w-[180px] px-3 py-3">
                           {wo.operator_complaint ? (
                             <p className="line-clamp-2 text-xs text-[#111827]">{wo.operator_complaint}</p>
                           ) : (
@@ -1654,7 +1666,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                         </td>
 
                         {/* Materials — plain wording instead of a bare icon */}
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-3">
                           <p className="text-xs text-[#111827]">{materialsColumnText(materialsSummaryByWoId.get(wo.id) ?? { total: 0, openCount: 0 })}</p>
                         </td>
 
@@ -1665,7 +1677,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                             longer replaces this with "Correction Requested"
                             — it shows as a small secondary "Needs Update"
                             badge next to the normal primary status instead. */}
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-3">
                           <div className="flex flex-wrap items-center gap-1">
                             {(() => {
                               const simplified = displaySimplifiedStatus(wo.status);
@@ -1683,7 +1695,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                         </td>
 
                         {/* Assignment */}
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-3">
                           {assignedDisplay ? (
                             <span className="text-sm text-[#111827]">{assignedDisplay}</span>
                           ) : (
@@ -1691,16 +1703,26 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                           )}
                         </td>
 
-                        {/* Created Date — actual date/time only, no relative
-                            "Created today"/"X days ago" wording. */}
-                        <td className="px-4 py-3">
-                          <p className="text-xs font-semibold text-[#111827]">{formatDate(wo.created_at)}</p>
-                          <p className="text-xs text-[#9CA3AF]">{formatTime(wo.created_at)}</p>
-                          {isOverdue && <p className="text-xs font-bold text-[#DC2626]">Overdue</p>}
+                        {/* Job Card Start / End Date — the saved date-only
+                            fields, shown as their own calendar date (no time
+                            zone applied), "Not entered" when blank. */}
+                        <td className="whitespace-nowrap px-3 py-3">
+                          {wo.job_card_start_date ? (
+                            <span className="text-xs font-semibold text-[#111827]">{formatJobCardDate(wo.job_card_start_date)}</span>
+                          ) : (
+                            <span className="text-xs text-[#9CA3AF]">Not entered</span>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3">
+                          {wo.job_card_end_date ? (
+                            <span className="text-xs font-semibold text-[#111827]">{formatJobCardDate(wo.job_card_end_date)}</span>
+                          ) : (
+                            <span className="text-xs text-[#9CA3AF]">Not entered</span>
+                          )}
                         </td>
 
                         {/* Action */}
-                        <td className="whitespace-nowrap px-4 py-3">
+                        <td className="whitespace-nowrap px-3 py-3">
                           <div className="flex items-center justify-end gap-1.5">
                             <Link
                               href={`/maintenance/work-orders/${wo.id}`}
@@ -1752,7 +1774,7 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                   })
                 ) : (
                   <tr>
-                    <td colSpan={7} className="px-4 py-10">
+                    <td colSpan={10} className="px-4 py-10">
                       {/* Tab-specific empty state when a status tab alone yields
                           nothing (Task 9); falls back to the generic filters
                           message once search/date/other filters are also involved. */}
@@ -1820,29 +1842,39 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
 function FilterSection({ sp }: { sp: SP }) {
   return (
     <form method="GET" action="/maintenance/work-orders" className="rounded-md border border-[#E5E7EB] bg-white p-4 shadow-sm">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_160px_160px_auto]">
+      {/* The date range filters work_orders.date_of_order (the Job Card's
+          Date of Order, a date-only column, both ends inclusive) — unchanged;
+          the labels and helper text only make that visible. */}
+      <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_170px_170px_auto]">
         <input
           name="search"
           defaultValue={sp.search ?? ""}
           placeholder="Search job card, asset, vehicle plate, requester, material…"
+          aria-label="Search Job Cards"
           className="focus-ring w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
         />
 
-        <input
-          name="date_from"
-          type="date"
-          defaultValue={sp.date_from ?? ""}
-          className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm text-[#4B5563]"
-          title="Date from"
-        />
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-bold text-[#1F2937]">From Date</span>
+          <input
+            name="date_from"
+            type="date"
+            defaultValue={sp.date_from ?? ""}
+            aria-describedby="job-card-date-filter-help"
+            className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm text-[#4B5563]"
+          />
+        </label>
 
-        <input
-          name="date_to"
-          type="date"
-          defaultValue={sp.date_to ?? ""}
-          className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm text-[#4B5563]"
-          title="Date to"
-        />
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-bold text-[#1F2937]">To Date</span>
+          <input
+            name="date_to"
+            type="date"
+            defaultValue={sp.date_to ?? ""}
+            aria-describedby="job-card-date-filter-help"
+            className="focus-ring rounded-md border border-[#E5E7EB] px-3 py-2 text-sm text-[#4B5563]"
+          />
+        </label>
 
         <div className="flex gap-2">
           <Button type="submit" variant="secondary" className="flex-1">Apply</Button>
@@ -1851,6 +1883,9 @@ function FilterSection({ sp }: { sp: SP }) {
           </Link>
         </div>
       </div>
+      <p id="job-card-date-filter-help" className="mt-2 text-xs text-[#6B7280]">
+        Filter by Job Card Date of Order (the date under each Job Card number). From and To dates are both included.
+      </p>
     </form>
   );
 }

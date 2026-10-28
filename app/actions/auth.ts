@@ -59,7 +59,11 @@ export async function signInAction(formData: FormData) {
     redirect("/login?error=invalid-input");
   }
 
-  const email = parsed.data.email.toLowerCase();
+  // The login field accepts the full email or just the part before "@"
+  // (e.g. "dataentry" for dataentry@recafco.com). The form still says
+  // "Email"; the short form is a convenience, not a separate username.
+  const email = parsed.data.email.trim().toLowerCase();
+  const isShortName = !email.includes("@");
 
   // ── Email-level rate limit (defense-in-depth alongside middleware IP limit) ──
   const emailLimit = checkLoginEmailRateLimit(email);
@@ -67,6 +71,9 @@ export async function signInAction(formData: FormData) {
     redirect(`/login?error=rate-limited`);
   }
 
+  // A short name must match exactly ONE active account; if two active
+  // accounts share it (different domains) nothing is guessed — the person
+  // signs in with the full email instead.
   const users = await prisma.$queryRaw<LoginUserRow[]>`
     select
       au.id        as user_id,
@@ -78,12 +85,12 @@ export async function signInAction(formData: FormData) {
       p.is_active
     from public.auth_users au
     join public.profiles p on p.id = au.profile_id
-    where lower(au.email) = ${email}
+    where (case when ${isShortName} then split_part(lower(au.email), '@', 1) else lower(au.email) end) = ${email}
       and au.deleted_at is null
       and p.deleted_at is null
-    limit 1
+    limit 2
   `;
-  const user = users[0];
+  const user = users.length === 1 ? users[0] : undefined;
 
   if (!user) {
     await writeLoginAttemptAudit({

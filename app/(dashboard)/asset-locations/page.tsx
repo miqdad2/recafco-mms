@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { AssetLocationsManager } from "@/components/assets/asset-locations-manager";
-import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
+import { PageBackButton } from "@/components/layout/page-back-button";
 import { PageHeader } from "@/components/ui/page-header";
 import { getAssetLocationRows } from "@/lib/assets/asset-locations";
 import { requireUser } from "@/lib/auth/context";
@@ -21,7 +21,7 @@ export default async function AssetLocationsPage() {
       <PageHeader
         title="Site Locations"
         description="Manage approved site/project locations used when sending assets to site."
-        actions={<PageNavigationActions secondaryLinks={[{ label: "Assets & Equipment", href: "/assets" }]} />}
+        actions={<PageBackButton />}
       />
       <AssetLocationsManager rows={rows} />
     </>

@@ -29,7 +29,9 @@ export const E2E_PREFIX = `E2E-MMS-${RUN_ID}`;
 // asset/worker rows (Task 2's "prefer existing asset already available"
 // principle extended to the one seeded worker profile — avoids polluting
 // Worker Profiles with test rows that would need separate cleanup).
-export const FIXTURE_ASSET_CODE = "AST-VEH-0043"; // Ford — Plate 11546
+// Assets were re-imported from Excel (AST-VEH-0043 no longer exists); any
+// active asset works — override with E2E_ASSET_CODE.
+export const FIXTURE_ASSET_CODE = process.env.E2E_ASSET_CODE ?? "AST-BOBCAT-0001"; // BOBCAT — Plate 17174
 export const FIXTURE_WORKER_NAME = "worker1"; // Helper/Labor, active, hourly_rate 2 KWD/hr
 export const FIXTURE_MATERIAL_NAME = "engine filter"; // existing Offline Inventory item with positive balance
 
@@ -49,7 +51,9 @@ export async function login(page: Page, email: string, password: string) {
 
 /** Extracts the Job Card number (e.g. "REC/MD/AUTO/JOB/0007") from free text. */
 export function extractJobCardNumber(text: string): string {
-  const match = text.match(/Job Card\s+(\S+)\s+is now Active/);
+  // Current success popup: a "Job Card Number" label (CSS upper-case) above
+  // the number; older popup: "Job Card <number> is now Active".
+  const match = text.match(/Job Card Number\s+(REC\/\S+)/i) ?? text.match(/Job Card\s+(\S+)\s+is now Active/);
   if (!match) throw new Error(`Could not find Job Card number in text: ${text}`);
   return match[1];
 }
@@ -130,6 +134,23 @@ export async function getOfflineInventoryBalance(materialName: string, unit = "P
       (sum, m) => sum + (m.movement_type === "ISSUED" ? -Number(m.quantity) : Number(m.quantity)),
       0
     );
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+/** Stock movements recorded against one Job Card (by its number), oldest first. */
+export async function getJobCardMovements(jobCardNumber: string) {
+  const prisma = new PrismaClient();
+  try {
+    const wo = await prisma.work_orders.findFirst({ where: { work_order_number: jobCardNumber }, select: { id: true } });
+    if (!wo) throw new Error(`getJobCardMovements: ${jobCardNumber} not found`);
+    const rows = await prisma.offline_inventory_movements.findMany({
+      where: { related_work_order_id: wo.id, deleted_at: null },
+      orderBy: { created_at: "asc" },
+      select: { movement_type: true, manual_material_name: true, quantity: true, unit: true },
+    });
+    return rows.map((r) => ({ type: r.movement_type, name: r.manual_material_name, quantity: Number(r.quantity), unit: r.unit }));
   } finally {
     await prisma.$disconnect();
   }

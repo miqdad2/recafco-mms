@@ -48,10 +48,11 @@ test.describe("RECAFCO MMS full workflow", () => {
     });
 
     await test.step("Step 1 — Select Asset", async () => {
-      const search = wizard.getByPlaceholder(/Search asset code, name, plate number/i);
+      const search = wizard.getByLabel("Search assets, vehicles, and machines");
       await search.fill(FIXTURE_ASSET_CODE);
       await wizard.getByRole("button", { name: new RegExp(FIXTURE_ASSET_CODE) }).first().click();
-      await expect(wizard.getByText("SELECTED ASSET / VEHICLE")).toBeVisible();
+      await expect(wizard.getByText("Selected asset", { exact: true })).toBeVisible();
+      await expect(wizard.getByText(FIXTURE_ASSET_CODE, { exact: true })).toBeVisible();
       await wizard.getByRole("button", { name: "Next" }).click();
     });
 
@@ -73,12 +74,12 @@ test.describe("RECAFCO MMS full workflow", () => {
       // figure further down instead.
       await expect(wizard.getByText("Estimated total work hours")).toHaveCount(0);
 
-      await wizard.getByLabel("Assign work now").check();
+      await wizard.getByLabel(/Assign work(ers)? now/).check();
       await wizard.getByRole("button", { name: "Internal Team" }).click();
 
-      const helperSearch = wizard.getByPlaceholder(/Search helpers \/ labor/i);
+      const helperSearch = wizard.getByRole("combobox", { name: "Find a helper" });
       await helperSearch.fill(FIXTURE_WORKER_NAME);
-      await wizard.getByRole("button", { name: new RegExp(FIXTURE_WORKER_NAME, "i") }).first().click();
+      await wizard.getByRole("option", { name: new RegExp(FIXTURE_WORKER_NAME, "i") }).first().click();
 
       // Data Entry restriction check (Task 14): worker picker/chip never
       // shows an hourly rate or "KWD" regardless of role — confirm here.
@@ -88,7 +89,7 @@ test.describe("RECAFCO MMS full workflow", () => {
       // Unit 10G.13, Task 2/15: per-worker estimated hours, optional, shown
       // once the worker is selected. Task 13 — Data Entry can enter/see
       // hours but the input carries no rate/pay text alongside it.
-      await wizard.getByLabel("Estimated hours").fill("2");
+      await wizard.getByLabel(`Expected hours for ${FIXTURE_WORKER_NAME}`).fill("2");
       await expect(wizard.getByText(/Hourly Rate/)).toHaveCount(0);
 
       await wizard.getByRole("button", { name: "Next" }).click();
@@ -97,7 +98,7 @@ test.describe("RECAFCO MMS full workflow", () => {
     await test.step("Step 4 — Required Materials", async () => {
       const descInput = wizard.locator('input[name="req_part_description_0"]');
       await descInput.fill(FIXTURE_MATERIAL_NAME);
-      const suggestion = wizard.getByRole("button", { name: new RegExp(FIXTURE_MATERIAL_NAME, "i") }).first();
+      const suggestion = wizard.getByRole("option", { name: new RegExp(FIXTURE_MATERIAL_NAME, "i") }).first();
       await expect(suggestion).toBeVisible({ timeout: 10_000 });
       await suggestion.click();
       await wizard.locator('input[name="req_part_quantity_0"]').fill("1");
@@ -114,7 +115,7 @@ test.describe("RECAFCO MMS full workflow", () => {
       // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 3/5:
       // total is auto-calculated from the one worker estimate entered in
       // Step 3 ("2") — never typed anywhere on this screen.
-      await expect(wizard.getByText("Total estimated hours: 2 h")).toBeVisible();
+      await expect(wizard.getByText("Expected hours in total: 2 h")).toBeVisible();
 
       const submitButton = wizard.getByRole("button", { name: "Create Job Card", exact: true });
       await expect(submitButton).toBeVisible();
@@ -148,68 +149,58 @@ test.describe("RECAFCO MMS full workflow", () => {
     const panel = () => page.locator("#daily-activity-panel");
 
     await test.step("Daily Activity: confirm status and assignment", async () => {
-      await expect(panel().getByText("Active", { exact: true }).first()).toBeVisible();
-      await expect(panel().getByText(FIXTURE_WORKER_NAME)).toBeVisible();
+      // The panel shows plain work states now ("Not Started" for a new card
+      // whose worker has not started), not the old "Active" badge.
+      await expect(panel().getByText("Not Started", { exact: true }).first()).toBeVisible();
+      await expect(panel().getByText(FIXTURE_WORKER_NAME).first()).toBeVisible();
       // Data Entry cannot view costs — no KWD anywhere in the panel.
       await expect(panel().getByText(/KWD/)).toHaveCount(0);
     });
 
-    await test.step("Materials: issue (receiving first if stock is unavailable)", async () => {
-      const receiveBtn = panel().getByRole("button", { name: "Receive Materials" });
-      if (await receiveBtn.count()) {
-        await receiveBtn.click();
-        const receiveDialog = page.locator('div[role="dialog"][aria-labelledby="send-materials-heading"]');
-        await expect(receiveDialog).toBeVisible({ timeout: 10_000 });
-        await receiveDialog.getByRole("button", { name: "Receive Materials", exact: true }).click();
-        await expect(page.getByText("Material Received")).toBeVisible({ timeout: 10_000 });
-        await expect(receiveDialog).toBeHidden({ timeout: 10_000 });
-      }
-
-      const issueBtn = panel().getByRole("button", { name: /Issue (Material|Available)/ });
-      await expect(issueBtn).toBeVisible({ timeout: 15_000 });
-      await issueBtn.click();
-
-      const issueDialog = page.getByRole("dialog").filter({ hasText: "Issue Material to Job Card" });
-      await expect(issueDialog).toBeVisible({ timeout: 10_000 });
-      await issueDialog.getByRole("button", { name: "Issue Material", exact: true }).click();
-      await expect(page.getByText("Material Issued")).toBeVisible({ timeout: 10_000 });
-      await expect(issueDialog).toBeHidden({ timeout: 10_000 });
+    await test.step("Materials: Process Materials (receives any shortage, then issues)", async () => {
+      // One "Process Materials" action replaced the separate Receive / Issue dialogs.
+      await panel().getByRole("button", { name: "Process Materials" }).first().click();
+      const processDialog = page.getByRole("dialog").filter({ hasText: "Process Materials" });
+      await expect(processDialog).toBeVisible({ timeout: 10_000 });
+      await processDialog.getByRole("button", { name: "Confirm & Process Materials" }).click();
+      await expect(processDialog).toBeHidden({ timeout: 15_000 });
     });
 
     await test.step("Materials: confirm Required/Issued/Remaining and Materials Completed", async () => {
-      await expect(panel().getByText(/Required 1[\s\S]*Issued 1[\s\S]*Remaining 0/)).toBeVisible({ timeout: 15_000 });
+      await expect(panel().getByText(/Required 1[\s\S]*Issued 1[\s\S]*Remaining 0/).first()).toBeVisible({ timeout: 15_000 });
       await expect(panel().getByText("Materials Completed").first()).toBeVisible();
-      await expect(panel().getByRole("button", { name: "Receive Materials" })).toHaveCount(0);
+      await expect(panel().getByRole("button", { name: "Process Materials" })).toHaveCount(0);
     });
 
-    await test.step("Worker time: Start / Pause / Resume / Stop", async () => {
+    await test.step("Worker time: Start / Pause / Resume / Finish Work", async () => {
       // Toast confirmations (e.g. "Work Session Started") are transient and
       // unreliable to assert on — the button/status-badge state change in
       // the panel itself is the authoritative, task-required signal.
-      await panel().getByRole("button", { name: "Start" }).click();
-      await expect(panel().getByText("Live")).toBeVisible({ timeout: 10_000 });
+      await panel().getByRole("button", { name: "Start", exact: true }).click();
+      await expect(panel().getByText("Live").first()).toBeVisible({ timeout: 10_000 });
       await expect(panel().getByRole("button", { name: "Pause" })).toBeVisible();
 
       await page.waitForTimeout(3_000);
 
       await panel().getByRole("button", { name: "Pause" }).click();
-      await expect(panel().getByText("Paused", { exact: true })).toBeVisible({ timeout: 10_000 });
+      await expect(panel().getByText("Paused", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
       await expect(panel().getByRole("button", { name: "Resume" })).toBeVisible();
 
       await panel().getByRole("button", { name: "Resume" }).click();
-      await expect(panel().getByText("Live")).toBeVisible({ timeout: 10_000 });
+      await expect(panel().getByText("Live").first()).toBeVisible({ timeout: 10_000 });
       await expect(panel().getByRole("button", { name: "Pause" })).toBeVisible();
 
       await page.waitForTimeout(3_000);
 
-      await panel().getByRole("button", { name: "Stop" }).click();
-      await expect(panel().getByText("Completed", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
-      await expect(panel().getByRole("button", { name: "Resume Work" })).toBeVisible();
+      // "Stop" became "Finish Work"; a finished worker has no Resume.
+      await panel().getByRole("button", { name: "Finish Work" }).click();
+      await expect(panel().getByText("Finished", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+      await expect(panel().getByRole("button", { name: "Resume" })).toHaveCount(0);
     });
 
     await test.step("Request Closure", async () => {
-      await expect(panel().getByText("Ready", { exact: true })).toBeVisible({ timeout: 10_000 });
-      await panel().getByRole("button", { name: "Request Closure" }).click();
+      await expect(panel().getByRole("button", { name: "Request Closure" }).first()).toBeVisible({ timeout: 10_000 });
+      await panel().getByRole("button", { name: "Request Closure" }).first().click();
 
       const closureDialog = page.getByRole("dialog").filter({ hasText: "Request Job Card Closure" });
       await expect(closureDialog).toBeVisible({ timeout: 10_000 });
@@ -220,19 +211,21 @@ test.describe("RECAFCO MMS full workflow", () => {
         .first()
         .fill(`E2E closure request ${E2E_PREFIX}`);
 
-      const nameInput = closureDialog.getByPlaceholder(/Attachment name/i).first();
+      const nameInput = closureDialog.getByPlaceholder(/Attachment name|Completed work photo/i).first();
       if (await nameInput.count()) {
         await nameInput.fill("E2E Completion Photo");
         const fileInput = closureDialog.locator('input[type="file"]').first();
+        // A real photo: text files were never an allowed attachment type.
         await fileInput.setInputFiles({
-          name: "e2e-completion-photo.txt",
-          mimeType: "text/plain",
-          buffer: Buffer.from(`E2E completion attachment ${E2E_PREFIX}`),
+          name: "e2e-completion-photo.png",
+          mimeType: "image/png",
+          // PNG signature + body: uploads are checked against their real contents.
+          buffer: Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(2040, 7)]),
         });
       }
 
       await closureDialog.getByRole("button", { name: "Request Closure", exact: true }).click();
-      await expect(page.getByText("Closure Request Sent")).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText("Closure request submitted.").first()).toBeVisible({ timeout: 15_000 });
       await expect(closureDialog).toBeHidden({ timeout: 10_000 });
     });
 
@@ -291,33 +284,38 @@ test.describe("RECAFCO MMS full workflow", () => {
       await expect(reviewModal.getByText(/Closure requested:/)).toBeVisible();
       await expect(reviewModal.getByText(/Time taken:/)).toBeVisible();
       await expect(reviewModal.getByText(/Requested by:/)).toBeVisible();
-      await expect(reviewModal.getByText("dataentry", { exact: false })).toBeVisible();
+      await expect(reviewModal.getByText("dataentry", { exact: false }).first()).toBeVisible();
     });
 
     await test.step("Closure Review: verify worker hours/rate/pay (Manager canViewCosts=true)", async () => {
-      await expect(reviewModal.getByText(FIXTURE_WORKER_NAME)).toBeVisible();
-      await expect(reviewModal.getByText(/Hourly Rate:/)).toBeVisible();
-      await expect(reviewModal.getByText(/KWD\/hr/)).toBeVisible();
-      await expect(reviewModal.getByText(/Total Pay:/)).toBeVisible();
-      await expect(reviewModal.getByText(/Total Hours:/)).toBeVisible();
-      await expect(reviewModal.getByText(/Sessions:/)).toBeVisible();
+      await expect(reviewModal.getByText(FIXTURE_WORKER_NAME).first()).toBeVisible();
+      await expect(reviewModal.getByText(/Hourly Rate:/).first()).toBeVisible();
+      await expect(reviewModal.getByText(/KWD\/hr/).first()).toBeVisible();
+      // "Total Pay" / "Total Hours" are now "Direct Labor Cost" and the
+      // System Recorded / Manually Entered / Effective Total breakdown.
+      await expect(reviewModal.getByText(/Direct Labor Cost:/).first()).toBeVisible();
+      await expect(reviewModal.getByText("Effective Total", { exact: true }).first()).toBeVisible();
+      await expect(reviewModal.getByText(/Sessions:/).first()).toBeVisible();
     });
 
     await test.step("Closure Review: verify estimated vs actual hours (Unit 10G.13, Task 8)", async () => {
-      // Job-Card-level: Estimated total hours (2, entered by Data Entry in
-      // Step 3) vs Actual total hours vs Variance, before Approve Closure.
-      await expect(reviewModal.getByText(/Estimated vs Actual/)).toBeVisible();
+      // Estimated (2 h, entered by Data Entry in Step 3) vs Actual vs Variance,
+      // per worker and in the Estimated Hours / Actual Hours table.
+      await expect(reviewModal.getByRole("columnheader", { name: "Estimated Hours" })).toBeVisible();
+      await expect(reviewModal.getByRole("columnheader", { name: "Actual Hours" })).toBeVisible();
+      await expect(reviewModal.getByRole("cell", { name: "2 h", exact: true }).first()).toBeVisible();
+      await expect(reviewModal.getByText(/Estimated:/).first()).toBeVisible();
       await expect(reviewModal.getByText(/Actual:/).first()).toBeVisible();
-      // "Estimated:" appears twice — once for the Job-Card total, once for
-      // FIXTURE_WORKER_NAME's own estimate (both entered as 2 in Step 3).
-      await expect(reviewModal.getByText(/Estimated:/)).toHaveCount(2);
       await expect(reviewModal.getByText(/Variance:/).first()).toBeVisible();
     });
 
     await test.step("Closure Review: verify materials completion", async () => {
-      await expect(reviewModal.getByText("Materials Completed", { exact: true })).toBeVisible();
-      await expect(reviewModal.getByText(FIXTURE_MATERIAL_NAME, { exact: false })).toBeVisible();
-      await expect(reviewModal.getByText(/Req 1[\s\S]*Issued 1[\s\S]*Remaining 0/)).toBeVisible();
+      await expect(reviewModal.getByText("Materials Completed", { exact: true }).first()).toBeVisible();
+      // Material row: Required 1 · Issued 1 · Remaining 0 · Fully Issued.
+      const row = reviewModal.getByRole("row").filter({ hasText: FIXTURE_MATERIAL_NAME });
+      await expect(row).toBeVisible();
+      await expect(row.getByRole("cell")).toContainText([FIXTURE_MATERIAL_NAME, "1", "1", "0", "PCS"]);
+      await expect(row.getByText("Fully Issued")).toBeVisible();
     });
 
     await test.step("Closure Review: verify attachment and closure note", async () => {
@@ -330,7 +328,8 @@ test.describe("RECAFCO MMS full workflow", () => {
 
     await test.step("Closure Review: readiness checklist", async () => {
       await expect(reviewModal.getByText("Materials completed", { exact: true })).toBeVisible();
-      await expect(reviewModal.getByText("No active worker session", { exact: true })).toBeVisible();
+      // "No active worker session" is now the stricter "All workers finished".
+      await expect(reviewModal.getByText("All workers finished", { exact: true })).toBeVisible();
       await reviewModal.getByText(/Worker hours reviewed/).click();
       await reviewModal.getByText(/Attachments reviewed/).click();
     });

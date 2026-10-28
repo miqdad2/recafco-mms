@@ -1,5 +1,6 @@
 import { upsertWorkOrderAction } from "@/app/actions/maintenance";
 import { Button } from "@/components/ui/button";
+import { CancelEditButton } from "@/components/work-orders/cancel-edit-button";
 import { Field } from "@/components/ui/field";
 import { FormSection } from "@/components/ui/form-section";
 import { FormDocumentHeader } from "@/components/forms/form-document-header";
@@ -56,9 +57,12 @@ export function WorkOrderForm({
   laborRows = [],
   materialRows = [],
   attachmentRows = [],
-  requiredPartRows = []
+  requiredPartRows = [],
+  cancelHref
 }: {
   workOrder?: FormRecord | null;
+  // Edit only: where Cancel Edit returns to (built by the edit page).
+  cancelHref?: string;
   departments: Option[];
   assets: AssetOption[];
   preselectedAsset?: FullAssetOption | null;
@@ -457,6 +461,11 @@ export function WorkOrderForm({
         <Field label="Serial number" name="serial_number" defaultValue={workOrder?.serial_number} />
         <Field label="Plate number" name="plate_number" defaultValue={workOrder?.plate_number} />
         <Field label="Date of order" name="date_of_order" type="date" defaultValue={workOrder?.date_of_order ?? new Date().toISOString().slice(0, 10)} required />
+        {/* Job Card Start / End Date — optional calendar dates for the Job
+            Card itself, not worker time. Checked on save: End Date needs a
+            Start Date and cannot be earlier than it. */}
+        <Field label="Job Card Start Date (optional)" name="job_card_start_date" type="date" defaultValue={workOrder?.job_card_start_date ?? ""} />
+        <Field label="Job Card End Date (optional)" name="job_card_end_date" type="date" defaultValue={workOrder?.job_card_end_date ?? ""} />
         <Field label="Job location" name="job_location" defaultValue={workOrder?.job_location} />
       </FormSection>
 
@@ -612,7 +621,16 @@ export function WorkOrderForm({
         ))}
       </FormSection>
 
-      <Button type="submit">Save Job Card</Button>
+      {workOrder?.id && cancelHref ? (
+        // Edit Job Card: Save Changes + Cancel Edit (never submits; asks
+        // before discarding typed changes).
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="submit" className="min-h-11">Save Changes</Button>
+          <CancelEditButton returnHref={cancelHref} />
+        </div>
+      ) : (
+        <Button type="submit">Save Job Card</Button>
+      )}
     </form>
   );
 }

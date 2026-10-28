@@ -1,5 +1,5 @@
 // Module hooks for in-process integration scripts (e.g.
-// scripts/verify-job-card-deletion-time-correction.ts): the unit-test hooks
+// scripts/verify-worker-time-single-approval.ts): the unit-test hooks
 // ("@/..." alias, "server-only" stub) plus Next.js' extensionless subpath
 // imports ("next/navigation", "next/headers"), which only Next's bundler
 // resolves without the ".js" suffix. "next/cache" is replaced by no-ops:

@@ -17,6 +17,7 @@ import {
   requestJobCardClosure,
   requestJobCardCorrection,
   respondToJobCardCorrection,
+  returnJobCardClosure,
   returnWorkOrderToDraft,
   reviewJobCard,
   startJobCardProgress,
@@ -694,4 +695,30 @@ export async function markNotificationsReadAction() {
   const context = await requireUser();
   await markAllNotificationsRead(context.userId);
   revalidatePath("/dashboard");
+}
+
+// Closure Review "Return for Correction" (worker time single closure
+// approval): the Manager's other decision on a closure request. Same
+// non-redirecting, useActionState-shaped result as the approve action above.
+export async function returnJobCardClosureModalAction(
+  _prev: ApproveJobCardClosureModalState,
+  formData: FormData
+): Promise<ApproveJobCardClosureModalState> {
+  const context = await requireUser();
+  let id: string;
+  try {
+    id = parseWorkOrderId(formData.get("work_order_id"));
+  } catch (error) {
+    return { ok: false, error: safeErrorMessage(error) };
+  }
+  try {
+    const result = await returnJobCardClosure(context, id, String(formData.get("reason") ?? ""));
+    revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
+    revalidatePath("/maintenance/work-orders");
+    revalidatePath("/maintenance/daily-activity");
+    revalidatePath("/dashboard");
+    return { ok: true, workOrderId: result.workOrderId };
+  } catch (error) {
+    return { ok: false, error: safeErrorMessage(error) };
+  }
 }

@@ -72,6 +72,21 @@ export function canTransition(entity: WorkflowEntity, fromStatus: string | null 
   return transitions[entity][fromStatus]?.includes(toStatus) ?? false;
 }
 
+// Closure Review "Return for Correction" (Manager): Closure Requested goes
+// back to the active status the Job Card had when closure was requested, so
+// Data Entry can correct it and request closure again. A dedicated rule, not
+// an entry in the map above — no other action may move a Job Card out of
+// Closure Requested except approving the closure. A status that could not
+// have requested closure falls back to "Approved" (shown as Active).
+export const CLOSURE_RETURN_FALLBACK_STATUS = "Approved";
+
+export function closureReturnTarget(statusBeforeRequest: string | null | undefined): string {
+  const canRequestFrom = Object.entries(transitions.work_order)
+    .filter(([, targets]) => targets.includes("Closure Requested"))
+    .map(([from]) => from);
+  return statusBeforeRequest && canRequestFrom.includes(statusBeforeRequest) ? statusBeforeRequest : CLOSURE_RETURN_FALLBACK_STATUS;
+}
+
 // Enterprise Error Handling Audit Unit Task 10: this message reaches users
 // verbatim via AppError.safeMessage — it was rendering "work order"/"parts
 // request" (entity.replaceAll("_", " ")), the exact old wording every prior

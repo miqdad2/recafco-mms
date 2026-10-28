@@ -4,6 +4,8 @@ import type { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import type { BackendTransaction } from "@/lib/backend/shared/transaction";
+import { summarizePausedWork, timerStateOf, type PausedWorkSummary } from "@/lib/work-orders/paused-work";
+import { ACTIVE_JOB_CARD_STATUSES, CLOSURE_REQUESTED_STATUS } from "@/lib/work-orders/simplified-status-display";
 
 // Work Session Time Tracking and Labor Cost Calculation Unit 8, Task 8.
 //
@@ -53,6 +55,10 @@ export type WorkerLaborRow = {
   hourly_rate_snapshot: number;
   status: WorkerSessionStatus;
   total_minutes: number;
+  // Minutes of total_minutes entered manually on this assignment. > 0 means
+  // "Manual Time Recorded": a plain Start is refused for this assignment
+  // (startWorkSession) — new work goes through Record Additional Work.
+  manual_minutes: number;
   total_hours: number;
   total_amount: number;
   active_session_id: string | null;
@@ -147,13 +153,17 @@ export async function getWorkOrderLaborSummary(db: DbClient, workOrderId: string
   const workers: WorkerLaborRow[] = assignments.map((a) => {
     const rows = sessionsByAssignment.get(a.id) ?? [];
     const minutes = rows.reduce((sum, r) => sum + r.duration_minutes, 0);
+    // Manually entered minutes on THIS assignment (non-cancelled rows only).
+    const manualMinutes = rows.reduce((sum, r) => sum + (r.is_manual_entry ? r.duration_minutes : 0), 0);
     const amount = rows.reduce((sum, r) => sum + Number(r.calculated_amount), 0);
     totalMinutes += minutes;
     totalAmount += amount;
 
     const activeSession = rows.find((r) => r.status === "Active") ?? null;
     if (activeSession) hasActiveSession = true;
-    const latest = rows[0] ?? null; // rows ordered started_at desc
+    // The timer state comes from the latest TIMER period (rows ordered
+    // started_at desc): a manual entry dated later never hides a paused timer.
+    const latest = rows.find((r) => !r.is_manual_entry) ?? null;
 
     let status: WorkerSessionStatus = "Not Started";
     if (activeSession) status = "Active";
@@ -168,6 +178,7 @@ export async function getWorkOrderLaborSummary(db: DbClient, workOrderId: string
       assignment_status: a.status,
       status,
       total_minutes: minutes,
+      manual_minutes: manualMinutes,
       total_hours: Math.round((minutes / 60) * 100) / 100,
       total_amount: Math.round(amount * 1000) / 1000,
       active_session_id: activeSession?.id ?? null,
@@ -267,6 +278,8 @@ export async function getWorkOrderLaborSummariesBulk(
     const workers: WorkerLaborRow[] = woAssignments.map((a) => {
       const rows = sessionsByAssignment.get(a.id) ?? [];
       const minutes = rows.reduce((sum, r) => sum + r.duration_minutes, 0);
+      // Manually entered minutes on THIS assignment (non-cancelled rows only).
+      const manualMinutes = rows.reduce((sum, r) => sum + (r.is_manual_entry ? r.duration_minutes : 0), 0);
       const amount = rows.reduce((sum, r) => sum + Number(r.calculated_amount), 0);
       totalMinutes += minutes;
       totalAmount += amount;
@@ -316,7 +329,8 @@ export async function getWorkOrderLaborSummariesBulk(
 
       const activeSession = rows.find((r) => r.status === "Active") ?? null;
       if (activeSession) hasActiveSession = true;
-      const latest = rows[0] ?? null;
+      // Timer state from the latest timer period (see getWorkOrderLaborSummary).
+      const latest = rows.find((r) => !r.is_manual_entry) ?? null;
 
       let status: WorkerSessionStatus = "Not Started";
       if (activeSession) status = "Active";
@@ -331,6 +345,7 @@ export async function getWorkOrderLaborSummariesBulk(
         assignment_status: a.status,
         status,
         total_minutes: minutes,
+        manual_minutes: manualMinutes,
         total_hours: Math.round((minutes / 60) * 100) / 100,
         total_amount: Math.round(amount * 1000) / 1000,
         active_session_id: activeSession?.id ?? null,
@@ -465,6 +480,16 @@ export type SessionRow = {
     corrected_duration_minutes: number;
     requested_by_name: string;
   } | null;
+  // Worker time single closure approval: how a manual period was entered
+  // (times not known = show the date only; span = hours over a date range,
+  // duration_minutes is the worked time), when the row was saved, and —
+  // for span periods — other periods of the same worker inside those dates
+  // (Job Card numbers), flagged for the Manager.
+  start_time_known: boolean;
+  end_time_known: boolean;
+  period_is_span: boolean;
+  created_at: string;
+  possible_conflicts: string[];
 };
 
 // "View Sessions" — full session history for one worker assignment,
@@ -488,6 +513,26 @@ export async function getSessionsForAssignment(
     },
     orderBy: { started_at: "desc" },
   });
+  // Possible conflicts for span periods: the worker's other non-cancelled
+  // periods (any Job Card) inside the span's dates. Never used to block.
+  const spans = rows.filter((r) => r.period_is_span && r.status !== "Cancelled");
+  const others = spans.length
+    ? await prisma.workOrderWorkSession.findMany({
+        where: {
+          worker_id: spans[0].worker_id,
+          status: { not: "Cancelled" },
+          started_at: { lt: new Date(Math.max(...spans.map((r) => (r.stopped_at ?? r.started_at).getTime()))) },
+        },
+        select: { id: true, started_at: true, stopped_at: true, paused_at: true, work_orders: { select: { work_order_number: true } } },
+      })
+    : [];
+  const conflictsFor = (r: (typeof rows)[number]): string[] => {
+    if (!r.period_is_span || r.status === "Cancelled") return [];
+    const end = r.stopped_at ?? r.started_at;
+    return others
+      .filter((o) => o.id !== r.id && o.started_at < end && r.started_at < (o.stopped_at ?? o.paused_at ?? new Date()))
+      .map((o) => o.work_orders.work_order_number ?? "another Job Card");
+  };
   return rows.map((r) => {
     const pending = r.time_corrections[0] ?? null;
     return {
@@ -515,6 +560,11 @@ export async function getSessionsForAssignment(
             requested_by_name: pending.profiles_requested_by.full_name,
           }
         : null,
+      start_time_known: r.start_time_known,
+      end_time_known: r.end_time_known,
+      period_is_span: r.period_is_span,
+      created_at: r.created_at.toISOString(),
+      possible_conflicts: conflictsFor(r),
     };
   });
 }
@@ -626,8 +676,25 @@ export async function getWorkerActivitySummaries(
   const monthStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), 1);
 
   const [assignments, todayTotals, monthTotals] = await Promise.all([
+    // Paused Workers Count Fix: only assignments on open Job Cards (not
+    // Closed, not deleted) can make a worker Working / Paused / Assigned.
     db.workOrderWorkerAssignment.findMany({
-      where: { worker_id: { in: workerIds }, status: "active" },
+      // Same open-work scope as getPausedWorkSummary / Daily Activity.
+      where: {
+        worker_id: { in: workerIds },
+        status: "active",
+        work_orders: {
+          is: {
+            deleted_at: null,
+            status: { not: "Closed" },
+            OR: [
+              { status: { in: ACTIVE_JOB_CARD_STATUSES } },
+              { status: CLOSURE_REQUESTED_STATUS },
+              { work_order_work_sessions: { some: { status: "Active" } } },
+            ],
+          },
+        },
+      },
       orderBy: { assigned_at: "desc" },
       select: {
         id: true,
@@ -659,16 +726,27 @@ export async function getWorkerActivitySummaries(
   ]);
 
   const assignmentIds = assignments.map((a) => a.id);
-  // Only Active/Paused sessions matter for "what is this worker doing right
-  // now" — Completed/Cancelled history is irrelevant here and never fetched.
-  const openSessions = assignmentIds.length
+  // Current timer state per assignment from its TIMER periods, with the
+  // shared rule (lib/work-orders/paused-work.ts): an old "Paused" row that a
+  // later period superseded is not a current pause.
+  const timerPeriods = assignmentIds.length
     ? await db.workOrderWorkSession.findMany({
-        where: { worker_assignment_id: { in: assignmentIds }, status: { in: ["Active", "Paused"] } },
-        orderBy: { started_at: "desc" },
-        select: { worker_assignment_id: true, status: true, started_at: true },
+        where: { worker_assignment_id: { in: assignmentIds }, status: { not: "Cancelled" }, is_manual_entry: false },
+        select: { worker_assignment_id: true, status: true, started_at: true, is_manual_entry: true },
       })
     : [];
-  const sessionByAssignment = new Map(openSessions.map((s) => [s.worker_assignment_id, s]));
+  const periodsByAssignment = new Map<string, typeof timerPeriods>();
+  for (const s of timerPeriods) {
+    const list = periodsByAssignment.get(s.worker_assignment_id) ?? [];
+    list.push(s);
+    periodsByAssignment.set(s.worker_assignment_id, list);
+  }
+  const sessionByAssignment = new Map<string, { status: "Active" | "Paused"; started_at: Date }>();
+  for (const [assignmentId, list] of periodsByAssignment) {
+    const state = timerStateOf(list);
+    if (state === "Active") sessionByAssignment.set(assignmentId, { status: "Active", started_at: list.find((x) => x.status === "Active")!.started_at });
+    else if (state === "Paused") sessionByAssignment.set(assignmentId, { status: "Paused", started_at: list[0].started_at });
+  }
 
   const todayByWorker = new Map(todayTotals.map((t) => [t.worker_id, t]));
   const monthByWorker = new Map(monthTotals.map((t) => [t.worker_id, t]));
@@ -685,7 +763,12 @@ export async function getWorkerActivitySummaries(
     // Prefer whichever assignment currently has an open session (Working
     // Now beats a second, dormant assignment); otherwise the most recently
     // assigned one (already the fetch order).
-    const chosen = workerAssignments.find((a) => sessionByAssignment.has(a.id)) ?? workerAssignments[0] ?? null;
+    // Working beats Paused beats a dormant assignment.
+    const chosen =
+      workerAssignments.find((a) => sessionByAssignment.get(a.id)?.status === "Active") ??
+      workerAssignments.find((a) => sessionByAssignment.has(a.id)) ??
+      workerAssignments[0] ??
+      null;
     const openSession = chosen ? sessionByAssignment.get(chosen.id) ?? null : null;
 
     const status: WorkerActivityStatus =
@@ -918,4 +1001,55 @@ export async function getWorkerActivityDetail(db: DbClient, workerId: string): P
     jobCards,
     recentSessions,
   };
+}
+
+// ── Currently paused work (shared) ───────────────────────────────────────────
+// Distinct paused workers and paused Job Cards for the dashboards, using the
+// one definition in lib/work-orders/paused-work.ts. `scope` is the caller's
+// visibility filter (and any other role scope); the open-work scope below is
+// the same as the Daily Activity page's base list (not deleted, not Closed;
+// an Active-bucket status, Closure Requested, or a running timer), and there
+// is no sample cap — every eligible Job Card is counted.
+export async function getPausedWorkSummary(db: DbClient, scope: Prisma.work_ordersWhereInput): Promise<PausedWorkSummary> {
+  const assignments = await db.workOrderWorkerAssignment.findMany({
+    where: {
+      status: "active",
+      work_orders: {
+        is: {
+          AND: [
+            scope,
+            { deleted_at: null },
+            { status: { not: "Closed" } },
+            {
+              OR: [
+                { status: { in: ACTIVE_JOB_CARD_STATUSES } },
+                { status: CLOSURE_REQUESTED_STATUS },
+                { work_order_work_sessions: { some: { status: "Active" } } },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    select: { id: true, work_order_id: true, worker_id: true, status: true },
+  });
+  if (assignments.length === 0) return summarizePausedWork([]);
+  const periods = await db.workOrderWorkSession.findMany({
+    where: { worker_assignment_id: { in: assignments.map((a) => a.id) }, status: { not: "Cancelled" }, is_manual_entry: false },
+    select: { worker_assignment_id: true, status: true, is_manual_entry: true, started_at: true },
+  });
+  const byAssignment = new Map<string, typeof periods>();
+  for (const p of periods) {
+    const list = byAssignment.get(p.worker_assignment_id) ?? [];
+    list.push(p);
+    byAssignment.set(p.worker_assignment_id, list);
+  }
+  return summarizePausedWork(
+    assignments.map((a) => ({
+      workOrderId: a.work_order_id,
+      workerId: a.worker_id,
+      assignmentStatus: a.status,
+      timerState: timerStateOf(byAssignment.get(a.id) ?? []),
+    }))
+  );
 }

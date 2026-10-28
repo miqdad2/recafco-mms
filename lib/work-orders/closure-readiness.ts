@@ -27,6 +27,10 @@ export type WorkerClosureInput = {
   workerName: string;
   assignmentStatus: string;
   sessionStatus: string;
+  // Minutes entered manually on this assignment. A worker with manual time
+  // and no running/paused timer is still "Not Started" for the timer, but
+  // the way out is only "mark work finished" — the reason says so.
+  manualMinutes?: number;
 };
 
 export type WorkerClosureState = {
@@ -57,6 +61,9 @@ export function checkWorkersReadyForClosure(workers: WorkerClosureInput[]): Work
   const workingWorkers = states.filter((w) => w.state === "Working");
   const pausedWorkers = states.filter((w) => w.state === "Paused");
   const notStartedWorkers = states.filter((w) => w.state === "Not Started");
+  const manualById = new Map(workers.map((w) => [w.workerAssignmentId, (w.manualMinutes ?? 0) > 0]));
+  const manualNotFinished = notStartedWorkers.filter((w) => manualById.get(w.workerAssignmentId));
+  const trulyNotStarted = notStartedWorkers.filter((w) => !manualById.get(w.workerAssignmentId));
 
   const reasons: string[] = [];
   if (workingWorkers.length) {
@@ -65,8 +72,11 @@ export function checkWorkersReadyForClosure(workers: WorkerClosureInput[]): Work
   if (pausedWorkers.length) {
     reasons.push(`Worker paused - finish work before closure: ${pausedWorkers.map((w) => w.workerName).join(", ")}.`);
   }
-  if (notStartedWorkers.length) {
-    reasons.push(`Worker not started - finish or remove assignment before closure: ${notStartedWorkers.map((w) => w.workerName).join(", ")}.`);
+  if (manualNotFinished.length) {
+    reasons.push(`Manual time recorded - mark work finished before closure: ${manualNotFinished.map((w) => w.workerName).join(", ")}.`);
+  }
+  if (trulyNotStarted.length) {
+    reasons.push(`Worker not started - finish or remove assignment before closure: ${trulyNotStarted.map((w) => w.workerName).join(", ")}.`);
   }
 
   return {

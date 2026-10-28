@@ -20,7 +20,8 @@ import {
   type ServiceContractState,
 } from "@/app/actions/service-contracts";
 import { PageHeader } from "@/components/ui/page-header";
-import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
+import { PageBackButton } from "@/components/layout/page-back-button";
+import { headerPrimaryBtn, headerSecondaryBtn } from "@/components/layout/header-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { cn } from "@/lib/utils";
 
@@ -432,25 +433,19 @@ export function ServiceContractsShell({
         description="Track service contracts linked to assets — service provider, coverage, expiry dates, and renewal schedules."
         actions={
           <>
-            {/* Missing Page Navigation Buttons Fix Unit 10E.3, Task 3. */}
-            <PageNavigationActions secondaryLinks={[{ label: "Assets & Equipment", href: "/assets" }]} />
-            {/* Printable Asset Register, Materials Requests, and Service
-                Contracts Reports Unit 10G.71, Task 5. */}
-            <Link
-              href="/reports/service-contracts-expiry/print"
-              className="inline-flex items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
-            >
-              <Printer className="h-4 w-4" aria-hidden />
-              Print Report
-            </Link>
-            <button
-              type="button"
-              onClick={() => setOpenModal(true)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-2 text-sm font-bold text-white hover:bg-[#c8181e]"
-            >
+            {/* Back, New Service Contract, Print Report — other modules are
+                in the sidebar. New opens the existing registration modal;
+                Print Report is the existing Service Contracts report. Both
+                need assets.view, the same permission as this page. */}
+            <PageBackButton />
+            <button type="button" onClick={() => setOpenModal(true)} className={headerPrimaryBtn}>
               <Plus className="h-4 w-4" aria-hidden />
               New Service Contract
             </button>
+            <Link href="/reports/service-contracts-expiry/print" className={headerSecondaryBtn}>
+              <Printer className="h-4 w-4" aria-hidden />
+              Print Report
+            </Link>
           </>
         }
       />

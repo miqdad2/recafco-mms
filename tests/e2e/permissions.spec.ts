@@ -27,7 +27,7 @@ test.describe("Data Entry restrictions", () => {
     await expect(wizard).toBeVisible();
 
     // Step 1 requires an asset before Next advances (strict validation).
-    await wizard.getByPlaceholder(/Search asset code, name, plate number/i).fill(FIXTURE_ASSET_CODE);
+    await wizard.getByLabel("Search assets, vehicles, and machines").fill(FIXTURE_ASSET_CODE);
     await wizard.getByRole("button", { name: new RegExp(FIXTURE_ASSET_CODE) }).first().click();
     await wizard.getByRole("button", { name: "Next" }).click(); // -> step 2
 

@@ -10,8 +10,9 @@ import { LongPeriodConfirm } from "@/components/work-orders/long-period-confirm"
 import { checkTimeCorrection, CORRECTION_REASON_MAX_LENGTH, CORRECTION_REASON_MIN_LENGTH } from "@/lib/work-orders/work-time-correction-rules";
 import type { SessionRow } from "@/lib/work-orders/work-session-totals";
 
-// Worker Time Correction — Data Entry proposes corrected start/end times for
-// one finished work period. Inputs are Kuwait wall-clock times (labelled as
+// Worker Time Correction — Data Entry corrects the start/end times of one
+// finished TIMER period. Saved at once (the first system values are kept and
+// shown as "System recorded"); the Manager reviews it in Closure Review. Inputs are Kuwait wall-clock times (labelled as
 // such) and are sent to the server as typed; the server parses them with an
 // explicit +03:00 offset (lib/format/kuwait-time.ts), so the browser's own
 // time zone never shifts them. The live comparison uses the same rules as
@@ -35,6 +36,8 @@ export function CorrectTimeForm({
   const [start, setStart] = useState(() => toKuwaitInputValue(session.started_at));
   const [end, setEnd] = useState(() => toKuwaitInputValue(recordedEnd));
   const [confirmLong, setConfirmLong] = useState(false);
+  // One id per opened form: a double click or retry saves once.
+  const [submissionId] = useState(() => crypto.randomUUID());
   const [state, formAction, isPending] = useActionState<WorkTimeCorrectionActionState, FormData>(requestWorkTimeCorrectionAction, null);
   const handled = useRef<WorkTimeCorrectionActionState>(null);
 
@@ -42,7 +45,7 @@ export function CorrectTimeForm({
     if (state === handled.current) return;
     handled.current = state;
     if (state?.ok) {
-      dispatchActionToast({ tone: "success", title: "Correction sent", description: state.message });
+      dispatchActionToast({ tone: "success", title: "Time corrected", description: state.message });
       onDone();
     }
   }, [state, onDone]);
@@ -72,6 +75,7 @@ export function CorrectTimeForm({
   return (
     <form action={formAction} className="mt-2 space-y-3 rounded-md border border-blue-200 bg-blue-50/50 p-3">
       <input type="hidden" name="session_id" value={session.id} />
+      <input type="hidden" name="submission_id" value={submissionId} />
       <p className="text-sm font-black text-[#111827]">Correct Time</p>
 
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 rounded-md border border-[#E5E7EB] bg-white p-2.5 text-sm">
@@ -171,7 +175,7 @@ export function CorrectTimeForm({
         </p>
       ) : null}
 
-      <p className="text-xs text-[#6B7280]">The Maintenance Manager must approve this. Until then the system time is used.</p>
+      <p className="text-xs text-[#6B7280]">Saved at once. The system-recorded time is kept in the history, and the Manager reviews the correction when closing the Job Card.</p>
       <div className="flex flex-col-reverse gap-2 sm:flex-row">
         <button
           type="button"
@@ -187,7 +191,7 @@ export function CorrectTimeForm({
           className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-4 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-60"
         >
           {isPending ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : null}
-          Send to Manager
+          Save Correction
         </button>
       </div>
     </form>

@@ -5,7 +5,7 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageBreadcrumb } from "@/components/ui/page-breadcrumb";
-import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
+import { PageBackButton } from "@/components/layout/page-back-button";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts as canViewCostsForContext, isManagerRole } from "@/lib/security/permissions";
@@ -207,7 +207,7 @@ export default async function AssignmentsPage({
               Monitor maintenance worker status, current Job Cards, and hours. Assign workers from a Job Card.
             </p>
           </div>
-          <PageNavigationActions />
+          <PageBackButton />
         </div>
       </div>
 

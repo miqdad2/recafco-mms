@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { createManualSystemIssueAction, updateSystemIssueStatusAction } from "@/app/actions/system-health";
+import { PageBackButton } from "@/components/layout/page-back-button";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
@@ -83,9 +84,8 @@ export default async function SystemHealthPage({ searchParams }: { searchParams?
         title="System Health Center"
         description="Super Admin and IT monitoring for crashes, workflow failures, notification delivery issues, session problems, and day-to-day system reliability."
         actions={
-          <Link href="/admin/audit-logs">
-            <Button variant="secondary">Audit logs</Button>
-          </Link>
+          // Audit Logs is in the Super Admin sidebar.
+          <PageBackButton />
         }
       />
       <div className="space-y-5 p-4 lg:p-6">

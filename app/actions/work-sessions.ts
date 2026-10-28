@@ -33,6 +33,10 @@ function revalidateJobCard(workOrderId: string) {
   revalidatePath(`/maintenance/work-orders/${workOrderId}`);
   revalidatePath("/maintenance/work-orders");
   revalidatePath("/dashboard");
+  // Start / Pause / Resume / Finish change the Paused / Working counts on
+  // these pages too — never leave them stale after navigating.
+  revalidatePath("/maintenance/daily-activity");
+  revalidatePath("/maintenance/assignments");
 }
 
 export async function startWorkSessionAction(
@@ -45,6 +49,8 @@ export async function startWorkSessionAction(
       workOrderId: formData.get("work_order_id"),
       workerAssignmentId: formData.get("worker_assignment_id"),
       notes: formData.get("notes") || undefined,
+      // Record Additional Work: both the flag and the user's confirmation tick.
+      additionalWork: formData.get("additional_work") === "1" && formData.get("confirm_additional_work") === "on" ? true : undefined,
     });
     const result = await startWorkSession(context, parsed);
     revalidateJobCard(result.workOrderId);

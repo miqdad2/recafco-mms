@@ -51,10 +51,15 @@ describe("classifyDailyActivity — Paused", () => {
     assert.equal(c.isWorking, true);
   });
 
-  it("treats a card with one worker working and one paused as Working Now, not Paused", () => {
+  // Paused Workers Count Fix: the Paused filter lists every Job Card that
+  // contains a currently paused worker (the dashboard's Paused Workers card
+  // links here), so this card is under BOTH Working Now and Paused; its own
+  // label still reads "Working Now".
+  it("lists a card with one worker working and one paused under Paused too, labelled Working Now", () => {
     const c = classifyDailyActivity(card({ workers: [working, paused] }));
     assert.equal(c.isWorking, true);
-    assert.equal(c.isPaused, false);
+    assert.equal(c.isPaused, true);
+    assert.equal(c.pausedWorkers, 1);
     assert.equal(c.plainStatus.label, "Working Now");
   });
 });

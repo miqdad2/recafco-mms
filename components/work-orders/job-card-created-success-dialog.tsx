@@ -9,6 +9,7 @@ import {
   CalendarDays,
   CheckCircle2,
   ClipboardList,
+  Clock,
   FileText,
   Hammer,
   List,
@@ -23,6 +24,8 @@ import {
 
 import { StatusBadge } from "@/components/ui/status-badge";
 import type { JobCardCreatedSummary } from "@/lib/work-orders/job-card-create-result";
+import { formatKuwaitDateTime } from "@/lib/format/kuwait-time";
+import { formatJobCardDate, NOT_ENTERED } from "@/lib/work-orders/job-card-edit";
 
 // Job Card Success Popup UI/UX Improvement — the confirmation the New Job
 // Card wizard shows once the server has confirmed the Job Card exists.
@@ -111,9 +114,10 @@ export function JobCardCreatedSuccessDialog({
   const detailHref = `/maintenance/work-orders/${jobCard.id}`;
   // Daily Activity's existing free-text search (matches the Job Card number).
   const dailyActivityHref = jobCard.number ? `/maintenance/daily-activity?q=${encodeURIComponent(jobCard.number)}` : "/maintenance/daily-activity";
-  const date = jobCard.dateOfOrder
-    ? new Date(`${jobCard.dateOfOrder}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
-    : null;
+  // The three Job Card dates as saved, in the same "27 Oct 2026" format as
+  // the Job Card page, print and Daily Activity; "Not entered" when blank.
+  // Created On is the system time and never stands in for Order Date.
+  const dateValue = (value: string | null) => (value ? formatJobCardDate(value) : muted(NOT_ENTERED));
   const title = partial
     ? `${jobCard.isDraft ? "Draft" : "Job Card"} Created — Some Details Were Not Saved`
     : jobCard.isDraft
@@ -191,8 +195,13 @@ export function JobCardCreatedSuccessDialog({
             <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2.5 rounded-lg border border-[#E5E7EB] p-4 sm:grid-cols-2">
               <InfoRow icon={Box} label="Asset" value={[jobCard.assetCode, jobCard.assetName].filter(Boolean).join(" — ") || muted("Not linked")} />
               <InfoRow icon={Hammer} label="Maintenance Type" value={jobCard.maintenanceType ?? muted("—")} />
-              <InfoRow icon={CalendarDays} label="Date" value={date ?? muted("—")} />
+              <InfoRow icon={CalendarDays} label="Order Date" value={dateValue(jobCard.dateOfOrder)} />
               <InfoRow icon={Users} label="Team / Division" value={jobCard.workerTeam ?? muted("—")} />
+              <InfoRow icon={CalendarDays} label="Job Card Start Date" value={dateValue(jobCard.jobCardStartDate)} />
+              <InfoRow icon={CalendarDays} label="Job Card End Date" value={dateValue(jobCard.jobCardEndDate)} />
+              {jobCard.createdAt ? (
+                <InfoRow icon={Clock} label="Created On (system)" wide value={formatKuwaitDateTime(jobCard.createdAt)} />
+              ) : null}
               <InfoRow
                 icon={UserCheck}
                 label="Assigned Team"

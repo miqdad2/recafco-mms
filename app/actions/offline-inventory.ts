@@ -77,6 +77,8 @@ export async function computeBalance(opts: {
   manualName: string | null;
   unit: string;
 }): Promise<number> {
+  // Exported from a "use server" file, so it is also callable directly.
+  await requireUser();
   const movements = await prisma.offline_inventory_movements.findMany({
     where: opts.partId
       ? { part_id: opts.partId, deleted_at: null }

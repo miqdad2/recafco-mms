@@ -7,7 +7,7 @@ import { AlertCircle, CheckCircle2, FileText, Loader2, XCircle } from "lucide-re
 
 import { getClosureReviewDetailAction, type ClosureReviewDetail, type ClosureReviewWorker, type ClosureReviewAttachment } from "@/app/actions/closure-requests";
 import { getSessionsForAssignmentAction } from "@/app/actions/work-sessions";
-import { approveJobCardClosureModalAction } from "@/app/actions/workflow";
+import { approveJobCardClosureModalAction, returnJobCardClosureModalAction } from "@/app/actions/workflow";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { SessionHistoryModal } from "@/components/work-orders/session-history-modal";
 import { AttachmentPreviewModal } from "@/components/dashboard/attachment-preview-modal";
@@ -16,7 +16,7 @@ import { dispatchActionToast } from "@/lib/action-messages";
 import type { SessionRow } from "@/lib/work-orders/work-session-totals";
 import { computeHoursVariance, hoursVarianceTone, deriveSimpleWorkerState, simpleWorkerStateTone } from "@/lib/work-orders/hours-variance";
 import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
-import { formatDurationMinutes } from "@/lib/format/kuwait-time";
+import { formatDurationMinutes, formatKuwaitDateTime, formatKuwaitMoment } from "@/lib/format/kuwait-time";
 
 // Closure Requests Review Popup Unit 10G.2.
 //
@@ -50,10 +50,38 @@ function sessionStatusTone(status: string): "green" | "amber" | "red" | "blue" |
   if (status === "Cancelled") return "red";
   return "gray";
 }
-function formatSessionTime(iso: string | null): string {
+// Worker time single closure approval: Kuwait time (was the browser's own
+// time zone), date only when a manual entry's time was not entered.
+function formatSessionTime(iso: string | null, timeKnown = true): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return formatKuwaitMoment(iso, timeKnown);
+}
+
+// Plain source labels for the Manager — informative, not alarming.
+function sourceLabel(s: SessionRow): "System Recorded" | "Manually Entered" | "Manually Corrected" {
+  if (s.is_manual_entry) return "Manually Entered";
+  return s.original_started_at ? "Manually Corrected" : "System Recorded";
+}
+
+// Hours by source for one worker — the same stored duration_minutes every
+// total uses (non-cancelled periods), so they add up to the effective total.
+function hoursBySource(sessions: SessionRow[]) {
+  const live = sessions.filter((s) => s.status !== "Cancelled");
+  const sum = (rows: SessionRow[]) => rows.reduce((t, s) => t + s.duration_minutes, 0);
+  return {
+    system: sum(live.filter((s) => sourceLabel(s) === "System Recorded")),
+    manual: sum(live.filter((s) => s.is_manual_entry)),
+    corrected: sum(live.filter((s) => sourceLabel(s) === "Manually Corrected")),
+    effective: sum(live),
+    // Which kinds of periods exist (a 0-minute timer period still counts as "timer used").
+    timerPeriods: live.filter((s) => !s.is_manual_entry).length,
+    manualPeriods: live.filter((s) => s.is_manual_entry).length,
+  };
+}
+
+function enteredReason(s: SessionRow): string | null {
+  if (s.correction_reason) return s.correction_reason;
+  return s.notes ? s.notes.replace(/^Entered manually(?: \(no timer( used)?\))?:\s*/, "") : null;
 }
 function formatDuration(minutes: number): string {
   const h = Math.floor(minutes / 60);
@@ -104,16 +132,18 @@ function SessionTable({
           <div key={s.id} className="rounded-md border border-[#F3F4F6] bg-white px-3 py-2 text-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="font-medium text-[#111827]">
-                {formatSessionTime(s.started_at)} → {s.stopped_at ? formatSessionTime(s.stopped_at) : s.paused_at ? formatSessionTime(s.paused_at) : "—"}
+                {formatSessionTime(s.started_at, s.start_time_known)} →{" "}
+                {s.stopped_at ? formatSessionTime(s.stopped_at, s.end_time_known) : s.paused_at ? formatSessionTime(s.paused_at) : "—"}
               </span>
               <div className="flex items-center gap-1.5">
-                {s.correction_reason ? <StatusBadge label="Corrected" tone="amber" /> : null}
+                <StatusBadge label={sourceLabel(s)} tone={sourceLabel(s) === "System Recorded" ? "gray" : "blue"} />
+                {s.is_manual_entry && s.original_started_at ? <StatusBadge label="Changed" tone="blue" /> : null}
                 <StatusBadge label={s.status} tone={sessionStatusTone(s.status)} />
               </div>
             </div>
             <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[#6B7280]">
               <span>
-                Duration: <strong className="text-[#111827]">{formatDuration(s.duration_minutes)}</strong>
+                {s.period_is_span ? "Hours worked" : "Duration"}: <strong className="text-[#111827]">{formatDuration(s.duration_minutes)}</strong>
                 {/* Unit 10G.3, Task 3/6 (unchanged): session-level pay,
                     matching the task's own "Duration: 1m · Pay: 0.033 KWD"
                     example — same calculated_amount SessionHistoryModal
@@ -135,10 +165,24 @@ function SessionTable({
                 </button>
               ) : null}
             </div>
-            {s.correction_reason ? (
-              <p className="mt-1 text-xs text-[#B45309]">
-                Reason: {s.correction_reason}
-                {s.edited_by_name ? ` · Edited by: ${s.edited_by_name}` : ""}
+            {s.is_manual_entry ? (
+              <p className="mt-1 text-xs text-[#4B5563]">
+                Entered by {s.entered_by_name ?? "—"} on {formatKuwaitDateTime(s.created_at)}
+                {s.period_is_span ? " · Hours over the dates shown (not one continuous period)" : ""}
+              </p>
+            ) : null}
+            {s.original_started_at ? (
+              <p className="mt-1 text-xs text-[#4B5563]">
+                {/* Manual entries: times are optional, so the first values show as dates and hours only. */}
+                {s.is_manual_entry ? "First entered" : "First recorded"}: {formatSessionTime(s.original_started_at, !s.is_manual_entry)} →{" "}
+                {formatSessionTime(s.original_ended_at, !s.is_manual_entry)} ({formatDuration(s.original_duration_minutes ?? 0)})
+                {s.edited_by_name ? ` · Changed by ${s.edited_by_name}` : ""}
+              </p>
+            ) : null}
+            {enteredReason(s) ? <p className="mt-1 text-xs text-[#374151]">Reason: {enteredReason(s)}</p> : null}
+            {s.possible_conflicts.length ? (
+              <p className="mt-1 text-xs text-[#1D4ED8]">
+                Possible overlap: other work of this worker is recorded in these dates (Job Card {[...new Set(s.possible_conflicts)].join(", ")}). The hours cannot be checked hour by hour — please confirm them.
               </p>
             ) : null}
           </div>
@@ -237,6 +281,46 @@ function WorkerReviewCard({
           behind a further click) — read-only display built from data
           already fetched; correction itself always goes through
           SessionHistoryModal, never re-implemented here. */}
+      {sessions && sessions.length ? (
+        (() => {
+          const h = hoursBySource(sessions);
+          return (
+            <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-2.5 text-sm sm:grid-cols-4" aria-label={`Worker time for ${worker.name}`}>
+              <div>
+                <dt className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">System Recorded</dt>
+                <dd className="font-bold text-[#111827]">{formatDurationMinutes(h.system)}</dd>
+              </div>
+              <div>
+                <dt className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Manually Entered</dt>
+                <dd className="font-bold text-[#111827]">{formatDurationMinutes(h.manual)}</dd>
+              </div>
+              <div>
+                <dt className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Manually Corrected</dt>
+                <dd className="font-bold text-[#111827]">{formatDurationMinutes(h.corrected)}</dd>
+              </div>
+              <div>
+                <dt className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Effective Total</dt>
+                <dd className="font-black text-[#111827]">{formatDurationMinutes(h.effective)}</dd>
+              </div>
+              <div className="col-span-2 sm:col-span-4">
+                <dt className="sr-only">Recording method</dt>
+                <dd className="text-xs text-[#4B5563]">
+                  Recording method:{" "}
+                  <strong className="text-[#111827]">
+                    {h.manualPeriods > 0 && h.timerPeriods > 0
+                      ? "Timer and manual entry"
+                      : h.manualPeriods > 0
+                        ? "Manual entry"
+                        : h.corrected > 0
+                          ? "Timer (with corrections)"
+                          : "Timer"}
+                  </strong>
+                </dd>
+              </div>
+            </dl>
+          );
+        })()
+      ) : null}
       <SessionTable
         sessions={sessions}
         canViewCosts={canViewCosts}
@@ -286,6 +370,10 @@ export function ClosureReviewModal({
   const [reviewedAttachments, setReviewedAttachments] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
+  // Return for Correction — the other decision; the reason is required.
+  const [returnMode, setReturnMode] = useState(false);
+  const [returnReason, setReturnReason] = useState("");
+  const [isReturning, setIsReturning] = useState(false);
   const hasCalledOnLoaded = useRef(false);
 
   useEffect(() => {
@@ -362,6 +450,34 @@ export function ClosureReviewModal({
       onApproved();
     } finally {
       setIsApproving(false);
+    }
+  }
+
+  async function handleReturn() {
+    if (!detail) return;
+    setApproveError(null);
+    if (returnReason.trim().length < 5) {
+      setApproveError("Please write what needs to be corrected (at least 5 letters).");
+      return;
+    }
+    setIsReturning(true);
+    try {
+      const form = new FormData();
+      form.set("work_order_id", detail.id);
+      form.set("reason", returnReason.trim());
+      const result = await returnJobCardClosureModalAction(null, form);
+      if (!result?.ok) {
+        setApproveError(result?.error ?? "Failed to return the closure request.");
+        return;
+      }
+      dispatchActionToast({
+        tone: "success",
+        title: "Returned for correction",
+        description: `${detail.workOrderNumber ?? "Job Card"} is active again. Data Entry has been told what to correct.`,
+      });
+      onApproved();
+    } finally {
+      setIsReturning(false);
     }
   }
 
@@ -452,10 +568,12 @@ export function ClosureReviewModal({
           {/* Manual Worker Time Entry — source of the hours before closing. */}
           <p className="mt-1 text-[11px] text-[#4B5563]">
             Timer recorded: <strong className="text-[#111827]">{formatDurationMinutes(detail.timeSources.automaticMinutes)}</strong>
-            {" · "}Manually entered (approved): <strong className="text-[#111827]">{formatDurationMinutes(detail.timeSources.manualMinutes)}</strong>
-            {detail.timeSources.correctedPeriods ? <> · Corrected periods: <strong className="text-[#111827]">{detail.timeSources.correctedPeriods}</strong></> : null}
+            {" (incl. corrected) · "}Manually entered: <strong className="text-[#111827]">{formatDurationMinutes(detail.timeSources.manualMinutes)}</strong>
+            {detail.timeSources.correctedPeriods ? <> · Changed periods: <strong className="text-[#111827]">{detail.timeSources.correctedPeriods}</strong></> : null}
             {detail.timeSources.pending ? (
-              <span className="ml-1 font-bold text-amber-700">· {detail.timeSources.pending} waiting for review — approve or reject before closing</span>
+              <span className="ml-1 font-bold text-amber-700">
+                · {detail.timeSources.pending} older {detail.timeSources.pending === 1 ? "entry" : "entries"} waiting for your decision in the Job Card — approve or reject before closing
+              </span>
             ) : null}
           </p>
           {detail.workers.length === 0 ? (
@@ -751,16 +869,65 @@ export function ClosureReviewModal({
               <span>{approveError}</span>
             </div>
           ) : null}
+          {returnMode ? (
+            <div className="mt-3 rounded-md border border-amber-200 bg-white p-2.5">
+              <label htmlFor="closure-return-reason" className="block text-xs font-bold text-[#4B5563]">
+                What needs to be corrected? <span className="text-[#ED1C24]">*</span>
+              </label>
+              <textarea
+                id="closure-return-reason"
+                value={returnReason}
+                onChange={(e) => setReturnReason(e.target.value)}
+                placeholder="Example: Worker 2's manual hours on 26 Oct look too high — please check and correct them."
+                rows={2}
+                maxLength={1000}
+                disabled={isReturning}
+                className="mt-1 w-full resize-none rounded-md border border-[#E5E7EB] bg-white px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-amber-500 disabled:bg-gray-50"
+              />
+              <p className="mt-1 text-[11px] text-[#6B7280]">
+                The Job Card becomes active again so Data Entry can correct it and request closure again. Nothing recorded is deleted.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleReturn}
+                  disabled={isReturning}
+                  className="inline-flex min-h-9 items-center gap-1.5 rounded-md bg-amber-600 px-3.5 py-1.5 text-sm font-bold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isReturning && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+                  {isReturning ? "Returning…" : "Confirm Return for Correction"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReturnMode(false)}
+                  disabled={isReturning}
+                  className="inline-flex min-h-9 items-center rounded-md border border-[#E5E7EB] bg-white px-3.5 py-1.5 text-sm font-bold text-[#4B5563] transition hover:bg-gray-50"
+                >
+                  Back
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={handleApprove}
-              disabled={isApproving}
+              disabled={isApproving || isReturning}
               className="inline-flex min-h-9 items-center gap-1.5 rounded-md bg-[#16A34A] px-3.5 py-1.5 text-sm font-bold text-white transition hover:bg-[#15803d] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isApproving && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
               {isApproving ? "Approving…" : "Approve Closure"}
             </button>
+            {!returnMode ? (
+              <button
+                type="button"
+                onClick={() => setReturnMode(true)}
+                disabled={isApproving}
+                className="inline-flex min-h-9 items-center rounded-md border border-amber-300 bg-amber-50 px-3.5 py-1.5 text-sm font-bold text-amber-800 transition hover:bg-amber-100 disabled:opacity-60"
+              >
+                Return for Correction
+              </button>
+            ) : null}
             <Link
               href={detail.detailHref}
               className="inline-flex min-h-9 items-center rounded-md border border-[#E5E7EB] bg-white px-3.5 py-1.5 text-sm font-bold text-[#111827] transition hover:bg-gray-50"

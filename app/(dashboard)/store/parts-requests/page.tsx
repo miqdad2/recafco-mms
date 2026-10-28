@@ -5,7 +5,8 @@ import type { LucideIcon } from "lucide-react";
 
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
-import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
+import { PageBackButton } from "@/components/layout/page-back-button";
+import { headerPrimaryBtn, headerSecondaryBtn } from "@/components/layout/header-actions";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { StatCard } from "@/components/dashboard/stat-card";
 import {
@@ -973,24 +974,20 @@ export default async function PartsRequestsPage({
         description="Materials requested for Job Cards or for general inventory / stock — track and receive them here."
         actions={
           <>
-            <PageNavigationActions />
-            {/* Printable Asset Register, Materials Requests, and Service
-                Contracts Reports Unit 10G.71, Task 5. */}
-            <Link
-              href="/reports/materials-requests/print"
-              className="focus-ring inline-flex min-h-10 items-center gap-1.5 rounded-md border border-[#DDE2EA] bg-white px-3 py-2 text-sm font-bold text-[#111827] hover:bg-gray-50"
-            >
+            {/* Back, Print Report, New Materials Request — other modules
+                are in the sidebar. Print Report is the existing Materials
+                Requests report (same parts_requests.view permission as this
+                page); New opens the existing General Inventory / Stock
+                request modal (?newRequest=1). */}
+            <PageBackButton />
+            <Link href="/reports/materials-requests/print" className={headerSecondaryBtn}>
               <Printer className="h-4 w-4" aria-hidden="true" />
               Print Report
             </Link>
             {canCreate ? (
-              <Link
-                className="focus-ring inline-flex min-h-10 items-center gap-2 rounded-md bg-[#ED1C24] px-4 py-2 text-sm font-semibold text-white hover:bg-[#c9151c]"
-                href="?newRequest=1"
-                scroll={false}
-              >
-                <Plus className="h-4 w-4" />
-                New materials request
+              <Link className={headerPrimaryBtn} href="?newRequest=1" scroll={false}>
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                New Materials Request
               </Link>
             ) : null}
           </>

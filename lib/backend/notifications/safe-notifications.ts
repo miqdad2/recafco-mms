@@ -1,8 +1,30 @@
 import "server-only";
 
 import { safeSideEffect } from "@/lib/errors/safe-action";
+import { logSystemError } from "@/lib/errors/logging";
 import { notifyByEvent } from "@/lib/notifications/service";
 import type { NotifyByEventInput } from "@/lib/notifications/types";
+
+/**
+ * Recipients are looked up after the main write has committed. A database
+ * hiccup here must not turn that saved write into an error for the user —
+ * who would then retry an action that already happened ("already
+ * requested", a second timer click) — so it is logged and nobody is
+ * notified, like any other notification failure (CLAUDE.md invariant 3).
+ */
+export async function resolveRecipientsSafely(source: string, lookup: () => Promise<string[]>): Promise<string[]> {
+  try {
+    return await lookup();
+  } catch (error) {
+    await logSystemError({
+      severity: "error",
+      source,
+      message: (error instanceof Error ? error.message : String(error)).slice(0, 1000),
+      stack: error instanceof Error ? (error.stack ?? null) : null,
+    }).catch(() => undefined);
+    return [];
+  }
+}
 
 export async function notifyWorkflowEvent(input: NotifyByEventInput) {
   await safeSideEffect(

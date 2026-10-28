@@ -3,6 +3,7 @@ import "server-only";
 import { savePrivateFile } from "@/lib/files/local-storage";
 import { getFileSecuritySettings } from "@/lib/files/settings";
 import {
+  checkFileContent,
   pickUploadedFile,
   validatePrivateFileWithOptions,
   type PrivateFileBucket,
@@ -58,7 +59,7 @@ export async function saveAttachmentBatch(
       maxSizeBytes: settings.maxUploadSizeBytes,
       allowedTypes: settings.allowedFileTypes,
     });
-    if (validationError) continue;
+    if (validationError || (await checkFileContent(item.file))) continue;
 
     try {
       const path = await savePrivateFile(bucket, folder, item.file);

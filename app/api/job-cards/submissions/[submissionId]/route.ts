@@ -26,7 +26,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ sub
     return reply({ ok: false, category: "bad_request", message: "Unknown submission." }, 400);
   }
 
-  const context = await getCurrentUserContext().catch(() => null);
+  let context: Awaited<ReturnType<typeof getCurrentUserContext>>;
+  try {
+    context = await getCurrentUserContext();
+  } catch {
+    return reply({ ok: false, category: "database", message: "The server could not check right now. Please try again." }, 503);
+  }
   if (!context || context.mustResetPassword) {
     return reply({ ok: false, category: "session", message: "Your session has expired. Sign in again, then press Retry." }, 401);
   }

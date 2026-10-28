@@ -6,7 +6,7 @@ import { assertActiveUser, assertBackendPermission } from "@/lib/backend/securit
 import { withBackendTransaction, type BackendTransaction } from "@/lib/backend/shared/transaction";
 import { writeAuditLog } from "@/lib/audit/log";
 import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
-import { dedupeRecipients } from "@/lib/backend/notifications/safe-notifications";
+import { dedupeRecipients, resolveRecipientsSafely } from "@/lib/backend/notifications/safe-notifications";
 import { getActiveUserIdsByRoleSlugs, lockOpenJobCardForActivity } from "@/lib/backend/work-orders/repository";
 import { loadOtherPeriods, lockWorkerTime } from "@/lib/backend/work-orders/work-time-corrections";
 import { parseKuwaitInputValue } from "@/lib/format/kuwait-time";
@@ -105,10 +105,12 @@ async function notifyAndAudit(
   result: SessionMutationResult,
   extraMetadata: Record<string, string | number | undefined> = {}
 ) {
-  const recipients = await withBackendTransaction(context.userId, async (tx) => {
-    const roleIds = await getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager"]);
-    return dedupeRecipients([result.createdBy, ...roleIds], context.userId);
-  });
+  const recipients = await resolveRecipientsSafely("workSession.notify.recipients", () =>
+    withBackendTransaction(context.userId, async (tx) => {
+      const roleIds = await getActiveUserIdsByRoleSlugs(tx, ["maintenance_manager"]);
+      return dedupeRecipients([result.createdBy, ...roleIds], context.userId);
+    })
+  );
 
   await Promise.all([
     recipients.length
@@ -161,6 +163,26 @@ export async function startWorkSession(context: CurrentUserContext, input: Start
     });
     if (existingActive) {
       throw new AppError("This worker already has an active work session. Pause or stop it first.", { code: "WORKFLOW_ERROR" });
+    }
+
+    // Manual Time Recorded: once hours were entered manually for THIS
+    // assignment, a plain Start is refused so the same work is not timed
+    // twice by accident. New work goes through "Record Additional Work"
+    // (additionalWork: true, confirmed by the user) — the recorded hours stay
+    // exactly as they are. Resuming a PAUSED timer is the same timed work and
+    // is not blocked. Per assignment only: the worker's other Job Cards are
+    // unaffected (the one-running-timer rule below still applies). Checked
+    // under the Job Card lock taken by loadOpenWorkOrder, the same lock a
+    // manual save takes, so the two cannot cross.
+    const [manualCount, pausedTimer] = await Promise.all([
+      tx.workOrderWorkSession.count({ where: { worker_assignment_id: input.workerAssignmentId, is_manual_entry: true, status: { not: "Cancelled" } } }),
+      tx.workOrderWorkSession.findFirst({ where: { worker_assignment_id: input.workerAssignmentId, is_manual_entry: false, status: "Paused" }, select: { id: true } }),
+    ]);
+    if (manualCount > 0 && !pausedTimer && input.additionalWork !== true) {
+      throw new AppError(
+        "Manual time is already recorded for this worker on this Job Card. If the worker has new work to do, use Record Additional Work.",
+        { code: "WORKFLOW_ERROR" }
+      );
     }
 
     // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 5: one
@@ -216,7 +238,7 @@ export async function startWorkSession(context: CurrentUserContext, input: Start
     "Work session started",
     `${result.workerName} started work on ${result.workOrderNumber ?? "a Job Card"}.`,
     result,
-    { workerAssignmentId: input.workerAssignmentId }
+    { workerAssignmentId: input.workerAssignmentId, ...(input.additionalWork ? { additionalWork: "yes" } : {}) }
   );
 
   return result;
@@ -334,7 +356,8 @@ export async function finishWorkSession(context: CurrentUserContext, input: Paus
         tx.workSessionTimeCorrection.count({ where: { worker_assignment_id: input.workerAssignmentId, entry_kind: "manual_entry", status: "Pending" } }),
       ]);
       if (pendingManual > 0) {
-        throw new AppError("This worker's manually entered time is waiting for Manager review. Mark the work finished after it is approved.", { code: "WORKFLOW_ERROR" });
+        // Only older entries (sent before single closure approval) can still be Pending.
+        throw new AppError("This worker has an older manual time entry waiting for the Manager's decision. Mark the work finished after the Manager approves or rejects it.", { code: "WORKFLOW_ERROR" });
       }
       if (recorded === 0) {
         throw new AppError("No work time is recorded for this worker yet. Start the timer, or enter the time manually first.", { code: "WORKFLOW_ERROR" });
@@ -509,6 +532,12 @@ export async function editWorkSession(context: CurrentUserContext, input: EditWo
     if (existing.status === "Active") {
       throw new AppError("Stop or pause this session before editing it.", { code: "WORKFLOW_ERROR" });
     }
+    // Hours entered over dates: the worked time is the entered hours, not end
+    // minus start, so a start/end edit here would change it. Change Manual
+    // Time edits the dates and hours together.
+    if (existing.period_is_span) {
+      throw new AppError("This time was entered as hours over dates. Use Change Manual Time to change it.", { code: "WORKFLOW_ERROR" });
+    }
 
     const wo = await tx.work_orders.findFirst({
       where: { id: existing.work_order_id, deleted_at: null },
@@ -545,7 +574,7 @@ export async function editWorkSession(context: CurrentUserContext, input: EditWo
     });
     if (pendingCorrection) {
       throw new AppError(
-        "A time correction for this work period is waiting for review. Approve or reject it in Time Corrections first.",
+        "An older time correction for this work period is waiting for a decision. Approve or reject it in the Job Card's Manual Time and Corrections section first.",
         { code: "CONFLICT" }
       );
     }

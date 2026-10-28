@@ -6,12 +6,14 @@ import { writeAuditLog } from "@/lib/audit/log";
 import { requirePermission } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { formatDate, formatDateTime } from "@/lib/utils";
+import { formatKuwaitDate } from "@/lib/format/kuwait-time";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { displaySimplifiedStatus } from "@/lib/work-orders/simplified-status-display";
 import { deriveSimpleWorkerState } from "@/lib/work-orders/hours-variance";
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete } from "@/lib/work-orders/material-fulfillment";
 import { getJobCardCostSummary } from "@/lib/work-orders/job-card-cost-summary";
 import { getJobCardDates } from "@/lib/work-orders/job-card-dates-data";
+import { formatJobCardDate } from "@/lib/work-orders/job-card-edit";
 import { jobCardDateText } from "@/components/work-orders/job-card-dates-section";
 
 const formatKwd = (value: number) => `${value.toFixed(3)} KWD`;
@@ -138,33 +140,47 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
       const sessions = sessionsByAssignment.get(a.id) ?? [];
       const totalMinutes = sessions.reduce((sum, s) => sum + s.duration_minutes, 0);
       const activeSession = sessions.find((s) => s.status === "Active") ?? null;
-      const earliestStart = sessions.length ? sessions[0].started_at : null;
-      const latestEnd = sessions.reduce<Date | null>((max, s) => {
+      const earliest = sessions[0] ?? null;
+      const latest = sessions.reduce<(typeof sessions)[number] | null>((max, s) => {
         const end = s.stopped_at ?? s.paused_at;
         if (!end) return max;
-        return !max || end > max ? end : max;
+        const maxEnd = max ? (max.stopped_at ?? max.paused_at)! : null;
+        return !maxEnd || end > maxEnd ? s : max;
       }, null);
+      const latestEnd = latest ? (latest.stopped_at ?? latest.paused_at) : null;
 
       // Unit 10G.53, Task 11: same 4-state model as everywhere else
       // (Not Started/Working/Paused/Finished) — a raw session status of
       // "Completed" prints as "In progress"'s opposite, "Not recorded"/
       // "Not Started"'s sibling below, not as a separate technical status.
-      const sessionStatus = activeSession ? "Active" : sessions.length ? sessions[sessions.length - 1].status : "Not Started";
+      // Timer state from the latest TIMER period (sessions ordered started_at
+      // asc) — a manual entry never stands in for a paused timer.
+      const lastTimer = [...sessions].reverse().find((s) => !s.is_manual_entry) ?? null;
+      const sessionStatus = activeSession ? "Active" : lastTimer ? lastTimer.status : "Not Started";
       const simpleState = deriveSimpleWorkerState(a.status, sessionStatus);
       // Worker Time Correction: hours above already use the approved
       // corrected time; the note says so on paper.
       const timeCorrected = sessions.some((s) => s.original_started_at !== null);
-      // Manual Worker Time Entry: periods entered without the timer (Data
-      // Entry with Manager approval, or a Manager directly) are marked too.
+      // Manual Worker Time Entry: periods entered without the timer are
+      // marked too — reviewed by the Manager at closure, so the note says
+      // whether that review has happened (Closed) or is still to come.
       const manuallyEntered = sessions.some((s) => s.is_manual_entry);
-      const notes = `${simpleState === "Working" ? "In Progress" : simpleState}${manuallyEntered ? " · Time manually entered" : ""}${timeCorrected ? " · Time manually corrected" : ""}`;
+      const reviewNote = rawWo.status === "Closed" ? " (approved at closure)" : " (reviewed at closure)";
+      const notes = `${simpleState === "Working" ? "In Progress" : simpleState}${manuallyEntered ? ` · Time manually entered${reviewNote}` : ""}${timeCorrected ? ` · Time manually corrected${reviewNote}` : ""}`;
 
       workerRows.push({
         name: a.worker_profiles.name,
         employeeNo: a.worker_profiles.employee_id ?? "-",
         type: a.worker_role,
-        start: earliestStart ? formatDateTime(earliestStart.toISOString()) : "Not recorded",
-        end: activeSession ? "In progress" : latestEnd ? formatDateTime(latestEnd.toISOString()) : "Not recorded",
+        // A manual entry without a time prints its date only.
+        start: earliest ? (earliest.start_time_known ? formatDateTime(earliest.started_at.toISOString()) : formatKuwaitDate(earliest.started_at)) : "Not recorded",
+        end: activeSession
+          ? "In progress"
+          : latest && latestEnd
+            ? latest.end_time_known
+              ? formatDateTime(latestEnd.toISOString())
+              : formatKuwaitDate(latestEnd)
+            : "Not recorded",
         hours: (totalMinutes / 60).toFixed(2),
         notes
       });
@@ -259,7 +275,12 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
   // the grid never grows with blank rows.
   const detailRows: Array<[string, string]> = [
     ["Reported by", rawWo.ordered_by || "Not recorded"],
-    ["Date of Job Card", formatDate(rawWo.date_of_order)],
+    ["Date of Order", formatJobCardDate(rawWo.date_of_order, "—")],
+    // Job Card Start / End Date — typed calendar dates, always printed
+    // ("Not entered" when blank); separate from the recorded Work Start /
+    // Work End below.
+    ["Job Card Start Date", formatJobCardDate(rawWo.job_card_start_date)],
+    ["Job Card End Date", formatJobCardDate(rawWo.job_card_end_date)],
     ...(department?.name ? ([["Department", department.name]] as Array<[string, string]>) : []),
     ["Asset", asset ? `${asset.asset_code} - ${asset.asset_name}` : "Not recorded"],
     ...(rawWo.asset_category ? ([["Asset Type", rawWo.asset_category]] as Array<[string, string]>) : []),

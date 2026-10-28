@@ -18,7 +18,7 @@ import { addWorkOrderMaterialAction } from "@/app/actions/maintenance";
 import { respondToClarificationAction } from "@/app/actions/workflow";
 import { uploadWorkOrderFileAction, deleteWorkOrderAttachmentAction } from "@/app/actions/files";
 import { BackLink } from "@/components/ui/back-link";
-import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
+import { PageBackButton } from "@/components/layout/page-back-button";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
@@ -49,6 +49,7 @@ import { JobCardDatesSection } from "@/components/work-orders/job-card-dates-sec
 import { RequestDeletionButton } from "@/components/work-orders/request-deletion-button";
 import { DeletionRequestPanel } from "@/components/work-orders/deletion-request-panel";
 import { getJobCardDates } from "@/lib/work-orders/job-card-dates-data";
+import { formatJobCardDate, isJobCardEditable, readJobCardEditChanges } from "@/lib/work-orders/job-card-edit";
 import {
   canRequestJobCardDeletion,
   canReviewJobCardDeletion,
@@ -59,7 +60,7 @@ import {
   canReviewTimeCorrection,
   getTimeCorrectionsForWorkOrder,
 } from "@/lib/backend/work-orders/work-time-corrections";
-import { formatKuwaitDateTime } from "@/lib/format/kuwait-time";
+import { formatDurationMinutes, formatKuwaitDateTime } from "@/lib/format/kuwait-time";
 import { JobCardTabHashRedirect } from "@/components/work-orders/job-card-tab-hash-redirect";
 import {
   displaySimplifiedStatus,
@@ -70,6 +71,7 @@ import {
 import { displayPartsRequestStatus, partsRequestStatusTone } from "@/lib/display/parts-request-labels";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
+import { ON_TEAM_ASSIGNMENT_STATUSES } from "@/lib/backend/workers/constants";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -186,11 +188,12 @@ const workOrderControlInclude = {
   work_order_assignments: { include: { profiles: true }, orderBy: { assigned_at: "asc" } },
   // Work Assignment and Worker Profiles Foundation Unit 7: the new Internal
   // Team labor roster — separate from work_order_assignments above (see
-  // lib/backend/work-orders/worker-roster.ts). Only "active" rows; "removed"
-  // history rows stay in the DB (for a future work-session unit) but are not
-  // displayed here.
+  // lib/backend/work-orders/worker-roster.ts). "active" and "finished" rows
+  // (Finish Work marks an assignment finished — the worker is still on this
+  // Job Card's team); "removed" history rows stay in the DB but are not
+  // displayed here. The roster edit form below still gets active rows only.
   work_order_worker_assignments: {
-    where: { status: "active" },
+    where: { status: { in: ON_TEAM_ASSIGNMENT_STATUSES } },
     include: { worker_profiles: true, profiles: true },
     orderBy: [{ worker_role: "asc" }, { assigned_at: "asc" }]
   },
@@ -539,6 +542,7 @@ export default async function WorkOrderDetailPage({
       workerName: w.worker_name,
       assignmentStatus: w.assignment_status,
       sessionStatus: w.status,
+      manualMinutes: w.manual_minutes,
     }))
   );
   const closureBlockers: string[] = [];
@@ -547,7 +551,7 @@ export default async function WorkOrderDetailPage({
   if (materialsIncomplete) closureBlockers.push("Required materials have not been fully issued yet.");
   closureBlockers.push(...workersClosureCheck.reasons);
   // Mirrors assertNoPendingTimeCorrections in the closure approval.
-  if (pendingTimeCorrections > 0) closureBlockers.push("A worker time correction is waiting for Manager review.");
+  if (pendingTimeCorrections > 0) closureBlockers.push("An older worker time entry is waiting for the Manager's decision (Worker Time section).");
   const closureReady = closureBlockers.length === 0;
 
   // Status chips for the hero header (Task 2, Premium Job Card Detail Page
@@ -748,13 +752,10 @@ export default async function WorkOrderDetailPage({
         }
         actions={
           <>
-            {/* Manager Closed Job Cards Summary and Global Navigation
-                Improvements Unit 10E, Task 8/9: replaces the plain "Back to
-                Job Cards" link with the consistent Back/Dashboard/Daily
-                Activity/Job Cards set — "Job Cards" below covers the exact
-                same destination the old BackLink pointed at, so nothing is
-                lost, just widened. */}
-            <PageNavigationActions secondaryLinks={[{ label: "Materials Requests", href: "/store/parts-requests" }]} />
+            {/* Back returns to the page this Job Card was opened from (Daily
+                Activity, Job Cards with its filters, Dashboard…); opened
+                directly, it goes to the Job Cards list. */}
+            <PageBackButton fallbackHref="/maintenance/work-orders" />
             {canPrint ? (
               <Link href={`/maintenance/work-orders/${wo.id}/print`}>
                 <Button variant="secondary">
@@ -767,16 +768,19 @@ export default async function WorkOrderDetailPage({
                 which no longer exist in the simplified workflow (status-rules.ts
                 renamed them to "Created"/"Under Review") — no current Job Card
                 could ever match, so a saved draft had no way back into its own
-                edit form (the only reachable action was blind Submit). Matches
-                EDITABLE_STATUSES in upsertWorkOrderAction exactly. */}
-            {canManage && ["Created", "Under Review"].includes(wo.status) ? (
+                edit form (the only reachable action was blind Submit). Now
+                isJobCardEditable — the same rule upsertWorkOrderAction and
+                Daily Activity's Edit Job Card use: editable until closure is
+                requested. */}
+            {canManage && isJobCardEditable(wo.status) ? (
               <Link href={`/maintenance/work-orders/${wo.id}/edit`}>
-                <Button>Edit</Button>
+                <Button>Edit Job Card</Button>
               </Link>
             ) : null}
-            {/* Job Card Deletion: Data Entry's request action. Hidden on a
-                closed Job Card; on any other Job Card that cannot be
-                deleted, the dialog explains why instead of sending. */}
+            {/* Job Card Deletion request action — Super Admin only now
+                (canRequestJobCardDeletion; Maintenance Data Entry no longer
+                has it). Hidden on a closed Job Card; on any other Job Card
+                that cannot be deleted, the dialog explains why. */}
             {canRequestDeletion && deletionStatus && wo.status !== "Closed" ? (
               <RequestDeletionButton
                 workOrderId={wo.id}
@@ -1229,7 +1233,13 @@ export default async function WorkOrderDetailPage({
                     ) : null}
                     <div className="grid grid-cols-2 gap-2">
                       {wo.maintenance_type ? <InfoBlock label="Maintenance type" value={wo.maintenance_type} /> : null}
-                      {wo.date_of_order ? <InfoBlock label="Date of order" value={formatDateValue(wo.date_of_order)} /> : null}
+                      {wo.date_of_order ? <InfoBlock label="Date of order" value={formatJobCardDate(wo.date_of_order)} /> : null}
+                      {/* Job Card Start / End Date — typed calendar dates,
+                          always shown ("Not entered" when blank); not the
+                          recorded Work Start / Work End in Job Card Dates. */}
+                      <InfoBlock label="Job Card Start Date" value={formatJobCardDate(wo.job_card_start_date)} />
+                      <InfoBlock label="Job Card End Date" value={formatJobCardDate(wo.job_card_end_date)} />
+                      <InfoBlock label="Created on" value={formatDateTimeValue(wo.created_at)} />
                       {wo.ordered_by ? <InfoBlock label="Reported by" value={wo.ordered_by} /> : null}
                       {wo.job_location ? <InfoBlock label="Job location" value={wo.job_location} /> : null}
                       {wo.profiles ? <InfoBlock label="Supervisor" value={wo.profiles.full_name} /> : null}
@@ -2067,7 +2077,7 @@ export default async function WorkOrderDetailPage({
                 : null
             }
             activeWorkers={activeWorkers}
-            internalTeamRoster={wo.work_order_worker_assignments.map((r) => ({
+            internalTeamRoster={wo.work_order_worker_assignments.filter((r) => r.status === "active").map((r) => ({
               worker_id: r.worker_id,
               worker_role: r.worker_role,
               // Estimated Work Hours for Job Cards and Workers Unit 10G.13,
@@ -2432,6 +2442,27 @@ function jobCardAuditEntry(log: AuditLogRow, actorName: (id?: string | null) => 
         detail: metaGet(log.metadata, "comments") ?? "Manager approved closing this Job Card.",
         actor, tone: "green", label: "Closure",
       };
+    // Worker time single closure approval: the Manager's other decision.
+    case "work_order.closure_returned":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Closure returned for correction",
+        detail: metaGet(log.metadata, "note") ?? "The Manager returned the closure request.",
+        actor, tone: "amber", label: "Closure",
+      };
+    case "work_order.manual_time_recorded":
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: `Manual time saved — ${metaGet(log.metadata, "worker_name") ?? "worker"}`,
+        detail: `${formatDurationMinutes(Number(metaGet(log.metadata, "actual_minutes") ?? 0))} entered. ${metaGet(log.metadata, "reason") ?? ""}`.trim(),
+        actor, tone: "blue", label: "Time Tracking",
+      };
+    case "work_order.manual_time_changed":
+    case "work_order.time_correction_recorded":
+      return {
+        id: `audit-${log.id}`, at: log.created_at,
+        title: `${log.action === "work_order.manual_time_changed" ? "Manual time changed" : "Time corrected"} — ${metaGet(log.metadata, "worker_name") ?? "worker"}`,
+        detail: `${formatDurationMinutes(Number(metaGet(log.metadata, "original_minutes") ?? metaGet(log.metadata, "original_duration_minutes") ?? 0))} → ${formatDurationMinutes(Number(metaGet(log.metadata, "corrected_minutes") ?? metaGet(log.metadata, "corrected_duration_minutes") ?? 0))}. ${metaGet(log.metadata, "reason") ?? ""}`.trim(),
+        actor, tone: "blue", label: "Time Tracking",
+      };
     // Work Session Time Tracking and Labor Cost Calculation Unit 8.
     case "work_order.work_session_started":
       return {
@@ -2490,8 +2521,20 @@ function jobCardAuditEntry(log: AuditLogRow, actorName: (id?: string | null) => 
         id: `audit-${log.id}`, at: log.created_at, title: "Delete request rejected",
         detail: metaGet(log.metadata, "remarks") ?? "Job Card kept.", actor, tone: "gray", label: "Job Card",
       };
+    // Edit Job Card: the field-level old → new values recorded by
+    // upsertWorkOrderAction. Older edit rows (no recorded changes) and saves
+    // that changed nothing stay in System Audit only.
+    case "work_order.update": {
+      const changes = readJobCardEditChanges(log.metadata);
+      if (!changes.length) return null;
+      return {
+        id: `audit-${log.id}`, at: log.created_at, title: "Job Card details edited",
+        detail: changes.map((c) => `${c.label}: ${c.from} → ${c.to}`).join("; "),
+        actor, tone: "gray", label: "Edit",
+      };
+    }
     default:
-      return null; // work_order.create/update/assign, file.upload — covered elsewhere or System Audit only
+      return null; // work_order.create/assign, file.upload — covered elsewhere or System Audit only
   }
 }
 

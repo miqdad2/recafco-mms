@@ -113,6 +113,7 @@ const ERROR_MAP: Record<string, ToastMessage> = {
   // below instead of a readable message.
   "upload-permission":          { tone: "error",   title: "You don't have permission to upload files here" },
   "delete-permission":          { tone: "error",   title: "You don't have permission to delete this file" },
+  "attachment-locked":          { tone: "error",   title: "This file cannot be removed", description: "The Job Card is closed or waiting for closure approval. Ask the Manager if a file must be removed." },
   "no-file":                    { tone: "error",   title: "No file selected",               description: "Choose a file before uploading." },
   "file-upload-failed":         { tone: "error",   title: "File upload failed",              description: "Please try again or contact IT." },
   "file-metadata-failed":       { tone: "error",   title: "File uploaded, but could not be recorded", description: "Please try again or contact IT." },

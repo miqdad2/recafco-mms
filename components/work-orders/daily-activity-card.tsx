@@ -9,6 +9,7 @@ import {
   PackageSearch,
   PackageX,
   PauseCircle,
+  Pencil,
   PlayCircle,
   Printer,
   Users,
@@ -19,6 +20,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { WorkerSessionRow } from "@/components/work-orders/worker-session-row";
 import { JobCardDatesSection } from "@/components/work-orders/job-card-dates-section";
 import type { JobCardDates } from "@/lib/work-orders/job-card-dates";
+import { NOT_ENTERED } from "@/lib/work-orders/job-card-edit";
 import { ReviewApproveClosureButton } from "@/components/work-orders/review-approve-closure-button";
 import type { WorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import type { MaterialFulfillment } from "@/lib/work-orders/material-fulfillment";
@@ -129,6 +131,12 @@ export type DailyActivityCardData = {
   } | null;
   dates: JobCardDates | null;
   canRequestManualTime: boolean;
+  // Date of order and the typed Job Card Start / End Date, already formatted
+  // ("Not entered" when blank) — not worker time.
+  requestDates: { dateOfOrder: string; start: string; end: string };
+  // work_orders.manage and the Job Card is still editable (closure not yet
+  // requested). The edit page and its save action re-check both.
+  canEditJobCard: boolean;
 };
 
 // Anchor target inside the panel that the Next Action button scrolls to for
@@ -402,11 +410,15 @@ function summarizeMaterials(card: DailyActivityCardData) {
 // the real server-side closure guard uses. Only Not Started/Working/Paused/
 // Finished ever surface — no session/technical wording.
 function summarizeWorkers(card: DailyActivityCardData) {
-  const states = card.laborSummary.workers.map((w) => deriveSimpleWorkerState(w.assignment_status, w.status));
+  const rows = card.laborSummary.workers.map((w) => ({ state: deriveSimpleWorkerState(w.assignment_status, w.status), manual: (w.manual_minutes ?? 0) > 0 }));
+  const states = rows.map((r) => r.state);
   const total = states.length;
   const working = states.filter((s) => s === "Working").length;
   const paused = states.filter((s) => s === "Paused").length;
-  const notStarted = states.filter((s) => s === "Not Started").length;
+  // Manual Time Recorded: hours saved, timer not used, not yet marked
+  // finished — "Not Finished", not "not started".
+  const manualNotFinished = rows.filter((r) => r.state === "Not Started" && r.manual).length;
+  const notStarted = rows.filter((r) => r.state === "Not Started" && !r.manual).length;
   const finished = states.filter((s) => s === "Finished").length;
 
   let value: string;
@@ -423,15 +435,21 @@ function summarizeWorkers(card: DailyActivityCardData) {
   } else if (notStarted > 0) {
     value = notStarted === total ? "Work not started" : `${notStarted} worker${notStarted > 1 ? "s" : ""} not started`;
     icon = Clock;
+  } else if (manualNotFinished > 0) {
+    value = `${manualNotFinished} worker${manualNotFinished > 1 ? "s" : ""} — manual time recorded`;
+    icon = Clock;
   } else {
     value = "All workers finished";
     icon = CheckCircle2;
   }
-  const detail = total > 0 ? `Total ${total} · Finished ${finished} · Working ${working} · Paused ${paused} · Not started ${notStarted}` : null;
+  const detail =
+    total > 0
+      ? `Total ${total} · Finished ${finished} · Working ${working} · Paused ${paused} · Not started ${notStarted}${manualNotFinished ? ` · Manual, not finished ${manualNotFinished}` : ""}`
+      : null;
   // card.workTimeChip.tone is the exact same tone the existing list-row/
   // panel already use for this Job Card's work-time state — reused rather
   // than a second, possibly-disagreeing color opinion.
-  return { total, working, paused, notStarted, finished, value, detail, tone: card.workTimeChip.tone as SummaryTone, icon };
+  return { total, working, paused, notStarted, manualNotFinished, finished, value, detail, tone: card.workTimeChip.tone as SummaryTone, icon };
 }
 
 // Task 1 (#3) — plain wording for card.closureChip.label, the exact same
@@ -485,6 +503,9 @@ function computeGuidance(
   }
   if (workers.notStarted > 0) {
     return { message: "Worker not started. Start and finish work before requesting closure.", button: "workers", urgent: false };
+  }
+  if (workers.manualNotFinished > 0) {
+    return { message: "Manual time is recorded. Mark Work Finished for the worker before requesting closure.", button: "workers", urgent: false };
   }
   if (workers.total > 0) {
     return { message: "Ready for closure. Submit to Manager for approval.", button: "closure", urgent: false };
@@ -572,9 +593,24 @@ export function DailyActivitySelectedPanel({
           <JobCardDatesSection dates={card.dates} compact />
         </div>
       ) : null}
+      {/* Date of order and the Job Card Start / End Date typed by Data Entry. */}
+      <dl className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[#6B7280]">
+        <div className="flex gap-1">
+          <dt>Date of order:</dt>
+          <dd className="font-semibold text-[#111827]">{card.requestDates.dateOfOrder}</dd>
+        </div>
+        <div className="flex gap-1">
+          <dt>Job Card Start Date:</dt>
+          <dd className={`font-semibold ${card.requestDates.start === NOT_ENTERED ? "text-[#9CA3AF]" : "text-[#111827]"}`}>{card.requestDates.start}</dd>
+        </div>
+        <div className="flex gap-1">
+          <dt>Job Card End Date:</dt>
+          <dd className={`font-semibold ${card.requestDates.end === NOT_ENTERED ? "text-[#9CA3AF]" : "text-[#111827]"}`}>{card.requestDates.end}</dd>
+        </div>
+      </dl>
       {card.timeSummary && card.timeSummary.pendingManualEntries + card.timeSummary.pendingCorrections > 0 ? (
         <p role="status" className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
-          Worker time waiting for Manager review: {card.timeSummary.pendingManualEntries} manual{" "}
+          Older worker time waiting for the Manager&apos;s decision: {card.timeSummary.pendingManualEntries} manual{" "}
           {card.timeSummary.pendingManualEntries === 1 ? "entry" : "entries"}, {card.timeSummary.pendingCorrections}{" "}
           {card.timeSummary.pendingCorrections === 1 ? "correction" : "corrections"}. It is not counted until approved, and closure waits for it.
           {card.isManager ? (
@@ -678,6 +714,14 @@ export function DailyActivitySelectedPanel({
           >
             Open Job Card
           </Link>
+          {card.canEditJobCard ? (
+            <Link
+              href={`${detailHref}/edit?from=daily-activity`}
+              className="inline-flex min-h-8 items-center justify-center gap-1 rounded-md border border-[#E5E7EB] bg-white px-3.5 py-1.5 text-xs font-bold text-[#111827] transition hover:bg-gray-50"
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit Job Card
+            </Link>
+          ) : null}
           {(card.status === "Closure Requested" || card.status === "Closed") && canPrint ? (
             <Link
               href={`${detailHref}/print`}

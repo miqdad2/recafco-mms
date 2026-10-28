@@ -58,7 +58,21 @@ export async function POST(request: NextRequest) {
     return reply({ ok: false, category: "bad_request", message: "Request refused.", retryable: false, reference });
   }
 
-  const context = await getCurrentUserContext().catch(() => null);
+  // A database outage throws here; it is not an expired session, so it must
+  // not send the user off to sign in (which would fail too).
+  let context: Awaited<ReturnType<typeof getCurrentUserContext>>;
+  try {
+    context = await getCurrentUserContext();
+  } catch {
+    logJobCardAttempt(base, { outcome: "failed", category: "database" });
+    return reply({
+      ok: false,
+      category: "database",
+      message: "The server could not reach the database in time. Nothing was saved. Your information is still here. Please press Retry.",
+      retryable: true,
+      reference,
+    });
+  }
   if (!context || context.mustResetPassword) {
     logJobCardAttempt(base, { outcome: "failed", category: "session" });
     return reply({

@@ -15,8 +15,18 @@ import { emitRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/
 import { prisma } from "@/lib/db/prisma";
 import { parsePendingAttachments, saveAttachmentBatch } from "@/lib/files/attachment-form";
 import { MAX_ATTACHMENT_ROWS } from "@/lib/files/attachment-constants";
-import { ACTIVE_JOB_CARD_STATUSES } from "@/lib/work-orders/simplified-status-display";
 import { createJobCardFromForm } from "@/lib/backend/work-orders/job-card-creation";
+import { lockJobCardActivity } from "@/lib/backend/work-orders/repository";
+import { formatKuwaitDateTime } from "@/lib/format/kuwait-time";
+import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import {
+  diffJobCardEdit,
+  formatJobCardDate,
+  isJobCardEditable,
+  lineItemsUnchanged,
+  type JobCardEditSnapshot,
+} from "@/lib/work-orders/job-card-edit";
+import type { Prisma } from "@prisma/client";
 import {
   cleanPayload,
   parseAttachmentRows,
@@ -381,6 +391,66 @@ const WO_FIELD_ERROR_KEYS: Record<string, string> = {
   date_of_order:                "missing-date",
 };
 
+// Job Card edit audit trail: the request fields compared before/after an
+// edit (lib/work-orders/job-card-edit.ts lists them). Display text only —
+// names instead of ids, Kuwait time for date-times, no cost fields.
+const JOB_CARD_EDIT_SNAPSHOT_SELECT = {
+  ordered_by: true,
+  asset_category: true,
+  serial_number: true,
+  plate_number: true,
+  date_of_order: true,
+  job_card_start_date: true,
+  job_card_end_date: true,
+  job_location: true,
+  starting_datetime: true,
+  ending_datetime: true,
+  maintenance_type: true,
+  worker_type: true,
+  priority: true,
+  running_hours: true,
+  kilometers: true,
+  estimated_labor_hours: true,
+  operator_complaint: true,
+  description_of_work: true,
+  notes: true,
+  next_service_date: true,
+  next_service_kilometer: true,
+  next_service_running_hours: true,
+  departments: { select: { name: true } },
+  assets: { select: { asset_code: true, asset_name: true } },
+} satisfies Prisma.work_ordersSelect;
+
+function jobCardEditSnapshot(row: Prisma.work_ordersGetPayload<{ select: typeof JOB_CARD_EDIT_SNAPSHOT_SELECT }>): JobCardEditSnapshot {
+  const num = (value: Prisma.Decimal | null) => (value === null ? null : String(value.toNumber()));
+  return {
+    ordered_by: row.ordered_by,
+    department: row.departments?.name ?? null,
+    asset: row.assets ? `${row.assets.asset_code} - ${row.assets.asset_name}` : null,
+    asset_category: row.asset_category,
+    serial_number: row.serial_number,
+    plate_number: row.plate_number,
+    date_of_order: formatJobCardDate(row.date_of_order, ""),
+    job_card_start_date: formatJobCardDate(row.job_card_start_date, ""),
+    job_card_end_date: formatJobCardDate(row.job_card_end_date, ""),
+    job_location: row.job_location,
+    starting_datetime: formatKuwaitDateTime(row.starting_datetime, ""),
+    ending_datetime: formatKuwaitDateTime(row.ending_datetime, ""),
+    maintenance_type: row.maintenance_type,
+    worker_type: row.worker_type,
+    priority: row.priority,
+    running_hours: num(row.running_hours),
+    kilometers: num(row.kilometers),
+    estimated_labor_hours: num(row.estimated_labor_hours),
+    operator_complaint: row.operator_complaint,
+    description_of_work: row.description_of_work,
+    notes: row.notes,
+    next_service_date: formatJobCardDate(row.next_service_date, ""),
+    next_service_kilometer: num(row.next_service_kilometer),
+    next_service_running_hours: num(row.next_service_running_hours),
+  };
+}
+
 export async function upsertWorkOrderAction(formData: FormData) {
   const context = await requirePermission("work_orders.manage");
 
@@ -424,7 +494,13 @@ export async function upsertWorkOrderAction(formData: FormData) {
   const parsed = workOrderSchema.safeParse(Object.fromEntries(formData));
 
   if (!parsed.success) {
-    const firstField = String(parsed.error.issues[0]?.path?.[0] ?? "");
+    const firstIssue = parsed.error.issues[0];
+    const firstField = String(firstIssue?.path?.[0] ?? "");
+    // Job Card Start / End Date: the range rule's own message ("End Date
+    // cannot be earlier than the Start Date", ...) shown as the toast.
+    if (firstField === "job_card_start_date" || firstField === "job_card_end_date") {
+      redirect(`${formBackHref}?error=${encodeURIComponent(firstIssue?.message ?? "Please check the Job Card dates.")}`);
+    }
     const errKey = WO_FIELD_ERROR_KEYS[firstField] ?? "invalid-input";
     redirect(`${formBackHref}?error=${errKey}`);
   }
@@ -438,20 +514,24 @@ export async function upsertWorkOrderAction(formData: FormData) {
   // non-editable through this form — once closure is requested, the only
   // remaining step is Manager's closing decision (Task 7: no reject/return
   // path in this unit to send a Closure Requested Job Card back for edits).
-  const EDITABLE_STATUSES = ["Created", "Under Review", ...ACTIVE_JOB_CARD_STATUSES];
+  // The list lives in lib/work-orders/job-card-edit.ts (isJobCardEditable),
+  // shared with the edit page and Daily Activity's Edit Job Card button.
   const id = rawId;
   const { id: _parsedId, ...values } = parsed.data;
   void _parsedId;
 
-  // Existing work order: only allow metadata edits when WO is in an editable state.
+  // Existing work order: only allow metadata edits when WO is in an editable
+  // state and the user may see it (same visibility filter as every other
+  // Job Card query). Re-checked under the Job Card lock in the transaction.
+  const visibilityFilter = getWorkOrderVisibilityFilter(context);
   let existing: { status: string } | null = null;
   try {
-    existing = await prisma.work_orders.findFirst({ where: { id, deleted_at: null }, select: { status: true } });
+    existing = await prisma.work_orders.findFirst({ where: { AND: [{ id, deleted_at: null }, visibilityFilter] }, select: { status: true } });
   } catch {
     redirect("/maintenance/work-orders?error=not-found");
   }
   if (!existing) redirect("/maintenance/work-orders?error=not-found");
-  if (!EDITABLE_STATUSES.includes(existing.status)) {
+  if (!isJobCardEditable(existing.status)) {
     redirect(`/maintenance/work-orders/${id}?error=not-editable`);
   }
   const existingStatus = existing.status;
@@ -466,26 +546,25 @@ export async function upsertWorkOrderAction(formData: FormData) {
     if (error instanceof RequiredPartRowError) redirect(`${formBackHref}?error=${encodeURIComponent(error.message)}`);
     throw error;
   }
-  if (requiredPartRows.some((row) => !Number.isInteger(row.quantity_required) || row.quantity_required <= 0)) {
-    redirect(
-      `${formBackHref}?error=${encodeURIComponent("Quantity must be a whole number greater than 0 (in the stock unit after conversion).")}`
-    );
-  }
+  // The whole-number quantity rule applies only when required materials are
+  // actually changed (checked in the transaction below) — re-saving rows the
+  // wizard stored in a converted stock unit must not block a date edit.
+  const requiredPartQuantityError = "Quantity must be a whole number greater than 0 (in the stock unit after conversion).";
   const pendingAttachments = parsePendingAttachments(formData, "doc_attachment", MAX_ATTACHMENT_ROWS);
-  const totalLabor = laborRows.reduce((sum, row) => sum + (row?.hours ?? 0) * (row?.rate ?? 0), 0);
-  const totalMaterials = materialRows.reduce((sum, row) => sum + (row?.quantity ?? 0) * (row?.unit_price ?? 0), 0);
 
   // The standalone edit form has no worker picker, so its own manual
   // estimated_labor_hours field (values.estimated_labor_hours) passes
-  // through untouched.
+  // through untouched. created_by is never changed by an edit (it used to be
+  // overwritten with the editor, which misattributed the Job Card).
+  // total_labor_cost / total_material_cost are set in the transaction from
+  // the line-item rows the Job Card actually keeps.
   const basePayload = cleanPayload({
     ...values,
     starting_datetime: values.starting_datetime || null,
     ending_datetime: values.ending_datetime || null,
-    total_labor_cost: totalLabor,
-    total_material_cost: totalMaterials,
-    updated_by: context.userId,
-    created_by: context.userId
+    job_card_start_date: values.job_card_start_date ?? null,
+    job_card_end_date: values.job_card_end_date ?? null,
+    updated_by: context.userId
   });
 
   // Legacy pre-Unit3 defensive branch: "Rejected" is no longer a reachable status
@@ -498,39 +577,120 @@ export async function upsertWorkOrderAction(formData: FormData) {
     : basePayload;
 
   let data: { id: string; work_order_number: string | null } | null = null;
+  // Set inside the transaction callback (a cast so TS doesn't narrow it to null).
+  let refused = null as "not-found" | "not-editable" | "invalid-quantity" | null;
   try {
     // Backend Reliability Fix Unit 1, Task 2: the Job Card update and its
-    // full line-item replacement (deleteMany old rows + createMany new rows
-    // for labor/materials/attachments/required parts) run inside a single
-    // transaction, so no partial edit can persist.
+    // line-item replacement (deleteMany old rows + createMany new rows for
+    // each changed labor/materials/attachments/required parts table) run
+    // inside a single transaction, so no partial edit can persist.
     data = await withBackendTransaction(context.userId, async (tx) => {
+      // Job Card lock first (same one deletion approval and closure-time
+      // writes take), then re-read under it: a Job Card deleted or sent for
+      // closure since the check above is refused, and the "before" values
+      // for the audit trail are the ones this edit actually replaces.
+      await lockJobCardActivity(tx, id);
+      const before = await tx.work_orders.findFirst({
+        where: { AND: [{ id, deleted_at: null }, visibilityFilter] },
+        select: { status: true, ...JOB_CARD_EDIT_SNAPSHOT_SELECT },
+      });
+      if (!before) {
+        refused = "not-found";
+        return null;
+      }
+      if (!isJobCardEditable(before.status)) {
+        refused = "not-editable";
+        return null;
+      }
+
+      // Line items: replace a table only if the user changed what the form
+      // showed (lib/work-orders/job-card-edit.ts lineItemsUnchanged). Same
+      // order as the edit page, which pre-filled the form.
+      const lineOrder = [{ created_at: "asc" as const }, { id: "asc" as const }];
+      const [oldLabor, oldMaterials, oldAttachments, oldRequired] = await Promise.all([
+        tx.work_order_labor.findMany({ where: { work_order_id: id }, orderBy: lineOrder }),
+        tx.work_order_materials.findMany({ where: { work_order_id: id }, orderBy: lineOrder }),
+        tx.work_order_attachments.findMany({ where: { work_order_id: id }, orderBy: lineOrder }),
+        tx.workOrderRequiredPart.findMany({ where: { work_order_id: id }, orderBy: lineOrder }),
+      ]);
+      const laborKey = (r: { labor_name: string; employee_number: string | null; hours: unknown; rate: unknown }) =>
+        [r.labor_name, r.employee_number || null, Number(r.hours), Number(r.rate)];
+      const materialKey = (r: { material_name: string; part_number: string | null; ss_rec_code: string | null; quantity: unknown; unit_price: unknown }) =>
+        [r.material_name, r.part_number || null, r.ss_rec_code || null, Number(r.quantity), Number(r.unit_price)];
+      const attachmentKey = (r: { attachment_type: string; file_name: string; file_path: string }) => [r.attachment_type, r.file_name, r.file_path];
+      const requiredKey = (r: { description: string; part_number: string | null; quantity_required: unknown; unit_of_measure: string; notes: string | null }) =>
+        [r.description, r.part_number || null, Number(r.quantity_required), r.unit_of_measure, r.notes || null];
+      const replaceLabor = !lineItemsUnchanged(laborRows.map((r) => laborKey(r!)), oldLabor.map(laborKey), 3);
+      const replaceMaterials = !lineItemsUnchanged(materialRows.map((r) => materialKey(r!)), oldMaterials.map(materialKey), 3);
+      const replaceAttachments = !lineItemsUnchanged(attachmentRows.map((r) => attachmentKey(r!)), oldAttachments.map(attachmentKey), 2);
+      const replaceRequired = !lineItemsUnchanged(requiredPartRows.map(requiredKey), oldRequired.map(requiredKey), 8);
+      if (replaceRequired && requiredPartRows.some((row) => !Number.isInteger(row.quantity_required) || row.quantity_required <= 0)) {
+        refused = "invalid-quantity";
+        return null;
+      }
+      const keptLabor = replaceLabor ? laborRows.map((r) => ({ hours: r!.hours, rate: r!.rate })) : oldLabor;
+      const keptMaterials = replaceMaterials ? materialRows.map((r) => ({ quantity: r!.quantity, unit_price: r!.unit_price })) : oldMaterials;
+      const totalLabor = keptLabor.reduce((sum, row) => sum + Number(row.hours) * Number(row.rate), 0);
+      const totalMaterials = keptMaterials.reduce((sum, row) => sum + Number(row.quantity) * Number(row.unit_price), 0);
+
       const wo = await tx.work_orders.update({
         where: { id },
-        data: updatePayload,
-        select: { id: true, work_order_number: true }
+        data: { ...updatePayload, total_labor_cost: totalLabor, total_material_cost: totalMaterials },
+        select: { id: true, work_order_number: true, ...JOB_CARD_EDIT_SNAPSHOT_SELECT }
       });
 
-      await Promise.all([
-        tx.work_order_labor.deleteMany({ where: { work_order_id: id } }),
-        tx.work_order_materials.deleteMany({ where: { work_order_id: id } }),
-        tx.work_order_attachments.deleteMany({ where: { work_order_id: id } }),
-        tx.workOrderRequiredPart.deleteMany({ where: { work_order_id: id } })
-      ]);
+      // Edit audit trail (old → new, who, when) in the same transaction as
+      // the edit, so an edit is never saved without its history row.
+      const changes = diffJobCardEdit(jobCardEditSnapshot(before), jobCardEditSnapshot(wo));
+      await tx.audit_logs.create({
+        data: {
+          actor_id: context.userId,
+          action: "work_order.update",
+          entity_type: "work_order",
+          entity_id: id,
+          summary: changes.length
+            ? `Edited Job Card ${wo.work_order_number ?? ""}: ${changes.map((c) => c.label).join(", ")}`.slice(0, 500)
+            : `Saved Job Card ${wo.work_order_number ?? ""} (no request details changed)`,
+          metadata: {
+            status: before.status === "Rejected" ? "Rejected→Under Review" : "(preserved)",
+            worker_type: parsed.data.worker_type,
+            changes,
+            replacedLineItems: [
+              ...(replaceLabor ? ["labor"] : []),
+              ...(replaceMaterials ? ["materials"] : []),
+              ...(replaceAttachments ? ["attachments"] : []),
+              ...(replaceRequired ? ["required_materials"] : []),
+            ],
+          },
+        },
+      });
 
-      if (laborRows.length) {
-        await tx.work_order_labor.createMany({ data: laborRows.map((row) => ({ ...row!, work_order_id: id })) });
+      if (replaceLabor) {
+        await tx.work_order_labor.deleteMany({ where: { work_order_id: id } });
+        if (laborRows.length) {
+          await tx.work_order_labor.createMany({ data: laborRows.map((row) => ({ ...row!, work_order_id: id })) });
+        }
       }
-      if (materialRows.length) {
-        await tx.work_order_materials.createMany({ data: materialRows.map((row) => ({ ...row!, work_order_id: id })) });
+      if (replaceMaterials) {
+        await tx.work_order_materials.deleteMany({ where: { work_order_id: id } });
+        if (materialRows.length) {
+          await tx.work_order_materials.createMany({ data: materialRows.map((row) => ({ ...row!, work_order_id: id })) });
+        }
       }
-      if (attachmentRows.length) {
-        await tx.work_order_attachments.createMany({ data: attachmentRows.map((row) => ({ ...row!, work_order_id: id, uploaded_by: context.userId })) });
+      if (replaceAttachments) {
+        await tx.work_order_attachments.deleteMany({ where: { work_order_id: id } });
+        if (attachmentRows.length) {
+          await tx.work_order_attachments.createMany({ data: attachmentRows.map((row) => ({ ...row!, work_order_id: id, uploaded_by: context.userId })) });
+        }
       }
-      if (requiredPartRows.length) {
-        await tx.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id: id, created_by: context.userId })) });
+      if (replaceRequired) {
+        await tx.workOrderRequiredPart.deleteMany({ where: { work_order_id: id } });
+        if (requiredPartRows.length) {
+          await tx.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id: id, created_by: context.userId })) });
+        }
       }
 
-      return wo;
+      return { id: wo.id, work_order_number: wo.work_order_number };
     });
   } catch (saveError) {
     const rawMessage = saveError instanceof Error ? saveError.message : "save failed";
@@ -559,6 +719,9 @@ export async function upsertWorkOrderAction(formData: FormData) {
     });
     redirect(`${formBackHref}?error=save-failed`);
   }
+  if (refused === "not-found") redirect("/maintenance/work-orders?error=not-found");
+  if (refused === "not-editable") redirect(`/maintenance/work-orders/${id}?error=not-editable`);
+  if (refused === "invalid-quantity") redirect(`${formBackHref}?error=${encodeURIComponent(requiredPartQuantityError)}`);
   if (!data) redirect(`${formBackHref}?error=save-failed`);
 
   // Attachments posted with the edit — a partial or total upload failure
@@ -592,14 +755,8 @@ export async function upsertWorkOrderAction(formData: FormData) {
     if (savedAttachments.length < pendingAttachments.length) attachmentUploadFailed = true;
   }
 
-  await writeAuditLog({
-    actorId: context.userId,
-    action: "work_order.update",
-    entityType: "work_order",
-    entityId: data.id,
-    summary: `Updated work order ${data.work_order_number}`,
-    metadata: { status: existingStatus === "Rejected" ? "Rejected→Under Review" : "(preserved)", worker_type: parsed.data.worker_type }
-  });
+  // The work_order.update audit row (with old → new values) was written in
+  // the edit transaction above.
 
   await emitRealtimeEvent({
     eventType: REALTIME_EVENTS.WORK_ORDER_SAVED,

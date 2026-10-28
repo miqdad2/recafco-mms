@@ -2,7 +2,7 @@ import "server-only";
 
 import type { CurrentUserContext } from "@/lib/auth/context";
 import { writeAuditLog } from "@/lib/audit/log";
-import { dedupeRecipients, notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
+import { dedupeRecipients, notifyWorkflowEvent, resolveRecipientsSafely } from "@/lib/backend/notifications/safe-notifications";
 import { assertActiveUser } from "@/lib/backend/security/guards";
 import { withBackendTransaction, type BackendTransaction } from "@/lib/backend/shared/transaction";
 import { getActiveUserIdsByRoleSlugs, lockJobCardActivity } from "@/lib/backend/work-orders/repository";
@@ -32,11 +32,16 @@ import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 // and approval always blocks the approval.
 //
 // Role checks follow the closure-approval convention in service.ts (role
-// slug, not a DB permission): requesters are Maintenance Data Entry (with
-// work_orders.manage, so a deny override still blocks) or Super Admin;
-// reviewers are Maintenance Manager or Super Admin, never the requester.
+// slug, not a DB permission): reviewers are Maintenance Manager or Super
+// Admin, never the requester.
+//
+// Requesters: Super Admin only. Maintenance Data Entry no longer requests
+// deletion (2026-10-27) — refused here, so the Server Action cannot be
+// called directly either. Requests already sent stay and are still
+// reviewed (approve / reject below have their own reviewer check), and
+// history is kept. To give a role the action again, add its slug here.
 
-const REQUESTER_ROLES = ["maintenance_data_entry"];
+const REQUESTER_ROLES: string[] = [];
 const REVIEWER_ROLES = ["maintenance_manager"];
 
 export function canRequestJobCardDeletion(context: CurrentUserContext) {
@@ -170,7 +175,7 @@ export async function requestJobCardDeletion(
 ): Promise<JobCardDeletionRequestResult> {
   assertActiveUser(context);
   if (!canRequestJobCardDeletion(context)) {
-    throw new AppError("Only Maintenance Data Entry can ask to delete a Job Card.", { code: "FORBIDDEN" });
+    throw new AppError("You do not have permission to ask to delete a Job Card.", { code: "FORBIDDEN" });
   }
   const reason = input.reason.trim();
   if (reason.length < DELETION_REASON_MIN_LENGTH) {
@@ -220,9 +225,11 @@ export async function requestJobCardDeletion(
   });
 
   if (!result.alreadyPending) {
-    const recipients = await withBackendTransaction(context.userId, async (tx) =>
-      dedupeRecipients(await getActiveUserIdsByRoleSlugs(tx, REVIEWER_ROLES), context.userId)
-    );
+    const recipients = await resolveRecipientsSafely("jobCardDeletion.notify.recipients", () =>
+    withBackendTransaction(context.userId, async (tx) =>
+        dedupeRecipients(await getActiveUserIdsByRoleSlugs(tx, REVIEWER_ROLES), context.userId)
+      )
+  );
     const number = result.workOrderNumber ?? "a Job Card";
     await Promise.all([
       recipients.length

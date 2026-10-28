@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 
 import { ClosureReviewModal } from "@/components/dashboard/closure-review-modal";
@@ -36,7 +37,10 @@ export function ReviewApproveClosureButton({
       <button type="button" onClick={() => setReviewing(true)} className={className}>
         {label}
       </button>
-      {reviewing ? (
+      {/* Rendered into <body>: on Daily Activity the button sits inside the
+          page content's stacking context, so the wide review opened UNDER the
+          fixed sidebar and hid the left part of the worker time and costs. */}
+      {reviewing ? createPortal(
         <ClosureReviewModal
           workOrderId={workOrderId}
           loadErrorMessage={loadErrorMessage}
@@ -47,7 +51,8 @@ export function ReviewApproveClosureButton({
             setReviewing(false);
             router.refresh();
           }}
-        />
+        />,
+        document.body
       ) : null}
     </>
   );

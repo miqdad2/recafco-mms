@@ -14,6 +14,7 @@ import {
   type FmpNeedsAttentionItem,
 } from "@/lib/integrations/fmp/maintenance-dashboard";
 import { ACTIVE_JOB_CARD_STATUSES, CLOSURE_REQUESTED_STATUS } from "@/lib/work-orders/simplified-status-display";
+import { ON_TEAM_ASSIGNMENT_STATUSES } from "@/lib/backend/workers/constants";
 
 // FMP-MAINT-04: full MMS executive summary for FMP — job cards, materials
 // requests, inventory, assets, vehicle expiry, labor, and manager attention
@@ -356,6 +357,10 @@ export async function buildFmpLiveDashboard(
         // session on a Closure Requested/Closed card is not counted.
         where: {
           status: { in: ["Active", "Paused"] },
+          // Paused Workers Count Fix: a period left "Paused" when the worker
+          // was then marked Finished is not current work.
+          is_manual_entry: false,
+          worker_assignment: { status: "active" },
           work_orders: { is: { deleted_at: null, status: { in: ACTIVE_JOB_CARD_STATUSES } } },
         },
         select: { work_order_id: true, worker_id: true, status: true },
@@ -567,7 +572,7 @@ export async function buildFmpLiveDashboard(
             status: { in: ["Under Review", ...ACTIVE_JOB_CARD_STATUSES] },
             assigned_supervisor_id: null,
             work_order_assignments: { none: {} },
-            work_order_worker_assignments: { none: { status: "active" } },
+            work_order_worker_assignments: { none: { status: { in: ON_TEAM_ASSIGNMENT_STATUSES } } },
           },
         }),
       logError

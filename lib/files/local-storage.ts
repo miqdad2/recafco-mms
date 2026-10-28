@@ -3,18 +3,24 @@ import "server-only";
 import { mkdir, readFile, unlink, writeFile } from "fs/promises";
 import path from "path";
 
-import { safeStorageName, type PrivateFileBucket } from "@/lib/files/validation";
+import { checkFileContent, safeStorageName, type PrivateFileBucket } from "@/lib/files/validation";
 
 export function getUploadRoot() {
   return path.join(process.cwd(), "uploads");
 }
 
 export function resolveUploadPath(bucket: PrivateFileBucket, storagePath: string) {
-  const bucketRoot = path.join(getUploadRoot(), bucket);
+  const bucketRoot = path.resolve(getUploadRoot(), bucket);
   const pathParts = storagePath.split("/").filter(Boolean);
-  const fullPath = path.join(bucketRoot, ...pathParts);
-
-  if (!path.resolve(fullPath).startsWith(path.resolve(bucketRoot))) {
+  // Every segment is a plain name: no "." / "..", no Windows separators or
+  // drive letters, no NUL — and the result must sit INSIDE the bucket folder
+  // (a bare prefix test would also accept a sibling such as
+  // "work-order-files-old").
+  if (!pathParts.length || pathParts.some((part) => part === "." || part === ".." || /[\\:\u0000]/.test(part))) {
+    throw new Error("Invalid upload path.");
+  }
+  const fullPath = path.resolve(bucketRoot, ...pathParts);
+  if (!fullPath.startsWith(bucketRoot + path.sep)) {
     throw new Error("Invalid upload path.");
   }
 
@@ -22,6 +28,10 @@ export function resolveUploadPath(bucket: PrivateFileBucket, storagePath: string
 }
 
 export async function savePrivateFile(bucket: PrivateFileBucket, folder: string, file: File) {
+  // Last line of defence for every upload path: never store a file whose
+  // name / contents do not match its declared type.
+  const contentProblem = await checkFileContent(file);
+  if (contentProblem) throw new Error(contentProblem);
   const scopedFolder = safeStorageName(folder);
   const storagePath = `${scopedFolder}/${Date.now()}-${safeStorageName(file.name)}`;
   const fullPath = resolveUploadPath(bucket, storagePath);

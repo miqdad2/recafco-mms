@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import type { TimeCorrectionView } from "@/lib/backend/work-orders/work-time-corrections";
 import type { WorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours-variance";
+import { isCurrentlyPaused, isCurrentlyWorking } from "@/lib/work-orders/paused-work";
 
 // Work Session Time Tracking and Labor Cost Calculation Unit 8, Task 6/7/9.
 // Internal Team roster only (Unit 7) — Freelancer/External Company have no
@@ -97,8 +98,10 @@ export function WorkTimeTracking({
     );
   }
 
-  const workingNow = summary.workers.filter((w) => w.status === "Active").length;
-  const pausedCount = summary.workers.filter((w) => w.status === "Paused").length;
+  // Shared definition (lib/work-orders/paused-work.ts): a worker finished
+  // from a paused state is Finished, not paused.
+  const workingNow = summary.workers.filter((w) => isCurrentlyWorking(w.assignment_status, w.status)).length;
+  const pausedCount = summary.workers.filter((w) => isCurrentlyPaused(w.assignment_status, w.status)).length;
 
   return (
     <section id="work-time-tracking" className="rounded-md border border-[#DDE2EA] bg-white p-5 shadow-sm">

@@ -10,6 +10,7 @@ import { BrandLogo } from "@/components/layout/brand-logo";
 import { MobileNavigation } from "@/components/layout/mobile-navigation";
 import { type NavIconKey } from "@/components/layout/nav-link";
 import { CollapsibleNav, type CollapsibleNavGroup } from "@/components/layout/collapsible-nav";
+import { NavigationHistoryTracker } from "@/components/layout/page-back-button";
 import { LiveTopClock } from "@/components/layout/live-top-clock";
 import { NotificationBell } from "@/components/notifications/notification-bell";
 import { NotificationToastCenter } from "@/components/notifications/notification-toast-center";
@@ -433,6 +434,10 @@ export async function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
         <Suspense fallback={null}>
           <ActionToast />
+        </Suspense>
+        {/* Per-tab list of visited pages for the page-header Back button. */}
+        <Suspense fallback={null}>
+          <NavigationHistoryTracker userId={context.userId} />
         </Suspense>
         <NotificationToastCenter userId={context.userId} />
         {/* Role-to-Role Critical Workflow Popup Unit 9G: mounted

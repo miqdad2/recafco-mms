@@ -8,8 +8,8 @@ import { Button } from "@/components/ui/button";
 import { dispatchActionToast } from "@/lib/action-messages";
 import { DELETION_REASON_MAX_LENGTH, DELETION_REASON_MIN_LENGTH } from "@/lib/work-orders/job-card-deletion-rules";
 
-// Job Card Deletion — the Data Entry "Request Deletion" action in the Job
-// Card header. It never deletes anything: it sends a request to the
+// Job Card Deletion — the "Request Deletion" action in the Job Card header
+// (Super Admin only since 2026-10-27; see canRequestJobCardDeletion). It never deletes anything: it sends a request to the
 // Maintenance Manager. When the Job Card cannot be deleted, the same dialog
 // explains why in plain words instead of offering the request.
 

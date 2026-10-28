@@ -17,8 +17,9 @@ import { prisma } from "@/lib/db/prisma";
 import { parsePendingAttachments, saveAttachmentBatch, type PendingAttachment } from "@/lib/files/attachment-form";
 import { MAX_ATTACHMENT_ROWS } from "@/lib/files/attachment-constants";
 import { getFileSecuritySettings } from "@/lib/files/settings";
-import { validatePrivateFileWithOptions } from "@/lib/files/validation";
+import { checkFileContent, validatePrivateFileWithOptions } from "@/lib/files/validation";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import { JOB_CARD_DATE_MESSAGES } from "@/lib/work-orders/job-card-edit";
 import {
   cleanPayload,
   parseAttachmentRows,
@@ -92,6 +93,9 @@ const FIELD_PROBLEMS: Record<string, { step: JobCardWizardStep; message: string 
   asset_id: { step: 1, message: "Please select an asset." },
   ordered_by: { step: 2, message: "Please enter who took the order (at least 2 letters)." },
   date_of_order: { step: 2, message: "Please enter the date of order." },
+  // The date-range rule's own wording (custom issue) is used when it applies.
+  job_card_start_date: { step: 2, message: JOB_CARD_DATE_MESSAGES.invalidStart },
+  job_card_end_date: { step: 2, message: JOB_CARD_DATE_MESSAGES.invalidEnd },
   maintenance_type: { step: 2, message: "Please select the maintenance type." },
   kilometers: { step: 2, message: "Please check the kilometer reading. It must be a number, 0 or more." },
   running_hours: { step: 2, message: "Please check the running hours. It must be a number, 0 or more." },
@@ -116,12 +120,13 @@ async function prepareJobCard(formData: FormData, intent: Intent, canAssign: boo
 
   const parsed = workOrderSchema.safeParse(raw);
   if (!parsed.success) {
-    const field = String(parsed.error.issues[0]?.path?.[0] ?? "");
+    const issue = parsed.error.issues[0];
+    const field = String(issue?.path?.[0] ?? "");
     const problem = FIELD_PROBLEMS[field];
     throw new JobCardValidationError(
       problem?.step ?? 6,
       field || "form",
-      problem?.message ?? "Some information is not valid. Please review the Job Card."
+      (issue?.code === "custom" ? issue.message : null) ?? problem?.message ?? "Some information is not valid. Please review the Job Card."
     );
   }
   const { id: _ignoredId, ...values } = parsed.data;
@@ -191,6 +196,8 @@ async function prepareJobCard(formData: FormData, intent: Intent, canAssign: boo
         allowedTypes: settings.allowedFileTypes,
       });
       if (problem) throw new JobCardValidationError(5, "attachments", `"${item.file.name}": ${problem}`);
+      const contentProblem = await checkFileContent(item.file);
+      if (contentProblem) throw new JobCardValidationError(5, "attachments", `"${item.file.name}": ${contentProblem}`);
     }
   }
 
@@ -210,6 +217,8 @@ async function prepareJobCard(formData: FormData, intent: Intent, canAssign: boo
       : {}),
     starting_datetime: values.starting_datetime || null,
     ending_datetime: values.ending_datetime || null,
+    job_card_start_date: values.job_card_start_date ?? null,
+    job_card_end_date: values.job_card_end_date ?? null,
     total_labor_cost: totalLabor,
     total_material_cost: totalMaterials,
   });
@@ -244,6 +253,9 @@ async function loadSummary(where: Prisma.work_ordersWhereInput): Promise<JobCard
       maintenance_type: true,
       worker_type: true,
       date_of_order: true,
+      job_card_start_date: true,
+      job_card_end_date: true,
+      created_at: true,
       assets: { select: { asset_name: true, asset_code: true } },
       work_order_worker_assignments: {
         where: { status: { not: "removed" } },
@@ -278,6 +290,9 @@ async function loadSummary(where: Prisma.work_ordersWhereInput): Promise<JobCard
     issue: wo.operator_complaint || wo.description_of_work || null,
     maintenanceType: wo.maintenance_type,
     dateOfOrder: toIsoDate(wo.date_of_order),
+    jobCardStartDate: toIsoDate(wo.job_card_start_date),
+    jobCardEndDate: toIsoDate(wo.job_card_end_date),
+    createdAt: wo.created_at.toISOString(),
     workerTeam: wo.worker_type,
     assignedTeam: team,
     requiredMaterialsCount: wo._count.work_order_required_parts,
@@ -554,6 +569,10 @@ export async function createJobCardFromForm(
     issue: String(prepared.values.operator_complaint ?? "") || String(prepared.values.description_of_work ?? "") || null,
     maintenanceType: String(prepared.values.maintenance_type ?? "") || null,
     dateOfOrder: toIsoDate(prepared.values.date_of_order as Date | undefined),
+    // The same validated values the committed insert wrote.
+    jobCardStartDate: toIsoDate(prepared.values.job_card_start_date as Date | undefined),
+    jobCardEndDate: toIsoDate(prepared.values.job_card_end_date as Date | undefined),
+    createdAt: null,
     workerTeam: String(prepared.values.worker_type ?? "") || null,
     assignedTeam: [],
     requiredMaterialsCount: prepared.requiredPartRows.length,

@@ -3,7 +3,7 @@ import "server-only";
 import type { CurrentUserContext } from "@/lib/auth/context";
 
 const SETTINGS_ID = "00000000-0000-0000-0000-000000000001";
-import { dedupeRecipients, notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
+import { dedupeRecipients, notifyWorkflowEvent, resolveRecipientsSafely } from "@/lib/backend/notifications/safe-notifications";
 import { assertActiveUser, assertBackendPermission } from "@/lib/backend/security/guards";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { advanceMaintenanceManagerReview, requestMaintenanceManagerClarification, respondToMaintenanceManagerClarification } from "@/lib/backend/workflows/engine";
@@ -11,13 +11,14 @@ import {
   findWorkflowWorkOrder,
   getActiveUserIdsByRoleSlugs,
   isTechnicianAssigned,
+  lockJobCardActivity,
   updateWorkOrderStatus
 } from "@/lib/backend/work-orders/repository";
 import type { BackendTransaction } from "@/lib/backend/shared/transaction";
 import type { TechnicianAssignmentInput, TechnicianUpdateInput } from "@/lib/backend/work-orders/validators";
 import { writeAuditLog } from "@/lib/audit/log";
 import { AppError } from "@/lib/errors/app-error";
-import { canTransition, transitionError } from "@/lib/workflows/status-rules";
+import { canTransition, closureReturnTarget, transitionError } from "@/lib/workflows/status-rules";
 import { emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { approvePartsRequest } from "@/lib/backend/parts-requests/service";
 import { CLOSURE_REQUESTED_STATUS } from "@/lib/work-orders/simplified-status-display";
@@ -331,8 +332,10 @@ export async function markJobCardWaitingMaterials(context: CurrentUserContext, w
   assertBackendPermission(context, "work_orders.manage");
   const result = await transitionWorkOrder(context, workOrderId, "Waiting Materials");
 
-  const recipients = await withBackendTransaction(context.userId, (tx) =>
-    jobCardRecipients(tx, ["maintenance_manager", "maintenance_engineer"], result.createdBy, context.userId)
+  const recipients = await resolveRecipientsSafely("workOrder.notify.recipients", () =>
+    withBackendTransaction(context.userId, (tx) =>
+      jobCardRecipients(tx, ["maintenance_manager", "maintenance_engineer"], result.createdBy, context.userId)
+    )
   );
 
   await Promise.all([
@@ -627,8 +630,10 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
   // Data Entry have no technician.jobs.view access to the Technician job
   // page) — a single shared notifyWorkflowEvent call can only carry one
   // actionUrl for every recipient, so this is now two calls instead of one.
-  const otherRecipients = await withBackendTransaction(context.userId, async (tx) =>
-    jobCardRecipients(tx, ["maintenance_engineer", "maintenance_manager"], result.createdBy, context.userId)
+  const otherRecipients = await resolveRecipientsSafely("workOrder.notify.recipients", () =>
+    withBackendTransaction(context.userId, async (tx) =>
+      jobCardRecipients(tx, ["maintenance_engineer", "maintenance_manager"], result.createdBy, context.userId)
+    )
   );
   const technicianRecipients = dedupeRecipients(result.technicianIds, context.userId);
   const awarenessRecipients = otherRecipients.filter((id) => !technicianRecipients.includes(id));
@@ -746,8 +751,10 @@ export async function markExternalWorkCompleted(context: CurrentUserContext, wor
     return closeFromInFlightStatus(tx, context, workOrderId);
   });
 
-  const recipients = await withBackendTransaction(context.userId, (tx) =>
-    jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
+  const recipients = await resolveRecipientsSafely("workOrder.notify.recipients", () =>
+    withBackendTransaction(context.userId, (tx) =>
+      jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
+    )
   );
 
   await Promise.all([
@@ -871,8 +878,10 @@ export async function addTechnicianUpdate(context: CurrentUserContext, input: Te
   // update or photo silently notified nobody. Routed to the same
   // creator + Engineer + Manager pattern every other Job Card notification
   // in this file uses.
-  const recipients = await withBackendTransaction(context.userId, (tx) =>
-    jobCardRecipients(tx, ["maintenance_engineer", "maintenance_manager"], result.createdBy, context.userId)
+  const recipients = await resolveRecipientsSafely("workOrder.notify.recipients", () =>
+    withBackendTransaction(context.userId, (tx) =>
+      jobCardRecipients(tx, ["maintenance_engineer", "maintenance_manager"], result.createdBy, context.userId)
+    )
   );
 
   await Promise.all([
@@ -924,8 +933,10 @@ export async function completeTechnicianJob(context: CurrentUserContext, workOrd
     return closeFromInFlightStatus(tx, context, workOrderId);
   });
 
-  const recipients = await withBackendTransaction(context.userId, (tx) =>
-    jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
+  const recipients = await resolveRecipientsSafely("workOrder.notify.recipients", () =>
+    withBackendTransaction(context.userId, (tx) =>
+      jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
+    )
   );
 
   await Promise.all([
@@ -1023,6 +1034,7 @@ async function assertWorkersReadyForClosure(tx: BackendTransaction, workOrderId:
       workerName: w.worker_name,
       assignmentStatus: w.assignment_status,
       sessionStatus: w.status,
+      manualMinutes: w.manual_minutes,
     }))
   );
   if (!check.ready) {
@@ -1049,6 +1061,9 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
   const trimmedNote = (note ?? "").trim();
 
   const result = await withBackendTransaction(context.userId, async (tx) => {
+    // Worker time single closure approval: same per-Job-Card lock as every
+    // work/time write, so a time entry and the closure request never cross.
+    await lockJobCardActivity(tx, workOrderId);
     const existing = await findWorkflowWorkOrder(tx, workOrderId);
     if (!existing) throw new AppError("Job Card was not found.", { code: "NOT_FOUND" });
     if (existing.status === "Created" || existing.status === "Under Review") {
@@ -1089,8 +1104,10 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
     };
   });
 
-  const recipients = await withBackendTransaction(context.userId, (tx) =>
-    jobCardRecipients(tx, ["maintenance_manager"], result.createdBy, context.userId)
+  const recipients = await resolveRecipientsSafely("workOrder.notify.recipients", () =>
+    withBackendTransaction(context.userId, (tx) =>
+      jobCardRecipients(tx, ["maintenance_manager"], result.createdBy, context.userId)
+    )
   );
 
   await Promise.all([
@@ -1112,12 +1129,14 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
 
 /**
  * Manager (or super_admin) approves a pending closure request.
- * Closure Requested -> Closed. No reject/return path in this unit (Task 7).
+ * Closure Requested -> Closed. The other decision is returnJobCardClosure below.
  */
 export async function approveJobCardClosure(context: CurrentUserContext, workOrderId: string, comments?: string) {
   assertIsManager(context);
 
   const result = await withBackendTransaction(context.userId, async (tx) => {
+    // Same lock as returnJobCardClosure: Approve and Return are decided one at a time.
+    await lockJobCardActivity(tx, workOrderId);
     const existing = await findWorkflowWorkOrder(tx, workOrderId);
     if (!existing) throw new AppError("Job Card was not found.", { code: "NOT_FOUND" });
     if (existing.status !== CLOSURE_REQUESTED_STATUS) {
@@ -1151,8 +1170,10 @@ export async function approveJobCardClosure(context: CurrentUserContext, workOrd
     };
   });
 
-  const recipients = await withBackendTransaction(context.userId, (tx) =>
-    jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
+  const recipients = await resolveRecipientsSafely("workOrder.notify.recipients", () =>
+    withBackendTransaction(context.userId, (tx) =>
+      jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
+    )
   );
 
   await Promise.all([
@@ -1172,6 +1193,86 @@ export async function approveJobCardClosure(context: CurrentUserContext, workOrd
   return result;
 }
 
+/**
+ * Manager (or super_admin) returns a pending closure request for correction
+ * — the other decision in Closure Review (worker time single closure
+ * approval). Closure Requested -> the active status the Job Card had when
+ * closure was requested (status-rules closureReturnTarget), so Data Entry can
+ * correct worker time / details and request closure again. Nothing recorded
+ * is changed or deleted: worker periods, manual entries and their audit rows
+ * stay exactly as they are. The reason is required and goes to the requester.
+ */
+export async function returnJobCardClosure(context: CurrentUserContext, workOrderId: string, reason: string) {
+  assertIsManager(context);
+  const note = (reason ?? "").trim();
+  if (note.length < 5) {
+    throw new AppError("Please write what needs to be corrected (at least 5 letters).", { code: "VALIDATION_ERROR" });
+  }
+  if (note.length > 1000) {
+    throw new AppError("The note is too long. Please keep it under 1000 letters.", { code: "VALIDATION_ERROR" });
+  }
+
+  const result = await withBackendTransaction(context.userId, async (tx) => {
+    // Same per-Job-Card lock as every work/time write, so a return and a
+    // closure approval (or a late time entry) are decided one at a time.
+    await lockJobCardActivity(tx, workOrderId);
+    const existing = await findWorkflowWorkOrder(tx, workOrderId);
+    if (!existing) throw new AppError("Job Card was not found.", { code: "NOT_FOUND" });
+    if (existing.status !== CLOSURE_REQUESTED_STATUS) {
+      throw new AppError(
+        `Only a pending closure request can be returned. Current status: "${existing.status}".`,
+        { code: "WORKFLOW_ERROR" }
+      );
+    }
+
+    const lastRequest = await tx.work_order_status_history.findFirst({
+      where: { work_order_id: workOrderId, to_status: CLOSURE_REQUESTED_STATUS },
+      orderBy: { changed_at: "desc" },
+      select: { from_status: true },
+    });
+    const target = closureReturnTarget(lastRequest?.from_status);
+    const requestedBy = await tx.approvals.findFirst({
+      where: { work_order_id: workOrderId, status: CLOSURE_REQUESTED_STATUS },
+      orderBy: { decided_at: "desc" },
+      select: { decided_by: true },
+    });
+
+    const row = await updateWorkOrderStatus(tx, workOrderId, target, context.userId);
+    await tx.approvals.create({
+      data: { work_order_id: workOrderId, status: "Closure Returned", decided_by: context.userId, comments: note }
+    });
+
+    return {
+      workOrderId: row.id,
+      workOrderNumber: row.work_order_number,
+      status: row.status,
+      createdBy: existing.created_by,
+      requestedBy: requestedBy?.decided_by ?? null,
+    };
+  });
+
+  await Promise.all([
+    notifyWorkflowEvent({
+      eventKey: "job_card.closure_returned",
+      entityType: "work_order",
+      entityId: result.workOrderId,
+      actorId: context.userId,
+      recipientUserIds: dedupeRecipients([result.requestedBy, result.createdBy], context.userId),
+      category: "Approvals",
+      priority: "high",
+      title: "Closure returned for correction",
+      message: `${result.workOrderNumber ?? "A Job Card"} was returned by the Manager: ${note}`,
+      metadata: { job_card_number: result.workOrderNumber ?? "Job Card", note },
+      actionUrl: `/maintenance/work-orders/${result.workOrderId}`,
+      actionLabel: "Open Job Card",
+    }),
+    auditWorkflow(context, "work_order.closure_returned", result, `Closure returned for correction on ${result.workOrderNumber ?? "work order"}`, { note }),
+    emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_UPDATED, result.workOrderId, context.userId),
+  ]);
+
+  return result;
+}
+
 // Approval Workflow Unit 4: direct close is now Manager-only (super_admin
 // included) — Data Entry can no longer final-close a Job Card directly
 // (business rule 8), only request closure (requestJobCardClosure above).
@@ -1184,6 +1285,9 @@ export async function closeWorkOrder(context: CurrentUserContext, workOrderId: s
   assertIsManager(context);
 
   const result = await withBackendTransaction(context.userId, async (tx) => {
+    // Same per-Job-Card lock as Approve / Return and every timer write, so a
+    // worker cannot start between the readiness check and the close.
+    await lockJobCardActivity(tx, workOrderId);
     const existing = await findWorkflowWorkOrder(tx, workOrderId);
     if (!existing) throw new AppError("Work order was not found.", { code: "NOT_FOUND" });
     if (existing.status === CLOSURE_REQUESTED_STATUS) {
@@ -1218,8 +1322,10 @@ export async function closeWorkOrder(context: CurrentUserContext, workOrderId: s
 
   // Unit 6: creator + Engineer + Manager + assigned internal technician (was
   // notifying only the actor themselves, which is rarely useful).
-  const recipients = await withBackendTransaction(context.userId, (tx) =>
-    jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
+  const recipients = await resolveRecipientsSafely("workOrder.notify.recipients", () =>
+    withBackendTransaction(context.userId, (tx) =>
+      jobCardClosedRecipients(tx, workOrderId, result.createdBy, context.userId)
+    )
   );
 
   await Promise.all([

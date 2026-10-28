@@ -33,6 +33,19 @@ export function formatKuwaitDateTime(value: Date | string | null | undefined, fa
     .replace(/\b(am|pm)\b/i, (m) => m.toUpperCase());
 }
 
+/** "26 Oct 2026" — the Kuwait calendar date only (a manual entry whose time was not entered). */
+export function formatKuwaitDate(value: Date | string | null | undefined, fallback = "Not recorded"): string {
+  if (!value) return fallback;
+  const date = toDate(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return new Intl.DateTimeFormat("en-GB", { timeZone: KUWAIT_TIME_ZONE, day: "numeric", month: "short", year: "numeric" }).format(date);
+}
+
+/** Kuwait date and time, or the date only when the time was not entered. */
+export function formatKuwaitMoment(value: Date | string | null | undefined, timeKnown: boolean, fallback = "Not recorded"): string {
+  return timeKnown ? formatKuwaitDateTime(value, fallback) : formatKuwaitDate(value, fallback);
+}
+
 /** A `<input type="datetime-local">` value ("2026-10-26T14:05") showing Kuwait wall-clock time. */
 export function toKuwaitInputValue(value: Date | string): string {
   const shifted = new Date(toDate(value).getTime() + KUWAIT_OFFSET_MS);

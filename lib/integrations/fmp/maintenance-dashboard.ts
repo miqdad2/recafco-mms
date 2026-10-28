@@ -7,6 +7,7 @@ import {
   CLOSURE_REQUESTED_STATUS,
   displaySimplifiedStatus,
 } from "@/lib/work-orders/simplified-status-display";
+import { ON_TEAM_ASSIGNMENT_STATUSES } from "@/lib/backend/workers/constants";
 
 // MMS-FMP-INTEGRATION-01: read-only live Maintenance dashboard summary for
 // the separate Factory Management Platform (FMP). MMS stays the source of
@@ -366,7 +367,7 @@ export async function buildFmpMaintenanceDashboard(
                 status: { in: UNASSIGNED_ELIGIBLE_STATUSES },
                 assigned_supervisor_id: null,
                 work_order_assignments: { none: {} },
-                work_order_worker_assignments: { none: { status: "active" } },
+                work_order_worker_assignments: { none: { status: { in: ON_TEAM_ASSIGNMENT_STATUSES } } },
               },
             ],
           },

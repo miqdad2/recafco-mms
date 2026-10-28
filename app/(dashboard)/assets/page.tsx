@@ -5,7 +5,7 @@ import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
-import { PageNavigationActions } from "@/components/layout/page-navigation-actions";
+import { PageBackButton } from "@/components/layout/page-back-button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { AssetTypeCards, type AssetTypeCardRow, type AssetTypeMovementCounts } from "@/components/assets/asset-type-cards";
 import { SimpleAssetForm } from "@/components/assets/simple-asset-form";
@@ -474,7 +474,7 @@ export default async function AssetsPage({ searchParams }: AssetsPageProps) {
         description="Manage machines, equipment, vehicles, condition, and repair history."
         actions={
           <>
-            <PageNavigationActions />
+            <PageBackButton />
             {canManage ? (
               <>
                 <Link href="/assets?import_assets=1" title="Upload many assets or vehicles from Excel.">

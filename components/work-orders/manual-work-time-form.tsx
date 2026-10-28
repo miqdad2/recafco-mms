@@ -3,44 +3,78 @@
 import { useActionState, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Clock, Loader2, X } from "lucide-react";
 
-import { requestManualWorkTimeEntryAction, type WorkTimeCorrectionActionState } from "@/app/actions/work-time-corrections";
+import { saveManualWorkTimeAction, type WorkTimeCorrectionActionState } from "@/app/actions/work-time-corrections";
 import { LongPeriodConfirm } from "@/components/work-orders/long-period-confirm";
 import { dispatchActionToast } from "@/lib/action-messages";
-import { formatDurationMinutes, formatKuwaitDateTime, parseKuwaitInputValue, toKuwaitInputValue } from "@/lib/format/kuwait-time";
-import { checkWorkPeriod, CORRECTION_REASON_MAX_LENGTH, CORRECTION_REASON_MIN_LENGTH } from "@/lib/work-orders/work-time-correction-rules";
+import { formatDurationMinutes, toKuwaitInputValue } from "@/lib/format/kuwait-time";
+import {
+  checkManualHoursEntry,
+  CORRECTION_REASON_MAX_LENGTH,
+  CORRECTION_REASON_MIN_LENGTH,
+  parseActualHours,
+  suggestedManualMinutes,
+} from "@/lib/work-orders/work-time-correction-rules";
 
-// Manual Worker Time Entry — Data Entry records a worker's real start and
-// end when the timer was not used. Nothing is counted until the Maintenance
-// Manager approves it (the server enforces that; this form only collects
-// and previews). All times are Kuwait time; the duration is calculated here
-// and again on the server — staff never type hours.
+// Enter Time Manually — Data Entry records the days a worker worked without
+// the timer and the ACTUAL hours worked. Saved at once (one work period, counted
+// once); the Manager reviews it in Closure Review — there is no separate
+// time approval. All dates/times are Kuwait time. With `existing`, the same
+// form is "Change Manual Time" for a period entered this way.
 
 const inputClass =
   "focus-ring min-h-11 w-full rounded-md border border-[#D1D5DB] bg-white px-3 text-base text-[#111827] disabled:bg-gray-50 sm:text-sm";
 const labelClass = "block text-sm font-bold text-[#374151]";
+
+export type ManualTimeExisting = {
+  sessionId: string;
+  startedAt: string;
+  stoppedAt: string;
+  startTimeKnown: boolean;
+  endTimeKnown: boolean;
+  minutes: number;
+};
+
+function hoursText(minutes: number): string {
+  return String(Math.round((minutes / 60) * 100) / 100);
+}
 
 export function ManualWorkTimeForm({
   workerAssignmentId,
   workerName,
   jobCardNumber,
   hasRecordedTime,
+  existing,
   onClose,
+  onSaved,
 }: {
   workerAssignmentId: string;
   workerName: string;
   jobCardNumber: string | null;
-  // The worker already has recorded periods: this adds another, separate
-  // period; changing a recorded one is Correct Time (View Sessions).
+  // The worker already has recorded periods: this adds another, separate one.
   hasRecordedTime: boolean;
+  existing?: ManualTimeExisting;
   onClose: () => void;
+  onSaved?: () => void;
 }) {
   const today = toKuwaitInputValue(new Date()).slice(0, 10);
-  const [startDate, setStartDate] = useState(today);
-  const [startTime, setStartTime] = useState("");
-  const [endDate, setEndDate] = useState(today);
-  const [endTime, setEndTime] = useState("");
+  const initial = existing
+    ? {
+        startDate: toKuwaitInputValue(existing.startedAt).slice(0, 10),
+        startTime: existing.startTimeKnown ? toKuwaitInputValue(existing.startedAt).slice(11, 16) : "",
+        endDate: toKuwaitInputValue(existing.stoppedAt).slice(0, 10),
+        endTime: existing.endTimeKnown ? toKuwaitInputValue(existing.stoppedAt).slice(11, 16) : "",
+        hours: hoursText(existing.minutes),
+      }
+    : { startDate: today, startTime: "", endDate: today, endTime: "", hours: "" };
+  const [startDate, setStartDate] = useState(initial.startDate);
+  const [startTime, setStartTime] = useState(initial.startTime);
+  const [endDate, setEndDate] = useState(initial.endDate);
+  const [endTime, setEndTime] = useState(initial.endTime);
+  const [hours, setHours] = useState(initial.hours);
   const [confirmLong, setConfirmLong] = useState(false);
-  const [state, formAction, isPending] = useActionState<WorkTimeCorrectionActionState, FormData>(requestManualWorkTimeEntryAction, null);
+  // One id per opened form: a double click or retry returns the first save.
+  const [submissionId] = useState(() => crypto.randomUUID());
+  const [state, formAction, isPending] = useActionState<WorkTimeCorrectionActionState, FormData>(saveManualWorkTimeAction, null);
   const handled = useRef<WorkTimeCorrectionActionState>(null);
   const firstField = useRef<HTMLInputElement>(null);
 
@@ -51,10 +85,11 @@ export function ManualWorkTimeForm({
     if (state === handled.current) return;
     handled.current = state;
     if (state?.ok) {
-      dispatchActionToast({ tone: "success", title: "Time sent for approval", description: state.message });
+      dispatchActionToast({ tone: "success", title: existing ? "Manual time changed" : "Manual time saved", description: state.message });
+      onSaved?.();
       onClose();
     }
-  }, [state, onClose]);
+  }, [state, onClose, onSaved, existing]);
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape" && !isPending) onClose();
@@ -63,18 +98,17 @@ export function ManualWorkTimeForm({
     return () => document.removeEventListener("keydown", onKey);
   }, [isPending, onClose]);
 
-  const start = startDate && startTime ? parseKuwaitInputValue(`${startDate}T${startTime}`) : null;
-  const end = endDate && endTime ? parseKuwaitInputValue(`${endDate}T${endTime}`) : null;
-  const ready = Boolean(startDate && startTime && endDate && endTime);
-  // Overlaps are checked on the server (it knows the worker's other periods).
+  const suggestion = suggestedManualMinutes(startDate, startTime, endDate, endTime);
   const preview = useMemo(
-    () => (ready ? checkWorkPeriod({ start, end, now: new Date(), otherPeriods: [], longPeriodConfirmed: confirmLong }) : null),
-    [ready, start, end, confirmLong]
+    () =>
+      startDate && endDate && hours.trim()
+        ? checkManualHoursEntry({ startDate, startTime, endDate, endTime, actualHours: hours, now: new Date(), longPeriodConfirmed: confirmLong })
+        : null,
+    [startDate, startTime, endDate, endTime, hours, confirmLong]
   );
-  const longMinutes =
-    preview && ((preview.ok && preview.unusuallyLong) || (!preview.ok && preview.needsLongPeriodConfirmation)) && start && end
-      ? Math.round((end.getTime() - start.getTime()) / 60000)
-      : null;
+  const enteredMinutes = parseActualHours(hours);
+  const needsLongConfirm = preview !== null && ((preview.ok && preview.unusuallyLong) || (!preview.ok && preview.needsLongPeriodConfirmation === true));
+  const multiDay = Boolean(startDate && endDate && startDate !== endDate);
 
   return (
     <>
@@ -89,9 +123,11 @@ export function ManualWorkTimeForm({
           <div className="flex items-start justify-between gap-3 border-b border-[#E5E7EB] px-5 py-4">
             <div>
               <h2 id="manual-time-heading" className="flex items-center gap-2 text-lg font-black text-[#111827]">
-                <Clock className="h-5 w-5 text-[#ED1C24]" aria-hidden="true" /> Enter Time Manually
+                <Clock className="h-5 w-5 text-[#ED1C24]" aria-hidden="true" /> {existing ? "Change Manual Time" : "Enter Time Manually"}
               </h2>
-              <p className="mt-0.5 text-sm text-[#4B5563]">For work done without the timer. The Manager must approve it before it counts.</p>
+              <p className="mt-0.5 text-sm text-[#4B5563]">
+                For work done without the timer. It is saved at once; the Manager checks it when reviewing the Job Card closure.
+              </p>
             </div>
             <button
               type="button"
@@ -106,6 +142,8 @@ export function ManualWorkTimeForm({
 
           <form action={formAction} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
             <input type="hidden" name="worker_assignment_id" value={workerAssignmentId} />
+            <input type="hidden" name="submission_id" value={submissionId} />
+            {existing ? <input type="hidden" name="session_id" value={existing.sessionId} /> : null}
 
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-3 text-sm">
               <dt className="text-[#6B7280]">Worker</dt>
@@ -114,16 +152,14 @@ export function ManualWorkTimeForm({
               <dd className="break-words font-bold text-[#111827]">{jobCardNumber ?? "—"}</dd>
             </dl>
 
-            {hasRecordedTime ? (
+            {hasRecordedTime && !existing ? (
               <p className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
-                This adds a <strong>separate</strong> work period. To change time that is already recorded, close this and use{" "}
-                <strong>View Sessions → Correct Time</strong>.
+                This adds <strong>more</strong> hours. To change hours already recorded, close this and use <strong>View Sessions</strong>.
               </p>
             ) : null}
 
             <p className="text-sm text-[#4B5563]">
-              All times are <strong>Kuwait time</strong>. Example: started 26 Oct at 08:00, finished 26 Oct at 12:30. For work past midnight, choose the next
-              day as the end date.
+              All dates and times are <strong>Kuwait time</strong>. Enter the times only if you know them. Example: worked 25–27 Oct, 9 hours in total.
             </p>
 
             <fieldset className="grid grid-cols-2 gap-3">
@@ -136,9 +172,9 @@ export function ManualWorkTimeForm({
               </div>
               <div>
                 <label htmlFor="mwt-start-time" className={labelClass}>
-                  Start Time <span className="text-[#ED1C24]">*</span>
+                  Start Time <span className="font-normal text-[#6B7280]">(if known)</span>
                 </label>
-                <input id="mwt-start-time" type="time" name="start_time" required value={startTime} onChange={(e) => setStartTime(e.target.value)} disabled={isPending} className={inputClass} />
+                <input id="mwt-start-time" type="time" name="start_time" value={startTime} onChange={(e) => setStartTime(e.target.value)} disabled={isPending} className={inputClass} />
               </div>
             </fieldset>
             <fieldset className="grid grid-cols-2 gap-3">
@@ -147,42 +183,72 @@ export function ManualWorkTimeForm({
                 <label htmlFor="mwt-end-date" className={labelClass}>
                   End Date <span className="text-[#ED1C24]">*</span>
                 </label>
-                <input id="mwt-end-date" type="date" name="end_date" required max={today} value={endDate} onChange={(e) => setEndDate(e.target.value)} disabled={isPending} className={inputClass} />
+                <input id="mwt-end-date" type="date" name="end_date" required min={startDate || undefined} max={today} value={endDate} onChange={(e) => setEndDate(e.target.value)} disabled={isPending} className={inputClass} />
               </div>
               <div>
                 <label htmlFor="mwt-end-time" className={labelClass}>
-                  End Time <span className="text-[#ED1C24]">*</span>
+                  End Time <span className="font-normal text-[#6B7280]">(if known)</span>
                 </label>
-                <input id="mwt-end-time" type="time" name="end_time" required value={endTime} onChange={(e) => setEndTime(e.target.value)} disabled={isPending} className={inputClass} />
+                <input id="mwt-end-time" type="time" name="end_time" value={endTime} onChange={(e) => setEndTime(e.target.value)} disabled={isPending} className={inputClass} />
               </div>
             </fieldset>
 
+            <div>
+              <label htmlFor="mwt-hours" className={labelClass}>
+                Actual Hours Worked <span className="text-[#ED1C24]">*</span>
+              </label>
+              <input
+                id="mwt-hours"
+                type="text"
+                inputMode="decimal"
+                name="actual_hours"
+                required
+                autoComplete="off"
+                placeholder="e.g. 9 or 4.5"
+                value={hours}
+                onChange={(e) => setHours(e.target.value)}
+                disabled={isPending}
+                aria-describedby="mwt-hours-help"
+                className={inputClass}
+              />
+              <p id="mwt-hours-help" className="mt-1 text-xs text-[#6B7280]">
+                {multiDay
+                  ? "Only the hours actually worked across these days — not the time between the dates."
+                  : "The hours actually worked (breaks not included)."}
+              </p>
+              {suggestion !== null && enteredMinutes !== suggestion ? (
+                <button
+                  type="button"
+                  onClick={() => setHours(hoursText(suggestion))}
+                  disabled={isPending}
+                  className="mt-1.5 inline-flex min-h-11 items-center rounded-md border border-[#E5E7EB] bg-white px-3 text-sm font-bold text-[#111827] hover:bg-gray-50 sm:min-h-9"
+                >
+                  Use {formatDurationMinutes(suggestion)} (from the times)
+                </button>
+              ) : null}
+            </div>
+
             <div className="rounded-md border border-[#E5E7EB] bg-white p-3 text-sm" aria-live="polite">
-              {!ready ? (
-                <p className="text-[#6B7280]">Worked time is calculated when start and end are filled in.</p>
-              ) : preview?.ok || longMinutes !== null ? (
+              {!preview ? (
+                <p className="text-[#6B7280]">Fill in the dates and the hours worked.</p>
+              ) : preview.ok || needsLongConfirm ? (
                 <p className="text-[#111827]">
-                  Worked time: <strong className="text-base">{formatDurationMinutes(preview?.ok ? preview.durationMinutes : (longMinutes ?? 0))}</strong>
-                  {start && end ? (
-                    <span className="block text-xs text-[#6B7280]">
-                      {formatKuwaitDateTime(start)} → {formatKuwaitDateTime(end)}
-                    </span>
-                  ) : null}
+                  Hours to save: <strong className="text-base">{formatDurationMinutes(enteredMinutes ?? 0)}</strong>
                 </p>
               ) : (
                 <p className="flex items-start gap-1.5 text-amber-800">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                  {preview && !preview.ok ? preview.message : "Check the dates and times."}
+                  {preview.message}
                 </p>
               )}
             </div>
-            {longMinutes !== null ? (
-              <LongPeriodConfirm id="mwt-confirm-long" minutes={longMinutes} checked={confirmLong} onChange={setConfirmLong} disabled={isPending} />
+            {needsLongConfirm && enteredMinutes !== null ? (
+              <LongPeriodConfirm id="mwt-confirm-long" minutes={enteredMinutes} checked={confirmLong} onChange={setConfirmLong} disabled={isPending} />
             ) : null}
 
             <div>
               <label htmlFor="mwt-reason" className={labelClass}>
-                Reason for manual entry <span className="text-[#ED1C24]">*</span>
+                Reason / Remarks <span className="text-[#ED1C24]">*</span>
               </label>
               <textarea
                 id="mwt-reason"
@@ -192,7 +258,7 @@ export function ManualWorkTimeForm({
                 minLength={CORRECTION_REASON_MIN_LENGTH}
                 maxLength={CORRECTION_REASON_MAX_LENGTH}
                 disabled={isPending}
-                placeholder="Example: Timer was not started; supervisor confirmed the worker worked 08:00–12:30"
+                placeholder="Example: Timer was not used; supervisor confirmed 9 hours over 3 days"
                 className="focus-ring w-full rounded-md border border-[#D1D5DB] bg-white px-3 py-2 text-base sm:text-sm"
               />
             </div>
@@ -215,11 +281,11 @@ export function ManualWorkTimeForm({
               </button>
               <button
                 type="submit"
-                disabled={isPending || !ready || !preview?.ok}
+                disabled={isPending || !preview?.ok}
                 className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-4 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-60"
               >
                 {isPending ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : null}
-                Send to Manager for Approval
+                {existing ? "Save Change" : "Save Manual Time"}
               </button>
             </div>
           </form>

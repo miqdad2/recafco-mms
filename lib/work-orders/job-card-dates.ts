@@ -25,15 +25,18 @@
 
 export type JobCardDateSource = "timer" | "status" | "form" | "closure";
 
+// dateOnly: the date comes from a manual work period whose time was not
+// entered — show the date only, never an invented time.
 export type JobCardDate =
-  | { recorded: true; at: string; source: JobCardDateSource }
+  | { recorded: true; at: string; source: JobCardDateSource; dateOnly?: boolean }
   | { recorded: false; label: "Not started" | "Not finished" | "Not recorded" };
 
 export type JobCardDatesInput = {
   createdAt: string;
   status: string;
   // Non-cancelled work periods only.
-  sessions: Array<{ startedAt: string; endedAt: string | null; status: string }>;
+  // startTimeKnown / endTimeKnown false = a manual period entered without times.
+  sessions: Array<{ startedAt: string; endedAt: string | null; status: string; startTimeKnown?: boolean; endTimeKnown?: boolean }>;
   // Active + finished internal team assignments (removed ones excluded).
   workerAssignmentStatuses: string[];
   statusStartAt: string | null;
@@ -75,7 +78,9 @@ export function computeJobCardDates(input: JobCardDatesInput): JobCardDates {
   const systemStart = earliest([timerStart, input.statusStartAt]);
   let workStart: JobCardDate;
   if (systemStart) {
-    workStart = { recorded: true, at: systemStart, source: systemStart === timerStart ? "timer" : "status" };
+    const fromTimer = systemStart === timerStart;
+    const dateOnly = fromTimer && input.sessions.some((s) => s.startedAt === systemStart && s.startTimeKnown === false);
+    workStart = { recorded: true, at: systemStart, source: fromTimer ? "timer" : "status", ...(dateOnly ? { dateOnly } : {}) };
   } else if (input.formStartAt) {
     workStart = { recorded: true, at: input.formStartAt, source: "form" };
   } else {
@@ -90,7 +95,8 @@ export function computeJobCardDates(input: JobCardDatesInput): JobCardDates {
     const anyRunning = input.sessions.some((s) => s.status === "Active");
     const lastEnd = latest(input.sessions.map((s) => s.endedAt));
     if (allFinished && !anyRunning && lastEnd) {
-      workEnd = { recorded: true, at: lastEnd, source: "timer" };
+      const dateOnly = input.sessions.some((s) => s.endedAt === lastEnd && s.endTimeKnown === false);
+      workEnd = { recorded: true, at: lastEnd, source: "timer", ...(dateOnly ? { dateOnly } : {}) };
     } else if (isClosed) {
       workEnd = { recorded: false, label: "Not recorded" };
     } else {

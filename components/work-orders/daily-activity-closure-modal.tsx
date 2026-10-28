@@ -102,6 +102,7 @@ export function DailyActivityClosureModal({
       workerName: w.worker_name,
       assignmentStatus: w.assignment_status,
       sessionStatus: w.status,
+      manualMinutes: w.manual_minutes,
     }))
   );
   const allWorkersFinished = workersCheck.ready;
@@ -226,11 +227,11 @@ export function DailyActivityClosureModal({
                 <dd className="text-sm font-bold text-[#111827]">{formatDurationMinutes(time.automaticMinutes)}</dd>
               </div>
               <div>
-                <dt className="text-[#6B7280]">Manual time (approved)</dt>
+                <dt className="text-[#6B7280]">Manually entered</dt>
                 <dd className="text-sm font-bold text-[#111827]">{formatDurationMinutes(time.manualMinutes)}</dd>
               </div>
               <div>
-                <dt className="text-[#6B7280]">Waiting for Manager</dt>
+                <dt className="text-[#6B7280]">Older entries waiting</dt>
                 <dd className={`text-sm font-bold ${pendingTime ? "text-amber-700" : "text-[#111827]"}`}>
                   {time.pendingManualEntries} manual · {time.pendingCorrections} {time.pendingCorrections === 1 ? "correction" : "corrections"}
                 </dd>
@@ -239,7 +240,7 @@ export function DailyActivityClosureModal({
             {pendingTime > 0 ? (
               <p className="mt-2 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs font-semibold text-amber-800">
                 <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                The Manager must approve or reject the waiting worker time before closure can be requested.
+                An older worker time entry is waiting for the Manager&apos;s decision. The Manager must approve or reject it before closure can be requested.
               </p>
             ) : null}
           </div>
@@ -251,7 +252,7 @@ export function DailyActivityClosureModal({
           <ul className="space-y-1.5">
             <ChecklistRow ok={materialsReady} label="Materials completed" />
             <ChecklistRow ok={allWorkersFinished} label="All workers finished" />
-            <ChecklistRow ok={pendingTime === 0} label="No worker time waiting for Manager review" />
+            <ChecklistRow ok={pendingTime === 0} label="No older worker time waiting for the Manager" />
           </ul>
           {/* Task 9 — named, specific worker call-outs (not just the generic
               blockers line below) so a Manager/Data Entry knows exactly who

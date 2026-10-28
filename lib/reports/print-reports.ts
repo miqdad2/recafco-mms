@@ -376,6 +376,7 @@ export async function getTechnicianWorkloadPrintReport(filters: TechnicianWorklo
         where: { work_orders: { deleted_at: null, ...dateRangeWhere(filters.from, filters.to) } },
         select: {
           work_orders: { select: { status: true } },
+          status: true,
           work_sessions: { select: { duration_minutes: true, calculated_amount: true, status: true } },
         },
       },
@@ -403,7 +404,9 @@ export async function getTechnicianWorkloadPrintReport(filters: TechnicianWorklo
         if (s.status !== "Cancelled") totalMinutes += s.duration_minutes;
         laborCost += Number(s.calculated_amount);
         if (s.status === "Active") hasActiveSession = true;
-        if (s.status === "Paused") hasPausedSession = true;
+        // Paused only while the worker is still on the job (Finish from a
+        // paused state leaves that period "Paused").
+        if (s.status === "Paused" && a.status === "active") hasPausedSession = true;
       }
     }
 
