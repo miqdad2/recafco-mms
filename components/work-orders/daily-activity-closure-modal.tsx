@@ -95,7 +95,11 @@ export function DailyActivityClosureModal({
   // the server guard/Daily Activity board/Job Card detail page all use, so
   // this modal can never show "ready" when the real backend guard would
   // still reject the request.
-  const materialsReady = card.materialsChip.label === "Materials Completed";
+  // An empty worker / material list only counts once confirmed Not Required
+  // (closure-readiness.ts checkClosureRequirements, same as the server).
+  const materialsNotRequired = card.requirements.materials === "not_required";
+  const workersNotRequired = card.requirements.workers === "not_required";
+  const materialsReady = card.materialsChip.label === "Materials Completed" || materialsNotRequired;
   const workersCheck = checkWorkersReadyForClosure(
     card.laborSummary.workers.map((w) => ({
       workerAssignmentId: w.worker_assignment_id,
@@ -105,7 +109,7 @@ export function DailyActivityClosureModal({
       manualMinutes: w.manual_minutes,
     }))
   );
-  const allWorkersFinished = workersCheck.ready;
+  const allWorkersFinished = workersCheck.ready && card.requirements.workers !== "missing";
   // Manual Worker Time Entry — minutes by source (never money) and anything
   // still waiting for the Manager; the server refuses closure while waiting.
   const time = card.timeSummary;
@@ -250,8 +254,8 @@ export function DailyActivityClosureModal({
         <div className="rounded-md border border-[#E5E7EB] p-3">
           <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Closure Readiness</p>
           <ul className="space-y-1.5">
-            <ChecklistRow ok={materialsReady} label="Materials completed" />
-            <ChecklistRow ok={allWorkersFinished} label="All workers finished" />
+            <ChecklistRow ok={materialsReady} label={materialsNotRequired ? "No materials required (confirmed)" : "Materials completed"} />
+            <ChecklistRow ok={allWorkersFinished} label={workersNotRequired ? "No workers required (confirmed)" : "All workers finished"} />
             <ChecklistRow ok={pendingTime === 0} label="No older worker time waiting for the Manager" />
           </ul>
           {/* Task 9 — named, specific worker call-outs (not just the generic

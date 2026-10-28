@@ -27,6 +27,7 @@ import { emitOfflineInventoryRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_E
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { syncPartsRequestStatusAfterFullIssueInTx } from "@/lib/backend/parts-requests/service";
 import { lockOpenJobCardForActivity } from "@/lib/backend/work-orders/repository";
+import { supersedeRequirementConfirmation } from "@/lib/backend/work-orders/closure-requirements";
 
 export type OfflineMovementState =
   // Add New Material Category Flexibility Cleanup Task 7: `category` is only
@@ -777,6 +778,9 @@ export async function issueOfflineMaterialAction(
       // already happen anywhere else. No-op when there's nothing to sync.
       if (woIdRaw) {
         await syncPartsRequestStatusAfterFullIssueInTx(tx, context, woIdRaw);
+        // Material issued to the Job Card: a "No Materials Required"
+        // confirmation (if any) is superseded, never deleted.
+        await supersedeRequirementConfirmation(tx, woIdRaw, "materials", context.userId, "Material issued from Inventory Control");
       }
 
       return movement;

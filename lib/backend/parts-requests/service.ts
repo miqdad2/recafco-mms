@@ -16,6 +16,7 @@ import {
   updatePartsRequestStatus
 } from "@/lib/backend/parts-requests/repository";
 import { getActiveUserIdsByRoleSlugs } from "@/lib/backend/work-orders/repository";
+import { supersedeRequirementConfirmation } from "@/lib/backend/work-orders/closure-requirements";
 import type {
   ApprovePartsRequestInput,
   CreatePartsRequestInput,
@@ -98,6 +99,9 @@ export async function createPartsRequest(
       },
       select: { id: true, parts_request_number: true, status: true, work_order_id: true }
     });
+    // The Job Card now has materials: a "No Materials Required" confirmation
+    // (if any) is superseded, never deleted.
+    await supersedeRequirementConfirmation(tx, input.workOrderId, "materials", context.userId, "Materials Request created");
 
     if (input.items.length > 0) {
       await tx.parts_request_items.createMany({

@@ -23,8 +23,18 @@ const PANEL_ID = "daily-activity-panel";
 // stack, so a row click should scroll the (now below-the-fold) panel into view.
 const STACKED_LAYOUT_MAX_WIDTH = 1024;
 
-export function DailyActivityBoard({ cards, canPrint }: { cards: DailyActivityCardData[]; canPrint: boolean }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+export function DailyActivityBoard({
+  cards,
+  canPrint,
+  initialSelectedId = null,
+}: {
+  cards: DailyActivityCardData[];
+  canPrint: boolean;
+  // A Job Card to select first (exact Job Card number search, e.g. the
+  // creation popup's "Open in Daily Activity"); falls back to the first row.
+  initialSelectedId?: string | null;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
   const selected = (selectedId ? cards.find((c) => c.id === selectedId) : undefined) ?? cards[0] ?? null;
   // Unified Material Processing Flow Unit 10G.23 (was two separate
   // issue/receive modal states, Unit 10D): which Job Card's Process

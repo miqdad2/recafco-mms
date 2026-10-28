@@ -667,6 +667,8 @@ model profiles {
   work_sessions_edited_by                                           WorkOrderWorkSession[]        @relation("wows_edited_by")
   job_card_deletion_requests_requested                              JobCardDeletionRequest[]      @relation("jcdr_requested_by")
   job_card_deletion_requests_decided                                JobCardDeletionRequest[]      @relation("jcdr_decided_by")
+  job_card_requirement_confirmations_confirmed                       JobCardRequirementConfirmation[] @relation("jcrc_confirmed_by")
+  job_card_requirement_confirmations_superseded                      JobCardRequirementConfirmation[] @relation("jcrc_superseded_by")
   work_time_corrections_requested                                   WorkSessionTimeCorrection[]   @relation("wstc_requested_by")
   work_time_corrections_reviewed                                    WorkSessionTimeCorrection[]   @relation("wstc_reviewed_by")
 
@@ -964,6 +966,7 @@ model work_orders {
   work_order_worker_assignments   WorkOrderWorkerAssignment[]
   work_order_work_sessions        WorkOrderWorkSession[]
   job_card_deletion_requests      JobCardDeletionRequest[]
+  job_card_requirement_confirmations JobCardRequirementConfirmation[]
   work_session_time_corrections   WorkSessionTimeCorrection[]
   assets                          assets?                       @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
   profiles                        profiles?                     @relation(fields: [assigned_supervisor_id], references: [id], onUpdate: NoAction)
@@ -1680,4 +1683,30 @@ model inventory_material_settings {
   updated_at             DateTime @default(now()) @db.Timestamptz(6)
 
   @@index([part_id])
+}
+
+// ─── Job Card requirement confirmations (migration 20261028000000) ──────────
+//
+// "No Workers Required" / "No Materials Required", confirmed explicitly
+// before closure when a Job Card genuinely has none. Active while
+// superseded_at is null (partial unique index: one active row per Job Card
+// and requirement); superseded — never deleted — once workers/materials are
+// added, so the history stays.
+model JobCardRequirementConfirmation {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  work_order_id     String    @db.Uuid
+  requirement       String
+  reason            String?
+  confirmed_by      String    @db.Uuid
+  confirmed_at      DateTime  @default(now()) @db.Timestamptz(6)
+  superseded_at     DateTime? @db.Timestamptz(6)
+  superseded_by     String?   @db.Uuid
+  superseded_reason String?
+
+  work_orders              work_orders @relation(fields: [work_order_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  profiles_confirmed_by    profiles    @relation("jcrc_confirmed_by", fields: [confirmed_by], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  profiles_superseded_by   profiles?   @relation("jcrc_superseded_by", fields: [superseded_by], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([work_order_id, confirmed_at(sort: Desc)], map: "idx_job_card_requirement_confirmations_work_order")
+  @@map("job_card_requirement_confirmations")
 }

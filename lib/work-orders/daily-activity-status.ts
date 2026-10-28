@@ -26,12 +26,17 @@
 //  - Ready to Close:       not Closed / not already requested, the existing
 //                          closure-readiness check passes, and at least one
 //                          worker exists (so every worker is Finished — work
-//                          is actually done, not just never started).
+//                          is actually done, not just never started) or "No
+//                          Workers Required" is confirmed.
 //  - Not Started:          not Closed / not requested, nobody Working/Paused,
 //                          and at least one worker (or the whole team) has not
-//                          started — the existing work-time chip rule.
+//                          started — the existing work-time chip rule. A card
+//                          with no workers confirmed as not needing any is not
+//                          "Not Started".
 //  - Materials Pending:    not Closed, the materials chip reads "Materials
 //                          Pending".
+//  - Needs My Action:      not Closed, and the viewer has an action they are
+//                          allowed to take (deriveMyAction — role-specific).
 // Buckets may overlap (e.g. Waiting for Approval + Working when a worker was
 // resumed after the request); they are not meant to sum to Open.
 
@@ -39,6 +44,7 @@ import { deriveSimpleWorkerState } from "@/lib/work-orders/hours-variance";
 
 export const DAILY_ACTIVITY_STATUS_FILTERS = [
   "all",
+  "needs-action",
   "working",
   "paused",
   "ready-closure",
@@ -73,6 +79,11 @@ export type DailyActivityInput = {
   // required materials fully issued, every worker Finished).
   closureReady: boolean;
   materialsPending: boolean;
+  // "No Workers Required" confirmed (only meaningful with no workers).
+  workersNotRequired?: boolean;
+  // The viewer has an action to take here (daily-activity-my-action.ts
+  // deriveMyAction — role-specific, computed by the page).
+  needsMyAction?: boolean;
 };
 
 export type DailyActivityClassification = {
@@ -83,6 +94,7 @@ export type DailyActivityClassification = {
   isReadyToClose: boolean;
   isNotStarted: boolean;
   isMaterialsPending: boolean;
+  isNeedsMyAction: boolean;
   workingWorkers: number;
   pausedWorkers: number;
   plainStatus: DailyActivityPlainStatus;
@@ -106,9 +118,12 @@ export function classifyDailyActivity(input: DailyActivityInput): DailyActivityC
   // count), even if another worker on the card is working. The card's own
   // label still reads "Working Now" in that case (see plainStatus below).
   const isPaused = !isClosed && pausedWorkers > 0;
-  const isReadyToClose = isOpenForWork && input.closureReady && states.length > 0;
-  const isNotStarted = isOpenForWork && workingWorkers === 0 && pausedWorkers === 0 && (states.length === 0 || notStartedWorkers > 0);
+  const noWorkersNeeded = states.length === 0 && input.workersNotRequired === true;
+  const isReadyToClose = isOpenForWork && input.closureReady && (states.length > 0 || noWorkersNeeded);
+  const isNotStarted =
+    isOpenForWork && workingWorkers === 0 && pausedWorkers === 0 && ((states.length === 0 && !noWorkersNeeded) || notStartedWorkers > 0);
   const isMaterialsPending = !isClosed && input.materialsPending;
+  const isNeedsMyAction = !isClosed && input.needsMyAction === true;
 
   let plainStatus: DailyActivityPlainStatus;
   if (isClosed) plainStatus = { label: "Closed", description: "Job Card closed.", tone: "gray" };
@@ -116,6 +131,7 @@ export function classifyDailyActivity(input: DailyActivityInput): DailyActivityC
   else if (isWorking) plainStatus = { label: "Working Now", description: "A worker is currently working.", tone: "green" };
   else if (isPaused && workingWorkers === 0) plainStatus = { label: "Paused", description: "Work has been paused.", tone: "amber" };
   else if (isReadyToClose) plainStatus = { label: "Ready to Close", description: "Work is finished.", tone: "blue" };
+  else if (noWorkersNeeded) plainStatus = { label: "No Workers Needed", description: "Finish the remaining items before closing.", tone: "gray" };
   else if (manualOnlyWorkers > 0 && notStartedWorkers === 0)
     plainStatus = { label: "Manual Time Recorded", description: "Hours were entered manually. Mark the work finished.", tone: "blue" };
   else if (states.length > 0 && notStartedWorkers === 0) plainStatus = { label: "Work Finished", description: "Complete materials before closing.", tone: "blue" };
@@ -130,6 +146,7 @@ export function classifyDailyActivity(input: DailyActivityInput): DailyActivityC
     isReadyToClose,
     isNotStarted,
     isMaterialsPending,
+    isNeedsMyAction,
     workingWorkers: isClosed ? 0 : workingWorkers,
     pausedWorkers: isClosed ? 0 : pausedWorkers,
     plainStatus,
@@ -140,6 +157,8 @@ export function matchesDailyActivityFilter(c: DailyActivityClassification, filte
   switch (filter) {
     case "all":
       return !c.isClosed;
+    case "needs-action":
+      return c.isNeedsMyAction;
     case "working":
       return c.isWorking;
     case "paused":
@@ -159,6 +178,7 @@ export function matchesDailyActivityFilter(c: DailyActivityClassification, filte
 
 export type DailyActivitySummary = {
   open: number;
+  needsMyAction: number;
   working: number;
   paused: number;
   readyToClose: number;
@@ -174,6 +194,7 @@ export function summarizeDailyActivity(items: DailyActivityClassification[]): Da
   const count = (filter: DailyActivityStatusFilter) => items.filter((c) => matchesDailyActivityFilter(c, filter)).length;
   return {
     open: count("all"),
+    needsMyAction: count("needs-action"),
     working: count("working"),
     paused: count("paused"),
     readyToClose: count("ready-closure"),

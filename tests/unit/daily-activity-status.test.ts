@@ -137,7 +137,7 @@ describe("summary counts match the filtered list", () => {
 
   it("an empty scope counts zero everywhere", () => {
     const empty = summarizeDailyActivity([]);
-    assert.deepEqual(Object.values(empty), [0, 0, 0, 0, 0, 0, 0, 0]);
+    assert.deepEqual(Object.values(empty), [0, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 });
 

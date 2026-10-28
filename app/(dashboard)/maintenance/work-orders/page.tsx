@@ -67,6 +67,7 @@ import { DeletedJobCardsHistory } from "@/components/work-orders/deleted-job-car
 import { formatJobCardDate } from "@/lib/work-orders/job-card-edit";
 import { formatKuwaitDate } from "@/lib/format/kuwait-time";
 import { ON_TEAM_ASSIGNMENT_STATUSES } from "@/lib/backend/workers/constants";
+import { getClosureReadinessForWorkOrders } from "@/lib/work-orders/closure-readiness-data";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -83,6 +84,10 @@ const TERMINAL_STATUSES = [
 ];
 
 const OVERDUE_DAYS = 7;
+
+// Statuses whose Next Action hint reads "Ready to close" — checked against the
+// shared closure conditions (getClosureReadinessForWorkOrders) first.
+const CLOSURE_HINT_STATUSES = ["In Progress", "Reopened"];
 
 type Tab = { label: string; status: string };
 
@@ -360,7 +365,9 @@ function getNextAction(
   // Task 2: optional — every existing call site keeps working unchanged if
   // omitted, but the two "Ready to assign" cases below use it to apply the
   // task's exact priority ladder instead of a single static label.
-  flags?: { hasInternalTeam: boolean; hasPendingMaterials: boolean; hasActiveSession: boolean }
+  // closureReady: the shared closure check for this row (In Progress /
+  // Reopened only) — "Ready to close" only when it passes.
+  flags?: { hasInternalTeam: boolean; hasPendingMaterials: boolean; hasActiveSession: boolean; closureReady?: boolean }
 ): { label: string; mine: boolean } {
   const p = context.permissions;
   const isAdmin = context.role?.slug === "super_admin";
@@ -416,7 +423,9 @@ function getNextAction(
     case "Partially Issued":  return { label: "Materials partially received", mine: canAssign };
     case "Materials Issued":  return readyToAssignOrBetter();
     case "Assigned":          return { label: canUpdateProgress ? "Ready to start" : "Technician to start", mine: canUpdateProgress };
-    case "In Progress":       return { label: canClose ? "Ready to close" : "Work in progress", mine: canClose };
+    case "In Progress":
+      if (flags?.closureReady === false) return { label: "Work in progress", mine: false };
+      return { label: canClose ? "Ready to close" : "Work in progress", mine: canClose };
     case "Closed":             return { label: "Job card closed",          mine: false };
     // Legacy pre-Unit3 statuses — defensive fallback only.
     case "Draft":              return { label: "Submit for review",        mine: p.includes("work_orders.manage") };
@@ -430,7 +439,9 @@ function getNextAction(
     case "Confirmed by Requester": return { label: "Awaiting manager closure", mine: canClose };
     case "Rejected":          return { label: "Legacy status",             mine: false };
     case "Cancelled":         return { label: "Legacy status",             mine: false };
-    case "Reopened":          return { label: "Ready to close",            mine: canClose };
+    case "Reopened":
+      if (flags?.closureReady === false) return { label: "Work in progress", mine: false };
+      return { label: "Ready to close", mine: canClose };
     default:                  return { label: status,                     mine: false };
   }
 }
@@ -909,6 +920,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
     if (row.status !== "Issued") entry.openCount += row._count._all;
     materialsSummaryByWoId.set(row.work_order_id, entry);
   }
+  // "Ready to close" hint — only for rows whose hint depends on it, using the
+  // same closure conditions as Daily Activity / the closure guard (workers
+  // finished, materials done, workers / materials present or confirmed not
+  // required, no time waiting for the Manager).
+  const closureHintIds = workOrders.filter((w) => CLOSURE_HINT_STATUSES.includes(w.status)).map((w) => w.id);
+  const closureReadinessById = await getClosureReadinessForWorkOrders(prisma, closureHintIds);
 
   // ── Quick-view preview data ───────────────────────────────────────────────
   // `created` (set on the post-create redirect) is a fallback source for the
@@ -1579,7 +1596,12 @@ export default async function WorkOrdersPage({ searchParams }: PageProps) {
                       wo.status,
                       context,
                       correctionIdSet.has(wo.id),
-                      { hasInternalTeam: internalTeamCount > 0, hasPendingMaterials: (materialsSummaryByWoId.get(wo.id)?.openCount ?? 0) > 0, hasActiveSession }
+                      {
+                        hasInternalTeam: internalTeamCount > 0,
+                        hasPendingMaterials: (materialsSummaryByWoId.get(wo.id)?.openCount ?? 0) > 0,
+                        hasActiveSession,
+                        closureReady: closureReadinessById.get(wo.id)?.ready,
+                      }
                     );
                     const isTerminal = TERMINAL_STATUSES.includes(wo.status);
                     const age        = ageInDays(wo.created_at);

@@ -17,6 +17,7 @@ import { parsePendingAttachments, saveAttachmentBatch } from "@/lib/files/attach
 import { MAX_ATTACHMENT_ROWS } from "@/lib/files/attachment-constants";
 import { createJobCardFromForm } from "@/lib/backend/work-orders/job-card-creation";
 import { lockJobCardActivity } from "@/lib/backend/work-orders/repository";
+import { supersedeRequirementConfirmation } from "@/lib/backend/work-orders/closure-requirements";
 import { formatKuwaitDateTime } from "@/lib/format/kuwait-time";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import {
@@ -689,6 +690,11 @@ export async function upsertWorkOrderAction(formData: FormData) {
           await tx.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id: id, created_by: context.userId })) });
         }
       }
+      // Materials now on the Job Card: a "No Materials Required"
+      // confirmation (if any) is superseded, never deleted.
+      if ((replaceRequired && requiredPartRows.length) || (replaceMaterials && materialRows.length)) {
+        await supersedeRequirementConfirmation(tx, id, "materials", context.userId, "Materials added on Edit Job Card");
+      }
 
       return { id: wo.id, work_order_number: wo.work_order_number };
     });
@@ -842,6 +848,7 @@ export async function addWorkOrderMaterialAction(formData: FormData) {
       unit_price: 0,
     },
   });
+  await supersedeRequirementConfirmation(prisma, wo.id, "materials", context.userId, "Material used line added");
 
   await writeAuditLog({
     actorId: context.userId,

@@ -16,9 +16,9 @@
 // Not Started worker also blocks (the assignment exists but nothing was
 // ever done against it) — the way out is exactly what the UI tells the user:
 // finish that worker (Start then Finish Work) or remove the assignment from
-// the roster. A Job Card with no assigned workers at all is unaffected by
-// this check (the caller's own materials/other guards still apply) — Task 4:
-// "If no workers are assigned: use current business behavior."
+// the roster. A Job Card with no assigned workers passes THIS check; whether
+// "no workers" is acceptable is decided by checkClosureRequirements below
+// (only once "No Workers Required" is confirmed).
 
 import { deriveSimpleWorkerState, type SimpleWorkerState } from "@/lib/work-orders/hours-variance";
 
@@ -86,5 +86,71 @@ export function checkWorkersReadyForClosure(workers: WorkerClosureInput[]): Work
     pausedWorkers,
     notStartedWorkers,
     reasons,
+  };
+}
+
+// ── Workers / materials requirement (No Workers / No Materials Required) ────
+//
+// Workers and materials are optional when a Job Card is created, but an
+// empty list is never taken as "done": before closure each must be either
+// present and complete, or explicitly confirmed as not required. Same rule
+// on every surface (server guard in requestJobCardClosure, Daily Activity,
+// Dashboard, Job Cards list, Job Card detail, closure modals), so no page
+// can say "Ready" while another refuses.
+//
+//  - Workers:   satisfied when at least one worker is on the team and all are
+//               Finished (checkWorkersReadyForClosure), OR no worker is on the
+//               team and "No Workers Required" is confirmed.
+//  - Materials: satisfied when the Job Card has materials and none is pending
+//               (the caller's existing pending-request / not-fully-issued
+//               checks, unchanged), OR it has none and "No Materials
+//               Required" is confirmed.
+// A confirmation is ignored once workers / materials exist — adding them
+// supersedes it.
+
+export type RequirementConfirmation = {
+  confirmedByName: string | null;
+  confirmedAt: string;
+  reason: string | null;
+};
+
+export type RequirementState = "present" | "not_required" | "missing";
+
+export type ClosureRequirementsInput = {
+  workerCount: number;
+  workersNotRequired: RequirementConfirmation | null;
+  materialsPresent: boolean;
+  materialsNotRequired: RequirementConfirmation | null;
+};
+
+export type ClosureRequirementsCheck = {
+  workers: RequirementState;
+  materials: RequirementState;
+  // Active confirmations only (null once superseded by real workers/materials).
+  workersConfirmation: RequirementConfirmation | null;
+  materialsConfirmation: RequirementConfirmation | null;
+  // Missing workers/materials only — worker progress and pending materials
+  // keep their own existing checks and reasons.
+  reasons: string[];
+  // Neither requirement is missing. Callers AND this with their existing checks.
+  ready: boolean;
+};
+
+export const NO_WORKERS_REASON = "No workers assigned - assign workers or confirm No Workers Required.";
+export const NO_MATERIALS_REASON = "No materials added - add materials or confirm No Materials Required.";
+
+export function checkClosureRequirements(input: ClosureRequirementsInput): ClosureRequirementsCheck {
+  const workers: RequirementState = input.workerCount > 0 ? "present" : input.workersNotRequired ? "not_required" : "missing";
+  const materials: RequirementState = input.materialsPresent ? "present" : input.materialsNotRequired ? "not_required" : "missing";
+  const reasons: string[] = [];
+  if (workers === "missing") reasons.push(NO_WORKERS_REASON);
+  if (materials === "missing") reasons.push(NO_MATERIALS_REASON);
+  return {
+    workers,
+    materials,
+    workersConfirmation: workers === "not_required" ? input.workersNotRequired : null,
+    materialsConfirmation: materials === "not_required" ? input.materialsNotRequired : null,
+    reasons,
+    ready: reasons.length === 0,
   };
 }

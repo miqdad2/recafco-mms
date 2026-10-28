@@ -9,6 +9,7 @@ import { writeAuditLog } from "@/lib/audit/log";
 import { notifyWorkflowEvent } from "@/lib/backend/notifications/safe-notifications";
 import { dedupeRecipients, resolveRecipientsSafely } from "@/lib/backend/notifications/safe-notifications";
 import { getActiveUserIdsByRoleSlugs, lockOpenJobCardForActivity } from "@/lib/backend/work-orders/repository";
+import { supersedeRequirementConfirmation } from "@/lib/backend/work-orders/closure-requirements";
 import { emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import type { InternalTeamRosterInput } from "@/lib/backend/workers/validators";
 
@@ -170,6 +171,11 @@ export async function assignInternalTeamRoster(context: CurrentUserContext, inpu
     }
     if (toCreate.length > 0) {
       await tx.workOrderWorkerAssignment.createMany({ data: toCreate });
+    }
+    // The Job Card now has workers: a "No Workers Required" confirmation (if
+    // any) is superseded, never deleted.
+    if (picks.length > 0) {
+      await supersedeRequirementConfirmation(tx, input.workOrderId, "workers", context.userId, "Workers assigned");
     }
 
     return {

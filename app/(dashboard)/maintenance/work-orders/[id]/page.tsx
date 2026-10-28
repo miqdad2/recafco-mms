@@ -43,7 +43,10 @@ import { buildBalanceKey, canManageOfflineInventory } from "@/lib/store/offline-
 import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
-import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { checkClosureRequirements, checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { getClosureRequirementFactsFor } from "@/lib/work-orders/closure-requirements-data";
+import { canConfirmClosureRequirements } from "@/lib/backend/work-orders/closure-requirements";
+import { NotRequiredButton, NotRequiredNote } from "@/components/work-orders/requirement-not-required";
 import { WorkTimeTracking } from "@/components/work-orders/work-time-tracking";
 import { JobCardDatesSection } from "@/components/work-orders/job-card-dates-section";
 import { RequestDeletionButton } from "@/components/work-orders/request-deletion-button";
@@ -371,10 +374,12 @@ export default async function WorkOrderDetailPage({
   // read-only here; the actions re-check everything server-side.
   const canRequestDeletion = canRequestJobCardDeletion(context);
   const canReviewDeletion = canReviewJobCardDeletion(context);
-  const [jobCardDates, deletionStatus, timeCorrections] = await Promise.all([
+  const [jobCardDates, deletionStatus, timeCorrections, requirementFacts] = await Promise.all([
     getJobCardDates(prisma, wo),
     canRequestDeletion || canReviewDeletion ? getJobCardDeletionStatus(context, wo.id) : Promise.resolve(null),
     getTimeCorrectionsForWorkOrder(prisma, wo.id, { userId: context.userId, canViewCosts: canViewCostsForContext(context) }),
+    // Workers / materials present, or confirmed not required.
+    getClosureRequirementFactsFor(prisma, wo.id),
   ]);
   const pendingTimeCorrections = timeCorrections.filter((c) => c.status === "Pending").length;
   const jobCardAssetLabel = wo.assets ? `${wo.assets.asset_code} — ${wo.assets.asset_name}` : null;
@@ -426,6 +431,9 @@ export default async function WorkOrderDetailPage({
     hasPendingCorrection &&
     (isCreator || canManage || context.role?.slug === "super_admin");
   const canCreatePartsRequest = hasPermission(context, "parts_requests.create");
+  // No Workers / No Materials Required — same roles as Request Closure, only
+  // while the Job Card is still open. The action re-checks everything.
+  const canConfirmRequirements = canConfirmClosureRequirements(context) && wo.status !== "Closed" && wo.status !== "Closure Requested";
   // Required Materials Issue and Shortage Tracking Unit 6: "Issue" link on a
   // shortfall row jumps straight to Offline Inventory Control's own Issue
   // Material action (the only place stock is actually deducted) with both
@@ -545,11 +553,20 @@ export default async function WorkOrderDetailPage({
       manualMinutes: w.manual_minutes,
     }))
   );
+  // No workers / no materials only count once confirmed not required — same
+  // rule as the closure guard (closure-readiness.ts checkClosureRequirements).
+  const requirements = checkClosureRequirements({
+    workerCount: laborSummary.workers.length,
+    workersNotRequired: requirementFacts.workersNotRequired,
+    materialsPresent: requirementFacts.materialsPresent,
+    materialsNotRequired: requirementFacts.materialsNotRequired,
+  });
   const closureBlockers: string[] = [];
   if (hasPendingCorrection) closureBlockers.push("A correction is pending — respond to it before requesting closure.");
   if (pendingMaterialsRequestsCount > 0) closureBlockers.push("A Materials Request is still pending — receive it first.");
   if (materialsIncomplete) closureBlockers.push("Required materials have not been fully issued yet.");
   closureBlockers.push(...workersClosureCheck.reasons);
+  closureBlockers.push(...requirements.reasons);
   // Mirrors assertNoPendingTimeCorrections in the closure approval.
   if (pendingTimeCorrections > 0) closureBlockers.push("An older worker time entry is waiting for the Manager's decision (Worker Time section).");
   const closureReady = closureBlockers.length === 0;
@@ -641,8 +658,16 @@ export default async function WorkOrderDetailPage({
       ];
       return { message: "Materials are pending. Receive materials when they arrive.", buttons };
     }
-    if (!hasAssignment) {
-      return { message: "Assign workers to start work tracking.", buttons: [{ label: "Assign Workers", href: "?editAssignment=1&tab=assignment" }] };
+    // No workers and not confirmed as not required. (Confirmed: skip to the
+    // checks below — there is no worker to track.)
+    if (!hasAssignment && requirements.workers === "missing") {
+      return {
+        message: "No workers assigned. Assign workers, or confirm No Workers Required in the Closure section.",
+        buttons: [
+          { label: "Assign Workers", href: "?editAssignment=1&tab=assignment" },
+          ...(canConfirmRequirements ? [{ label: "Not Required", href: "?tab=closure#closure-panel" }] : []),
+        ],
+      };
     }
     // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 8 — Next
     // Action wording matched exactly to the task's own worked examples,
@@ -655,6 +680,15 @@ export default async function WorkOrderDetailPage({
     }
     if (hasInternalTeam && workersClosureCheck.notStartedWorkers.length > 0) {
       return { message: "Workers are assigned. Start tracking work, or remove unstarted assignments before closure.", buttons: [{ label: "Track Work", href: "?tab=assignment" }] };
+    }
+    if (requirements.materials === "missing") {
+      return {
+        message: "No materials added. Add materials, or confirm No Materials Required in the Closure section.",
+        buttons: [
+          ...(canCreatePartsRequest ? [{ label: "Add Materials", href: materialsButtonHref }] : []),
+          ...(canConfirmRequirements ? [{ label: "Not Required", href: "?tab=closure#closure-panel" }] : []),
+        ],
+      };
     }
     return { message: "Work is ready for closure request.", buttons: [{ label: "Request Closure", href: "?tab=closure" }] };
   })();
@@ -1911,7 +1945,10 @@ export default async function WorkOrderDetailPage({
                       </p>
                     ) : null}
                   </>
-                ) : closureReady ? (
+                ) : closureReady || wo.status === "Closure Requested" ? (
+                  // A request already sent stays "waiting for approval" even
+                  // if it predates the workers / materials confirmation rule —
+                  // the Manager decides it as before.
                   <p className="mt-3 text-sm text-[#4B5563]">
                     {wo.status === "Closure Requested"
                       ? "Closure has been requested and is waiting for Manager approval."
@@ -1927,6 +1964,59 @@ export default async function WorkOrderDetailPage({
                     </ul>
                   </div>
                 )}
+                {/* Workers / materials: confirmed not required, or missing
+                    with the existing Assign Workers / Job Card Materials
+                    Request flows and Not Required. */}
+                {requirements.workersConfirmation || requirements.materialsConfirmation || (wo.status !== "Closed" && !requirements.ready) ? (
+                  <div className="mt-3 space-y-2">
+                    {requirements.workersConfirmation ? (
+                      <NotRequiredNote label="No Workers Required" confirmation={requirements.workersConfirmation} />
+                    ) : null}
+                    {requirements.materialsConfirmation ? (
+                      <NotRequiredNote label="No Materials Required" confirmation={requirements.materialsConfirmation} />
+                    ) : null}
+                    {requirements.workers === "missing" && wo.status !== "Closed" && wo.status !== "Closure Requested" ? (
+                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-[#E5E7EB] p-2.5">
+                        <span className="mr-auto text-sm font-bold text-[#111827]">No workers assigned</span>
+                        {canEditAssignmentNow ? (
+                          <Link
+                            href={`/maintenance/work-orders/${wo.id}?editAssignment=1&tab=assignment`}
+                            className="inline-flex min-h-9 items-center rounded-md bg-[#ED1C24] px-3 py-1.5 text-xs font-bold text-white transition hover:bg-[#c8181e]"
+                          >
+                            Assign Workers
+                          </Link>
+                        ) : null}
+                        {canConfirmRequirements ? (
+                          <NotRequiredButton
+                            workOrderId={wo.id}
+                            requirement="workers"
+                            className="inline-flex min-h-9 items-center rounded-md border border-[#D1D5DB] bg-white px-3 py-1.5 text-xs font-bold text-[#111827] transition hover:bg-gray-50"
+                          />
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {requirements.materials === "missing" && wo.status !== "Closed" && wo.status !== "Closure Requested" ? (
+                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-[#E5E7EB] p-2.5">
+                        <span className="mr-auto text-sm font-bold text-[#111827]">No materials added</span>
+                        {canCreatePartsRequest ? (
+                          <Link
+                            href={materialsButtonHref}
+                            className="inline-flex min-h-9 items-center rounded-md bg-[#ED1C24] px-3 py-1.5 text-xs font-bold text-white transition hover:bg-[#c8181e]"
+                          >
+                            Add Materials
+                          </Link>
+                        ) : null}
+                        {canConfirmRequirements ? (
+                          <NotRequiredButton
+                            workOrderId={wo.id}
+                            requirement="materials"
+                            className="inline-flex min-h-9 items-center rounded-md border border-[#D1D5DB] bg-white px-3 py-1.5 text-xs font-bold text-[#111827] transition hover:bg-gray-50"
+                          />
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
               <div className="mt-4 border-t border-[#E5E7EB] pt-4">
                 {closureReady || wo.status === "Closure Requested" ? (

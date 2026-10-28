@@ -16,6 +16,7 @@ import { dispatchActionToast } from "@/lib/action-messages";
 import type { SessionRow } from "@/lib/work-orders/work-session-totals";
 import { computeHoursVariance, hoursVarianceTone, deriveSimpleWorkerState, simpleWorkerStateTone } from "@/lib/work-orders/hours-variance";
 import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { NotRequiredNote } from "@/components/work-orders/requirement-not-required";
 import { formatDurationMinutes, formatKuwaitDateTime, formatKuwaitMoment } from "@/lib/format/kuwait-time";
 
 // Closure Requests Review Popup Unit 10G.2.
@@ -530,9 +531,17 @@ export function ClosureReviewModal({
   // Task 8 — guidance-only checklist: materials/workers-finished mirror the
   // real backend guards read-only; the last two are the Manager's own
   // acknowledgement, never sent to the backend or used to block the button.
+  // An empty worker / material list only counts once confirmed Not Required
+  // (closure-readiness.ts checkClosureRequirements). A request sent before
+  // this rule may show unticked — guidance only, approval is unchanged.
+  const { requirements } = detail;
   const checklist = [
-    { label: "Materials completed", ok: detail.materialsFullyIssued },
-    { label: "All workers finished", ok: allWorkersFinished },
+    requirements.materials === "not_required"
+      ? { label: "No materials required (confirmed)", ok: true }
+      : { label: "Materials completed", ok: requirements.materials === "present" && (detail.materials.length === 0 || detail.materialsFullyIssued) },
+    requirements.workers === "not_required"
+      ? { label: "No workers required (confirmed)", ok: true }
+      : { label: "All workers finished", ok: requirements.workers === "present" && allWorkersFinished },
     { label: "Worker hours reviewed", ok: reviewedHours, manual: true },
     { label: "Attachments reviewed", ok: reviewedAttachments, manual: true },
   ];
@@ -577,7 +586,13 @@ export function ClosureReviewModal({
             ) : null}
           </p>
           {detail.workers.length === 0 ? (
-            <p className="mt-1 text-xs text-[#9CA3AF]">No workers recorded on this Job Card.</p>
+            detail.requirements.workersConfirmation ? (
+              <div className="mt-1.5">
+                <NotRequiredNote label="No Workers Required" confirmation={detail.requirements.workersConfirmation} />
+              </div>
+            ) : (
+              <p className="mt-1 text-xs font-semibold text-amber-700">No workers recorded, and No Workers Required was not confirmed.</p>
+            )
           ) : (
             <div className="mt-1.5 space-y-1.5">
               {detail.workers.map((w) => (
@@ -671,8 +686,17 @@ export function ClosureReviewModal({
               )
             ) : null}
           </div>
+          {detail.requirements.materialsConfirmation ? (
+            <div className="mt-1.5">
+              <NotRequiredNote label="No Materials Required" confirmation={detail.requirements.materialsConfirmation} />
+            </div>
+          ) : null}
           {detail.materials.length === 0 ? (
-            <p className="mt-1 text-xs text-[#9CA3AF]">No required materials on this Job Card.</p>
+            detail.requirements.materials === "missing" ? (
+              <p className="mt-1 text-xs font-semibold text-amber-700">No materials recorded, and No Materials Required was not confirmed.</p>
+            ) : detail.requirements.materials === "present" ? (
+              <p className="mt-1 text-xs text-[#9CA3AF]">No required materials on this Job Card.</p>
+            ) : null
           ) : detail.canViewCosts ? (
             // Closure Review Work and Material Cost Unit 10G.72, Task 5/7 —
             // cost-permitted view: adds Unit/Unit Cost/Total Cost columns.

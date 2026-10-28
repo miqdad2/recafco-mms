@@ -29,6 +29,9 @@ import type { MaterialFulfillment } from "@/lib/work-orders/material-fulfillment
 // uses server-side, called here against the same laborSummary.workers data
 // already on the card — never a re-guess from rendered text.
 import { deriveSimpleWorkerState } from "@/lib/work-orders/hours-variance";
+import type { RequirementConfirmation, RequirementState } from "@/lib/work-orders/closure-readiness";
+import { NotRequiredButton, NotRequiredNote } from "@/components/work-orders/requirement-not-required";
+import { formatKuwaitDateTime } from "@/lib/format/kuwait-time";
 
 // Daily Activity Compact Control Board Unit 9C, polished in Final UI Polish
 // Unit 9D.
@@ -137,6 +140,25 @@ export type DailyActivityCardData = {
   // work_orders.manage and the Job Card is still editable (closure not yet
   // requested). The edit page and its save action re-check both.
   canEditJobCard: boolean;
+  // Workers / materials: present, confirmed not required, or missing
+  // (lib/work-orders/closure-readiness.ts checkClosureRequirements — same
+  // rule as the closure guard). addMaterialsHref is the existing Job Card
+  // Materials Request form, null without permission or once closure is
+  // requested; canConfirmNotRequired gates the Not Required buttons.
+  requirements: {
+    workers: RequirementState;
+    materials: RequirementState;
+    workersConfirmation: RequirementConfirmation | null;
+    materialsConfirmation: RequirementConfirmation | null;
+    canConfirmNotRequired: boolean;
+    addMaterialsHref: string | null;
+  };
+  // Needs My Action: the one action this viewer can take here
+  // (lib/work-orders/daily-activity-my-action.ts), null when none.
+  myActionMessage: string | null;
+  // The Manager returned the last closure request for correction — their
+  // remarks, until closure is requested again.
+  closureReturn: { remarks: string | null; byName: string | null; at: string } | null;
 };
 
 // Anchor target inside the panel that the Next Action button scrolls to for
@@ -297,6 +319,15 @@ export function DailyActivityListRow({
         {card.issue}
       </p>
 
+      {/* Needs My Action — one short line naming what this viewer should do
+          next (only when there is something they can do). */}
+      {card.myActionMessage ? (
+        <p className="mt-1 flex min-w-0 items-center gap-1 text-[11px] font-bold text-[#B91C1C]">
+          <ChevronRight className="h-3 w-3 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 truncate">{card.myActionMessage}</span>
+        </p>
+      ) : null}
+
       {/* Bottom action row — Task 1/2/3/4: the one clear, icon-paired,
           color-matched action/status line (card.priorityLabel — computed
           once in page.tsx from the same priorityBucket the card's
@@ -393,7 +424,16 @@ function StatusSummaryRow({
 function summarizeMaterials(card: DailyActivityCardData) {
   const state: "none" | "pending" | "completed" =
     card.materialsChip.label === "No Materials" ? "none" : card.materialsChip.label === "Materials Completed" ? "completed" : "pending";
-  const value = state === "none" ? "No materials required" : state === "completed" ? "Materials Completed" : "Materials Pending";
+  // "No materials required" only once that is actually confirmed — an empty
+  // list on its own is "No materials added".
+  const value =
+    state === "none"
+      ? card.requirements.materials === "not_required"
+        ? "No materials required"
+        : "No materials added"
+      : state === "completed"
+        ? "Materials Completed"
+        : "Materials Pending";
   // required_qty/issued_qty/remaining_qty are true quantities (e.g. "10
   // bolts"), not a line count (lib/work-orders/material-fulfillment.ts) —
   // Task 2's quantity-based wording applies.
@@ -424,8 +464,8 @@ function summarizeWorkers(card: DailyActivityCardData) {
   let value: string;
   let icon: LucideIcon;
   if (total === 0) {
-    value = "No workers assigned";
-    icon = Users;
+    value = card.requirements.workers === "not_required" ? "No workers required" : "No workers assigned";
+    icon = card.requirements.workers === "not_required" ? CheckCircle2 : Users;
   } else if (working > 0) {
     value = `${working} worker${working > 1 ? "s" : ""} working`;
     icon = PlayCircle;
@@ -507,7 +547,19 @@ function computeGuidance(
   if (workers.manualNotFinished > 0) {
     return { message: "Manual time is recorded. Mark Work Finished for the worker before requesting closure.", button: "workers", urgent: false };
   }
-  if (workers.total > 0) {
+  // Empty worker / material lists are never "done": add them or confirm Not
+  // Required (the rows under this message carry those buttons).
+  const missingWorkers = card.requirements.workers === "missing";
+  const missingMaterials = card.requirements.materials === "missing";
+  if (missingWorkers || missingMaterials) {
+    const what = missingWorkers && missingMaterials ? "workers or materials" : missingWorkers ? "workers" : "materials";
+    return {
+      message: `No ${what} on this Job Card yet. Add them, or confirm they are not required, before requesting closure.`,
+      button: null,
+      urgent: false,
+    };
+  }
+  if (card.closureChip.label === "Ready") {
     return { message: "Ready for closure. Submit to Manager for approval.", button: "closure", urgent: false };
   }
   return { message: "Review the Job Card details before requesting closure.", button: null, urgent: false };
@@ -539,8 +591,15 @@ export function DailyActivitySelectedPanel({
   // (same "one main action" rule Unit 9B's card established).
   const materialsActionIsPrimary = card.nextAction.buttonLabel === card.materialsActionLabel;
   const materialsOnClick = card.showProcessMaterials ? onProcessMaterials : null;
-  const assignWorkersIsPrimary = card.nextAction.buttonLabel === "Assign Workers";
   const requestClosureIsPrimary = card.nextAction.buttonLabel === "Request Closure";
+  // Missing workers / materials rows (Assign Workers / Add Materials / Not
+  // Required) live in the Next Action box — the only place those buttons
+  // show, so they are never repeated below.
+  const isOpen = card.status !== "Closure Requested" && card.status !== "Closed";
+  const missingWorkers = card.requirements.workers === "missing";
+  const missingMaterials = card.requirements.materials === "missing";
+  const notRequiredBtnClass =
+    "inline-flex min-h-8 items-center justify-center rounded-md border border-[#D1D5DB] bg-white px-3.5 py-1.5 text-xs font-bold text-[#111827] transition hover:bg-gray-50";
   // Unit 10G.56 — Status Summary + Next Action guidance, computed once per
   // render from data already on `card` (see the functions above this
   // component). materialsOnClick (above) is the same Process Materials
@@ -608,6 +667,17 @@ export function DailyActivitySelectedPanel({
           <dd className={`font-semibold ${card.requestDates.end === NOT_ENTERED ? "text-[#9CA3AF]" : "text-[#111827]"}`}>{card.requestDates.end}</dd>
         </div>
       </dl>
+      {card.closureReturn ? (
+        // The Manager's Return for Correction remarks — what to fix before
+        // requesting closure again.
+        <div role="status" className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <p className="font-bold">
+            Closure returned for correction{card.closureReturn.byName ? ` by ${card.closureReturn.byName}` : ""} on{" "}
+            {formatKuwaitDateTime(card.closureReturn.at)}
+          </p>
+          {card.closureReturn.remarks ? <p className="mt-0.5 whitespace-pre-line">{card.closureReturn.remarks}</p> : null}
+        </div>
+      ) : null}
       {card.timeSummary && card.timeSummary.pendingManualEntries + card.timeSummary.pendingCorrections > 0 ? (
         <p role="status" className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
           Older worker time waiting for the Manager&apos;s decision: {card.timeSummary.pendingManualEntries} manual{" "}
@@ -731,6 +801,39 @@ export function DailyActivitySelectedPanel({
             </Link>
           ) : null}
         </div>
+        {/* Workers / materials still missing: the existing Assign Workers
+            and Job Card Materials Request flows, or Not Required. Only
+            while the Job Card is open (not requested / closed). */}
+        {isOpen && (missingWorkers || missingMaterials) ? (
+          <div className="mt-2.5 space-y-2 border-t border-black/5 pt-2">
+            {missingWorkers ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="mr-auto text-xs font-bold text-[#111827]">No workers assigned</span>
+                {card.showAssignWorkers ? (
+                  <Link href={`${detailHref}?editAssignment=1#assignment`} className={guidanceBtnClass}>
+                    <Users className="h-3.5 w-3.5" aria-hidden="true" /> Assign Workers
+                  </Link>
+                ) : null}
+                {card.requirements.canConfirmNotRequired ? (
+                  <NotRequiredButton workOrderId={card.id} requirement="workers" className={notRequiredBtnClass} />
+                ) : null}
+              </div>
+            ) : null}
+            {missingMaterials ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="mr-auto text-xs font-bold text-[#111827]">No materials added</span>
+                {card.requirements.addMaterialsHref ? (
+                  <Link href={card.requirements.addMaterialsHref} className={guidanceBtnClass}>
+                    <PackageSearch className="h-3.5 w-3.5" aria-hidden="true" /> Add Materials
+                  </Link>
+                ) : null}
+                {card.requirements.canConfirmNotRequired ? (
+                  <NotRequiredButton workOrderId={card.id} requirement="materials" className={notRequiredBtnClass} />
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {/* Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 7:
@@ -749,17 +852,14 @@ export function DailyActivitySelectedPanel({
       <div id={WORKERS_SECTION_ID} className="mt-3 scroll-mt-3">
         <p className="mb-1.5 text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Workers</p>
         {card.laborSummary.workers.length === 0 ? (
-          <div className="flex flex-col items-center gap-1.5 rounded-md border border-dashed border-[#E5E7EB] bg-[#F9FAFB] py-4 text-center">
-            <p className="text-xs text-[#6B7280]">No workers assigned yet.</p>
-            {card.showAssignWorkers && !assignWorkersIsPrimary ? (
-              <Link
-                href={`${detailHref}?editAssignment=1#assignment`}
-                className="inline-flex items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 py-1 text-xs font-bold text-white transition hover:bg-red-700"
-              >
-                <Users className="h-3.5 w-3.5" aria-hidden="true" /> Assign Workers
-              </Link>
-            ) : null}
-          </div>
+          card.requirements.workersConfirmation ? (
+            <NotRequiredNote label="No Workers Required" confirmation={card.requirements.workersConfirmation} />
+          ) : (
+            // Assign Workers / Not Required are in the Next Action box above.
+            <div className="flex flex-col items-center gap-1.5 rounded-md border border-dashed border-[#E5E7EB] bg-[#F9FAFB] py-4 text-center">
+              <p className="text-xs text-[#6B7280]">No workers assigned yet.</p>
+            </div>
+          )
         ) : (
           <div className="space-y-1.5">
             {card.laborSummary.workers.length > 1 ? (
@@ -793,6 +893,11 @@ export function DailyActivitySelectedPanel({
           <p className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Materials</p>
           <StatusBadge label={card.materialsChip.label} tone={card.materialsChip.tone} />
         </div>
+        {card.requirements.materialsConfirmation ? (
+          <div className="mt-1.5">
+            <NotRequiredNote label="No Materials Required" confirmation={card.requirements.materialsConfirmation} />
+          </div>
+        ) : null}
         {card.materialsTotals.required > 0 ? (
           <p className="mt-1 text-xs text-[#4B5563]">
             Required {card.materialsTotals.required} · Issued {card.materialsTotals.issued} · Remaining {card.materialsTotals.remaining}

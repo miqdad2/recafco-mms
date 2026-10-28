@@ -72,7 +72,8 @@ import {
 import { getWorkOrderLaborSummariesBulk, getLaborPeriodTotals, getPausedWorkSummary } from "@/lib/work-orders/work-session-totals";
 import { isCurrentlyPaused } from "@/lib/work-orders/paused-work";
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
-import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { checkClosureRequirements, checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { getClosureRequirementFacts } from "@/lib/work-orders/closure-requirements-data";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
 import { hasPermission, canViewCosts as canViewCostsForContext, canManageJobCardIndirectCostSetting } from "@/lib/security/permissions";
 import { VEHICLE_CATEGORIES } from "@/lib/assets/categories";
@@ -1056,9 +1057,10 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const nuPausedCount = isNormalUser ? (await getPausedWorkSummary(prisma, visibilityFilter)).pausedWorkers : 0;
   if (isNormalUser && nuActiveSample.length) {
     const activeIds = nuActiveSample.map((w) => w.id);
-    const [fulfillmentMap, laborMap] = await Promise.all([
+    const [fulfillmentMap, laborMap, requirementFactsMap] = await Promise.all([
       getMaterialFulfillmentForWorkOrders(prisma, activeIds),
       getWorkOrderLaborSummariesBulk(prisma, activeIds),
+      getClosureRequirementFacts(prisma, activeIds),
     ]);
     // Data Entry already holds work_orders.assign (Unit 7) in every seeded
     // role configuration — computed via the real permission check anyway
@@ -1087,9 +1089,19 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       // excluded by the branches above it) — now uses the same shared check
       // as every other closure surface, so a Not-Started worker keeps this
       // Job Card out of the "ready" bucket too.
+      // No workers / no materials only count once confirmed not required —
+      // same rule as the closure guard and Daily Activity.
+      const requirementFacts = requirementFactsMap.get(wo.id);
+      const requirements = checkClosureRequirements({
+        workerCount: laborSummary?.workers.length ?? 0,
+        workersNotRequired: requirementFacts?.workersNotRequired ?? null,
+        materialsPresent: requirementFacts?.materialsPresent ?? false,
+        materialsNotRequired: requirementFacts?.materialsNotRequired ?? null,
+      });
       const closureReady =
         pendingMaterialsRequestsCount === 0 &&
         !materialsIncomplete &&
+        requirements.ready &&
         checkWorkersReadyForClosure(
           (laborSummary?.workers ?? []).map((w) => ({
             workerAssignmentId: w.worker_assignment_id,
@@ -1138,7 +1150,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           actionLabel: "Open Daily Activity",
           actionHref: "/maintenance/daily-activity?status=working",
         });
-      } else if (!hasAssignment) {
+      } else if (!hasAssignment && requirements.workers === "missing") {
         candidates.push({
           id: wo.id, rank: 3, updatedAt: wo.updated_at.toISOString(),
           workOrderNumber: wo.work_order_number, assetLabel, issue,
@@ -1159,6 +1171,16 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           // full Job Card detail page, scrolled straight to the closure
           // panel, so Data Entry sees the full context (materials/worker
           // state) before requesting.
+          actionLabel: "Open Job Card",
+          actionHref: `${detailHref}#closure-panel`,
+        });
+      } else if (requirements.materials === "missing" && !hasActiveSession && !anyWorkerPaused) {
+        // Work otherwise done but no materials recorded or confirmed —
+        // the Job Card's Closure panel offers Add Materials / Not Required.
+        candidates.push({
+          id: wo.id, rank: 4, updatedAt: wo.updated_at.toISOString(),
+          workOrderNumber: wo.work_order_number, assetLabel, issue,
+          badgeLabel: "Materials Not Confirmed", badgeTone: "amber",
           actionLabel: "Open Job Card",
           actionHref: `${detailHref}#closure-panel`,
         });

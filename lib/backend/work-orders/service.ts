@@ -25,6 +25,7 @@ import { CLOSURE_REQUESTED_STATUS } from "@/lib/work-orders/simplified-status-di
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { assertClosureRequirementsMet } from "@/lib/backend/work-orders/closure-requirements";
 import { assertNoPendingTimeCorrections } from "@/lib/backend/work-orders/work-time-corrections";
 
 type WorkflowResult = {
@@ -1089,6 +1090,9 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
     );
 
     await assertWorkersReadyForClosure(tx, workOrderId);
+    // An empty worker / material list is never "done" by itself: each must
+    // be present or confirmed not required (closure-requirements.ts).
+    await assertClosureRequirementsMet(tx, workOrderId);
     await assertNoPendingTimeCorrections(tx, workOrderId);
 
     const row = await updateWorkOrderStatus(tx, workOrderId, CLOSURE_REQUESTED_STATUS, context.userId);

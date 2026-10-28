@@ -12,6 +12,8 @@ import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
 import { buildBalanceKey, getLastUnitCostsForIdentities } from "@/lib/store/offline-inventory-data";
 import { getJobCardIndirectCostSetting } from "@/lib/work-orders/job-card-indirect-cost";
 import { getWorkTimeSourceSummaries } from "@/lib/backend/work-orders/work-time-corrections";
+import { checkClosureRequirements, type ClosureRequirementsCheck } from "@/lib/work-orders/closure-readiness";
+import { getClosureRequirementFactsFor } from "@/lib/work-orders/closure-requirements-data";
 
 // Closure Requests Review Popup Unit 10G.2, Task 10.
 //
@@ -154,6 +156,10 @@ export type ClosureReviewDetail = {
   estimatedHours: number | null;
   materials: ClosureReviewMaterial[];
   materialsFullyIssued: boolean;
+  // Workers / materials: present, confirmed not required (with who, when and
+  // the workers reason), or missing — closure-readiness.ts
+  // checkClosureRequirements, the same rule as the closure guard.
+  requirements: Pick<ClosureRequirementsCheck, "workers" | "materials" | "workersConfirmation" | "materialsConfirmation">;
   attachments: ClosureReviewAttachment[];
   note: string | null;
   canViewCosts: boolean;
@@ -208,7 +214,7 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
   });
   if (!wo) return null;
 
-  const [laborMap, fulfillment, canViewFiles] = await Promise.all([
+  const [laborMap, fulfillment, canViewFiles, requirementFacts] = await Promise.all([
     // Task 3 — the bulk variant (single-element array) is used deliberately
     // even for one Job Card: it's the only function that also carries
     // skill_category/sessions_count (see lib/work-orders/work-session-totals.ts) —
@@ -217,8 +223,15 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
     getWorkOrderLaborSummariesBulk(prisma, [workOrderId]),
     getMaterialFulfillmentForWorkOrder(prisma, workOrderId),
     canViewEntityFile(context, "work-order-files", workOrderId),
+    getClosureRequirementFactsFor(prisma, workOrderId),
   ]);
   const laborSummary = laborMap.get(workOrderId) ?? { workers: [], total_minutes: 0, total_hours: 0, total_amount: 0, has_active_session: false, today_minutes: 0, today_amount: 0, week_minutes: 0, week_amount: 0, month_minutes: 0, month_amount: 0 };
+  const requirementsCheck = checkClosureRequirements({
+    workerCount: laborSummary.workers.length,
+    workersNotRequired: requirementFacts.workersNotRequired,
+    materialsPresent: requirementFacts.materialsPresent,
+    materialsNotRequired: requirementFacts.materialsNotRequired,
+  });
 
   // Job Card Level Indirect Cost Correction Unit 10G.72B, Task 1/4 — the
   // ONE global, Job-Card-wide Indirect Cost setting, read once regardless of
@@ -357,6 +370,12 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
     ),
     materials,
     materialsFullyIssued: materials.length > 0 && materials.every((m) => m.status === "Fully Issued"),
+    requirements: {
+      workers: requirementsCheck.workers,
+      materials: requirementsCheck.materials,
+      workersConfirmation: requirementsCheck.workersConfirmation,
+      materialsConfirmation: requirementsCheck.materialsConfirmation,
+    },
     attachments,
     note: approval?.comments ?? null,
     canViewCosts,
