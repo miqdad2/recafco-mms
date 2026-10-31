@@ -6,7 +6,10 @@ import Link from "next/link";
 import {
   Activity,
   AlertTriangle,
+  Archive,
   Boxes,
+  FileSpreadsheet,
+  Trash2,
   CheckCircle2,
   History,
   ChevronDown,
@@ -29,6 +32,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { PageBackButton } from "@/components/layout/page-back-button";
 import { headerPrimaryBtn, headerSecondaryBtn } from "@/components/layout/header-actions";
 import { MaterialDetailModal } from "@/components/store/material-detail-modal";
+import { MaterialRemovalDialog } from "@/components/store/material-removal-dialog";
 import { AddNewMaterialForm } from "@/components/store/add-new-material-form";
 import { ReceiveMaterialForm } from "@/components/store/receive-material-form";
 import { IssueMaterialForm } from "@/components/store/issue-material-form";
@@ -54,6 +58,8 @@ export interface StoreBalanceViewProps {
   balance: number;
   canManage: boolean;
   isSuperAdmin: boolean;
+  // Edit Material: Super Admin and Maintenance Data Entry.
+  canEditMaterial: boolean;
   // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 5/6 —
   // gates the Unit Cost/Stock Value table columns, the Current Stock Value
   // summary card, and the Opening Unit Cost field on Add New Material.
@@ -292,6 +298,7 @@ export function StoreBalanceView({
   balance,
   canManage,
   isSuperAdmin,
+  canEditMaterial,
   canViewCosts,
   totalStockValue,
   recentSince,
@@ -345,6 +352,12 @@ export function StoreBalanceView({
   // "insights" at all (no tab bar, no preview line — see the JSX below), so
   // this state carries no cost data itself and is harmless either way.
   const [activeTab, setActiveTab] = useState<"register" | "insights">("register");
+  // Super Admin row selection for Delete Selected. Tied to the view's
+  // pageSig: kept while paging through the same view, cleared as soon as
+  // the tab, a filter, the search or the page size changes. Never means
+  // "everything in the database" — only rows the administrator ticked.
+  const [selection, setSelection] = useState<{ sig: string; keys: string[] }>({ sig: "", keys: [] });
+  const [removalKeys, setRemovalKeys] = useState<string[] | null>(null);
 
   const isEmpty = balanceItems.length === 0;
   const hasActiveFilters =
@@ -463,7 +476,7 @@ export function StoreBalanceView({
       if (quick.noLocation && item.location) return false;
       if (recentOnly && item.last_updated_at < recentSince) return false;
       if (q) {
-        const haystack = `${item.display_name} ${item.part_number ?? ""} ${item.ss_rec_code ?? ""} ${item.category} ${item.location ?? ""}`.toLowerCase();
+        const haystack = `${item.display_name} ${item.item_code ?? ""} ${item.part_number ?? ""} ${item.ss_rec_code ?? ""} ${item.category} ${item.location ?? ""}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
       return true;
@@ -551,17 +564,43 @@ export function StoreBalanceView({
   const pageRows = visibleRows.slice((page - 1) * pageSize, page * pageSize);
   const goToPage = (next: number) => setPageState({ sig: pageSig, page: Math.min(Math.max(1, next), totalPages) });
 
+  // Selected keys still in this view (a refresh may have removed some).
+  const visibleKeySet = new Set(visibleRows.map((item) => item.key));
+  const selectedKeys = isSuperAdmin && selection.sig === pageSig ? selection.keys.filter((k) => visibleKeySet.has(k)) : [];
+  const selectedSet = new Set(selectedKeys);
+  const pageKeys = pageRows.map((item) => item.key);
+  const pageAllSelected = pageKeys.length > 0 && pageKeys.every((k) => selectedSet.has(k));
+  const pageSomeSelected = pageKeys.some((k) => selectedSet.has(k));
+
+  function toggleRowSelection(key: string) {
+    setSelection({
+      sig: pageSig,
+      keys: selectedSet.has(key) ? selectedKeys.filter((k) => k !== key) : [...selectedKeys, key],
+    });
+  }
+
+  // Header checkbox: selects or deselects the rows on this page only.
+  function togglePageSelection() {
+    setSelection({
+      sig: pageSig,
+      keys: pageAllSelected
+        ? selectedKeys.filter((k) => !pageKeys.includes(k))
+        : [...selectedKeys, ...pageKeys.filter((k) => !selectedSet.has(k))],
+    });
+  }
+
   // Print Report opens the existing print route pre-filtered to this view.
   const printParams = new URLSearchParams();
   if (category) printParams.set("category", category);
   if (statusFilter !== "all") printParams.set("balanceStatus", statusFilter);
   const printHref = `/reports/offline-inventory/print${printParams.size ? `?${printParams.toString()}` : ""}`;
 
-  // Material, Balance, Unit, Stock Status, Minimum Stock, Category, Part
-  // No., SS Rec. Code, Location, Last Movement, Action (+ 2 cost columns).
-  // Recent Materials leaves Minimum Stock out.
+  // Material, Item Code, Balance, Unit, Stock Status, Minimum Stock,
+  // Category, Part No., SS Rec. Code, Location, Last Movement, Action
+  // (+ 2 cost columns, + the Super Admin selection column). Recent
+  // Materials leaves Minimum Stock out.
   const showMinimumStock = tab !== "recent";
-  const columnCount = canViewCosts ? 13 : 11;
+  const columnCount = (canViewCosts ? 14 : 12) + (isSuperAdmin ? 1 : 0);
 
   function renderRow(item: BalanceItem) {
     // Recent Materials stays calm: badge only. Review Issues says what is
@@ -573,8 +612,24 @@ export function StoreBalanceView({
           ? item.unit_issue ?? STATUS_HINT.review_required
           : STATUS_HINT[item.stock_status];
     return (
-      <tr key={item.key} onClick={() => setViewKey(item.key)} className="cursor-pointer hover:bg-gray-50">
+      <tr
+        key={item.key}
+        onClick={() => setViewKey(item.key)}
+        className={`cursor-pointer hover:bg-gray-50 ${selectedSet.has(item.key) ? "bg-red-50/60" : ""}`}
+      >
+        {isSuperAdmin && (
+          <td className="w-10 px-2.5 py-1.5" onClick={(e) => e.stopPropagation()}>
+            <input
+              type="checkbox"
+              checked={selectedSet.has(item.key)}
+              onChange={() => toggleRowSelection(item.key)}
+              aria-label={`Select ${item.display_name}`}
+              className="h-4 w-4 cursor-pointer accent-[#ED1C24]"
+            />
+          </td>
+        )}
         <td className="min-w-[130px] px-2.5 py-1.5 font-semibold text-[#111827]">{item.display_name}</td>
+        <td className="whitespace-nowrap px-2.5 py-1.5 font-mono text-xs text-[#4B5563]">{item.item_code ?? "—"}</td>
         <td className="whitespace-nowrap px-2.5 py-1.5 text-right">
           <span
             className={`font-black ${
@@ -622,13 +677,27 @@ export function StoreBalanceView({
         {/* View only — Receive/Issue still happen through Daily Activity
             for correct Job Card tracking (Unit 10G.16). */}
         <td className="whitespace-nowrap px-2.5 py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
-          <button
-            type="button"
-            onClick={() => setViewKey(item.key)}
-            className="inline-flex items-center rounded-md border border-[#E5E7EB] px-2.5 py-1 text-xs font-bold text-[#111827] hover:border-[#ED1C24] hover:text-[#ED1C24]"
-          >
-            View
-          </button>
+          <span className="inline-flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setViewKey(item.key)}
+              className="inline-flex items-center rounded-md border border-[#E5E7EB] px-2.5 py-1 text-xs font-bold text-[#111827] hover:border-[#ED1C24] hover:text-[#ED1C24]"
+            >
+              View
+            </button>
+            {/* Super Admin only; opens the delete review, never deletes directly. */}
+            {isSuperAdmin && (
+              <button
+                type="button"
+                onClick={() => setRemovalKeys([item.key])}
+                aria-label={`Delete ${item.display_name}`}
+                className="inline-flex items-center gap-1 rounded-md border border-red-200 px-2.5 py-1 text-xs font-bold text-[#ED1C24] hover:bg-red-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                Delete
+              </button>
+            )}
+          </span>
         </td>
       </tr>
     );
@@ -650,6 +719,14 @@ export function StoreBalanceView({
               <Link href="?addMaterial=1" className={headerPrimaryBtn}>
                 <PlusCircle className="h-4 w-4" aria-hidden />
                 Add New Material
+              </Link>
+            )}
+            {/* Material Master import (Item Code / Description / Unit, no
+                stock) — Super Admin only; separate from Import Opening Stock. */}
+            {isSuperAdmin && (
+              <Link href="/store/offline-inventory/import-materials" className={headerSecondaryBtn}>
+                <FileSpreadsheet className="h-4 w-4" aria-hidden />
+                Import from Excel
               </Link>
             )}
             <Link href="/store/offline-inventory/movements" className={headerSecondaryBtn}>
@@ -692,6 +769,10 @@ export function StoreBalanceView({
               Import Opening Stock
             </Link>
             <span className="text-xs text-[#9CA3AF]">Use before system go-live to enter existing materials.</span>
+            <Link href="/store/offline-inventory/archived" className={`${secondaryBtn} sm:ml-auto`}>
+              <Archive className="h-4 w-4" aria-hidden />
+              Archived Materials
+            </Link>
           </div>
         )}
 
@@ -846,7 +927,7 @@ export function StoreBalanceView({
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search material name, part no., SS Rec. Code, category, or location…"
+                placeholder="Search material name, item code, part no., SS Rec. Code, category, or location…"
                 className={`${inp} pl-9`}
               />
             </div>
@@ -1016,7 +1097,7 @@ export function StoreBalanceView({
               </h2>
               {hasActiveFilters && (
                 <>
-                  <p className="mt-1.5 text-sm text-[#4B5563]">Try another material name, part no., or SS Rec. Code.</p>
+                  <p className="mt-1.5 text-sm text-[#4B5563]">Try another material name, item code, part no., or SS Rec. Code.</p>
                   <button type="button" onClick={resetFilters} className="mt-3 text-xs font-bold text-[#ED1C24] hover:underline">
                     Reset filters
                   </button>
@@ -1036,11 +1117,51 @@ export function StoreBalanceView({
                 Nothing was added or updated recently — showing the most recently updated materials.
               </p>
             )}
+            {isSuperAdmin && selectedKeys.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-100 bg-red-50/70 px-3 py-1.5">
+                <span className="text-xs font-bold text-[#111827]">
+                  {selectedKeys.length} material{selectedKeys.length === 1 ? "" : "s"} selected
+                  <span className="font-semibold text-[#6B7280]"> · selection clears when you change the view or filters</span>
+                </span>
+                <span className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelection({ sig: "", keys: [] })}
+                    className="min-h-[36px] rounded-md px-2.5 text-xs font-bold text-[#4B5563] hover:bg-white"
+                  >
+                    Clear selection
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRemovalKeys(selectedKeys)}
+                    className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md bg-[#ED1C24] px-3 text-xs font-bold text-white hover:bg-[#c8181e]"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                    Delete Selected ({selectedKeys.length})
+                  </button>
+                </span>
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className="w-full text-[13px]">
                 <thead className="border-b-2 border-[#E5E7EB] bg-[#F3F4F6] text-left text-[11px] font-bold uppercase leading-tight tracking-wide text-[#4B5563] [&_th]:[overflow-wrap:normal]!">
                   <tr>
+                    {isSuperAdmin && (
+                      <th className="w-10 px-2.5 py-2">
+                        <input
+                          type="checkbox"
+                          checked={pageAllSelected}
+                          ref={(el) => {
+                            if (el) el.indeterminate = !pageAllSelected && pageSomeSelected;
+                          }}
+                          onChange={togglePageSelection}
+                          aria-label={pageAllSelected ? "Deselect all materials on this page" : "Select all materials on this page"}
+                          className="h-4 w-4 cursor-pointer accent-[#ED1C24]"
+                        />
+                      </th>
+                    )}
                     <th className="px-2.5 py-2">Material</th>
+                    <th className="whitespace-nowrap px-2.5 py-2">Item Code</th>
                     <th className="whitespace-nowrap px-2.5 py-2 text-right">Balance</th>
                     <th className="whitespace-nowrap px-2.5 py-2">Unit</th>
                     <th className="px-2.5 py-2">Stock Status</th>
@@ -1253,7 +1374,35 @@ export function StoreBalanceView({
       </div>
 
       {viewItem && (
-        <MaterialDetailModal item={viewItem} onClose={() => setViewKey(null)} canViewCosts={canViewCosts} canManage={canManage} />
+        <MaterialDetailModal
+          item={viewItem}
+          onClose={() => setViewKey(null)}
+          canViewCosts={canViewCosts}
+          canManage={canManage}
+          isSuperAdmin={isSuperAdmin}
+          onRequestDelete={isSuperAdmin ? () => setRemovalKeys([viewItem.key]) : undefined}
+          canEdit={canEditMaterial}
+          onEdited={(key) => {
+            // A renamed material has a new key: stay on it.
+            setViewKey(key);
+            router.refresh();
+          }}
+        />
+      )}
+
+      {/* Super Admin delete / archive review — opened from a row's Delete,
+          the Material Details footer, or Delete Selected. */}
+      {isSuperAdmin && removalKeys && (
+        <MaterialRemovalDialog
+          keys={removalKeys}
+          canViewCosts={canViewCosts}
+          onClose={() => setRemovalKeys(null)}
+          onDone={() => {
+            setSelection({ sig: "", keys: [] });
+            setViewKey(null);
+            router.refresh();
+          }}
+        />
       )}
 
       {/* Large Popup Conversion — Add New Material / Receive Material /

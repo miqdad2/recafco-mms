@@ -4,6 +4,7 @@ import { RealtimeRefresh } from "@/components/realtime/realtime-refresh";
 import { StoreBalanceView } from "@/components/store/store-balance-view";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts as canViewCostsPermission } from "@/lib/security/permissions";
+import { canEditMaterialMaster } from "@/lib/backend/store/material-master";
 import {
   canManageOfflineInventory,
   getOfflineInventoryBalance,
@@ -128,6 +129,7 @@ export default async function StoreBalancePage({
         balance={balance}
         canManage={canManage}
         isSuperAdmin={isSuperAdmin}
+        canEditMaterial={canEditMaterialMaster(context)}
         canViewCosts={canViewCosts}
         totalStockValue={canViewCosts ? totalStockValue : 0}
         recentSince={recentSince}

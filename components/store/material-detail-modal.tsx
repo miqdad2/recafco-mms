@@ -1,11 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
-import { AlertTriangle, Loader2, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { AlertTriangle, Loader2, Pencil, Trash2, X } from "lucide-react";
+
+import { setMaterialItemCodeAction } from "@/app/actions/material-master";
 
 import { StatusBadge } from "@/components/ui/status-badge";
 import { MaterialUnitSetupEditor } from "@/components/store/material-unit-setup-editor";
+import { MaterialEditDialog } from "@/components/store/material-edit-dialog";
 import {
   getMaterialRecentMovementsAction,
   getMaterialCostSummaryAction,
@@ -64,6 +68,84 @@ function Info({ label, value }: { label: string; value: string }) {
   );
 }
 
+// Super Admin: set, change or clear the Item Code. Uniqueness is checked on
+// the server; the page refresh brings the saved value back into `item`.
+function ItemCodeEditor({ item }: { item: BalanceItem }) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(item.item_code ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+
+  function save() {
+    setError(null);
+    startTransition(async () => {
+      const r = await setMaterialItemCodeAction(item.key, value);
+      if (!r.ok) {
+        setError(r.error);
+        return;
+      }
+      setEditing(false);
+      router.refresh();
+    });
+  }
+
+  if (!editing) {
+    return (
+      <div className="flex items-center justify-between gap-3 py-2">
+        <p className="text-xs font-bold uppercase tracking-wide text-[#9CA3AF]">Item Code</p>
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-mono text-sm font-semibold text-[#111827]">{item.item_code ?? "—"}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setValue(item.item_code ?? "");
+              setEditing(true);
+            }}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs font-bold text-[#ED1C24] hover:bg-red-50"
+          >
+            <Pencil className="h-3 w-3" aria-hidden />
+            Edit
+          </button>
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="py-2">
+      <label htmlFor="item-code-input" className="text-xs font-bold uppercase tracking-wide text-[#9CA3AF]">Item Code</label>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <input
+          id="item-code-input"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          maxLength={64}
+          placeholder="e.g. AMSHV0001 (leave blank to clear)"
+          className="min-w-0 flex-1 rounded-md border border-[#E5E7EB] px-3 py-1.5 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-[#ED1C24]"
+        />
+        <button
+          type="button"
+          onClick={save}
+          disabled={pending}
+          className="rounded-md bg-[#ED1C24] px-3 py-1.5 text-xs font-bold text-white hover:bg-[#c8181e] disabled:opacity-50"
+        >
+          {pending ? "Saving…" : "Save"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          disabled={pending}
+          className="rounded-md border border-[#E5E7EB] px-3 py-1.5 text-xs font-bold text-[#4B5563] hover:bg-gray-50"
+        >
+          Cancel
+        </button>
+      </div>
+      {error && <p role="alert" className="mt-1 text-xs font-semibold text-[#B91C1C]">{error}</p>}
+    </div>
+  );
+}
+
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
     <h3 className="mb-3 text-xs font-black uppercase tracking-wide text-[#4B5563]">{children}</h3>
@@ -81,13 +163,24 @@ export function MaterialDetailModal({
   onClose,
   canViewCosts = false,
   canManage = false,
+  isSuperAdmin = false,
+  onRequestDelete,
+  canEdit = false,
+  onEdited,
 }: {
   item: BalanceItem;
   onClose: () => void;
   // Inventory-First Material Request Workflow — may edit the Unit Setup.
   canManage?: boolean;
   canViewCosts?: boolean;
+  // Super Admin: may edit the Item Code and open the delete review.
+  isSuperAdmin?: boolean;
+  onRequestDelete?: () => void;
+  // Edit Material: Super Admin and Maintenance Data Entry.
+  canEdit?: boolean;
+  onEdited?: (key: string) => void;
 }) {
+  const [editing, setEditing] = useState(false);
   const [rows, setRows] = useState<MaterialMovementRow[] | null>(null);
   const [costSummary, setCostSummary] = useState<MaterialCostSummary | null>(null);
 
@@ -118,11 +211,26 @@ export function MaterialDetailModal({
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      // While editing, Escape belongs to the edit form's discard check.
+      if (e.key === "Escape" && !editing) onClose();
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, editing]);
+
+  if (editing) {
+    return (
+      <MaterialEditDialog
+        materialKey={item.key}
+        materialName={item.display_name}
+        onClose={() => setEditing(false)}
+        onSaved={(key) => {
+          setEditing(false);
+          onEdited?.(key);
+        }}
+      />
+    );
+  }
 
   return (
     <>
@@ -166,10 +274,12 @@ export function MaterialDetailModal({
                 <SectionTitle>Material Information</SectionTitle>
                 <div className="divide-y divide-[#F3F4F6] rounded-md border border-[#E5E7EB] px-4">
                   <Info label="Material Name" value={item.display_name} />
+                  {isSuperAdmin ? <ItemCodeEditor item={item} /> : <Info label="Item Code" value={item.item_code ?? "—"} />}
                   <Info label="Category" value={item.category} />
                   <Info label="Unit" value={item.unit} />
                   <Info label="Part No." value={item.part_number ?? "—"} />
                   <Info label="SS Rec. Code" value={item.ss_rec_code ?? "—"} />
+                  {item.notes && <Info label="Material Notes" value={item.notes} />}
                   <Info label="Last Movement Date" value={fmtDate(item.last_movement_date)} />
                 </div>
                 <MaterialUnitSetupEditor item={item} canEdit={canManage} />
@@ -350,13 +460,35 @@ export function MaterialDetailModal({
               >
                 View Full History
               </Link>
-              <button
-                type="button"
-                onClick={onClose}
-                className="inline-flex items-center justify-center rounded-md border border-[#E5E7EB] px-5 py-2.5 text-sm font-bold text-[#4B5563] hover:bg-gray-50"
-              >
-                Close
-              </button>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                {canEdit && item.archived_at === null && (
+                  <button
+                    type="button"
+                    onClick={() => setEditing(true)}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-md bg-[#ED1C24] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#c8181e]"
+                  >
+                    <Pencil className="h-4 w-4" aria-hidden />
+                    Edit Material
+                  </button>
+                )}
+                {onRequestDelete && (
+                  <button
+                    type="button"
+                    onClick={onRequestDelete}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-md border border-red-200 px-5 py-2.5 text-sm font-bold text-[#ED1C24] hover:bg-red-50"
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden />
+                    Delete Material
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="inline-flex items-center justify-center rounded-md border border-[#E5E7EB] px-5 py-2.5 text-sm font-bold text-[#4B5563] hover:bg-gray-50"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>

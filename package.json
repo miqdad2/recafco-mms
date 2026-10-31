@@ -16,7 +16,8 @@
     "assets:replace-local": "node --env-file=.env scripts/replace-assets-from-excel.mjs",
     "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tests/unit/register.mjs --test \"tests/unit/**/*.test.ts\"",
     "test:e2e": "playwright test",
-    "test:e2e:cleanup": "node --env-file=.env scripts/e2e-mms-cleanup.mjs"
+    "test:e2e:cleanup": "node --env-file=.env scripts/e2e-mms-cleanup.mjs",
+    "test:integration": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tests/integration/register.mjs --test --test-concurrency=1 \"tests/integration/**/*.test.ts\""
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

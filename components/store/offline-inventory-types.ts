@@ -136,6 +136,13 @@ export type BalanceItem = {
   // missing unit, a half-saved purchase-unit setup, or the same material
   // name also recorded under another unit. null = nothing detected.
   unit_issue: string | null;
+  // Item Code and archive state, from the same settings row (migration
+  // 20261029000000). null = no Item Code / not archived. An archived
+  // material is listed only in Archived Materials while its balance is 0.
+  item_code: string | null;
+  archived_at: string | null;
+  // Material Notes from the settings row; null when none.
+  notes: string | null;
 };
 
 // "Review Issues" — rows whose balance or setup looks unusual: negative

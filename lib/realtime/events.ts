@@ -101,6 +101,8 @@ export const REALTIME_EVENTS = {
   OFFLINE_INVENTORY_IMPORTED:            "offline_inventory.imported",
   OFFLINE_INVENTORY_RECEIVED:            "offline_inventory.received",
   OFFLINE_INVENTORY_USED:                "offline_inventory.used",
+  // Item Code change, Super Admin delete / archive / restore of a material.
+  OFFLINE_INVENTORY_MATERIAL_UPDATED:    "offline_inventory.material_updated",
   TECHNICIAN_JOB_UPDATED:      "technician_job.updated",
   NOTIFICATION_CREATED:        "notification.created",
   ASSET_UPDATED:               "asset.updated",

@@ -1681,8 +1681,47 @@ model inventory_material_settings {
   created_by             String   @db.Uuid
   created_at             DateTime @default(now()) @db.Timestamptz(6)
   updated_at             DateTime @default(now()) @db.Timestamptz(6)
+  // Migration 20261029000000: the material's Item Code (exactly as entered;
+  // unique case-insensitively via the partial index
+  // inventory_material_settings_item_code_unique, created in SQL) and its
+  // Super Admin archive state. Archived = hidden from Inventory Control and
+  // new material selections while its balance is 0; history untouched.
+  item_code              String?
+  archived_at            DateTime? @db.Timestamptz(6)
+  archived_by            String?   @db.Uuid
+  archive_reason         String?
+  // Migration 20261031000000: master values set through Edit Material. They
+  // take priority over the value read from movements, so editing never
+  // rewrites a transaction row. NULL = never edited, "" = deliberately cleared.
+  category               String?
+  part_number            String?
+  ss_rec_code            String?
+  location               String?
 
   @@index([part_id])
+}
+
+// ─── Material Master Excel import history (migration 20261029000000) ───────
+// One row per confirmed import; client_submission_id makes a repeated submit
+// return the first result instead of importing twice.
+model inventory_material_import_batches {
+  id                     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batch_reference        String   @unique
+  client_submission_id   String   @unique @db.Uuid
+  file_name              String
+  sheet_name             String
+  has_header_row         Boolean
+  column_mapping         Json     @default("{}")
+  total_rows             Int
+  imported_count         Int
+  existing_count         Int      @default(0)
+  duplicate_count        Int      @default(0)
+  invalid_count          Int      @default(0)
+  unsupported_unit_count Int      @default(0)
+  created_by             String   @db.Uuid
+  created_at             DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([created_at(sort: Desc)], map: "idx_inventory_material_import_batches_created_at")
 }
 
 // ─── Job Card requirement confirmations (migration 20261028000000) ──────────

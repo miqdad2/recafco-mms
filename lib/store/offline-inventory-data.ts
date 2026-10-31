@@ -150,7 +150,29 @@ export type OfflineInventoryBalance = {
   // Required (Unit 10G.62 excluded Review Required here; this unit
   // explicitly folds it back in, per the task's own redefinition).
   lowStockCount: number;
+  // Archived materials with a zero balance — kept out of balanceItems (and
+  // so out of every list, count and selection built from it) and listed
+  // only in the Super Admin Archived Materials view. The movement totals
+  // above still cover every movement, archived materials included, so
+  // ledger-wide figures never change because something was archived. An
+  // archived material that somehow has stock again stays in balanceItems,
+  // flagged as a review issue, so stock is never hidden.
+  archivedItems: BalanceItem[];
 };
+
+// A master value set through Edit Material wins over the value read from
+// movements: null = never edited, "" = deliberately cleared.
+function masterValue(edited: string | null | undefined, fromMovements: string | null): string | null {
+  if (edited === null || edited === undefined) return fromMovements;
+  return edited === "" ? null : edited;
+}
+
+export const ARCHIVED_WITH_STOCK_ISSUE = "Archived material has stock — restore it or issue the stock";
+
+// Hidden from Inventory Control: archived and nothing left in stock.
+export function isHiddenArchivedMaterial(item: Pick<BalanceItem, "archived_at" | "balance">): boolean {
+  return item.archived_at !== null && item.balance === 0;
+}
 
 // Performance Optimization Unit 3, Task 1: previously loaded every non-deleted
 // movement row (unbounded — grows forever with history) and aggregated
@@ -255,6 +277,13 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
         purchase_unit: true,
         conversion_quantity: true,
         updated_at: true,
+        item_code: true,
+        archived_at: true,
+        category: true,
+        part_number: true,
+        ss_rec_code: true,
+        location: true,
+        remarks: true,
       },
     }),
   ]);
@@ -287,10 +316,10 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
         key,
         part_id:              meta.part_id,
         display_name:         meta.parts?.part_name ?? meta.manual_material_name ?? "Unknown",
-        part_number:          meta.parts?.part_number ?? meta.manual_part_number ?? null,
-        ss_rec_code:          meta.ss_rec_code,
-        category:             meta.category ? normalizeCategory(meta.category) : OTHER_CATEGORY,
-        location:             locationByKey.get(key) ?? null,
+        part_number:          masterValue(settings?.part_number, meta.parts?.part_number ?? meta.manual_part_number ?? null),
+        ss_rec_code:          masterValue(settings?.ss_rec_code, meta.ss_rec_code),
+        category:             settings?.category || (meta.category ? normalizeCategory(meta.category) : OTHER_CATEGORY),
+        location:             masterValue(settings?.location, locationByKey.get(key) ?? null),
         manual_material_name: meta.manual_material_name,
         unit:                 meta.unit,
         total_opening_stock:  0,
@@ -315,6 +344,9 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
             : settings && (settings.purchase_unit !== null) !== (settings.conversion_quantity !== null)
               ? "Purchase unit setup is incomplete"
               : null, // the cross-unit name check is added below
+        item_code:   settings?.item_code ?? null,
+        archived_at: settings?.archived_at?.toISOString() ?? null,
+        notes:       settings?.remarks ?? null,
       });
     }
 
@@ -357,6 +389,8 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
   const unitsByManualNameLower = new Map<string, Set<string>>();
   for (const item of balanceAccum.values()) {
     if (item.part_id) continue;
+    // An archived, empty material is no longer "another unit in use".
+    if (isHiddenArchivedMaterial(item)) continue;
     const nameKey = (item.manual_material_name ?? "").toLowerCase().trim();
     if (!nameKey) continue;
     if (!unitsByManualNameLower.has(nameKey)) unitsByManualNameLower.set(nameKey, new Set());
@@ -369,9 +403,16 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
   // for the negative case instead of hiding it.
   let totalStockValue = 0;
   let lowStockCount = 0;
+  const archivedItems: BalanceItem[] = [];
   for (const item of balanceAccum.values()) {
     item.stock_value = item.balance > 0 && item.last_unit_cost !== null ? item.balance * item.last_unit_cost : 0;
+    if (isHiddenArchivedMaterial(item)) {
+      item.stock_status = "out_of_stock";
+      archivedItems.push(item);
+      continue;
+    }
     totalStockValue += item.stock_value;
+    if (item.archived_at !== null && item.unit_issue === null) item.unit_issue = ARCHIVED_WITH_STOCK_ISSUE;
 
     // Inventory Dashboard Spending and Simple Low Stock Rules Unit 10G.63,
     // Task 1 — priority: Negative Stock, then Out of Stock, then Low Stock,
@@ -419,7 +460,9 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
 
   const balance      = totalOpeningStock + totalReceived - totalIssued;
   const balanceItems = Array.from(balanceAccum.values())
+    .filter((item) => !isHiddenArchivedMaterial(item))
     .sort((a, b) => a.display_name.localeCompare(b.display_name));
+  archivedItems.sort((a, b) => a.display_name.localeCompare(b.display_name));
 
   return {
     balanceItems,
@@ -431,6 +474,7 @@ export async function getOfflineInventoryBalance(): Promise<OfflineInventoryBala
     totalReceivedValue,
     totalIssuedValue,
     lowStockCount,
+    archivedItems,
   };
 }
 
@@ -688,7 +732,21 @@ export type OfflineInventorySearchMatch = {
   // the stock unit (1:1).
   purchase_unit: string | null;
   conversion_quantity: number | null;
+  item_code: string | null;
 };
+
+// Settings-row identity → the same Prisma where-clause shape every
+// identity-scoped movement query in this file uses.
+function identityWhere(c: { part_id: string | null; manual_material_name: string | null; unit: string }) {
+  return c.part_id
+    ? { part_id: c.part_id, deleted_at: null }
+    : {
+        part_id: null,
+        manual_material_name: { equals: c.manual_material_name ?? "", mode: "insensitive" as const },
+        unit: { equals: c.unit, mode: "insensitive" as const },
+        deleted_at: null,
+      };
+}
 
 // Required Materials Inventory Matching Unit 5, Task 2: Required Materials
 // autocomplete search. Same balance-aggregation shape as
@@ -712,6 +770,29 @@ export async function searchOfflineInventoryMaterials(opts: {
   if (trimmed.length < 2) return [];
   const limit = Math.min(opts.limit ?? 10, 25);
 
+  // Item Code lives on the settings row, not on movements: materials whose
+  // Item Code matches are added to the search as identities. Archived
+  // materials are looked up once so they can be left out below (only while
+  // their balance is 0 — the same rule as the Inventory Control list).
+  const [itemCodeMatches, archivedRows] = await Promise.all([
+    prisma.inventory_material_settings.findMany({
+      where: {
+        OR: [
+          { item_code: { contains: trimmed, mode: "insensitive" } },
+          { part_number: { contains: trimmed, mode: "insensitive" } },
+          { ss_rec_code: { contains: trimmed, mode: "insensitive" } },
+        ],
+      },
+      select: { part_id: true, manual_material_name: true, unit: true },
+      take: limit,
+    }),
+    prisma.inventory_material_settings.findMany({
+      where: { archived_at: { not: null } },
+      select: { part_id: true, manual_material_name: true, unit: true },
+    }),
+  ]);
+  const archivedKeys = new Set(archivedRows.map((r) => buildBalanceKey(r)));
+
   const filters: Prisma.offline_inventory_movementsWhereInput[] = [
     { deleted_at: null },
     {
@@ -721,6 +802,7 @@ export async function searchOfflineInventoryMaterials(opts: {
         { ss_rec_code: { contains: trimmed, mode: "insensitive" } },
         { parts: { part_name: { contains: trimmed, mode: "insensitive" } } },
         { parts: { part_number: { contains: trimmed, mode: "insensitive" } } },
+        ...itemCodeMatches.map(identityWhere),
       ],
     },
   ];
@@ -759,21 +841,13 @@ export async function searchOfflineInventoryMaterials(opts: {
       movement_date: true,
       parts: { select: { part_name: true, part_number: true } },
     },
-    take: limit,
+    // Room for archived candidates that are dropped below.
+    take: limit + Math.min(archivedKeys.size, 50),
   });
 
   if (candidates.length === 0) return [];
 
-  const identityOr = candidates.map((c) =>
-    c.part_id
-      ? { part_id: c.part_id, deleted_at: null }
-      : {
-          part_id: null,
-          manual_material_name: { equals: c.manual_material_name ?? "", mode: "insensitive" as const },
-          unit: { equals: c.unit, mode: "insensitive" as const },
-          deleted_at: null,
-        }
-  );
+  const identityOr = candidates.map(identityWhere);
 
   const [grouped, locationRows, lastUnitCostByKey, settingsRows] = await Promise.all([
     prisma.offline_inventory_movements.groupBy({
@@ -811,6 +885,11 @@ export async function searchOfflineInventoryMaterials(opts: {
         minimum_stock_quantity: true,
         purchase_unit: true,
         conversion_quantity: true,
+        item_code: true,
+        category: true,
+        part_number: true,
+        ss_rec_code: true,
+        location: true,
       },
     }),
   ]);
@@ -828,6 +907,7 @@ export async function searchOfflineInventoryMaterials(opts: {
     settingsRows.map((s) => [buildBalanceKey(s), s.minimum_stock_quantity !== null ? Number(s.minimum_stock_quantity) : null])
   );
   const unitSetupByKey = new Map(settingsRows.map((s) => [buildBalanceKey(s), unitSetupFromSettings(s)]));
+  const settingsByKey = new Map(settingsRows.map((s) => [buildBalanceKey(s), s]));
 
   // Job Card Materials Request UX and Existing Inventory Selection Fix —
   // same priority order as getOfflineInventoryBalance(): Negative, then Out
@@ -841,25 +921,32 @@ export async function searchOfflineInventoryMaterials(opts: {
   }
 
   return candidates
+    .filter((c) => {
+      const key = buildBalanceKey(c);
+      return !(archivedKeys.has(key) && (balanceByKey.get(key) ?? 0) === 0);
+    })
+    .slice(0, limit)
     .map((c) => {
       const key = buildBalanceKey(c);
       const balance = balanceByKey.get(key) ?? 0;
+      const master = settingsByKey.get(key);
       return {
         key,
         part_id: c.part_id,
         manual_material_name: c.manual_material_name,
         display_name: c.parts?.part_name ?? c.manual_material_name ?? "Unknown",
-        part_number: c.parts?.part_number ?? c.manual_part_number ?? null,
-        ss_rec_code: c.ss_rec_code,
+        part_number: masterValue(master?.part_number, c.parts?.part_number ?? c.manual_part_number ?? null),
+        ss_rec_code: masterValue(master?.ss_rec_code, c.ss_rec_code),
         unit: c.unit,
-        category: c.category ? normalizeCategory(c.category) : OTHER_CATEGORY,
-        location: locationByKey.get(key) ?? null,
+        category: master?.category || (c.category ? normalizeCategory(c.category) : OTHER_CATEGORY),
+        location: masterValue(master?.location, locationByKey.get(key) ?? null),
         balance,
         last_movement_date: c.movement_date.toISOString(),
         last_unit_cost: opts.canViewCosts ? lastUnitCostByKey.get(key) ?? null : null,
         stock_status: stockStatusFor(balance, minimumByKey.get(key) ?? null),
         purchase_unit: unitSetupByKey.get(key)?.purchase_unit ?? null,
         conversion_quantity: unitSetupByKey.get(key)?.conversion_quantity ?? null,
+        item_code: master?.item_code ?? null,
       };
     })
     .sort((a, b) => a.display_name.localeCompare(b.display_name));
