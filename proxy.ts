@@ -96,6 +96,12 @@ export async function proxy(request: NextRequest) {
     }
   }
 
+  // The lightweight monitoring route is public after health rate limiting.
+  // Detailed health routes and all other routes retain session enforcement.
+  if (pathname === "/api/health" && method === "GET") {
+    return NextResponse.next();
+  }
+
   // FMP server-to-server integration (MMS-FMP-INTEGRATION-01). No MMS
   // session cookie — the route handler authenticates with the
   // x-fmp-integration-key header — so it must skip updateSession() below,

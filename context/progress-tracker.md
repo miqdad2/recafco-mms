@@ -6240,3 +6240,38 @@ UI/selection only; no workflow, schema, permission or data change.
 - Sorting in Needs My Action: action rank, then the existing bucket order, then fetch order (updated_at desc). An exact Job Card number match is listed first and pre-selected (board `initialSelectedId`, keyed remount).
 - List row: one red "› <action>" line when the viewer has an action. Panel: Manager's "Closure returned for correction" remarks (by/when) while unresolved. Existing controls unchanged.
 - Tests: unit 180/180 (new `tests/unit/daily-activity-my-action.test.ts`); E2E `tests/e2e/daily-activity-needs-action.spec.ts` 8/8 against `next start -p 3100` on a disposable clone seeded by `scripts/e2e-daily-activity-needs-action-seed.ts` (118 extra cards: default view, ranking, 50-row cap with matching count, each state's message, popup link selection, search, real Not Required click, filters/Reset/back, 390/768 px, Manager default); `scripts/verify-closure-requirements.ts` 16/16 re-run on the same clone; clone dropped. typecheck, lint, build pass.
+
+## 2026-11-01 - Monitoring: lightweight MMS health route
+
+Prepared in the separate monitoring worktree; NOT deployed.
+
+- Added an exact GET /api/health session bypass after existing health rate limiting.
+- Detailed database-health route and other authentication paths remain unchanged.
+- Removed raw database-error details from the lightweight health response; added no-store caching.
+- Database operation remains SELECT 1 only. No migration or feature-flag change.
+- Actual package.json in this checkout uses Next.js 16.2.7; older context stack tables still mention Next.js 15.
+- Verification pending: dependency installation, targeted route/auth checks, db:check, lint, typecheck, and build.
+- No commit, production build, production file replacement, or application restart performed.
+
+Current staging base: 3ac4f944ea9770d3a6e82d8021be323750b12532. Validation pending.
+
+
+### Monitoring health-route verification completed — 2026-11-01
+
+Validated in the separate health-readiness-current worktree based on 3ac4f944e.
+
+- Lint passed.
+- Prisma Client 6.19.3 generated in staging.
+- Read-only db:check passed against recafco_maintenance using SELECT 1.
+- Next.js route type generation, TypeScript check, and production build passed.
+- Temporary localhost:3191 production-server checks passed:
+  - Unauthenticated GET /api/health reports API/database readiness and no-store.
+  - /dashboard, /api/health/database, and /api/health/extra retain authentication.
+  - POST /api/health retains authentication.
+  - FMP integration retains its integration-key requirement.
+  - Existing health rate limit returns HTTP 429.
+  - A temporary process with an unavailable database returns safe HTTP 503 without raw error details or connection URLs.
+- Temporary test processes stopped. No migration, seed, production file replacement, or production application restart performed.
+- Generated next-env.d.ts is excluded from the health-fix commit.
+- Dependency remediation remains open: the production dependency audit reported 20 findings, including Next.js critical advisories. No dependency versions were changed by this health patch.
+- Production deployment and monitoring integration for MMS remain pending.

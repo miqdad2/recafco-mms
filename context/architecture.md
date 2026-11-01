@@ -257,3 +257,14 @@ NestJS readiness gates:
 13. Secrets are never logged.
 14. Feature flags come from the database.
 15. Schema-only features are not reported as active.
+
+## Lightweight Monitoring Health Route
+
+- `GET /api/health` is an intentional session-authentication exception for monitoring.
+- The existing health-request rate limit runs before this exact route bypass.
+- `/api/health/database`, sibling paths, other methods, and other application routes retain their existing authentication behavior.
+- The route performs only `SELECT 1`: HTTP 200 with `status: ok` / `database: connected`, otherwise HTTP 503 with `status: degraded` / `database: error`.
+- Raw database errors are not returned or logged by this route. Responses use `Cache-Control: no-store`.
+- No schema, workflow, role, permission, or integration-key changes are required.
+
+Current staging base: 3ac4f944ea9770d3a6e82d8021be323750b12532. Validation pending.
