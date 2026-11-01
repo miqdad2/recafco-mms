@@ -96,7 +96,7 @@ export function lineItemsUnchanged(posted: unknown[][], existing: unknown[][], f
 // field is in this list.
 
 export const JOB_CARD_EDIT_AUDIT_FIELDS = [
-  ["ordered_by", "Order Requested by"],
+  ["ordered_by", "Requested by"],
   ["department", "Department"],
   ["asset", "Asset"],
   ["asset_category", "Asset category"],

@@ -158,7 +158,7 @@ export function WorkOrderForm({
                   <tbody>
                     <tr>
                       <td className={cellClass}>
-                        <span className="font-semibold">Order Requested by <span className="text-[#ED1C24]">*</span></span>
+                        <span className="font-semibold">Requested by <span className="text-[#ED1C24]">*</span></span>
                         <input className={inputClass} name="ordered_by" required placeholder="Name of person ordering the work" />
                       </td>
                       <td className={cellClass}>
@@ -402,7 +402,7 @@ export function WorkOrderForm({
               <div className="mb-3 border-t border-[#E5E7EB] pt-3">
                 <p className="mb-1.5 text-xs font-black text-[#111827]">Required to submit:</p>
                 <ul className="space-y-1 text-xs text-[#4B5563]">
-                  <li className="flex items-center gap-1.5"><span className="font-bold text-[#ED1C24]">*</span> Order Requested by</li>
+                  <li className="flex items-center gap-1.5"><span className="font-bold text-[#ED1C24]">*</span> Requested by</li>
                   <li className="flex items-center gap-1.5"><span className="font-bold text-[#ED1C24]">*</span> Department</li>
                   <li className="flex items-center gap-1.5"><span className="font-bold text-[#ED1C24]">*</span> Operator complaint</li>
                   <li className="flex items-center gap-1.5"><span className="font-bold text-[#ED1C24]">*</span> Description of work</li>
@@ -436,7 +436,7 @@ export function WorkOrderForm({
     <form action={upsertWorkOrderAction} className="space-y-5">
       {workOrder?.id ? <input type="hidden" name="id" value={workOrder.id} /> : null}
       <FormSection title="Job Card Header" description="Primary paper-form details and asset reference.">
-        <Field label="Order Requested by" name="ordered_by" defaultValue={workOrder?.ordered_by} required />
+        <Field label="Requested by" name="ordered_by" defaultValue={workOrder?.ordered_by} required />
         <Field label="Requested by department" name="requested_by_department_id">
           <select className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2" name="requested_by_department_id" defaultValue={workOrder?.requested_by_department_id ?? ""}>
             <option value="">Not assigned</option>

@@ -1655,7 +1655,7 @@ function WizardBody({
             <div className="grid gap-5 sm:grid-cols-2">
               <div>
                 <label className="block">
-                  <FieldLabel label="Order Requested by" required />
+                  <FieldLabel label="Requested by" required />
                   <input
                     name="ordered_by"
                     data-field="ordered_by"
@@ -2506,7 +2506,7 @@ function WizardBody({
 
               <ReviewSection title="Request Details" onEdit={() => goToStep(2)}>
                 <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
-                  <ReviewRow label="Order Requested by" value={reviewData.ordered_by} />
+                  <ReviewRow label="Requested by" value={reviewData.ordered_by} />
                   <ReviewRow label="Date of order" value={reviewData.date_of_order} />
                   <ReviewRow label="Job Card Open Date" value={reviewData.job_card_start_date ?? NOT_ENTERED} />
                   <ReviewRow label="Job Card Closed Date" value={reviewData.job_card_end_date ?? NOT_ENTERED} />
