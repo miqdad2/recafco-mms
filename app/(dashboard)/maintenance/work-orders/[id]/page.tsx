@@ -873,7 +873,7 @@ export default async function WorkOrderDetailPage({
                 <p className="mt-1 text-sm font-bold text-[#111827]">{formatDateValue(wo.created_at)}</p>
               </div>
               <div>
-                <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Order Requested by</p>
+                <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Requested by</p>
                 <p className="mt-1 break-words text-sm font-bold text-[#111827]">{wo.ordered_by ?? "-"}</p>
               </div>
               <div>
@@ -1274,7 +1274,7 @@ export default async function WorkOrderDetailPage({
                       <InfoBlock label="Job Card Open Date" value={formatJobCardDate(wo.job_card_start_date)} />
                       <InfoBlock label="Job Card Closed Date" value={formatJobCardDate(wo.job_card_end_date)} />
                       <InfoBlock label="Created on" value={formatDateTimeValue(wo.created_at)} />
-                      {wo.ordered_by ? <InfoBlock label="Order Requested by" value={wo.ordered_by} /> : null}
+                      {wo.ordered_by ? <InfoBlock label="Requested by" value={wo.ordered_by} /> : null}
                       {wo.job_location ? <InfoBlock label="Job location" value={wo.job_location} /> : null}
                       {wo.profiles ? <InfoBlock label="Supervisor" value={wo.profiles.full_name} /> : null}
                       {wo.serial_number ? <InfoBlock label="RO serial no." value={wo.serial_number} /> : null}
@@ -1356,7 +1356,7 @@ export default async function WorkOrderDetailPage({
                   );
                 })()} />
                 {wo.maintenance_type ? <InfoLine label="Type" value={wo.maintenance_type} /> : null}
-                {wo.ordered_by ? <InfoLine label="Order Requested by" value={wo.ordered_by} /> : null}
+                {wo.ordered_by ? <InfoLine label="Requested by" value={wo.ordered_by} /> : null}
                 <InfoLine label="Created" value={formatDateValue(wo.created_at)} />
                 <InfoLine
                   label="Technician"

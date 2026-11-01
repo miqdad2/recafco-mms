@@ -85,6 +85,8 @@ Current settings:
 
 ## Completed
 
+- Phase JobCard-RequestedBy-Wording-02 — "Order Requested by" shortened to "Requested by" (2026-11-01). Wording only; not committed or deployed. No migration; `ordered_by` and all internal names unchanged; field still required; helper text and validation message unchanged. Other "Requested by" labels (closure, deletion, clarification, materials requests) show the system user who made that request and are a different value. Verified on a separate build and disposable DB (dropped afterwards): lint, typecheck, unit 228/228, db:check, build, browser check of Step 2, validation, Review & Save, create, Details, Edit and both print pages.
+
 - Phase JobCard-OrderRequestedBy-Wording-01 — "Order taken by" renamed to "Order Requested by" (2026-11-01). Wording only; not committed or deployed. No migration; `ordered_by` column, form field, `missing-ordered-by` key and audit field key unchanged; field still required.
   - The same field was also labelled "Reported by" (Job Card Details, Quick View, Job Card print), "Reported By" (Job Cards report print) and "Ordered by" (Edit form); all now read "Order Requested by". Validation: "Please enter who requested this Job Card (at least 2 letters)." Old History rows show the new label because labels are resolved at display time (`job-card-edit.ts`).
   - Verified on a separate build and disposable DB (dropped afterwards), because the dev server on port 3000 shares this folder's `.next`: lint, typecheck, unit 228/228, db:check, build; browser check of Step 2, validation, Review & Save, create, Details, Edit, both print pages.

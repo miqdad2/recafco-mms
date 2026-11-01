@@ -17,7 +17,7 @@ import { getJobCardSummaryPrintReport, REPORT_DIVISIONS, JOB_CARD_STATUSES } fro
 // filter UI (screen-only) and the A4 printable output for the currently
 // selected filters.
 
-const COL_HEADERS = ["Job Card No.", "Date", "Division", "Asset", "Maintenance Type", "Complaint / Issue", "Status", "Order Requested by", "Closed Date"];
+const COL_HEADERS = ["Job Card No.", "Date", "Division", "Asset", "Maintenance Type", "Complaint / Issue", "Status", "Requested by", "Closed Date"];
 
 export default async function JobCardSummaryPrintPage({
   searchParams,
