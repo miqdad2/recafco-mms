@@ -85,6 +85,10 @@ Current settings:
 
 ## Completed
 
+- Phase JobCard-OrderRequestedBy-Wording-01 — "Order taken by" renamed to "Order Requested by" (2026-11-01). Wording only; not committed or deployed. No migration; `ordered_by` column, form field, `missing-ordered-by` key and audit field key unchanged; field still required.
+  - The same field was also labelled "Reported by" (Job Card Details, Quick View, Job Card print), "Reported By" (Job Cards report print) and "Ordered by" (Edit form); all now read "Order Requested by". Validation: "Please enter who requested this Job Card (at least 2 letters)." Old History rows show the new label because labels are resolved at display time (`job-card-edit.ts`).
+  - Verified on a separate build and disposable DB (dropped afterwards), because the dev server on port 3000 shares this folder's `.next`: lint, typecheck, unit 228/228, db:check, build; browser check of Step 2, validation, Review & Save, create, Details, Edit, both print pages.
+
 - Phase InventoryControl-FlexibleImport-01 — Excel import with dynamic column mapping (2026-10-31). Not committed or deployed. No migration; `recafco_maintenance` unchanged. There is no category table: categories are the fixed list plus free text in use, so "create" means saving that text, as Add New Category does.
   - Fields: required Item Code, Material Description, Unit; optional Category, Part Number, SS Rec. Code, Location / Bin, Minimum Stock Level, Reorder Quantity, Notes; Serial Number display-only. Columns come from the header row, which may sit below a title (first 10 rows). No column position is assumed, one column cannot feed two fields, and other columns are listed as ignored.
   - Needs confirmation, blocking import on the server too: a required column not found (the old silent fallback to column D is gone), two columns for one field, an unrecognized header, or a headerless sheet that does not fit A Serial / B Code / C Description / D Unit.

@@ -996,7 +996,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                     </div>
                     {data.ordered_by && (
                       <div>
-                        <p className="text-xs text-[#9CA3AF]">Reported by</p>
+                        <p className="text-xs text-[#9CA3AF]">Order Requested by</p>
                         <p className="text-sm text-[#111827]">{data.ordered_by}</p>
                       </div>
                     )}
@@ -1722,7 +1722,7 @@ export function RepairOrderQuickView({ data }: { data: QuickViewData }) {
                         : "No Materials Request yet"}
                   </p>
                   {data.ordered_by && (
-                    <p className="mt-1 text-xs text-[#4B5563]">Reported by {data.ordered_by} · {formatDate(data.created_at)}</p>
+                    <p className="mt-1 text-xs text-[#4B5563]">Order Requested by {data.ordered_by} · {formatDate(data.created_at)}</p>
                   )}
                 </div>
 

@@ -138,7 +138,7 @@ const ERROR_MAP: Record<string, ToastMessage> = {
   // Job Card form validation
   "missing-complaint":          { tone: "error",   title: "Operator complaint required",    description: "Please describe the fault or issue reported before submitting." },
   "missing-description":        { tone: "error",   title: "Description of work required",   description: "Please add a description of the work to be carried out before submitting." },
-  "missing-ordered-by":         { tone: "error",   title: "\"Order taken by\" is required" },
+  "missing-ordered-by":         { tone: "error",   title: "\"Order Requested by\" is required" },
   "missing-department":         { tone: "error",   title: "Department is required" },
   "missing-type":               { tone: "error",   title: "Maintenance type is required" },
   "missing-team":               { tone: "error",   title: "Worker team is required" },

@@ -91,7 +91,7 @@ type PreparedJobCard = {
 // First failing schema field -> where it lives in the wizard and what to say.
 const FIELD_PROBLEMS: Record<string, { step: JobCardWizardStep; message: string }> = {
   asset_id: { step: 1, message: "Please select an asset." },
-  ordered_by: { step: 2, message: "Please enter who took the order (at least 2 letters)." },
+  ordered_by: { step: 2, message: "Please enter who requested this Job Card (at least 2 letters)." },
   date_of_order: { step: 2, message: "Please enter the date of order." },
   // The date-range rule's own wording (custom issue) is used when it applies.
   job_card_start_date: { step: 2, message: JOB_CARD_DATE_MESSAGES.invalidStart },

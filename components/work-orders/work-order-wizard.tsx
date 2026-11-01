@@ -1035,7 +1035,7 @@ function WizardBody({
 
     if (n === 2) {
       // Same rule as the server: at least 2 characters.
-      if (fields.ordered_by.trim().length < 2) errs.ordered_by = "Please enter who took the order (at least 2 letters).";
+      if (fields.ordered_by.trim().length < 2) errs.ordered_by = "Please enter who requested this Job Card (at least 2 letters).";
       if (!fields.date_of_order.trim()) errs.date_of_order = "Please enter the date of order.";
       // Same rule as the server (lib/work-orders/job-card-edit.ts).
       const dateProblem = checkJobCardDateRange(fields.job_card_start_date, fields.job_card_end_date);
@@ -1655,7 +1655,7 @@ function WizardBody({
             <div className="grid gap-5 sm:grid-cols-2">
               <div>
                 <label className="block">
-                  <FieldLabel label="Order taken by" required />
+                  <FieldLabel label="Order Requested by" required />
                   <input
                     name="ordered_by"
                     data-field="ordered_by"
@@ -1667,7 +1667,7 @@ function WizardBody({
                     placeholder="e.g. Ahmed Ali"
                   />
                 </label>
-                <p className={helpCls}>Name of the person who reported the problem or gave the order.</p>
+                <p className={helpCls}>Name of the person who requested this Job Card.</p>
                 <FieldError message={errors.ordered_by} />
               </div>
 
@@ -2506,7 +2506,7 @@ function WizardBody({
 
               <ReviewSection title="Request Details" onEdit={() => goToStep(2)}>
                 <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
-                  <ReviewRow label="Order taken by" value={reviewData.ordered_by} />
+                  <ReviewRow label="Order Requested by" value={reviewData.ordered_by} />
                   <ReviewRow label="Date of order" value={reviewData.date_of_order} />
                   <ReviewRow label="Job Card Open Date" value={reviewData.job_card_start_date ?? NOT_ENTERED} />
                   <ReviewRow label="Job Card Closed Date" value={reviewData.job_card_end_date ?? NOT_ENTERED} />

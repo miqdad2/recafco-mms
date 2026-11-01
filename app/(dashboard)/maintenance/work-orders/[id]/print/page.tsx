@@ -274,7 +274,7 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
   // omitted when empty instead of printing an empty "Not recorded" cell, so
   // the grid never grows with blank rows.
   const detailRows: Array<[string, string]> = [
-    ["Reported by", rawWo.ordered_by || "Not recorded"],
+    ["Order Requested by", rawWo.ordered_by || "Not recorded"],
     ["Date of Order", formatJobCardDate(rawWo.date_of_order, "—")],
     // Job Card Start / End Date — typed calendar dates, always printed
     // ("Not entered" when blank); separate from the recorded Work Start /
