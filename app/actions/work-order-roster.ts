@@ -6,12 +6,20 @@ import { requireUser } from "@/lib/auth/context";
 import { safeErrorMessage } from "@/lib/errors/error-handler";
 import { assignInternalTeamRoster } from "@/lib/backend/work-orders/worker-roster";
 import { internalTeamRosterSchema } from "@/lib/backend/workers/validators";
+import type { EditAssignmentData } from "@/lib/work-orders/assignment-edit";
+import { getEditAssignmentData } from "@/lib/work-orders/assignment-edit-data";
 
 // Work Assignment and Worker Profiles Foundation Unit 7, Task 4/5.
 // Separate from assignTechniciansAction/assignTechniciansModalAction
 // (app/actions/workflow.ts) — this saves the new worker_profiles-backed
 // Internal Team roster (Supervisor/Technicians/Helpers with rate snapshots),
 // not the existing technician self-service / Freelancer / Company flow.
+
+/** Edit Assignment data for a popup opened over a page that stays put. */
+export async function getEditAssignmentDataAction(workOrderId: string): Promise<EditAssignmentData | null> {
+  const context = await requireUser();
+  return getEditAssignmentData(context, workOrderId);
+}
 
 export type InternalTeamRosterState = { ok: true } | { ok: false; error: string } | null;
 
@@ -56,6 +64,7 @@ export async function saveInternalTeamRosterAction(
     const result = await assignInternalTeamRoster(context, parsed);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/work-orders");
+    revalidatePath("/maintenance/daily-activity");
     revalidatePath("/dashboard");
   } catch (error) {
     return { ok: false, error: safeErrorMessage(error) };

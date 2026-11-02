@@ -1,5 +1,7 @@
 "use server";
 
+import { getJobCardTiming } from "@/lib/work-orders/job-card-dates-data";
+import type { JobCardTiming } from "@/lib/work-orders/job-card-timing";
 import { requireUser, type CurrentUserContext } from "@/lib/auth/context";
 import { prisma } from "@/lib/db/prisma";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
@@ -269,6 +271,7 @@ export type ClosedJobCardDetail = {
   issue: string;
   createdAtLabel: string;
   closedAtLabel: string;
+  timing: JobCardTiming;
   requestedByName: string | null;
   closedByName: string | null;
   workers: ClosedJobCardDetailWorker[];
@@ -291,8 +294,14 @@ export async function getClosedJobCardDetailAction(workOrderId: string): Promise
     select: {
       id: true,
       work_order_number: true,
+      status: true,
       created_at: true,
       updated_at: true,
+      starting_datetime: true,
+      ending_datetime: true,
+      job_card_start_date: true,
+      job_card_opened_at: true,
+      work_completed_at: true,
       operator_complaint: true,
       description_of_work: true,
       created_by: true,
@@ -308,9 +317,10 @@ export async function getClosedJobCardDetailAction(workOrderId: string): Promise
   });
   if (!wo) return null;
 
-  const [laborSummary, fulfillment] = await Promise.all([
+  const [laborSummary, fulfillment, { timing }] = await Promise.all([
     getWorkOrderLaborSummary(prisma, workOrderId),
     getMaterialFulfillmentForWorkOrder(prisma, workOrderId),
+    getJobCardTiming(prisma, wo),
   ]);
 
   const approval = wo.approvals[0] ?? null;
@@ -330,6 +340,7 @@ export async function getClosedJobCardDetailAction(workOrderId: string): Promise
     closedAtLabel: closedAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
     requestedByName: wo.created_by ? nameById.get(wo.created_by) ?? null : null,
     closedByName: approval?.decided_by ? nameById.get(approval.decided_by) ?? null : null,
+    timing,
     workers: laborSummary.workers.map((w) => ({
       name: w.worker_name,
       role: w.worker_role,

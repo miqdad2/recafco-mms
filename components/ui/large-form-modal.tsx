@@ -29,6 +29,8 @@ import { X } from "lucide-react";
 
 type LargeFormModalContextValue = {
   requestClose: () => void;
+  // For a change that fires no change event, such as a Remove button.
+  markDirty: () => void;
 };
 
 const LargeFormModalContext = createContext<LargeFormModalContextValue | null>(null);
@@ -130,9 +132,12 @@ export function LargeFormModal({
           {/* Body — the only scrolling region; also owns dirty-detection */}
           <div
             className="flex-1 overflow-y-auto px-6 py-5"
-            onChangeCapture={() => setDirty(true)}
+            onChangeCapture={(e) => {
+              // data-no-dirty: a search box or a tab, not entered information.
+              if (!(e.target as HTMLElement).hasAttribute("data-no-dirty")) setDirty(true);
+            }}
           >
-            <LargeFormModalContext.Provider value={{ requestClose }}>
+            <LargeFormModalContext.Provider value={{ requestClose, markDirty: () => setDirty(true) }}>
               {children}
             </LargeFormModalContext.Provider>
           </div>

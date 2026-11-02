@@ -172,3 +172,13 @@ Printed work orders and reports must show RECAFCO identity, document number, dat
 8. Respect reduced motion.
 9. Prioritize operational clarity.
 10. Update this file when tokens or component conventions change.
+
+## Job Card Time Terms
+
+Use these labels everywhere, and keep the three figures apart:
+
+- Job Card Duration: Work Completed minus Job Card Opened. Elapsed time; never from worker hours.
+- Worker Hours: Estimated Worker Hours and Actual Worker Hours, under the heading "Workers' Working Hours". Combined time of all workers.
+- Manager Approved On: shown only after approval.
+
+A missing value reads "Time not recorded" or "Not available"; never show an assumed time.

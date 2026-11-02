@@ -115,7 +115,7 @@ test.describe("RECAFCO MMS full workflow", () => {
       // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 3/5:
       // total is auto-calculated from the one worker estimate entered in
       // Step 3 ("2") — never typed anywhere on this screen.
-      await expect(wizard.getByText("Expected hours in total: 2 h")).toBeVisible();
+      await expect(wizard.getByText("Estimated Worker Hours: 2 h")).toBeVisible();
 
       const submitButton = wizard.getByRole("button", { name: "Create Job Card", exact: true });
       await expect(submitButton).toBeVisible();
@@ -282,7 +282,7 @@ test.describe("RECAFCO MMS full workflow", () => {
       await expect(reviewModal.getByText(jobCardNumber)).toBeVisible();
       await expect(reviewModal.getByText(/Created:/)).toBeVisible();
       await expect(reviewModal.getByText(/Closure requested:/)).toBeVisible();
-      await expect(reviewModal.getByText(/Time taken:/)).toBeVisible();
+      await expect(reviewModal.getByText(/Closure requested after:/)).toBeVisible();
       await expect(reviewModal.getByText(/Requested by:/)).toBeVisible();
       await expect(reviewModal.getByText("dataentry", { exact: false }).first()).toBeVisible();
     });

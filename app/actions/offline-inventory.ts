@@ -18,11 +18,13 @@ import {
   findExistingCategoryMatch,
   findExistingMaterialByNormalizedName,
   buildBalanceKey,
+  getOfflineInventoryBalance,
   searchOfflineInventoryMaterials,
   upsertInventoryMaterialSettings,
   getOfflineInventoryMaterialByKey,
   type OfflineInventorySearchMatch,
 } from "@/lib/store/offline-inventory-data";
+import { pickInventoryPage, type InventoryPickerItem, type InventoryPickerPage, type InventoryPickerQuery } from "@/lib/store/inventory-picker";
 import { emitOfflineInventoryRealtimeEvent, emitJobCardRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
 import { withBackendTransaction } from "@/lib/backend/shared/transaction";
 import { syncPartsRequestStatusAfterFullIssueInTx } from "@/lib/backend/parts-requests/service";
@@ -954,6 +956,59 @@ export async function searchOfflineInventoryMaterialsAction(
   } catch {
     return [];
   }
+}
+
+// Inventory Material Selection popup (New Job Card, Required Materials, "*/"):
+// one page of Inventory Control materials, filtered and paged here so the
+// browser never receives the whole list. Same gate and same cost rule as the
+// autocomplete above; only display fields leave the server. Read-only.
+export async function browseInventoryForJobCardAction(query: InventoryPickerQuery): Promise<InventoryPickerPage> {
+  const context = await requirePermission("work_orders.manage");
+  const showCost = canViewCosts(context);
+  const { balanceItems } = await getOfflineInventoryBalance();
+  const items: InventoryPickerItem[] = balanceItems.map((b) => {
+    const status = b.stock_status === "review_required"
+      ? b.balance < 0 ? "negative" : b.balance === 0 ? "out_of_stock" : b.minimum_stock_quantity !== null && b.balance <= b.minimum_stock_quantity ? "low_stock" : "ok"
+      : b.stock_status;
+    return {
+      key: b.key,
+      name: b.display_name,
+      itemCode: b.item_code,
+      partNumber: b.part_number,
+      ssRecCode: b.ss_rec_code,
+      category: b.category,
+      location: b.location,
+      unit: b.unit,
+      balance: b.balance,
+      minimumStock: b.minimum_stock_quantity,
+      notes: b.notes,
+      match: {
+        key: b.key,
+        part_id: b.part_id,
+        manual_material_name: b.manual_material_name,
+        display_name: b.display_name,
+        part_number: b.part_number,
+        ss_rec_code: b.ss_rec_code,
+        unit: b.unit,
+        category: b.category,
+        location: b.location,
+        balance: b.balance,
+        last_movement_date: b.last_movement_date,
+        last_unit_cost: showCost ? b.last_unit_cost : null,
+        stock_status: status,
+        purchase_unit: b.purchase_unit,
+        conversion_quantity: b.conversion_quantity,
+        item_code: b.item_code,
+      },
+    };
+  });
+  return pickInventoryPage(items, {
+    search: String(query.search ?? "").slice(0, 120),
+    category: String(query.category ?? ""),
+    location: String(query.location ?? ""),
+    stock: query.stock === "in_stock" || query.stock === "out_of_stock" ? query.stock : "all",
+    page: Number(query.page) || 1,
+  });
 }
 
 // Job Card Required Materials Estimated Cost Visibility Unit 10G.73 (second

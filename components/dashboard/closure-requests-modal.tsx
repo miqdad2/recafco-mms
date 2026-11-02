@@ -80,8 +80,8 @@ function ClosureRequestListRow({ row, onReview }: { row: ClosureRequestRow; onRe
           Closure. */}
       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[#6B7280]">
         <span>Workers: <strong className="text-[#111827]">{row.workersCount}</strong></span>
-        <span>Estimated: <strong className="text-[#111827]">{row.estimatedHours !== null ? `${row.estimatedHours} h` : "Not recorded"}</strong></span>
-        <span>Actual: <strong className="text-[#111827]">{row.totalHours} h</strong></span>
+        <span>Estimated Worker Hours: <strong className="text-[#111827]">{row.estimatedHours !== null ? `${row.estimatedHours} h` : "Not recorded"}</strong></span>
+        <span>Actual Worker Hours: <strong className="text-[#111827]">{row.totalHours} h</strong></span>
         {row.estimatedHours !== null ? (() => {
           const variance = computeHoursVariance(row.estimatedHours, row.totalHours);
           return variance.varianceHours !== null ? (

@@ -38,8 +38,9 @@ import {
 } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummariesBulk, type DailyActivityLaborSummary } from "@/lib/work-orders/work-session-totals";
 import { canRequestTimeCorrection, getWorkTimeSourceSummaries } from "@/lib/backend/work-orders/work-time-corrections";
-import { getJobCardDatesBulk } from "@/lib/work-orders/job-card-dates-data";
-import { checkClosureRequirements, checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { getJobCardDatesBulk, jobCardTimingFrom } from "@/lib/work-orders/job-card-dates-data";
+import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
+import { checkClosureRequirements, checkWorkersReadyForClosure, countedWorkers } from "@/lib/work-orders/closure-readiness";
 import { getClosureRequirementFacts } from "@/lib/work-orders/closure-requirements-data";
 import { canConfirmClosureRequirements } from "@/lib/backend/work-orders/closure-requirements";
 import { ON_TEAM_ASSIGNMENT_STATUSES } from "@/lib/backend/workers/constants";
@@ -390,7 +391,9 @@ export default async function DailyActivityPage({
     ending_datetime: true,
     date_of_order: true,
     job_card_start_date: true,
+    job_card_opened_at: true,
     job_card_end_date: true,
+    work_completed_at: true,
     assets: { select: { asset_code: true, asset_name: true, plate_number: true } },
     departments: { select: { name: true } },
     work_order_assignments: { select: { id: true } },
@@ -463,12 +466,13 @@ export default async function DailyActivityPage({
     const activeMaterialsRequest = wo.parts_requests.find((r) => ["Requested", "Approved", "Waiting Stock", "Partially Issued"].includes(r.status)) ?? null;
 
     const hasInternalTeam = laborSummary.workers.length > 0;
+    const teamWorkers = countedWorkers(laborSummary.workers);
     const hasAssignment = hasInternalTeam || wo.work_order_assignments.length > 0;
     // Worker Timer and Closure Logic Hardening Unit 10G.53, Task 4/8: the
     // one shared per-worker state check every closure surface in this app
     // uses — see lib/work-orders/closure-readiness.ts.
     const workersClosureCheck = checkWorkersReadyForClosure(
-      laborSummary.workers.map((w) => ({
+      teamWorkers.map((w) => ({
         workerAssignmentId: w.worker_assignment_id,
         workerName: w.worker_name,
         assignmentStatus: w.assignment_status,
@@ -487,7 +491,7 @@ export default async function DailyActivityPage({
     // Task 8 — Working/Paused/Finished read off workersClosureCheck instead
     // of has_active_session/anyWorkerPaused; "Sessions Recorded" retired in
     // favor of "Finished" once every worker is actually done.
-    const workTimeChip: DailyActivityChip = !hasInternalTeam
+    const workTimeChip: DailyActivityChip = teamWorkers.length === 0
       ? { label: "Not Started", tone: "gray" }
       : workersClosureCheck.workingWorkers.length > 0
         ? { label: "Working", tone: "blue" }
@@ -514,7 +518,7 @@ export default async function DailyActivityPage({
     // present or confirmed not required (same rule as the closure guard).
     const requirementFacts = requirementFactsMap.get(wo.id);
     const requirements = checkClosureRequirements({
-      workerCount: laborSummary.workers.length,
+      workerCount: teamWorkers.length,
       workersNotRequired: requirementFacts?.workersNotRequired ?? null,
       materialsPresent: requirementFacts?.materialsPresent ?? false,
       materialsNotRequired: requirementFacts?.materialsNotRequired ?? null,
@@ -695,9 +699,9 @@ export default async function DailyActivityPage({
               // No workers and not confirmed as not required: Assign Workers
               // (Not Required sits next to it in the panel).
               : requirements.workers === "missing"
-                ? { message: "No workers assigned yet.", buttonLabel: canEditAssignment ? "Assign Workers" : null, href: canEditAssignment ? assignHref : null }
+                ? { message: "No workers assigned. Assign workers or confirm that they are not required.", buttonLabel: canEditAssignment ? "Assign Workers" : null, href: canEditAssignment ? assignHref : null }
                 : hasInternalTeam && workTimeChip.label === "Not Started"
-                  ? { message: "Workers are assigned. Start tracking work below.", buttonLabel: "Track Work", href: workersAnchorHref }
+                  ? { message: "Workers assigned. Start work when the team begins.", buttonLabel: "Track Work", href: workersAnchorHref }
                   : workTimeChip.label === "Working"
                     ? { message: "Work is in progress.", buttonLabel: null, href: null }
                     : workTimeChip.label === "Paused"
@@ -717,8 +721,12 @@ export default async function DailyActivityPage({
       // converted to a plain number here (not left as wo.estimated_labor_hours,
       // a Prisma Decimal) — matches this codebase's existing convention of
       // never passing a raw Decimal instance down into a rendering
-      // component (see the edit page's own .toNumber() calls).
-      estimatedHours: wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null,
+      // component (see the edit page's own .toNumber() calls). Same fallback
+      // as the detail page and Closure Review, so the totals agree.
+      estimatedHours: resolveEstimatedTotalHours(
+        wo.estimated_labor_hours !== null ? Number(wo.estimated_labor_hours) : null,
+        laborSummary.workers.map((w) => w.estimated_hours)
+      ),
       materialsChip,
       workTimeChip,
       assignmentChip,
@@ -737,6 +745,7 @@ export default async function DailyActivityPage({
       activity,
       timeSource,
       dates: datesMap.get(wo.id) ?? null,
+      timing: datesMap.has(wo.id) ? jobCardTimingFrom(wo, datesMap.get(wo.id)!, closureReady) : null,
       issue,
       assetLabel,
       workTeam,
@@ -877,7 +886,8 @@ export default async function DailyActivityPage({
       // only on the underlying materials/worker/assignment state, which
       // still reads "ready"/"assignable" even after the request is already
       // in, since none of that state itself changes at request time.
-      showAssignWorkers: !c.hasAssignment && canEditAssignment && !c.isClosureRequested && !c.isClosed,
+      showAssignWorkers: (!c.hasAssignment || c.requirements.workers === "missing") && canEditAssignment && !c.isClosureRequested && !c.isClosed,
+      canEditTeam: canEditAssignment && !c.isClosureRequested && !c.isClosed,
       showRequestClosure: c.closureReady && canRequestClosureRole && !c.isClosureRequested && !c.isClosed,
       // Review Closure & Approve — strictly the real Closure Requested
       // status (never "ready for closure") plus the same Manager/Super
@@ -904,6 +914,7 @@ export default async function DailyActivityPage({
           }
         : null,
       dates: c.dates,
+      timing: c.timing,
       canRequestManualTime: canRequestManualTime && !c.isClosed && !c.isClosureRequested,
       // Job Card Start / End Date (typed calendar dates, not worker time)
       // and the Edit Job Card button — the edit page and its save action

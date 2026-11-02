@@ -91,8 +91,15 @@ export async function assignInternalTeamRoster(context: CurrentUserContext, inpu
       throw new AppError("This Job Card is closed. Assignment can no longer be changed.", { code: "WORKFLOW_ERROR" });
     }
 
+    const existing = await tx.workOrderWorkerAssignment.findMany({
+      where: { work_order_id: input.workOrderId, status: { in: ["active", "finished"] } },
+      select: { id: true, worker_id: true, status: true },
+    });
+
+    // A worker already on this Job Card stays valid if their profile has since
+    // been made inactive; only a new assignment needs an active worker.
     const workers = await tx.workerProfile.findMany({
-      where: { id: { in: uniqueIds }, is_active: true },
+      where: { id: { in: uniqueIds }, OR: [{ is_active: true }, { id: { in: existing.map((r) => r.worker_id) } }] },
       select: { id: true, name: true, hourly_rate: true },
     });
     if (workers.length !== uniqueIds.length) {
@@ -106,16 +113,22 @@ export async function assignInternalTeamRoster(context: CurrentUserContext, inpu
     // would orphan the worker's recorded hours. A "finished" worker is never
     // re-created (that listed them twice); only genuinely dropped active
     // rows become "removed".
-    const existing = await tx.workOrderWorkerAssignment.findMany({
-      where: { work_order_id: input.workOrderId, status: { in: ["active", "finished"] } },
-      select: { id: true, worker_id: true, status: true },
-    });
     const activeByWorker = new Map(existing.filter((r) => r.status === "active").map((r) => [r.worker_id, r]));
     const finishedWorkerIds = new Set(existing.filter((r) => r.status === "finished").map((r) => r.worker_id));
     const pickedIds = new Set(uniqueIds);
 
     const droppedIds = existing.filter((r) => r.status === "active" && !pickedIds.has(r.worker_id)).map((r) => r.id);
     if (droppedIds.length > 0) {
+      // Hours and timers only count while the assignment is on the team, so a
+      // worker with recorded work cannot be dropped. Cancelled periods are not
+      // work: cancelling them first still allows a correction.
+      const worked = await tx.workOrderWorkSession.findFirst({
+        where: { worker_assignment_id: { in: droppedIds }, status: { not: "Cancelled" } },
+        select: { worker_profiles: { select: { name: true } } },
+      });
+      if (worked) {
+        throw new AppError(`${worked.worker_profiles.name} has work recorded on this Job Card and cannot be removed.`, { code: "WORKFLOW_ERROR" });
+      }
       await tx.workOrderWorkerAssignment.updateMany({
         where: { id: { in: droppedIds } },
         data: { status: "removed", updated_at: new Date() },
@@ -172,9 +185,9 @@ export async function assignInternalTeamRoster(context: CurrentUserContext, inpu
     if (toCreate.length > 0) {
       await tx.workOrderWorkerAssignment.createMany({ data: toCreate });
     }
-    // The Job Card now has workers: a "No Workers Required" confirmation (if
+    // The Job Card now has workers (a Supervisor alone is not): a "No Workers Required" confirmation (if
     // any) is superseded, never deleted.
-    if (picks.length > 0) {
+    if (picks.some((p) => p.role !== "Supervisor")) {
       await supersedeRequirementConfirmation(tx, input.workOrderId, "workers", context.userId, "Workers assigned");
     }
 

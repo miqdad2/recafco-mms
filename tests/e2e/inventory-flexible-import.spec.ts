@@ -167,7 +167,7 @@ test("Imported materials: Job Card selection, General Request, Edit Material, pr
   await page.locator("#sb-search").fill(`${CODE}B`);
   await page.locator("tbody tr", { hasText: `${CODE}B` }).getByRole("button", { name: "View" }).click();
   await page.getByRole("button", { name: "Edit Material" }).click();
-  await expect(page.locator("#me-category")).toHaveValue(NEW_CATEGORY);
+  await expect(page.locator("#me-category")).toContainText(NEW_CATEGORY);
   await page.locator("#me-location").fill("Yard 1");
   await page.getByRole("button", { name: "Save Changes" }).click();
   await expect(page.getByText("Material Updated Successfully")).toBeVisible({ timeout: 15_000 });

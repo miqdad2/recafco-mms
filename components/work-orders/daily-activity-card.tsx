@@ -18,8 +18,10 @@ import {
 
 import { StatusBadge } from "@/components/ui/status-badge";
 import { WorkerSessionRow } from "@/components/work-orders/worker-session-row";
-import { JobCardDatesSection } from "@/components/work-orders/job-card-dates-section";
+import { jobCardDateText } from "@/components/work-orders/job-card-dates-section";
+import { JobCardTimeDetails, WorkerHoursSummary } from "@/components/work-orders/job-card-time-details";
 import type { JobCardDates } from "@/lib/work-orders/job-card-dates";
+import type { JobCardTiming } from "@/lib/work-orders/job-card-timing";
 import { NOT_ENTERED } from "@/lib/work-orders/job-card-edit";
 import { ReviewApproveClosureButton } from "@/components/work-orders/review-approve-closure-button";
 import type { WorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
@@ -29,7 +31,7 @@ import type { MaterialFulfillment } from "@/lib/work-orders/material-fulfillment
 // uses server-side, called here against the same laborSummary.workers data
 // already on the card — never a re-guess from rendered text.
 import { deriveSimpleWorkerState } from "@/lib/work-orders/hours-variance";
-import type { RequirementConfirmation, RequirementState } from "@/lib/work-orders/closure-readiness";
+import { countedWorkers, type RequirementConfirmation, type RequirementState } from "@/lib/work-orders/closure-readiness";
 import { NotRequiredButton, NotRequiredNote } from "@/components/work-orders/requirement-not-required";
 import { formatKuwaitDateTime } from "@/lib/format/kuwait-time";
 
@@ -106,6 +108,7 @@ export type DailyActivityCardData = {
   priorityLabel: string;
   nextAction: DailyActivityNextAction;
   showAssignWorkers: boolean;
+  canEditTeam: boolean;
   showRequestClosure: boolean;
   // Daily Activity Manager Closure Request Review Action: true only when
   // this Job Card's real status is Closure Requested AND the viewer is a
@@ -133,6 +136,7 @@ export type DailyActivityCardData = {
     manualMinutesByAssignment: Record<string, number>;
   } | null;
   dates: JobCardDates | null;
+  timing: JobCardTiming | null;
   canRequestManualTime: boolean;
   // Date of order and the typed Job Card Start / End Date, already formatted
   // ("Not entered" when blank) — not worker time.
@@ -450,7 +454,7 @@ function summarizeMaterials(card: DailyActivityCardData) {
 // the real server-side closure guard uses. Only Not Started/Working/Paused/
 // Finished ever surface — no session/technical wording.
 function summarizeWorkers(card: DailyActivityCardData) {
-  const rows = card.laborSummary.workers.map((w) => ({ state: deriveSimpleWorkerState(w.assignment_status, w.status), manual: (w.manual_minutes ?? 0) > 0 }));
+  const rows = countedWorkers(card.laborSummary.workers).map((w) => ({ state: deriveSimpleWorkerState(w.assignment_status, w.status), manual: (w.manual_minutes ?? 0) > 0 }));
   const states = rows.map((r) => r.state);
   const total = states.length;
   const working = states.filter((s) => s === "Working").length;
@@ -542,7 +546,7 @@ function computeGuidance(
     return { message: "Worker is paused. Resume or Finish Work before requesting closure.", button: "workers", urgent: false };
   }
   if (workers.notStarted > 0) {
-    return { message: "Worker not started. Start and finish work before requesting closure.", button: "workers", urgent: false };
+    return { message: "Workers assigned. Start work when the team begins.", button: "workers", urgent: false };
   }
   if (workers.manualNotFinished > 0) {
     return { message: "Manual time is recorded. Mark Work Finished for the worker before requesting closure.", button: "workers", urgent: false };
@@ -552,7 +556,10 @@ function computeGuidance(
   const missingWorkers = card.requirements.workers === "missing";
   const missingMaterials = card.requirements.materials === "missing";
   if (missingWorkers || missingMaterials) {
-    const what = missingWorkers && missingMaterials ? "workers or materials" : missingWorkers ? "workers" : "materials";
+    if (missingWorkers && !missingMaterials) {
+      return { message: "No workers assigned. Assign workers or confirm that they are not required.", button: null, urgent: false };
+    }
+    const what = missingWorkers ? "workers or materials" : "materials";
     return {
       message: `No ${what} on this Job Card yet. Add them, or confirm they are not required, before requesting closure.`,
       button: null,
@@ -572,6 +579,7 @@ export function DailyActivitySelectedPanel({
   canPrint,
   onProcessMaterials,
   onRequestClosure,
+  onEditAssignment,
 }: {
   card: DailyActivityCardData;
   canPrint: boolean;
@@ -584,8 +592,13 @@ export function DailyActivitySelectedPanel({
   // to the Job Card detail page's Closure tab — only ever called when
   // card.showRequestClosure says so (see the button rendering below).
   onRequestClosure: () => void;
+  // Opens Edit Assignment over this page; never navigates.
+  onEditAssignment: () => void;
 }) {
   const detailHref = card.detailHref;
+  const teamWorkers = countedWorkers(card.laborSummary.workers);
+  const supervisorNames = card.laborSummary.workers.filter((w) => w.worker_role === "Supervisor").map((w) => w.worker_name);
+  const hasTeam = card.laborSummary.workers.length > 0;
   // Task 6/12 — never repeat the same click as both the panel's one primary
   // Next Action button AND a mini-section/empty-state secondary button
   // (same "one main action" rule Unit 9B's card established).
@@ -644,12 +657,11 @@ export function DailyActivitySelectedPanel({
         </div>
       </div>
 
-      {/* Manual Worker Time Entry / Job Card dates — Created, Work Start,
-          Work End from recorded timestamps (same rules as the detail page
-          and print), Kuwait time. */}
-      {card.dates ? (
+      {/* Job Card Time Details — same calculation as the detail page, print
+          and Closure Review (job-card-timing.ts), Kuwait time. */}
+      {card.timing ? (
         <div className="mt-2.5">
-          <JobCardDatesSection dates={card.dates} compact />
+          <JobCardTimeDetails timing={card.timing} />
         </div>
       ) : null}
       {/* Date of order and the Job Card Start / End Date typed by Data Entry. */}
@@ -658,6 +670,12 @@ export function DailyActivitySelectedPanel({
           <dt>Date of order:</dt>
           <dd className="font-semibold text-[#111827]">{card.requestDates.dateOfOrder}</dd>
         </div>
+        {card.dates ? (
+          <div className="flex gap-1">
+            <dt>Work Started:</dt>
+            <dd className="font-semibold text-[#111827]">{jobCardDateText(card.dates.workStart)}</dd>
+          </div>
+        ) : null}
         <div className="flex gap-1">
           <dt>Job Card Open Date:</dt>
           <dd className={`font-semibold ${card.requestDates.start === NOT_ENTERED ? "text-[#9CA3AF]" : "text-[#111827]"}`}>{card.requestDates.start}</dd>
@@ -810,9 +828,9 @@ export function DailyActivitySelectedPanel({
               <div className="flex flex-wrap items-center gap-2">
                 <span className="mr-auto text-xs font-bold text-[#111827]">No workers assigned</span>
                 {card.showAssignWorkers ? (
-                  <Link href={`${detailHref}?editAssignment=1#assignment`} className={guidanceBtnClass}>
+                  <button type="button" onClick={onEditAssignment} className={guidanceBtnClass}>
                     <Users className="h-3.5 w-3.5" aria-hidden="true" /> Assign Workers
-                  </Link>
+                  </button>
                 ) : null}
                 {card.requirements.canConfirmNotRequired ? (
                   <NotRequiredButton workOrderId={card.id} requirement="workers" className={notRequiredBtnClass} />
@@ -836,22 +854,36 @@ export function DailyActivitySelectedPanel({
         ) : null}
       </div>
 
-      {/* Estimated Work Hours for Job Cards and Workers Unit 10G.13, Task 7:
-          a brief one-line summary only — no variance/status badge here
-          (that's the fuller Job Card detail page's job); hidden entirely
-          when there's no estimate, per Task 7's "do not overcrowd". */}
-      {card.estimatedHours !== null && (
-        <p className="mt-3 text-xs text-[#6B7280]">
-          Estimated total: <strong className="text-[#111827]">{card.estimatedHours} h</strong>
-          {" · "}Actual total: <strong className="text-[#111827]">{card.laborSummary.total_hours} h</strong>
-        </p>
-      )}
+      {/* Worker Hours — combined time, kept apart from Job Card Duration
+          above. No variance badge here (the Job Card detail page has it);
+          hidden when there are no workers and no estimate. */}
+      {teamWorkers.length > 0 || card.estimatedHours !== null ? (
+        <div className="mt-3">
+          <WorkerHoursSummary estimatedHours={card.estimatedHours} actualHours={card.laborSummary.total_hours} />
+        </div>
+      ) : null}
 
       {/* Worker control section — full WorkerSessionRow controls, but only
           ever for THIS one selected Job Card (Task 8). */}
       <div id={WORKERS_SECTION_ID} className="mt-3 scroll-mt-3">
-        <p className="mb-1.5 text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Workers</p>
-        {card.laborSummary.workers.length === 0 ? (
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <p className="text-[10px] font-black uppercase tracking-wide text-[#6B7280]">Workers</p>
+          {card.canEditTeam && hasTeam ? (
+            <button
+              type="button"
+              onClick={onEditAssignment}
+              className="inline-flex min-h-8 items-center gap-1 rounded-md border border-[#E5E7EB] bg-white px-3 py-1 text-xs font-bold text-[#111827] transition hover:border-[#ED1C24] hover:text-[#ED1C24]"
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit Team
+            </button>
+          ) : null}
+        </div>
+        {supervisorNames.length > 0 ? (
+          <p className="mb-1.5 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-2 text-sm text-[#4B5563]">
+            Supervisor: <strong className="text-[#111827]">{supervisorNames.join(", ")}</strong>
+          </p>
+        ) : null}
+        {teamWorkers.length === 0 ? (
           card.requirements.workersConfirmation ? (
             <NotRequiredNote label="No Workers Required" confirmation={card.requirements.workersConfirmation} />
           ) : (
@@ -862,10 +894,10 @@ export function DailyActivitySelectedPanel({
           )
         ) : (
           <div className="space-y-1.5">
-            {card.laborSummary.workers.length > 1 ? (
+            {teamWorkers.length > 1 ? (
               <p className="text-[10px] font-semibold text-[#6B7280]">Worker timers are tracked individually.</p>
             ) : null}
-            {card.laborSummary.workers.map((w) => (
+            {teamWorkers.map((w) => (
               <WorkerSessionRow
                 key={w.worker_assignment_id}
                 workOrderId={card.id}

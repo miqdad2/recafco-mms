@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { WORK_COMPLETED_AUTOFILL_HELP } from "@/lib/work-orders/job-card-timing";
 import {
   approveJobCardAndMaterialsAction,
   approveJobCardClosureAction,
@@ -8,22 +9,12 @@ import {
   startJobCardProgressAction,
   submitWorkOrderAction
 } from "@/app/actions/workflow";
-import { AssignmentForm } from "@/components/work-orders/assignment-form";
-import { InternalTeamRosterForm } from "@/components/work-orders/internal-team-roster-form";
 import { Button } from "@/components/ui/button";
 import type { CurrentUserContext } from "@/lib/auth/context";
-import { canViewCosts } from "@/lib/security/permissions";
+import type { EditAssignmentCurrent } from "@/lib/work-orders/assignment-edit";
 import type { PermissionKey } from "@/types/database";
-import type { WorkerProfileRow } from "@/lib/backend/workers/service";
 
-type Technician = { id: string; full_name: string };
-type CurrentRosterRow = { worker_id: string; worker_role: string; estimated_hours: number | null };
-
-type CurrentAssignment = {
-  type: string;
-  externalName?: string | null;
-  externalCompany?: string | null;
-} | null;
+type CurrentAssignment = Pick<NonNullable<EditAssignmentCurrent>, "type" | "externalName" | "externalCompany"> | null;
 
 // Data Entry Job Card Action Clarity Fix Task 3: the Job Card's current
 // active Materials Request (if any), so the Quick actions link here can tell
@@ -35,14 +26,8 @@ type WorkflowActionsProps = {
   workOrderId: string;
   status: string;
   context: CurrentUserContext;
-  technicians: Technician[];
   currentAssignment?: CurrentAssignment;
   activeMaterialsRequest?: ActiveMaterialsRequest;
-  // Work Assignment and Worker Profiles Foundation Unit 7: worker profiles
-  // available for the Internal Team roster, and the Job Card's current
-  // active roster rows (for pre-selecting the picker).
-  activeWorkers?: WorkerProfileRow[];
-  internalTeamRoster?: CurrentRosterRow[];
   // Simplified Workflow UI Consistency Cleanup Task 3: whether this Job Card
   // has an unresolved correction request right now — suppresses every normal
   // status action below so the page's correction banner (with its own
@@ -56,7 +41,7 @@ type WorkflowActionsProps = {
   // once per section, passing the same props each time. Every permission
   // check and form below is untouched from before Unit 8C — only which
   // group of blocks a given call renders has changed.
-  section: "status" | "assignment" | "closure";
+  section: "status" | "closure";
   // Manager Closure Navigation and Detail Approval Flow Unit 10G.28: the
   // page now offers its own "Review & Approve Closure" button (opens the
   // Closure Review modal) next to this section's forms whenever a Manager
@@ -66,6 +51,9 @@ type WorkflowActionsProps = {
   // approve action itself. Every other section/form here is unaffected;
   // defaults to false (unchanged behavior) everywhere this isn't passed.
   hideApproveClosureForm?: boolean;
+  // Pre-filled Work Completed value when worker time cannot prove the finish
+  // (job-card-timing.ts suggestedWorkCompleted); null hides the field.
+  workCompletedEntry?: string | null;
 };
 
 function can(context: CurrentUserContext, permission: PermissionKey) {
@@ -146,14 +134,12 @@ export function WorkflowActions({
   workOrderId,
   status,
   context,
-  technicians,
   currentAssignment,
   activeMaterialsRequest,
-  activeWorkers = [],
-  internalTeamRoster = [],
   hasPendingCorrection = false,
   section,
   hideApproveClosureForm = false,
+  workCompletedEntry = null,
 }: WorkflowActionsProps) {
   const canSubmit  = can(context, "work_orders.manage") && status === "Created";
   const canApprove = can(context, "work_orders.approve") && status === "Under Review" && !hasPendingCorrection;
@@ -176,29 +162,6 @@ export function WorkflowActions({
   // actually edit.
   const canEditBeforeApproval =
     can(context, "work_orders.manage") && status === "Under Review" && !hasPendingCorrection;
-  // Assignment (and reassignment) is available once materials are resolved or
-  // not needed, and while work is still open — matches the Unit 3 transition
-  // map. Unified Manager Job Card + Materials Approval Flow Fix Task 4: the
-  // status list alone never actually checked whether materials were
-  // resolved — a Job Card could be "Approved" with its Materials Request
-  // still sitting Requested and this would still offer Assign Work. Now
-  // requires no active (in-progress) Materials Request at all, matching the
-  // same gate applied to the quick-view popup's Assign Work button.
-  const canAssign =
-    !hasPendingCorrection &&
-    (can(context, "work_orders.approve") || can(context, "work_orders.assign")) &&
-    ["Approved", "Partially Issued", "Materials Issued", "Assigned", "In Progress"].includes(status) &&
-    (status === "Assigned" || status === "In Progress" || !activeMaterialsRequest);
-  // Work Assignment and Worker Profiles Foundation Unit 7, Task 6: the
-  // Internal Team labor roster can be created/edited any time the Job Card
-  // is not Closed (wider than canAssign's status gate above, which is tied
-  // to the materials-resolved workflow step) — Data Entry can update it
-  // while the Job Card is open; blocked for everyone once Closed, since
-  // Unit 4 removed every post-closure correction path.
-  const canManageRoster =
-    !hasPendingCorrection &&
-    (can(context, "work_orders.assign") || isManagerRole(context)) &&
-    status !== "Closed";
   // Approval Workflow Unit 4: direct Close is now Manager-only (business
   // rule 8 — Data Entry cannot final-close a Job Card directly any more, it
   // requests closure instead — see canRequestClosure below). Still available
@@ -241,44 +204,6 @@ export function WorkflowActions({
     ["Assigned", "In Progress"].includes(status) &&
     isExternalAssignment;
 
-  // ── section: "assignment" — Assign Work / Internal Team roster forms.
-  // Job Card Detail Simplification Unit 8C: previously rendered inline and
-  // always visible in the sidebar; now only rendered inside the "Edit
-  // Assignment" modal opened from the read-only Assignment section. Same
-  // exact forms/gates as before, just relocated.
-  if (section === "assignment") {
-    if (!canAssign && !canManageRoster) return null;
-    return (
-      <div className="space-y-4">
-        {canAssign ? (
-          <div className="space-y-3 rounded-md border border-[#E5E7EB] bg-gray-50 p-4">
-            <p className="text-sm font-black text-[#111827]">{status === "Assigned" || status === "In Progress" ? "Reassign Work" : "Assign Work"}</p>
-            <AssignmentForm workOrderId={workOrderId} technicians={technicians} />
-          </div>
-        ) : null}
-
-        {/* Work Assignment and Worker Profiles Foundation Unit 7 — separate
-            from Assign Work above: builds the role-differentiated Internal
-            Team labor roster (Supervisor/Technicians/Helpers, sourced from
-            Worker Profiles, hourly rate snapshotted at save time), not the
-            single technician/freelancer/company assignment. */}
-        {canManageRoster ? (
-          <div className="space-y-3 rounded-md border border-[#E5E7EB] bg-gray-50 p-4">
-            <p className="text-sm font-black text-[#111827]">
-              {internalTeamRoster.length ? "Edit Internal Team" : "Assign Internal Team"}
-            </p>
-            <InternalTeamRosterForm
-              workOrderId={workOrderId}
-              workers={activeWorkers}
-              currentRoster={internalTeamRoster}
-              canViewCosts={canViewCosts(context)}
-            />
-          </div>
-        ) : null}
-      </div>
-    );
-  }
-
   // ── section: "closure" — Request Closure / Approve Closure / Close Job
   // Card forms. Job Card Detail Simplification Unit 8C: relocated from the
   // sidebar into the new Closure Panel, which also shows a readiness summary
@@ -307,6 +232,18 @@ export function WorkflowActions({
                 the Daily Activity closure modal's rule (requestJobCardClosure
                 itself no longer requires one), so there is only one rule
                 across both surfaces. */}
+            {workCompletedEntry !== null && workCompletedEntry !== undefined ? (
+              <label className="block text-sm font-semibold text-[#4B5563]">
+                Work Completed date and time (optional)
+                <input
+                  className="focus-ring mt-1 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
+                  type="datetime-local"
+                  name="work_completed_at"
+                  defaultValue={workCompletedEntry}
+                />
+                <span className="mt-1 block text-xs font-normal text-[#6B7280]">{WORK_COMPLETED_AUTOFILL_HELP}</span>
+              </label>
+            ) : null}
             <textarea
               className="focus-ring min-h-20 w-full rounded-md border border-[#E5E7EB] px-3 py-2 text-sm"
               name="note"

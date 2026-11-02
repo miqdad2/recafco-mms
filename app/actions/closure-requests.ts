@@ -12,8 +12,10 @@ import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
 import { buildBalanceKey, getLastUnitCostsForIdentities } from "@/lib/store/offline-inventory-data";
 import { getJobCardIndirectCostSetting } from "@/lib/work-orders/job-card-indirect-cost";
 import { getWorkTimeSourceSummaries } from "@/lib/backend/work-orders/work-time-corrections";
-import { checkClosureRequirements, type ClosureRequirementsCheck } from "@/lib/work-orders/closure-readiness";
+import { checkClosureRequirements, countedWorkers, type ClosureRequirementsCheck } from "@/lib/work-orders/closure-readiness";
 import { getClosureRequirementFactsFor } from "@/lib/work-orders/closure-requirements-data";
+import { getJobCardTiming } from "@/lib/work-orders/job-card-dates-data";
+import type { JobCardTiming } from "@/lib/work-orders/job-card-timing";
 
 // Closure Requests Review Popup Unit 10G.2, Task 10.
 //
@@ -148,6 +150,8 @@ export type ClosureReviewDetail = {
   workers: ClosureReviewWorker[];
   workersCount: number;
   totalHours: number;
+  // Job Card Opened / Work Completed / Duration, same as every other screen.
+  timing: JobCardTiming;
   // Manual Worker Time Entry — where the hours came from (minutes, no money).
   timeSources: { automaticMinutes: number; manualMinutes: number; correctedPeriods: number; pending: number };
   totalAmount: number | null;
@@ -196,6 +200,11 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
       work_order_number: true,
       status: true,
       created_at: true,
+      starting_datetime: true,
+      ending_datetime: true,
+      job_card_start_date: true,
+      job_card_opened_at: true,
+      work_completed_at: true,
       operator_complaint: true,
       description_of_work: true,
       estimated_labor_hours: true,
@@ -214,7 +223,7 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
   });
   if (!wo) return null;
 
-  const [laborMap, fulfillment, canViewFiles, requirementFacts] = await Promise.all([
+  const [laborMap, fulfillment, canViewFiles, requirementFacts, { timing }] = await Promise.all([
     // Task 3 — the bulk variant (single-element array) is used deliberately
     // even for one Job Card: it's the only function that also carries
     // skill_category/sessions_count (see lib/work-orders/work-session-totals.ts) —
@@ -224,10 +233,11 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
     getMaterialFulfillmentForWorkOrder(prisma, workOrderId),
     canViewEntityFile(context, "work-order-files", workOrderId),
     getClosureRequirementFactsFor(prisma, workOrderId),
+    getJobCardTiming(prisma, wo),
   ]);
   const laborSummary = laborMap.get(workOrderId) ?? { workers: [], total_minutes: 0, total_hours: 0, total_amount: 0, has_active_session: false, today_minutes: 0, today_amount: 0, week_minutes: 0, week_amount: 0, month_minutes: 0, month_amount: 0 };
   const requirementsCheck = checkClosureRequirements({
-    workerCount: laborSummary.workers.length,
+    workerCount: countedWorkers(laborSummary.workers).length,
     workersNotRequired: requirementFacts.workersNotRequired,
     materialsPresent: requirementFacts.materialsPresent,
     materialsNotRequired: requirementFacts.materialsNotRequired,
@@ -351,6 +361,7 @@ export async function getClosureReviewDetailAction(workOrderId: string): Promise
     })),
     workersCount: laborSummary.workers.length,
     totalHours: laborSummary.total_hours,
+    timing,
     timeSources: await getWorkTimeSourceSummaries(prisma, [workOrderId]).then((m) => {
       const t = m.get(workOrderId);
       return {

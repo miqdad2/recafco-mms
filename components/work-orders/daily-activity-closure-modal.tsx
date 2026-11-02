@@ -11,8 +11,9 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { dispatchActionToast } from "@/lib/action-messages";
 import { createClientId } from "@/lib/client/safe-id";
 import type { DailyActivityCardData } from "@/components/work-orders/daily-activity-card";
-import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
-import { formatDurationMinutes } from "@/lib/format/kuwait-time";
+import { checkWorkersReadyForClosure, countedWorkers } from "@/lib/work-orders/closure-readiness";
+import { formatDurationMinutes, parseKuwaitInputValue } from "@/lib/format/kuwait-time";
+import { checkWorkCompletedEntry, suggestedWorkCompleted, WORK_COMPLETED_AUTOFILL_HELP } from "@/lib/work-orders/job-card-timing";
 
 // Daily Activity Closure Request Modal with Attachments Unit 10F.6, extended
 // by Closure Request Modal Optional Note and Multiple Custom Attachments
@@ -79,6 +80,7 @@ export function DailyActivityClosureModal({
   const router = useRouter();
   const datalistId = useId();
   const [note, setNote] = useState("");
+  const [workCompleted, setWorkCompleted] = useState(() => (card.timing ? (suggestedWorkCompleted(card.timing) ?? "") : ""));
   const [rows, setRows] = useState<AttachmentRow[]>([emptyAttachmentRow()]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -101,7 +103,7 @@ export function DailyActivityClosureModal({
   const workersNotRequired = card.requirements.workers === "not_required";
   const materialsReady = card.materialsChip.label === "Materials Completed" || materialsNotRequired;
   const workersCheck = checkWorkersReadyForClosure(
-    card.laborSummary.workers.map((w) => ({
+    countedWorkers(card.laborSummary.workers).map((w) => ({
       workerAssignmentId: w.worker_assignment_id,
       workerName: w.worker_name,
       assignmentStatus: w.assignment_status,
@@ -132,10 +134,31 @@ export function DailyActivityClosureModal({
     setRows((prev) => (prev.length <= 1 ? prev : prev.filter((r) => r.id !== id)));
   }
 
+  // Same rule as the server, checked here first because attachments upload
+  // before the closure request: a refused time must not upload them twice.
+  function workCompletedProblem(): string | null {
+    if (!workCompleted || !card.timing?.needsCompletionEntry || !card.dates) return null;
+    const at = parseKuwaitInputValue(workCompleted);
+    if (!at) return "Please enter a valid Work Completed date and time.";
+    const { opened } = card.timing;
+    return checkWorkCompletedEntry({
+      at,
+      now: new Date(),
+      openDate: opened.state === "date_only" ? opened.date : null,
+      openedAt: opened.state === "exact" ? opened.at : null,
+      dates: card.dates,
+    });
+  }
+
   async function handleSubmit() {
     setSubmitError(null);
     if (invalidRows.length > 0) {
       setSubmitError("Choose a file or remove this row.");
+      return;
+    }
+    const timeProblem = workCompletedProblem();
+    if (timeProblem) {
+      setSubmitError(timeProblem);
       return;
     }
 
@@ -165,6 +188,7 @@ export function DailyActivityClosureModal({
       const closureForm = new FormData();
       closureForm.set("work_order_id", card.id);
       closureForm.set("note", note.trim());
+      closureForm.set("work_completed_at", workCompleted);
       const closureResult = await requestJobCardClosureModalAction(null, closureForm);
 
       if (!closureResult?.ok) {
@@ -215,7 +239,7 @@ export function DailyActivityClosureModal({
           <p className="mt-1 text-xs text-[#4B5563]">{card.assetLabel ?? "No asset linked"}</p>
           <p className="mt-0.5 text-xs text-[#374151]">{card.issue}</p>
           <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-[#6B7280] sm:grid-cols-3">
-            <span>Workers: <strong className="text-[#111827]">{card.laborSummary.workers.length}</strong></span>
+            <span>Workers: <strong className="text-[#111827]">{countedWorkers(card.laborSummary.workers).length}</strong></span>
             <span>Materials: <strong className="text-[#111827]">{card.materialsChip.label}</strong></span>
             <span>Work time: <strong className="text-[#111827]">{card.workTimeChip.label}</strong></span>
           </div>
@@ -292,6 +316,27 @@ export function DailyActivityClosureModal({
             </div>
           ) : null}
         </div>
+
+        {/* Worker time cannot prove when the work finished (No Workers
+            Required, or manual time without a clock time). Starts with the
+            saved time, otherwise the current Kuwait time, and is only
+            changed by the user. Cleared, Job Card Duration stays Not available. */}
+        {card.timing?.needsCompletionEntry ? (
+          <div>
+            <label htmlFor="closure-work-completed" className={lbl}>
+              Work Completed date and time (optional)
+            </label>
+            <input
+              id="closure-work-completed"
+              type="datetime-local"
+              value={workCompleted}
+              onChange={(e) => setWorkCompleted(e.target.value)}
+              className={inp}
+              disabled={isSubmitting}
+            />
+            <p className="mt-1 text-[11px] text-[#6B7280]">{WORK_COMPLETED_AUTOFILL_HELP}</p>
+          </div>
+        ) : null}
 
         {/* Unit 10F.6B, Task 1 — completion note is optional. */}
         <div>

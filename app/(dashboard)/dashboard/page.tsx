@@ -72,7 +72,7 @@ import {
 import { getWorkOrderLaborSummariesBulk, getLaborPeriodTotals, getPausedWorkSummary } from "@/lib/work-orders/work-session-totals";
 import { isCurrentlyPaused } from "@/lib/work-orders/paused-work";
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
-import { checkClosureRequirements, checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { checkClosureRequirements, checkWorkersReadyForClosure, countedWorkers } from "@/lib/work-orders/closure-readiness";
 import { getClosureRequirementFacts } from "@/lib/work-orders/closure-requirements-data";
 import { getMaterialBalancesForItems } from "@/lib/store/offline-inventory-data";
 import { hasPermission, canViewCosts as canViewCostsForContext, canManageJobCardIndirectCostSetting } from "@/lib/security/permissions";
@@ -1093,7 +1093,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
       // same rule as the closure guard and Daily Activity.
       const requirementFacts = requirementFactsMap.get(wo.id);
       const requirements = checkClosureRequirements({
-        workerCount: laborSummary?.workers.length ?? 0,
+        workerCount: countedWorkers(laborSummary?.workers ?? []).length,
         workersNotRequired: requirementFacts?.workersNotRequired ?? null,
         materialsPresent: requirementFacts?.materialsPresent ?? false,
         materialsNotRequired: requirementFacts?.materialsNotRequired ?? null,
@@ -1103,7 +1103,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
         !materialsIncomplete &&
         requirements.ready &&
         checkWorkersReadyForClosure(
-          (laborSummary?.workers ?? []).map((w) => ({
+          countedWorkers(laborSummary?.workers ?? []).map((w) => ({
             workerAssignmentId: w.worker_assignment_id,
             workerName: w.worker_name,
             assignmentStatus: w.assignment_status,

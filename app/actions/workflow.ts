@@ -324,12 +324,14 @@ export async function assignTechniciansModalAction(
       externalTrade: formData.get("external_trade") || undefined,
       externalExpectedVisitDate: formData.get("external_expected_visit_date") || undefined,
       agreedAmount: formData.get("agreed_amount") || undefined,
+      keepAgreedAmount: formData.get("keep_agreed_amount") === "1",
       notes: formData.get("assign_notes") || undefined,
     });
     const result = await assignTechnicians(context, input);
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/work-orders");
     revalidatePath("/technician/jobs");
+    revalidatePath("/maintenance/daily-activity");
     revalidatePath("/dashboard");
     return { ok: true, workOrderId: result.workOrderId, assignmentType };
   } catch (error) {
@@ -356,6 +358,7 @@ export async function assignTechniciansAction(formData: FormData) {
       externalTrade: formData.get("external_trade") || undefined,
       externalExpectedVisitDate: formData.get("external_expected_visit_date") || undefined,
       agreedAmount: formData.get("agreed_amount") || undefined,
+      keepAgreedAmount: formData.get("keep_agreed_amount") === "1",
       notes: formData.get("assign_notes") || undefined,
     });
     const result = await assignTechnicians(context, input);
@@ -535,7 +538,7 @@ export async function requestJobCardClosureAction(formData: FormData) {
   let targetPath = `/maintenance/work-orders/${id}`;
 
   try {
-    const result = await requestJobCardClosure(context, id, note);
+    const result = await requestJobCardClosure(context, id, note, String(formData.get("work_completed_at") ?? ""));
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/work-orders");
     revalidatePath("/dashboard");
@@ -580,7 +583,7 @@ export async function requestJobCardClosureModalAction(
   const note = String(formData.get("note") ?? "").trim();
 
   try {
-    const result = await requestJobCardClosure(context, id, note);
+    const result = await requestJobCardClosure(context, id, note, String(formData.get("work_completed_at") ?? ""));
     revalidatePath(`/maintenance/work-orders/${result.workOrderId}`);
     revalidatePath("/maintenance/work-orders");
     revalidatePath("/maintenance/daily-activity");

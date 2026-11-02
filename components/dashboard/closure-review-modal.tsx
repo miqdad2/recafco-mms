@@ -15,8 +15,9 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { dispatchActionToast } from "@/lib/action-messages";
 import type { SessionRow } from "@/lib/work-orders/work-session-totals";
 import { computeHoursVariance, hoursVarianceTone, deriveSimpleWorkerState, simpleWorkerStateTone } from "@/lib/work-orders/hours-variance";
-import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { checkWorkersReadyForClosure, isOverseeingSupervisor } from "@/lib/work-orders/closure-readiness";
 import { NotRequiredNote } from "@/components/work-orders/requirement-not-required";
+import { JobCardTimeDetails, WorkerHoursSummary } from "@/components/work-orders/job-card-time-details";
 import { formatDurationMinutes, formatKuwaitDateTime, formatKuwaitMoment } from "@/lib/format/kuwait-time";
 
 // Closure Requests Review Popup Unit 10G.2.
@@ -521,7 +522,7 @@ export function ClosureReviewModal({
   // requires it), but this keeps the wording consistent with every other
   // closure surface rather than a stale, narrower check.
   const allWorkersFinished = checkWorkersReadyForClosure(
-    detail.workers.map((w) => ({
+    detail.workers.filter((w) => !isOverseeingSupervisor({ worker_role: w.role, assignment_status: w.assignmentStatus, status: w.status, total_minutes: w.hours > 0 ? 1 : 0 })).map((w) => ({
       workerAssignmentId: w.workerAssignmentId,
       workerName: w.name,
       assignmentStatus: w.assignmentStatus,
@@ -561,10 +562,13 @@ export function ClosureReviewModal({
           <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-[#6B7280] sm:grid-cols-3">
             <span>Created: <strong className="text-[#111827]">{detail.createdAtLabel}</strong></span>
             <span>Closure requested: <strong className="text-[#111827]">{detail.closureRequestedAtLabel ?? "—"}</strong></span>
-            <span>Time taken: <strong className="text-[#111827]">{detail.daysTakenLabel ?? "—"}</strong></span>
+            <span>Closure requested after: <strong className="text-[#111827]">{detail.daysTakenLabel ?? "—"}</strong></span>
             <span>Requested by: <strong className="text-[#111827]">{detail.requestedByName ?? "Unknown"}</strong></span>
           </div>
         </div>
+
+        <JobCardTimeDetails timing={detail.timing} />
+        <WorkerHoursSummary estimatedHours={detail.estimatedHours} actualHours={detail.totalHours} />
 
         {/* Task 3/4 — worker summary + per-worker session breakdown */}
         <div>
@@ -662,7 +666,7 @@ export function ClosureReviewModal({
                       <td className="px-2 py-1.5 text-[#111827]">Total Direct Labor Cost</td>
                       <td className="px-2 py-1.5 text-[#4B5563]">—</td>
                       <td className="px-2 py-1.5 text-[#111827]">
-                        {detail.workers.reduce((sum, w) => sum + w.hours, 0).toFixed(2)} h
+                        {detail.totalHours.toFixed(2)} h
                       </td>
                       <td className="px-2 py-1.5 text-[#111827]">{detail.directLaborCostTotal !== null ? `${detail.directLaborCostTotal.toFixed(3)} KWD` : "—"}</td>
                       <td className="px-2 py-1.5"></td>

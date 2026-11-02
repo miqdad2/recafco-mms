@@ -5,9 +5,11 @@ import { PageHeader } from "@/components/ui/page-header";
 import { AddNewMaterialForm } from "@/components/store/add-new-material-form";
 import { requireOfflineInventoryManage } from "@/lib/store/offline-inventory-data";
 import { canViewCosts } from "@/lib/security/permissions";
+import { listInventoryCategories } from "@/lib/backend/store/material-master";
 
 export default async function AddNewMaterialPage() {
   const context = await requireOfflineInventoryManage();
+  const categories = await listInventoryCategories();
 
   return (
     <>
@@ -25,7 +27,7 @@ export default async function AddNewMaterialPage() {
         }
       />
       <div className="p-4 lg:p-6">
-        <AddNewMaterialForm canViewCosts={canViewCosts(context)} />
+        <AddNewMaterialForm canViewCosts={canViewCosts(context)} categories={categories} />
       </div>
     </>
   );

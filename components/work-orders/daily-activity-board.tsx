@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { DailyActivityListRow, DailyActivitySelectedPanel, type DailyActivityCardData } from "@/components/work-orders/daily-activity-card";
 import { ProcessMaterialsModal } from "@/components/work-orders/daily-activity-materials-modal";
 import { DailyActivityClosureModal } from "@/components/work-orders/daily-activity-closure-modal";
+import { EditAssignmentModal } from "@/components/work-orders/edit-assignment-modal";
 
 // Daily Activity Compact Control Board Unit 9C, Task 4/9.
 //
@@ -48,6 +50,9 @@ export function DailyActivityBoard({
   // `selected` at open time, so it can't drift if the user re-selects a
   // different row while the modal is open.
   const [closureModalOpen, setClosureModalOpen] = useState(false);
+  // Which Job Card's Edit Assignment is open, same pattern as Process Materials.
+  const [assignmentWorkOrderId, setAssignmentWorkOrderId] = useState<string | null>(null);
+  const router = useRouter();
 
   function handleSelect(id: string) {
     setSelectedId(id);
@@ -87,12 +92,25 @@ export function DailyActivityBoard({
             canPrint={canPrint}
             onProcessMaterials={() => setProcessMaterialsWorkOrderId(selected.id)}
             onRequestClosure={() => setClosureModalOpen(true)}
+            onEditAssignment={() => setAssignmentWorkOrderId(selected.id)}
           />
         ) : null}
       </div>
 
       {processMaterialsWorkOrderId ? (
         <ProcessMaterialsModal workOrderId={processMaterialsWorkOrderId} onClose={() => setProcessMaterialsWorkOrderId(null)} />
+      ) : null}
+
+      {assignmentWorkOrderId ? (
+        <EditAssignmentModal
+          key={assignmentWorkOrderId}
+          workOrderId={assignmentWorkOrderId}
+          onClose={() => setAssignmentWorkOrderId(null)}
+          onSaved={() => {
+            setAssignmentWorkOrderId(null);
+            router.refresh();
+          }}
+        />
       ) : null}
 
       {closureModalOpen && selected ? (

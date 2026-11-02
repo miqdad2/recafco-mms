@@ -19,7 +19,7 @@ import { MAX_ATTACHMENT_ROWS } from "@/lib/files/attachment-constants";
 import { getFileSecuritySettings } from "@/lib/files/settings";
 import { checkFileContent, validatePrivateFileWithOptions } from "@/lib/files/validation";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
-import { JOB_CARD_DATE_MESSAGES } from "@/lib/work-orders/job-card-edit";
+import { JOB_CARD_DATE_MESSAGES, jobCardOpenedAt } from "@/lib/work-orders/job-card-edit";
 import {
   cleanPayload,
   parseAttachmentRows,
@@ -95,6 +95,7 @@ const FIELD_PROBLEMS: Record<string, { step: JobCardWizardStep; message: string 
   date_of_order: { step: 2, message: "Please enter the date of order." },
   // The date-range rule's own wording (custom issue) is used when it applies.
   job_card_start_date: { step: 2, message: JOB_CARD_DATE_MESSAGES.invalidStart },
+  job_card_open_time: { step: 2, message: JOB_CARD_DATE_MESSAGES.invalidOpenTime },
   job_card_end_date: { step: 2, message: JOB_CARD_DATE_MESSAGES.invalidEnd },
   maintenance_type: { step: 2, message: "Please select the maintenance type." },
   kilometers: { step: 2, message: "Please check the kilometer reading. It must be a number, 0 or more." },
@@ -210,14 +211,16 @@ async function prepareJobCard(formData: FormData, intent: Intent, canAssign: boo
   // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 4: the Job
   // Card total is always the sum of the per-worker estimates the server
   // parsed itself, never the wizard's own computed hidden field.
+  const { job_card_open_time: jobCardOpenTime, ...savedValues } = values;
   const basePayload = cleanPayload({
-    ...values,
+    ...savedValues,
     ...(wizardAssignment?.kind === "INTERNAL_TEAM"
       ? { estimated_labor_hours: sumWorkerEstimates(wizardAssignment.estimatedHoursByWorkerId) }
       : {}),
     starting_datetime: values.starting_datetime || null,
     ending_datetime: values.ending_datetime || null,
     job_card_start_date: values.job_card_start_date ?? null,
+    job_card_opened_at: jobCardOpenedAt(values.job_card_start_date, jobCardOpenTime),
     job_card_end_date: values.job_card_end_date ?? null,
     total_labor_cost: totalLabor,
     total_material_cost: totalMaterials,

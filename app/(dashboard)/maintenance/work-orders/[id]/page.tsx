@@ -37,13 +37,11 @@ import { createSignedFileUrl } from "@/lib/files/signed-url";
 import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/security/permissions";
 import { canViewEntityFile } from "@/lib/security/file-access";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
-import { getTechnicianPickerOptions } from "@/lib/technicians/picker-options";
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete, summarizeMaterialAvailability } from "@/lib/work-orders/material-fulfillment";
 import { buildBalanceKey, canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
-import { getActiveWorkerProfilesForAssignment } from "@/lib/backend/workers/service";
 import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
-import { checkClosureRequirements, checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { checkClosureRequirements, checkWorkersReadyForClosure, countedWorkers } from "@/lib/work-orders/closure-readiness";
 import { getClosureRequirementFactsFor } from "@/lib/work-orders/closure-requirements-data";
 import { canConfirmClosureRequirements } from "@/lib/backend/work-orders/closure-requirements";
 import { NotRequiredButton, NotRequiredNote } from "@/components/work-orders/requirement-not-required";
@@ -51,8 +49,12 @@ import { WorkTimeTracking } from "@/components/work-orders/work-time-tracking";
 import { JobCardDatesSection } from "@/components/work-orders/job-card-dates-section";
 import { RequestDeletionButton } from "@/components/work-orders/request-deletion-button";
 import { DeletionRequestPanel } from "@/components/work-orders/deletion-request-panel";
-import { getJobCardDates } from "@/lib/work-orders/job-card-dates-data";
-import { formatJobCardDate, isJobCardEditable, readJobCardEditChanges } from "@/lib/work-orders/job-card-edit";
+import { EditAssignmentForm } from "@/components/work-orders/edit-assignment-form";
+import { assignmentGates, EDIT_ASSIGNMENT_SUBTITLE } from "@/lib/work-orders/assignment-edit";
+import { getEditAssignmentData } from "@/lib/work-orders/assignment-edit-data";
+import { getJobCardTiming } from "@/lib/work-orders/job-card-dates-data";
+import { suggestedWorkCompleted } from "@/lib/work-orders/job-card-timing";
+import { formatJobCardDate, isJobCardEditable, readJobCardEditChanges, toIsoDateOnly } from "@/lib/work-orders/job-card-edit";
 import {
   canRequestJobCardDeletion,
   canReviewJobCardDeletion,
@@ -336,7 +338,7 @@ export default async function WorkOrderDetailPage({
     ? `/store/parts-requests/${activeMaterialsRequest.id}`
     : `/store/parts-requests/new?repair_order_id=${wo.id}`;
 
-  const [auditLogs, partsRequestAuditLogs, offlineMovements, pendingClarification, technicians, materialFulfillment, activeWorkers, laborSummary] = await Promise.all([
+  const [auditLogs, partsRequestAuditLogs, offlineMovements, pendingClarification, materialFulfillment, laborSummary] = await Promise.all([
     prisma.audit_logs.findMany({
       where: { entity_type: "work_order", entity_id: wo.id },
       orderBy: { created_at: "desc" },
@@ -364,9 +366,7 @@ export default async function WorkOrderDetailPage({
       orderBy: { created_at: "desc" },
     }),
     getPendingClarificationForWorkOrder(wo.id),
-    getTechnicianPickerOptions(),
     getMaterialFulfillmentForWorkOrder(prisma, wo.id),
-    getActiveWorkerProfilesForAssignment(),
     getWorkOrderLaborSummary(prisma, wo.id),
   ]);
 
@@ -374,8 +374,8 @@ export default async function WorkOrderDetailPage({
   // read-only here; the actions re-check everything server-side.
   const canRequestDeletion = canRequestJobCardDeletion(context);
   const canReviewDeletion = canReviewJobCardDeletion(context);
-  const [jobCardDates, deletionStatus, timeCorrections, requirementFacts] = await Promise.all([
-    getJobCardDates(prisma, wo),
+  const [{ dates: jobCardDates, timing: jobCardTiming }, deletionStatus, timeCorrections, requirementFacts] = await Promise.all([
+    getJobCardTiming(prisma, wo),
     canRequestDeletion || canReviewDeletion ? getJobCardDeletionStatus(context, wo.id) : Promise.resolve(null),
     getTimeCorrectionsForWorkOrder(prisma, wo.id, { userId: context.userId, canViewCosts: canViewCostsForContext(context) }),
     // Workers / materials present, or confirmed not required.
@@ -427,6 +427,7 @@ export default async function WorkOrderDetailPage({
   const canPrint = hasPermission(context, "work_orders.print");
   const isCreator = wo.created_by === context.userId;
   const hasPendingCorrection = pendingClarification !== null;
+  const editAssignmentData = showEditAssignment ? await getEditAssignmentData(context, wo.id) : null;
   const canRespondToClarification =
     hasPendingCorrection &&
     (isCreator || canManage || context.role?.slug === "super_admin");
@@ -454,14 +455,8 @@ export default async function WorkOrderDetailPage({
   // to decide whether the read-only Assignment section's "Edit Assignment"
   // button is worth showing. The actual authorization for the forms
   // themselves still lives entirely inside WorkflowActions section="assignment".
-  const canAssignWorkNow =
-    !hasPendingCorrection &&
-    (hasPermission(context, "work_orders.approve") || hasPermission(context, "work_orders.assign")) &&
-    ["Approved", "Partially Issued", "Materials Issued", "Assigned", "In Progress"].includes(wo.status) &&
-    (wo.status === "Assigned" || wo.status === "In Progress" || !activeMaterialsRequest);
-  const canManageRosterNow =
-    !hasPendingCorrection && (hasPermission(context, "work_orders.assign") || isManagerRoleForSessions) && wo.status !== "Closed";
-  const canEditAssignmentNow = canAssignWorkNow || canManageRosterNow;
+  const assignment = assignmentGates(context, wo.status, { hasPendingCorrection, hasActiveMaterialsRequest: activeMaterialsRequest !== null });
+  const canEditAssignmentNow = assignment.canAssign || assignment.canManageRoster;
   const canUploadFiles = hasPermission(context, "files.upload");
   const canDeleteFiles =
     context.role?.slug === "super_admin" ||
@@ -544,8 +539,9 @@ export default async function WorkOrderDetailPage({
   // shared readiness check the server guard, Daily Activity board, and
   // Request Closure modal all use — Working/Paused/Not-Started workers all
   // block, not just an actively-running session.
+  const teamWorkers = countedWorkers(laborSummary.workers);
   const workersClosureCheck = checkWorkersReadyForClosure(
-    laborSummary.workers.map((w) => ({
+    teamWorkers.map((w) => ({
       workerAssignmentId: w.worker_assignment_id,
       workerName: w.worker_name,
       assignmentStatus: w.assignment_status,
@@ -556,7 +552,7 @@ export default async function WorkOrderDetailPage({
   // No workers / no materials only count once confirmed not required — same
   // rule as the closure guard (closure-readiness.ts checkClosureRequirements).
   const requirements = checkClosureRequirements({
-    workerCount: laborSummary.workers.length,
+    workerCount: teamWorkers.length,
     workersNotRequired: requirementFacts.workersNotRequired,
     materialsPresent: requirementFacts.materialsPresent,
     materialsNotRequired: requirementFacts.materialsNotRequired,
@@ -595,7 +591,7 @@ export default async function WorkOrderDetailPage({
   // separate has_active_session/anyWorkerPaused re-derivation — "Sessions
   // Recorded" is retired in favor of "Finished" once every worker is
   // actually done, matching the task's exact 3 labeled cases.
-  const workTimeChip: { label: string; tone: BadgeTone } = !hasInternalTeam
+  const workTimeChip: { label: string; tone: BadgeTone } = teamWorkers.length === 0
     ? { label: "Not Started", tone: "gray" }
     : workersClosureCheck.workingWorkers.length > 0
       ? { label: "Working", tone: "blue" }
@@ -709,8 +705,18 @@ export default async function WorkOrderDetailPage({
   const currentAssignment = primaryAssignment
     ? {
         type: primaryAssignment.assignment_type,
+        technicianId: primaryAssignment.technician_id,
+        technicianName: primaryAssignment.profiles?.full_name ?? null,
         externalName: primaryAssignment.external_name,
         externalCompany: primaryAssignment.external_company,
+        contactPerson: primaryAssignment.external_contact_person,
+        phone: primaryAssignment.external_phone,
+        trade: primaryAssignment.external_trade,
+        visitDate: toIsoDateOnly(primaryAssignment.external_expected_visit_date),
+        notes: primaryAssignment.notes,
+        // Cost field: the amount itself only reaches viewers who may see costs.
+        agreedAmount: canViewCosts && primaryAssignment.agreed_amount !== null ? Number(primaryAssignment.agreed_amount) : null,
+        hasAgreedAmount: primaryAssignment.agreed_amount !== null,
       }
     : null;
 
@@ -976,7 +982,6 @@ export default async function WorkOrderDetailPage({
               workOrderId={wo.id}
               status={wo.status}
               context={context}
-              technicians={technicians}
               currentAssignment={currentAssignment}
               activeMaterialsRequest={
                 activeMaterialsRequest
@@ -1296,8 +1301,8 @@ export default async function WorkOrderDetailPage({
                   <div className="mt-3 space-y-4">
                     {(wo.starting_datetime || wo.ending_datetime) ? (
                       <div className="grid gap-3 md:grid-cols-2">
-                        {wo.starting_datetime ? <InfoBlock label="Work started" value={formatDateTimeValue(wo.starting_datetime)} /> : null}
-                        {wo.ending_datetime ? <InfoBlock label="Work completed" value={formatDateTimeValue(wo.ending_datetime)} /> : null}
+                        {wo.starting_datetime ? <InfoBlock label="Starting date/time" value={formatDateTimeValue(wo.starting_datetime)} /> : null}
+                        {wo.ending_datetime ? <InfoBlock label="Ending date/time" value={formatDateTimeValue(wo.ending_datetime)} /> : null}
                       </div>
                     ) : null}
                     {wo.work_order_technician_notes.length ? (
@@ -1371,7 +1376,7 @@ export default async function WorkOrderDetailPage({
                 ) : null}
               </dl>
             </section>
-            <JobCardDatesSection dates={jobCardDates} />
+            <JobCardDatesSection dates={jobCardDates} timing={jobCardTiming} />
           </aside>
         </div>
         )}
@@ -2037,10 +2042,10 @@ export default async function WorkOrderDetailPage({
                     ) : null}
                     <WorkflowActions
                       section="closure"
+                      workCompletedEntry={suggestedWorkCompleted(jobCardTiming)}
                       workOrderId={wo.id}
                       status={wo.status}
                       context={context}
-                      technicians={technicians}
                       currentAssignment={currentAssignment}
                       activeMaterialsRequest={
                         activeMaterialsRequest
@@ -2148,38 +2153,15 @@ export default async function WorkOrderDetailPage({
           Requests page's "New Materials Request" modal). Renders the exact
           same forms/gates as before (WorkflowActions section="assignment"),
           just relocated out of the always-visible sidebar. */}
-      {showEditAssignment && (
+      {editAssignmentData ? (
         <LargeFormModal
           title="Edit Assignment"
-          subtitle="Assign or update who is working on this Job Card."
+          subtitle={EDIT_ASSIGNMENT_SUBTITLE}
           closeHref={`/maintenance/work-orders/${wo.id}?tab=assignment`}
         >
-          <WorkflowActions
-            section="assignment"
-            workOrderId={wo.id}
-            status={wo.status}
-            context={context}
-            technicians={technicians}
-            currentAssignment={currentAssignment}
-            activeMaterialsRequest={
-              activeMaterialsRequest
-                ? { id: activeMaterialsRequest.id, number: activeMaterialsRequest.parts_request_number, status: activeMaterialsRequest.status }
-                : null
-            }
-            activeWorkers={activeWorkers}
-            internalTeamRoster={wo.work_order_worker_assignments.filter((r) => r.status === "active").map((r) => ({
-              worker_id: r.worker_id,
-              worker_role: r.worker_role,
-              // Estimated Work Hours for Job Cards and Workers Unit 10G.13,
-              // Task 4: carried through so InternalTeamRosterForm can
-              // resubmit it unchanged on a roster edit, instead of silently
-              // wiping it.
-              estimated_hours: r.estimated_hours !== null ? Number(r.estimated_hours) : null,
-            }))}
-            hasPendingCorrection={hasPendingCorrection}
-          />
+          <EditAssignmentForm {...editAssignmentData} closeHref={`/maintenance/work-orders/${wo.id}?tab=assignment`} />
         </LargeFormModal>
-      )}
+      ) : null}
 
       {/* Job Card Detail Simplification Unit 8C — Record Material Used
           modal. Same addWorkOrderMaterialAction form/fields as before, just

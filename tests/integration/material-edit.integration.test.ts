@@ -52,11 +52,11 @@ const item = async (itemCode: string) => {
   return [...balanceItems, ...archivedItems].find((b) => b.item_code === itemCode);
 };
 
-async function edit(ctx: Ctx, itemCode: string, change: Partial<Awaited<ReturnType<typeof svc.getMaterialForEdit>>["values"]>) {
+async function edit(ctx: Ctx, itemCode: string, change: Partial<Awaited<ReturnType<typeof svc.getMaterialForEdit>>["values"]>, newCategory?: boolean) {
   const b = await item(itemCode);
   assert.ok(b, `material ${itemCode}`);
   const form = await svc.getMaterialForEdit(ctx, b.key);
-  return svc.saveMaterialEdit(ctx, { key: form.key, version: form.version, values: { ...form.values, ...change } });
+  return svc.saveMaterialEdit(ctx, { key: form.key, version: form.version, values: { ...form.values, ...change }, newCategory });
 }
 
 const fieldErrorsOf = async (p: Promise<unknown>) => {
@@ -303,5 +303,42 @@ describe("Edit Material (disposable DB)", () => {
     const file = new File([await wb.xlsx.writeBuffer()], "m.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const p = await svc.previewMaterialMasterImport(admin, file, { sheetName: null, hasHeaderRow: null, mapping: null });
     assert.equal(p.rows[0].status, "existing_item_code");
+  });
+
+  it("Category: lists the shared categories, keeps an existing spelling, refuses an unknown value", async () => {
+    await importMaterials([[code("K1"), label("cat one"), "PCS"], [code("K2"), label("cat two"), "PCS"]]);
+    const form = await svc.getMaterialForEdit(dataEntry, (await item(code("K1")))!.key);
+    assert.ok(form.categories.includes("Electrical Materials") && form.categories[0] === "Mechanical Materials", "fixed list first");
+    await edit(dataEntry, code("K1"), { category: "  electrical   MATERIALS " });
+    assert.equal((await item(code("K1")))?.category, "Electrical Materials", "existing spelling kept");
+    assert.deepEqual((await fieldErrorsOf(edit(dataEntry, code("K1"), { category: "Typo Materails" }))).category?.length, 1);
+    assert.equal((await item(code("K1")))?.category, "Electrical Materials", "refused value not saved");
+  });
+
+  it("Category: a new one is saved with the material, and is then shared", async () => {
+    const name = `Crane Spares ${RUN}`;
+    await edit(dataEntry, code("K1"), { category: name }, true);
+    assert.equal((await item(code("K1")))?.category, name);
+    const other = await svc.getMaterialForEdit(dataEntry, (await item(code("K2")))!.key);
+    assert.ok(other.categories.includes(name), "appears in every category list");
+    await edit(dataEntry, code("K2"), { category: name.toUpperCase() }, true);
+    assert.equal((await item(code("K2")))?.category, name, "a second 'new' entry reuses the first spelling");
+    assert.deepEqual((await fieldErrorsOf(edit(dataEntry, code("K2"), { category: "<b>x</b>" }, true))).category?.length, 1);
+  });
+
+  it("Category: two people adding the same new category at once get one spelling", async () => {
+    await importMaterials([[code("K3"), label("cat three"), "PCS"], [code("K4"), label("cat four"), "PCS"]]);
+    const name = `Gantry Parts ${RUN}`;
+    await Promise.all([edit(dataEntry, code("K3"), { category: name }, true), edit(admin, code("K4"), { category: name.toLowerCase() }, true)]);
+    const spellings = new Set([(await item(code("K3")))?.category, (await item(code("K4")))?.category]);
+    assert.equal(spellings.size, 1, [...spellings].join(" / "));
+  });
+
+  it("Category: changing it creates no stock movement and changes no other material", async () => {
+    const before = await prisma.offline_inventory_movements.count();
+    const otherBefore = (await item(code("K2")))?.category;
+    await edit(admin, code("K1"), { category: "Safety Materials" });
+    assert.equal(await prisma.offline_inventory_movements.count(), before);
+    assert.equal((await item(code("K2")))?.category, otherBefore);
   });
 });

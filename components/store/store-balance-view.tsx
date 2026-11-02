@@ -465,6 +465,12 @@ export function StoreBalanceView({
     return [...known, ...custom];
   }, [categoryCounts]);
 
+  // Every category for Add Material: the fixed list, then custom ones in use.
+  const allCategories = useMemo(() => {
+    const fixed = new Set<string>(MATERIAL_CATEGORIES);
+    return [...MATERIAL_CATEGORIES, ...visibleCategories.filter((c) => !fixed.has(c))];
+  }, [visibleCategories]);
+
   // Search + category + quick filters, before any tab is applied; the tab
   // badges count from this, so a search shows which tab holds the matches.
   // `matched` leaves the category out — the By Category cards need it.
@@ -1423,7 +1429,7 @@ export function StoreBalanceView({
           subtitle="Register a new material in Inventory Control."
           onClose={closeFormModal}
         >
-          <AddNewMaterialForm modalMode canViewCosts={canViewCosts} />
+          <AddNewMaterialForm modalMode canViewCosts={canViewCosts} categories={allCategories} />
         </LargeFormModal>
       )}
       {showReceiveMaterial && (

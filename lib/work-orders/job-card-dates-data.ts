@@ -2,7 +2,10 @@ import "server-only";
 
 import type { prisma } from "@/lib/db/prisma";
 import type { BackendTransaction } from "@/lib/backend/shared/transaction";
+import { getClosureReadinessForWorkOrders } from "@/lib/work-orders/closure-readiness-data";
 import { computeJobCardDates, type JobCardDates } from "@/lib/work-orders/job-card-dates";
+import { toIsoDateOnly } from "@/lib/work-orders/job-card-edit";
+import { computeJobCardTiming, type JobCardTiming } from "@/lib/work-orders/job-card-timing";
 
 type DbClient = typeof prisma | BackendTransaction;
 
@@ -12,6 +15,16 @@ type DbClient = typeof prisma | BackendTransaction;
 // markExternalWorkCompleted).
 const START_ACTIONS = ["work_order.start", "work_order.start_progress"];
 const END_ACTIONS = ["work_order.complete", "work_order.external_completed"];
+
+// The statuses that decide "has the team finished?": a Supervisor with no work
+// recorded is overseeing, not working (closure-readiness.ts).
+function workingTeamStatuses(
+  assignments: Array<{ id: string; status: string; worker_role: string }>,
+  sessions: Array<{ worker_assignment_id: string }>
+): string[] {
+  const worked = new Set(sessions.map((s) => s.worker_assignment_id));
+  return assignments.filter((a) => a.worker_role !== "Supervisor" || a.status === "finished" || worked.has(a.id)).map((a) => a.status);
+}
 
 /**
  * Loads the recorded events behind a Job Card's Created / Work Start / Work
@@ -31,11 +44,11 @@ export async function getJobCardDates(
   const [sessions, assignments, startLog, endLog, closedApproval] = await Promise.all([
     db.workOrderWorkSession.findMany({
       where: { work_order_id: workOrder.id, status: { not: "Cancelled" } },
-      select: { started_at: true, paused_at: true, stopped_at: true, status: true, start_time_known: true, end_time_known: true },
+      select: { worker_assignment_id: true, started_at: true, paused_at: true, stopped_at: true, status: true, start_time_known: true, end_time_known: true },
     }),
     db.workOrderWorkerAssignment.findMany({
       where: { work_order_id: workOrder.id, status: { in: ["active", "finished"] } },
-      select: { status: true },
+      select: { id: true, status: true, worker_role: true },
     }),
     db.audit_logs.findFirst({
       where: { entity_type: "work_order", entity_id: workOrder.id, action: { in: START_ACTIONS } },
@@ -66,13 +79,38 @@ export async function getJobCardDates(
       startTimeKnown: s.start_time_known,
       endTimeKnown: s.end_time_known,
     })),
-    workerAssignmentStatuses: assignments.map((a) => a.status),
+    workerAssignmentStatuses: workingTeamStatuses(assignments, sessions),
     statusStartAt: startLog?.created_at.toISOString() ?? null,
     statusEndAt: endLog?.created_at.toISOString() ?? null,
     formStartAt: workOrder.starting_datetime?.toISOString() ?? null,
     formEndAt: workOrder.ending_datetime?.toISOString() ?? null,
     closedAt: closedApproval?.decided_at.toISOString() ?? null,
   });
+}
+
+/** The stored fields behind Job Card Time Details, plus readiness (see job-card-timing.ts). */
+export function jobCardTimingFrom(
+  workOrder: { status: string; job_card_start_date: Date | null; job_card_opened_at: Date | null; work_completed_at: Date | null },
+  dates: JobCardDates,
+  readyForClosure: boolean
+): JobCardTiming {
+  return computeJobCardTiming({
+    status: workOrder.status,
+    openDate: toIsoDateOnly(workOrder.job_card_start_date),
+    openedAt: workOrder.job_card_opened_at?.toISOString() ?? null,
+    workCompletedAt: workOrder.work_completed_at?.toISOString() ?? null,
+    dates,
+    readyForClosure,
+  });
+}
+
+/** Dates and Time Details for one Job Card, with the same readiness as the closure guard. */
+export async function getJobCardTiming(
+  db: typeof prisma,
+  workOrder: Parameters<typeof getJobCardDates>[1] & Parameters<typeof jobCardTimingFrom>[0]
+): Promise<{ dates: JobCardDates; timing: JobCardTiming }> {
+  const [dates, readiness] = await Promise.all([getJobCardDates(db, workOrder), getClosureReadinessForWorkOrders(db, [workOrder.id])]);
+  return { dates, timing: jobCardTimingFrom(workOrder, dates, readiness.get(workOrder.id)?.ready ?? false) };
 }
 
 /**
@@ -92,11 +130,11 @@ export async function getJobCardDatesBulk(
   const [sessions, assignments, startLogs, endLogs, closedApprovals] = await Promise.all([
     db.workOrderWorkSession.findMany({
       where: { work_order_id: { in: ids }, status: { not: "Cancelled" } },
-      select: { work_order_id: true, started_at: true, paused_at: true, stopped_at: true, status: true, start_time_known: true, end_time_known: true },
+      select: { work_order_id: true, worker_assignment_id: true, started_at: true, paused_at: true, stopped_at: true, status: true, start_time_known: true, end_time_known: true },
     }),
     db.workOrderWorkerAssignment.findMany({
       where: { work_order_id: { in: ids }, status: { in: ["active", "finished"] } },
-      select: { work_order_id: true, status: true },
+      select: { id: true, work_order_id: true, status: true, worker_role: true },
     }),
     db.audit_logs.findMany({
       where: { entity_type: "work_order", entity_id: { in: ids }, action: { in: START_ACTIONS } },
@@ -121,7 +159,7 @@ export async function getJobCardDatesBulk(
         sessions: sessions
           .filter((s) => s.work_order_id === w.id)
           .map((s) => ({ startedAt: s.started_at.toISOString(), endedAt: (s.stopped_at ?? s.paused_at)?.toISOString() ?? null, status: s.status, startTimeKnown: s.start_time_known, endTimeKnown: s.end_time_known })),
-        workerAssignmentStatuses: assignments.filter((a) => a.work_order_id === w.id).map((a) => a.status),
+        workerAssignmentStatuses: workingTeamStatuses(assignments.filter((a) => a.work_order_id === w.id), sessions.filter((s) => s.work_order_id === w.id)),
         statusStartAt: pick(startLogs.filter((l) => l.entity_id === w.id).map((l) => ({ at: l.created_at })), "min"),
         statusEndAt: pick(endLogs.filter((l) => l.entity_id === w.id).map((l) => ({ at: l.created_at })), "max"),
         formStartAt: w.starting_datetime?.toISOString() ?? null,

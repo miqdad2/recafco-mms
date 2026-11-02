@@ -12,7 +12,9 @@ import { displaySimplifiedStatus } from "@/lib/work-orders/simplified-status-dis
 import { deriveSimpleWorkerState } from "@/lib/work-orders/hours-variance";
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete } from "@/lib/work-orders/material-fulfillment";
 import { getJobCardCostSummary } from "@/lib/work-orders/job-card-cost-summary";
-import { getJobCardDates } from "@/lib/work-orders/job-card-dates-data";
+import { getJobCardTiming } from "@/lib/work-orders/job-card-dates-data";
+import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
+import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import { formatJobCardDate } from "@/lib/work-orders/job-card-edit";
 import { jobCardDateText } from "@/components/work-orders/job-card-dates-section";
 
@@ -97,10 +99,15 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
   // query for them), so every cost section below is gated on this one
   // value: no rate, unit cost, indirect cost or total exists in this
   // render at all for Data Entry / Viewer / no-cost users.
-  const [costSummary, jobCardDates] = await Promise.all([
+  const [costSummary, { dates: jobCardDates, timing: jobCardTiming }, laborSummary] = await Promise.all([
     getJobCardCostSummary(context, id, materialFulfillment),
-    getJobCardDates(prisma, rawWo),
+    getJobCardTiming(prisma, rawWo),
+    getWorkOrderLaborSummary(prisma, id),
   ]);
+  const estimatedWorkerHours = resolveEstimatedTotalHours(
+    rawWo.estimated_labor_hours !== null ? Number(rawWo.estimated_labor_hours) : null,
+    laborSummary.workers.map((w) => w.estimated_hours)
+  );
 
   const decidedByIds = [...new Set(rawApprovals.map((a) => a.decided_by).filter((v): v is string => Boolean(v)))];
   const decidedByProfiles = decidedByIds.length
@@ -263,7 +270,7 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
     ...(closedApproval
       ? ([
           ["Closed by", nameById.get(closedApproval.decided_by ?? "") ?? "Unknown"],
-          ["Closed at", formatDateTime(closedApproval.decided_at.toISOString())]
+          ["Manager Approved On", formatDateTime(closedApproval.decided_at.toISOString())]
         ] as Array<[string, string]>)
       : []),
     ["Comments", closedApproval?.comments || closureRequestedApproval?.comments || "Not recorded"]
@@ -295,9 +302,14 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
     // Kuwait time. The old form's typed Start/End are folded into Work Start
     // / Work End there (used only when no recorded event exists).
     ["Created Date & Time", jobCardDateText(jobCardDates.created)],
-    ["Work Start Date & Time", jobCardDateText(jobCardDates.workStart)],
-    ["Work End Date & Time", jobCardDateText(jobCardDates.workEnd)],
-    ...(jobCardDates.closed ? ([["Closed (Manager approved)", jobCardDateText(jobCardDates.closed)]] as Array<[string, string]>) : [])
+    ["Job Card Opened", jobCardTiming.openedText],
+    ["Work Started", jobCardDateText(jobCardDates.workStart)],
+    ["Work Completed", jobCardTiming.completedText],
+    ["Job Card Duration", jobCardTiming.durationText],
+    ...(jobCardTiming.managerApprovedText ? ([["Manager Approved On", jobCardTiming.managerApprovedText]] as Array<[string, string]>) : []),
+    // Combined time of all workers, not how long the Job Card was open.
+    ["Estimated Worker Hours", estimatedWorkerHours !== null ? `${estimatedWorkerHours} h` : "Not recorded"],
+    ["Actual Worker Hours", `${laborSummary.total_hours} h`]
   ];
 
   const nextServiceRows: Array<[string, string]> = [
