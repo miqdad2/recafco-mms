@@ -39,6 +39,25 @@ export const MATERIAL_EDIT_LABELS: Record<keyof MaterialEditValues, string> = {
   reorderQuantity: "Reorder Quantity",
 };
 
+// A category name typed with "+ Add New Category". Existing categories are
+// matched ignoring case and spacing (categoryMatchKey), so "crane  SPARES"
+// is the same as "Crane Spares".
+export const NEW_CATEGORY_MAX_LENGTH = 60;
+
+export function categoryMatchKey(name: string): string {
+  return name.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+export function newCategoryProblem(name: string): string | null {
+  const v = name.trim();
+  if (!v) return "Enter a category name.";
+  if (v.length > NEW_CATEGORY_MAX_LENGTH) return `Use at most ${NEW_CATEGORY_MAX_LENGTH} characters.`;
+  // Control characters, and markup or formula starts that would look wrong in
+  // lists, exports and Excel.
+  if (/[\u0000-\u001F\u007F]/.test(v) || /[<>]/.test(v) || /^[=+@-]/.test(v)) return "Use letters, numbers and simple punctuation only.";
+  return null;
+}
+
 export type MaterialEditFieldErrors = Partial<Record<keyof MaterialEditValues, string[]>>;
 
 function quantityText(raw: string): string {

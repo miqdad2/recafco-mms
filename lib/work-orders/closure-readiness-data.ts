@@ -2,7 +2,7 @@ import "server-only";
 
 import type { prisma } from "@/lib/db/prisma";
 import { getWorkTimeSourceSummaries } from "@/lib/backend/work-orders/work-time-corrections";
-import { checkClosureRequirements, checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { checkClosureRequirements, checkWorkersReadyForClosure, countedWorkers } from "@/lib/work-orders/closure-readiness";
 import { getClosureRequirementFacts } from "@/lib/work-orders/closure-requirements-data";
 import { anyMaterialsIncomplete, getMaterialFulfillmentForWorkOrders } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummariesBulk } from "@/lib/work-orders/work-session-totals";
@@ -39,7 +39,7 @@ export async function getClosureReadinessForWorkOrders(db: DbClient, workOrderId
   const pendingByWorkOrder = new Set(pendingRequests.map((g) => g.work_order_id).filter((id): id is string => Boolean(id)));
 
   for (const id of workOrderIds) {
-    const workers = laborMap.get(id)?.workers ?? [];
+    const workers = countedWorkers(laborMap.get(id)?.workers ?? []);
     const facts = factsMap.get(id);
     const time = timeMap.get(id);
     const workersCheck = checkWorkersReadyForClosure(

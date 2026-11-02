@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  categoryMatchKey,
+  newCategoryProblem,
   changedMaterialFields,
   identityLockReason,
   materialEditVersion,
@@ -108,5 +110,18 @@ describe("identity and unit locks", () => {
     const facts = { ...clean, hasUnitSetup: true };
     assert.equal(identityLockReason(facts), null);
     assert.match(unitLockReason(facts) ?? "", /purchase unit setup/);
+  });
+});
+
+describe("New category names", () => {
+  it("matches existing categories ignoring case and spacing", () => {
+    assert.equal(categoryMatchKey("  Crane   SPARES "), categoryMatchKey("crane spares"));
+  });
+  it("refuses blank, too long, control characters, markup and formula starts", () => {
+    assert.equal(newCategoryProblem("Hydraulic Materials"), null);
+    assert.equal(newCategoryProblem("Pumps / Valves (Spare)"), null);
+    for (const bad of ["", "   ", "x".repeat(61), "BadName", "<b>Bold</b>", "=SUM(A1)", "+44", "@x", "-x"]) {
+      assert.ok(newCategoryProblem(bad), JSON.stringify(bad));
+    }
   });
 });

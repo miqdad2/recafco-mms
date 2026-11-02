@@ -25,6 +25,8 @@ export const technicianAssignmentSchema = z.object({
   // Work Assignment and Worker Profiles Foundation Unit 7, Task 5: "Agreed
   // amount or hourly rate optional" for Freelancer/External Company.
   agreedAmount: z.coerce.number().min(0).max(999999.999).optional(),
+  // For a viewer who may not see costs and so cannot re-enter the amount.
+  keepAgreedAmount: z.boolean().optional(),
   notes: z.string().trim().max(500).optional(),
 });
 

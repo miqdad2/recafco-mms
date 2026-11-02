@@ -21,6 +21,8 @@ import {
 } from "@/components/dashboard/data-entry-summary-card-styles";
 import { LargeFormModal } from "@/components/ui/large-form-modal";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { JobCardTimeDetails } from "@/components/work-orders/job-card-time-details";
+import { WORKER_HOURS_EXPLANATION } from "@/lib/work-orders/job-card-timing";
 import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours-variance";
 
 // Manager Closed Job Cards Summary and Global Navigation Improvements Unit
@@ -380,14 +382,17 @@ function ClosedJobCardDetailModal({ workOrderId, onBack, onClose }: { workOrderI
               badge), replacing Unit 10G.13's "hide entirely" behavior, for
               consistency with the Closure Review popup this Job Card went
               through before it was closed. */}
+          <div className="mt-4">
+            <JobCardTimeDetails timing={detail.timing} />
+          </div>
           <div className="mt-4 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] p-2.5">
-            <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Estimated vs Actual</p>
+            <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Workers&apos; Working Hours</p>
             {(() => {
               const variance = computeHoursVariance(detail.estimatedHours, detail.totalHours);
               return (
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#4B5563]">
-                  <span>Estimated: <strong className="text-[#111827]">{detail.estimatedHours !== null ? `${detail.estimatedHours} h` : "Not recorded"}</strong></span>
-                  <span>Actual: <strong className="text-[#111827]">{detail.totalHours} h</strong></span>
+                  <span>Estimated Worker Hours: <strong className="text-[#111827]">{detail.estimatedHours !== null ? `${detail.estimatedHours} h` : "Not recorded"}</strong></span>
+                  <span>Actual Worker Hours: <strong className="text-[#111827]">{detail.totalHours} h</strong></span>
                   {variance.varianceHours !== null && (
                     <span>Variance: <strong className="text-[#111827]">{variance.varianceHours >= 0 ? "+" : ""}{variance.varianceHours} h</strong></span>
                   )}
@@ -395,6 +400,7 @@ function ClosedJobCardDetailModal({ workOrderId, onBack, onClose }: { workOrderI
                 </div>
               );
             })()}
+            <p className="mt-1 text-xs text-[#6B7280]">{WORKER_HOURS_EXPLANATION}</p>
           </div>
 
           {/* Workers */}

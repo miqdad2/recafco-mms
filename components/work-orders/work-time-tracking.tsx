@@ -6,6 +6,7 @@ import { WorkerSessionRow } from "@/components/work-orders/worker-session-row";
 import { StatusBadge } from "@/components/ui/status-badge";
 import type { TimeCorrectionView } from "@/lib/backend/work-orders/work-time-corrections";
 import type { WorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
+import { WORKER_HOURS_EXPLANATION } from "@/lib/work-orders/job-card-timing";
 import { computeHoursVariance, hoursVarianceTone } from "@/lib/work-orders/hours-variance";
 import { isCurrentlyPaused, isCurrentlyWorking } from "@/lib/work-orders/paused-work";
 
@@ -76,11 +77,12 @@ export function WorkTimeTracking({
             state's own "Actual always visible" behavior, instead of a bare
             "No estimate recorded." when there's also no estimate. */}
         <div className="mt-3 rounded-md border border-[#E5E7EB] bg-white p-3">
-          <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Estimated vs Actual</p>
+          <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Workers&apos; Working Hours</p>
           <p className="mt-1 text-sm text-[#4B5563]">
-            Estimated: <strong className="text-[#111827]">{estimatedTotalHours !== null ? `${estimatedTotalHours} h` : "Not recorded"}</strong>
-            {" · "}Actual: <strong className="text-[#111827]">0 h</strong>
+            Estimated Worker Hours: <strong className="text-[#111827]">{estimatedTotalHours !== null ? `${estimatedTotalHours} h` : "Not recorded"}</strong>
+            {" · "}Actual Worker Hours: <strong className="text-[#111827]">0 h</strong>
           </p>
+          <p className="mt-1 text-xs text-[#6B7280]">{WORKER_HOURS_EXPLANATION}</p>
         </div>
         <div className="mt-4 flex flex-col items-center gap-3 rounded-md border border-dashed border-[#E5E7EB] bg-[#F9FAFB] py-8 text-center">
           <p className="text-sm text-[#6B7280]">No internal workers assigned yet.</p>
@@ -150,13 +152,13 @@ export function WorkTimeTracking({
           Closure Review and Closed Jobs — was previously a bare "No
           estimate recorded." paragraph that hid Actual/status entirely. */}
       <div className="mt-3 rounded-md border border-[#E5E7EB] bg-white p-3">
-        <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Estimated vs Actual</p>
+        <p className="text-[10px] font-black uppercase tracking-wide text-[#9CA3AF]">Workers&apos; Working Hours</p>
         {(() => {
           const variance = computeHoursVariance(estimatedTotalHours, summary.total_hours);
           return (
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
-              <span className="text-sm text-[#4B5563]">Estimated: <strong className="text-[#111827]">{estimatedTotalHours !== null ? `${estimatedTotalHours} h` : "Not recorded"}</strong></span>
-              <span className="text-sm text-[#4B5563]">Actual: <strong className="text-[#111827]">{summary.total_hours} h</strong></span>
+              <span className="text-sm text-[#4B5563]">Estimated Worker Hours: <strong className="text-[#111827]">{estimatedTotalHours !== null ? `${estimatedTotalHours} h` : "Not recorded"}</strong></span>
+              <span className="text-sm text-[#4B5563]">Actual Worker Hours: <strong className="text-[#111827]">{summary.total_hours} h</strong></span>
               {variance.varianceHours !== null && (
                 <span className="text-sm text-[#4B5563]">
                   Variance: <strong className="text-[#111827]">{variance.varianceHours >= 0 ? "+" : ""}{variance.varianceHours} h</strong>
@@ -166,6 +168,7 @@ export function WorkTimeTracking({
             </div>
           );
         })()}
+        <p className="mt-1 text-xs text-[#6B7280]">{WORKER_HOURS_EXPLANATION}</p>
       </div>
 
       <div className="mt-4 space-y-3">

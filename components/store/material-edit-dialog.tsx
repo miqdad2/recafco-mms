@@ -7,7 +7,8 @@ import { LargeFormModal, useLargeFormModal } from "@/components/ui/large-form-mo
 import { getMaterialForEditAction, saveMaterialEditAction } from "@/app/actions/material-master";
 import { dispatchActionToast } from "@/lib/action-messages";
 import { GENERAL_INVENTORY_UNIT_OPTIONS } from "@/components/store/general-inventory-units";
-import { MATERIAL_CATEGORIES, inputCls, labelCls } from "@/components/store/offline-inventory-types";
+import { CategoryPicker } from "@/components/store/category-picker";
+import { inputCls, labelCls } from "@/components/store/offline-inventory-types";
 import type { MaterialEditData } from "@/lib/backend/store/material-master";
 import type { MaterialEditValues } from "@/lib/store/material-edit";
 
@@ -62,6 +63,8 @@ function EditForm({ data, onSaved }: { data: MaterialEditData; onSaved: (key: st
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  // A category added in this form; saved only with the material.
+  const [pendingCategory, setPendingCategory] = useState<string | null>(null);
 
   const set = (field: keyof MaterialEditValues) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setValues((v) => ({ ...v, [field]: e.target.value }));
@@ -73,7 +76,7 @@ function EditForm({ data, onSaved }: { data: MaterialEditData; onSaved: (key: st
     setSaving(true);
     setFormError(null);
     setFieldErrors({});
-    const r = await saveMaterialEditAction({ key: data.key, version: data.version, values });
+    const r = await saveMaterialEditAction({ key: data.key, version: data.version, values, newCategory: pendingCategory !== null && values.category === pendingCategory });
     savingRef.current = false;
     setSaving(false);
     if (!r.ok) {
@@ -110,12 +113,23 @@ function EditForm({ data, onSaved }: { data: MaterialEditData; onSaved: (key: st
             <input id="me-code" value={values.itemCode} onChange={set("itemCode")} disabled={saving} className={`${inputCls} font-mono`} />
           </Field>
           <Field id="me-category" label="Category" required error={fieldErrors.category}>
-            <input id="me-category" list="me-category-options" value={values.category} onChange={set("category")} disabled={saving} className={inputCls} />
-            <datalist id="me-category-options">
-              {MATERIAL_CATEGORIES.map((c) => (
-                <option key={c} value={c} />
-              ))}
-            </datalist>
+            <CategoryPicker
+              id="me-category"
+              value={values.category}
+              categories={data.categories}
+              pendingNew={pendingCategory}
+              disabled={saving}
+              invalid={Boolean(fieldErrors.category)}
+              onSelect={(category) => {
+                if (category !== values.category) modal?.markDirty();
+                setValues((v) => ({ ...v, category }));
+              }}
+              onAddNew={(category) => {
+                modal?.markDirty();
+                setPendingCategory(category);
+                setValues((v) => ({ ...v, category }));
+              }}
+            />
           </Field>
           <Field id="me-unit" label="Unit" required error={fieldErrors.unit} hint={data.unitLockedReason}>
             <input id="me-unit" list="me-unit-options" value={values.unit} onChange={set("unit")} disabled={saving || data.unitLockedReason !== null} className={inputCls} />

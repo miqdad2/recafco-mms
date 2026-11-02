@@ -52,6 +52,19 @@ export function toKuwaitInputValue(value: Date | string): string {
   return shifted.toISOString().slice(0, 16);
 }
 
+/** The current Kuwait wall-clock time as a form value, whatever the machine's time zone. */
+export function currentKuwaitInputValue(now: Date = new Date()): string {
+  return toKuwaitInputValue(now);
+}
+
+/** "08:05" or "14:05" as "8:05 AM" or "2:05 PM"; other text comes back unchanged. */
+export function formatClockTime(value: string): string {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return value;
+  const hours = Number(match[1]);
+  return `${hours % 12 || 12}:${match[2]} ${hours < 12 ? "AM" : "PM"}`;
+}
+
 /**
  * Parses a Kuwait wall-clock "YYYY-MM-DDTHH:mm" string into the exact
  * instant. Returns null for anything that is not a real calendar time

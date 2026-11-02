@@ -22,6 +22,21 @@
 
 import { deriveSimpleWorkerState, type SimpleWorkerState } from "@/lib/work-orders/hours-variance";
 
+/**
+ * A Supervisor oversees the Job Card and is not a worker until they have work
+ * recorded: they need no timer, cannot hold up closure, and do not count as
+ * "workers present". One who starts a timer or has time entered counts like
+ * anyone else.
+ */
+export function isOverseeingSupervisor(worker: { worker_role: string; assignment_status: string; status: string; total_minutes: number }): boolean {
+  return worker.worker_role === "Supervisor" && worker.assignment_status !== "finished" && worker.status === "Not Started" && worker.total_minutes === 0;
+}
+
+/** The team members who count as workers for readiness and worker controls. */
+export function countedWorkers<T extends { worker_role: string; assignment_status: string; status: string; total_minutes: number }>(workers: T[]): T[] {
+  return workers.filter((w) => !isOverseeingSupervisor(w));
+}
+
 export type WorkerClosureInput = {
   workerAssignmentId: string;
   workerName: string;

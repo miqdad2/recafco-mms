@@ -40,7 +40,12 @@ export function canConfirmClosureRequirements(context: CurrentUserContext) {
 
 async function countTeamWorkers(tx: BackendTransaction, workOrderId: string) {
   return tx.workOrderWorkerAssignment.count({
-    where: { work_order_id: workOrderId, status: { in: ON_TEAM_ASSIGNMENT_STATUSES } },
+    where: {
+      work_order_id: workOrderId,
+      status: { in: ON_TEAM_ASSIGNMENT_STATUSES },
+      // Same rule as isOverseeingSupervisor: no work recorded, not a worker.
+      NOT: { worker_role: "Supervisor", status: "active", work_sessions: { none: { status: { not: "Cancelled" } } } },
+    },
   });
 }
 

@@ -24,7 +24,11 @@ import { approvePartsRequest } from "@/lib/backend/parts-requests/service";
 import { CLOSURE_REQUESTED_STATUS } from "@/lib/work-orders/simplified-status-display";
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
-import { checkWorkersReadyForClosure } from "@/lib/work-orders/closure-readiness";
+import { parseKuwaitInputValue } from "@/lib/format/kuwait-time";
+import { getJobCardDates } from "@/lib/work-orders/job-card-dates-data";
+import { toIsoDateOnly } from "@/lib/work-orders/job-card-edit";
+import { checkWorkCompletedEntry, workEndProvenByWorkerTime } from "@/lib/work-orders/job-card-timing";
+import { checkWorkersReadyForClosure, countedWorkers } from "@/lib/work-orders/closure-readiness";
 import { assertClosureRequirementsMet } from "@/lib/backend/work-orders/closure-requirements";
 import { assertNoPendingTimeCorrections } from "@/lib/backend/work-orders/work-time-corrections";
 
@@ -529,6 +533,10 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
       }
     }
 
+    const keptAmount = input.keepAgreedAmount
+      ? (await tx.work_order_assignments.findFirst({ where: { work_order_id: input.workOrderId, assignment_type: assignmentType }, select: { agreed_amount: true } }))?.agreed_amount
+      : undefined;
+
     await tx.work_order_assignments.deleteMany({ where: { work_order_id: input.workOrderId } });
 
     let technicianIds: string[] = [];
@@ -567,7 +575,7 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
           external_phone: input.externalPhone?.trim() || null,
           external_trade: input.externalTrade?.trim() || null,
           external_expected_visit_date: input.externalExpectedVisitDate ? new Date(input.externalExpectedVisitDate) : null,
-          agreed_amount: input.agreedAmount ?? null,
+          agreed_amount: keptAmount ?? input.agreedAmount ?? null,
           notes: input.notes?.trim() || null,
         }
       });
@@ -586,7 +594,7 @@ export async function assignTechnicians(context: CurrentUserContext, input: Tech
           external_phone: input.externalPhone?.trim() || null,
           external_trade: input.externalTrade?.trim() || null,
           external_expected_visit_date: input.externalExpectedVisitDate ? new Date(input.externalExpectedVisitDate) : null,
-          agreed_amount: input.agreedAmount ?? null,
+          agreed_amount: keptAmount ?? input.agreedAmount ?? null,
           notes: input.notes?.trim() || null,
         }
       });
@@ -1030,7 +1038,7 @@ async function assertRequiredMaterialsFulfilled(tx: BackendTransaction, workOrde
 async function assertWorkersReadyForClosure(tx: BackendTransaction, workOrderId: string) {
   const summary = await getWorkOrderLaborSummary(tx, workOrderId);
   const check = checkWorkersReadyForClosure(
-    summary.workers.map((w) => ({
+    countedWorkers(summary.workers).map((w) => ({
       workerAssignmentId: w.worker_assignment_id,
       workerName: w.worker_name,
       assignmentStatus: w.assignment_status,
@@ -1050,7 +1058,38 @@ async function assertWorkersReadyForClosure(tx: BackendTransaction, workOrderId:
  * Issued/Assigned/In Progress) — not from Draft, not from an already-closed
  * or already-closure-requested Job Card.
  */
-export async function requestJobCardClosure(context: CurrentUserContext, workOrderId: string, note: string) {
+// The time typed at closure request when worker time cannot prove the finish
+// (No Workers Required, or manual time without a clock time). Blank keeps what
+// is stored; a change is audited with the old value, and no session is created.
+async function recordWorkCompletedEntry(tx: BackendTransaction, workOrderId: string, entry: string) {
+  const typed = entry.trim();
+  if (!typed) return null;
+  const at = parseKuwaitInputValue(typed);
+  if (!at) throw new AppError("Please enter a valid Work Completed date and time.", { code: "VALIDATION_ERROR" });
+
+  const wo = await tx.work_orders.findUniqueOrThrow({
+    where: { id: workOrderId },
+    select: { id: true, created_at: true, status: true, starting_datetime: true, ending_datetime: true, job_card_start_date: true, job_card_opened_at: true, work_completed_at: true },
+  });
+  const dates = await getJobCardDates(tx, wo);
+  if (workEndProvenByWorkerTime(dates)) {
+    throw new AppError("Work Completed already comes from the worker time on this Job Card.", { code: "VALIDATION_ERROR" });
+  }
+  const problem = checkWorkCompletedEntry({
+    at,
+    now: new Date(),
+    openDate: toIsoDateOnly(wo.job_card_start_date),
+    openedAt: wo.job_card_opened_at?.toISOString() ?? null,
+    dates,
+  });
+  if (problem) throw new AppError(problem, { code: "VALIDATION_ERROR" });
+  if (wo.work_completed_at?.getTime() === at.getTime()) return null;
+
+  await tx.work_orders.update({ where: { id: workOrderId }, data: { work_completed_at: at } });
+  return { from: wo.work_completed_at?.toISOString() ?? null, to: at.toISOString() };
+}
+
+export async function requestJobCardClosure(context: CurrentUserContext, workOrderId: string, note: string, workCompletedEntry = "") {
   assertCanRequestJobCardClosure(context);
 
   // Closure Request Modal Optional Note and Multiple Custom Attachments
@@ -1094,6 +1133,7 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
     // be present or confirmed not required (closure-requirements.ts).
     await assertClosureRequirementsMet(tx, workOrderId);
     await assertNoPendingTimeCorrections(tx, workOrderId);
+    const workCompletedChange = await recordWorkCompletedEntry(tx, workOrderId, workCompletedEntry);
 
     const row = await updateWorkOrderStatus(tx, workOrderId, CLOSURE_REQUESTED_STATUS, context.userId);
     await tx.approvals.create({
@@ -1104,7 +1144,8 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
       workOrderId: row.id,
       workOrderNumber: row.work_order_number,
       status: row.status,
-      createdBy: existing.created_by
+      createdBy: existing.created_by,
+      workCompletedChange
     };
   });
 
@@ -1125,6 +1166,9 @@ export async function requestJobCardClosure(context: CurrentUserContext, workOrd
       actionUrl: `/maintenance/work-orders/${result.workOrderId}`
     }),
     auditWorkflow(context, "work_order.closure_requested", result, `Closure requested for ${result.workOrderNumber ?? "work order"}`, { note: trimmedNote }),
+    result.workCompletedChange
+      ? auditWorkflow(context, "work_order.work_completed_recorded", result, `Work Completed recorded for ${result.workOrderNumber ?? "work order"}`, result.workCompletedChange)
+      : Promise.resolve(),
     emitJobCardRealtimeEvent(REALTIME_EVENTS.JOB_CARD_CLOSURE_REQUESTED, result.workOrderId, context.userId)
   ]);
 

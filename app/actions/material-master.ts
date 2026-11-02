@@ -159,6 +159,7 @@ export async function getMaterialForEditAction(key: string): Promise<Result<Mate
 const editSchema = z.object({
   key: z.string().min(1).max(600),
   version: z.string().max(5000),
+  newCategory: z.boolean().optional(),
   values: z.object({
     name: z.string().max(2000),
     unit: z.string().max(2000),

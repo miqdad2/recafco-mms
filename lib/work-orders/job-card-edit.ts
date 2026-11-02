@@ -9,6 +9,7 @@
 // Card wizard (instant feedback), the shared form schema (server) and the
 // work_orders_job_card_dates_check database constraint.
 
+import { parseKuwaitInputValue } from "@/lib/format/kuwait-time";
 import { ACTIVE_JOB_CARD_STATUSES } from "@/lib/work-orders/simplified-status-display";
 
 export const NOT_ENTERED = "Not entered";
@@ -39,6 +40,8 @@ export const JOB_CARD_DATE_MESSAGES = {
   invalidEnd: "Please enter a valid Job Card Closed Date.",
   endWithoutStart: "Please enter the Job Card Open Date before the Closed Date.",
   endBeforeStart: "Job Card Closed Date cannot be earlier than the Open Date.",
+  invalidOpenTime: "Please enter a valid Job Card Open Time.",
+  openTimeWithoutDate: "Please enter the Job Card Open Date before the time.",
 } as const;
 
 /**
@@ -55,6 +58,13 @@ export function checkJobCardDateRange(start: string | null | undefined, end: str
   // ISO dates compare correctly as strings.
   if (s && e && e < s) return { field: "job_card_end_date", message: JOB_CARD_DATE_MESSAGES.endBeforeStart };
   return null;
+}
+
+/** The exact opening moment from the typed date and HH:mm, in Kuwait time. Null without a time. */
+export function jobCardOpenedAt(openDate: Date | string | null | undefined, openTime: string | null | undefined): Date | null {
+  const date = toIsoDateOnly(openDate);
+  const time = openTime?.trim();
+  return date && time ? parseKuwaitInputValue(`${date}T${time}`) : null;
 }
 
 /** A @db.Date value (stored as UTC midnight) or YYYY-MM-DD string → YYYY-MM-DD, else null. */
@@ -104,6 +114,7 @@ export const JOB_CARD_EDIT_AUDIT_FIELDS = [
   ["plate_number", "Plate number"],
   ["date_of_order", "Date of order"],
   ["job_card_start_date", "Job Card Open Date"],
+  ["job_card_open_time", "Job Card Open Time"],
   ["job_card_end_date", "Job Card Closed Date"],
   ["job_location", "Job location"],
   ["starting_datetime", "Starting date/time"],
@@ -113,7 +124,7 @@ export const JOB_CARD_EDIT_AUDIT_FIELDS = [
   ["priority", "Priority"],
   ["running_hours", "Running hours"],
   ["kilometers", "Kilometers"],
-  ["estimated_labor_hours", "Estimated total work hours"],
+  ["estimated_labor_hours", "Estimated Worker Hours"],
   ["operator_complaint", "Operator complaint"],
   ["description_of_work", "Description of work"],
   ["notes", "Notes"],

@@ -3,7 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import { parseKuwaitInputValue } from "@/lib/format/kuwait-time";
-import { checkJobCardDateRange, isIsoDate, toIsoDateOnly } from "@/lib/work-orders/job-card-edit";
+import { checkJobCardDateRange, isIsoDate, JOB_CARD_DATE_MESSAGES, jobCardOpenedAt, toIsoDateOnly } from "@/lib/work-orders/job-card-edit";
 import {
   getMaterialUnitSetupByKey,
   getOfflineInventoryMaterialByKey,
@@ -78,6 +78,7 @@ export const workOrderSchema = z.object({
   plate_number: optionalString,
   date_of_order: requiredDate,
   job_card_start_date: optionalJobCardDate,
+  job_card_open_time: optionalString,
   job_card_end_date: optionalJobCardDate,
   job_location: optionalString,
   starting_datetime: optionalKuwaitDateTime,
@@ -106,6 +107,14 @@ export const workOrderSchema = z.object({
   // Same rule as the wizard and the work_orders_job_card_dates_check constraint.
   const problem = checkJobCardDateRange(toIsoDateOnly(values.job_card_start_date), toIsoDateOnly(values.job_card_end_date));
   if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [problem.field], message: problem.message });
+  if (values.job_card_open_time) {
+    const timeProblem = !values.job_card_start_date
+      ? JOB_CARD_DATE_MESSAGES.openTimeWithoutDate
+      : jobCardOpenedAt(values.job_card_start_date, values.job_card_open_time)
+        ? null
+        : JOB_CARD_DATE_MESSAGES.invalidOpenTime;
+    if (timeProblem) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["job_card_open_time"], message: timeProblem });
+  }
 });
 
 function rowValue(formData: FormData, name: string, index: number) {

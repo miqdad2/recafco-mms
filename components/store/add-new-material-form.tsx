@@ -69,7 +69,14 @@ function fmtQty(n: number): string {
 export function AddNewMaterialForm({
   modalMode = false,
   canViewCosts = false,
-}: { modalMode?: boolean; canViewCosts?: boolean } = {}) {
+  categories,
+}: {
+  modalMode?: boolean;
+  canViewCosts?: boolean;
+  // The shared category list (fixed list plus custom categories in use).
+  // Without it, the fixed list.
+  categories?: readonly string[];
+} = {}) {
   const router = useRouter();
   const modal = useLargeFormModal();
   const [state, formAction, isPending] = useActionState<OfflineMovementState, FormData>(
@@ -210,7 +217,7 @@ export function AddNewMaterialForm({
                 className={inp}
                 disabled={isPending}
               >
-                {MATERIAL_CATEGORIES.map((c) => (
+                {(categories ?? MATERIAL_CATEGORIES).map((c) => (
                   <option key={c} value={c}>{c}</option>
                 ))}
                 <option value={ADD_NEW_CATEGORY_VALUE}>+ Add New Category</option>

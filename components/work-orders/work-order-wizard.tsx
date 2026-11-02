@@ -4,7 +4,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Check, CheckCircle2, ChevronLeft, ChevronRight, Loader2, Plus, Search, X } from "lucide-react";
 
-import { searchOfflineInventoryMaterialsAction, getCostViewPermissionAction } from "@/app/actions/offline-inventory";
+import { browseInventoryForJobCardAction, searchOfflineInventoryMaterialsAction, getCostViewPermissionAction } from "@/app/actions/offline-inventory";
 import { getUploadLimitsAction } from "@/app/actions/files";
 import { ALLOWED_PRIVATE_FILE_TYPES, MAX_PRIVATE_FILE_SIZE } from "@/lib/files/validation";
 import {
@@ -27,9 +27,12 @@ import {
   MAX_ATTACHMENT_ROWS,
 } from "@/lib/files/attachment-constants";
 import { MAINTENANCE_TYPES, DEFAULT_MAINTENANCE_TYPE } from "@/lib/work-orders/maintenance-types";
-import { checkJobCardDateRange, formatJobCardDate, NOT_ENTERED } from "@/lib/work-orders/job-card-edit";
+import { currentKuwaitInputValue, formatClockTime } from "@/lib/format/kuwait-time";
+import { checkJobCardDateRange, formatJobCardDate, JOB_CARD_DATE_MESSAGES, NOT_ENTERED } from "@/lib/work-orders/job-card-edit";
 import type { WorkerProfileRow } from "@/lib/backend/workers/service";
 import { stockStatusLabel, stockStatusTone } from "@/components/store/offline-inventory-types";
+import { InventoryPickerModal } from "@/components/store/inventory-picker-modal";
+import { isInventoryPickerShortcut } from "@/lib/store/inventory-picker";
 
 // Required Materials Inventory Matching Unit 5 — Required Materials row
 // state. New Job Card Required Materials Inventory Selection and Smart Unit
@@ -408,6 +411,7 @@ type RequestFields = {
   date_of_order: string;
   // Optional Job Card calendar dates (not worker time) — YYYY-MM-DD or "".
   job_card_start_date: string;
+  job_card_open_time: string;
   job_card_end_date: string;
   maintenance_type: string;
   operator_complaint: string;
@@ -639,6 +643,7 @@ function WizardBody({
     ordered_by: "",
     date_of_order: new Date().toISOString().slice(0, 10),
     job_card_start_date: "",
+    job_card_open_time: "",
     job_card_end_date: "",
     maintenance_type: DEFAULT_MAINTENANCE_TYPE,
     operator_complaint: "",
@@ -646,6 +651,15 @@ function WizardBody({
     kilometers: "",
     running_hours: "",
   }));
+  // A new Job Card opens now, in Kuwait time. Set after mount, once per wizard,
+  // so the server render cannot disagree with the browser; "Create Another" is
+  // a new wizard. A restored draft replaces these with what it saved, and this
+  // does not mark the form as changed.
+  useEffect(() => {
+    const [date, time] = currentKuwaitInputValue().split("T");
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the current time is only known after mount
+    setFields((prev) => (prev.job_card_start_date || prev.job_card_open_time ? prev : { ...prev, job_card_start_date: date, job_card_open_time: time }));
+  }, []);
   // The two Job Card dates are checked together, so changing either one
   // clears a range message shown on the other.
   function updateJobCardDate(name: "job_card_start_date" | "job_card_end_date", value: string) {
@@ -786,7 +800,48 @@ function WizardBody({
     else removeMaterialRow(index);
   }
 
+  // "*/" opens the Inventory popup for this row. The "*" typed first is held
+  // without unlinking the row, so opening the popup (or cancelling it) leaves
+  // the row as it was.
+  const shortcutHeld = useRef<Record<number, string>>({});
+  const [pickerRow, setPickerRow] = useState<number | null>(null);
+  function focusRowField(index: number, field: "description" | "quantity") {
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLInputElement>(`[name="req_part_${field}_${index}"]`);
+      el?.focus();
+    });
+  }
+  function closeInventoryPicker() {
+    const row = pickerRow;
+    setPickerRow(null);
+    if (row !== null) focusRowField(row, "description");
+  }
+  function selectFromInventoryPicker(match: OfflineInventorySearchMatch) {
+    const row = pickerRow;
+    setPickerRow(null);
+    if (row === null) return;
+    handleSelectSuggestion(row, match);
+    setDirty(true);
+    focusRowField(row, "quantity");
+  }
+
   function handleMaterialNameChange(index: number, value: string) {
+    if (isInventoryPickerShortcut(value)) {
+      const held = shortcutHeld.current[index];
+      delete shortcutHeld.current[index];
+      if (held !== undefined) updateRow(index, { description: held });
+      if (pickerRow === null) {
+        updateRow(index, { showSuggestions: false });
+        setPickerRow(index);
+      }
+      return;
+    }
+    if (value.trim() === "*") {
+      if (!(index in shortcutHeld.current)) shortcutHeld.current[index] = partRows[index]?.description ?? "";
+      updateRow(index, { description: value, showSuggestions: false });
+      return;
+    }
+    delete shortcutHeld.current[index];
     // Unit 10F.5, Task 2: quantity only ever defaults to 1 once the user has
     // actually entered a material name, and only if they haven't already
     // typed a quantity of their own — clearing the name back to blank does
@@ -998,7 +1053,7 @@ function WizardBody({
     setLastSyncedAssetId(d.selectedAssetId);
     // A draft saved before the Job Card Start / End Date fields existed has
     // no such keys — default them to "not entered".
-    const notEnteredDates = { job_card_start_date: "", job_card_end_date: "" };
+    const notEnteredDates = { job_card_start_date: "", job_card_open_time: "", job_card_end_date: "" };
     setFields({ ...notEnteredDates, ...d.fields });
     setJobLocation(d.jobLocation);
     setJobLocationTouched(d.jobLocationTouched);
@@ -1040,6 +1095,7 @@ function WizardBody({
       // Same rule as the server (lib/work-orders/job-card-edit.ts).
       const dateProblem = checkJobCardDateRange(fields.job_card_start_date, fields.job_card_end_date);
       if (dateProblem) errs[dateProblem.field] = dateProblem.message;
+      if (fields.job_card_open_time && !fields.job_card_start_date) errs.job_card_open_time = JOB_CARD_DATE_MESSAGES.openTimeWithoutDate;
       if (showKilometers && fields.kilometers.trim() && !isPlainNumber(fields.kilometers)) {
         errs.kilometers = "Please check the kilometer reading. Use numbers only, without commas or letters — for example 45000 or 45000.5.";
       }
@@ -1413,6 +1469,7 @@ function WizardBody({
       // Same "27 Oct 2026" style as the Start / End dates below and the popup.
       date_of_order: fields.date_of_order ? formatJobCardDate(fields.date_of_order) : "",
       job_card_start_date: fields.job_card_start_date ? formatJobCardDate(fields.job_card_start_date) : "",
+      job_card_open_time: formatClockTime(fields.job_card_open_time),
       job_card_end_date: fields.job_card_end_date ? formatJobCardDate(fields.job_card_end_date) : "",
       maintenance_type: fields.maintenance_type,
       job_location: jobLocation,
@@ -1704,8 +1761,28 @@ function WizardBody({
                     className={`${inp}${fieldCls("job_card_start_date")}`}
                   />
                 </label>
-                <p className={helpCls}>The date this Job Card is opened. You can add or change it later.</p>
+                <p className={helpCls}>Today in Kuwait is filled automatically. Change it if needed.</p>
                 <FieldError message={errors.job_card_start_date} />
+              </div>
+
+              <div>
+                <label className="block">
+                  <FieldLabel label="Job Card Open Time" hint="optional" />
+                  <input
+                    name="job_card_open_time"
+                    data-field="job_card_open_time"
+                    type="time"
+                    value={fields.job_card_open_time}
+                    onChange={(e) => updateField("job_card_open_time", e.target.value)}
+                    aria-invalid={Boolean(errors.job_card_open_time)}
+                    className={`${inp}${fieldCls("job_card_open_time")}`}
+                  />
+                </label>
+                <p className={helpCls}>
+                  {fields.job_card_open_time ? `${formatClockTime(fields.job_card_open_time)} Kuwait time. ` : "Kuwait time. "}
+                  Filled automatically. Change it if needed.
+                </p>
+                <FieldError message={errors.job_card_open_time} />
               </div>
 
               <div>
@@ -2113,6 +2190,7 @@ function WizardBody({
                             />
                           </label>
                           <input type="hidden" name={`req_part_material_key_${i}`} value={row.materialKey ?? ""} />
+                          <p className="mt-1 text-xs text-[#6B7280]">Search materials or type */ to view all Inventory items.</p>
 
                           {open && (
                             <div className="absolute left-0 top-full z-30 mt-1 w-[min(32rem,calc(100vw-3rem))] rounded-md border border-[#E5E7EB] bg-white shadow-lg max-lg:right-0 max-lg:w-auto">
@@ -2509,6 +2587,7 @@ function WizardBody({
                   <ReviewRow label="Requested by" value={reviewData.ordered_by} />
                   <ReviewRow label="Date of order" value={reviewData.date_of_order} />
                   <ReviewRow label="Job Card Open Date" value={reviewData.job_card_start_date ?? NOT_ENTERED} />
+                  <ReviewRow label="Job Card Open Time" value={reviewData.job_card_open_time ?? NOT_ENTERED} />
                   <ReviewRow label="Job Card Closed Date" value={reviewData.job_card_end_date ?? NOT_ENTERED} />
                   <ReviewRow label="Maintenance type" value={reviewData.maintenance_type} />
                   <ReviewRow label="Job location" value={reviewData.job_location} />
@@ -2558,7 +2637,7 @@ function WizardBody({
                     Task 5: shown as calculated from the worker-level fields. */}
                 {enteredWorkerEstimates.length > 0 && (
                   <div className="mt-3 border-t border-[#F3F4F6] pt-3">
-                    <p className="text-sm font-bold text-[#111827]">Expected hours in total: {totalEstimatedHours} h</p>
+                    <p className="text-sm font-bold text-[#111827]">Estimated Worker Hours: {totalEstimatedHours} h</p>
                     <dl className="mt-1 space-y-1">
                       {enteredWorkerEstimates.map((w) => (
                         <div key={w.id} className="flex items-center justify-between gap-3 text-sm">
@@ -2729,6 +2808,10 @@ function WizardBody({
           )}
         </div>
       </div>
+
+      {pickerRow !== null ? (
+        <InventoryPickerModal loadPage={browseInventoryForJobCardAction} onSelect={selectFromInventoryPicker} onClose={closeInventoryPicker} />
+      ) : null}
 
       {showCancelConfirm && (
         <>

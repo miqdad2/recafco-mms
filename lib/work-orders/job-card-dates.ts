@@ -51,6 +51,11 @@ export type JobCardDates = {
   workStart: JobCardDate;
   workEnd: JobCardDate;
   closed: JobCardDate | null;
+  // False while any period has no clock time for its end: the latest known
+  // end then cannot prove when the work finished.
+  allEndTimesKnown: boolean;
+  // Latest end with a real clock time, used to check a typed completion time.
+  lastKnownWorkEnd: string | null;
 };
 
 function earliest(values: Array<string | null>): string | null {
@@ -115,7 +120,10 @@ export function computeJobCardDates(input: JobCardDatesInput): JobCardDates {
   const closed: JobCardDate | null =
     isClosed && input.closedAt ? { recorded: true, at: input.closedAt, source: "closure" } : null;
 
-  return { created, workStart, workEnd, closed };
+  const allEndTimesKnown = input.sessions.every((s) => s.endTimeKnown !== false);
+  const lastKnownWorkEnd = latest(input.sessions.filter((s) => s.endTimeKnown !== false).map((s) => s.endedAt));
+
+  return { created, workStart, workEnd, closed, allEndTimesKnown, lastKnownWorkEnd };
 }
 
 export const JOB_CARD_DATE_SOURCE_NOTE: Record<JobCardDateSource, string | null> = {

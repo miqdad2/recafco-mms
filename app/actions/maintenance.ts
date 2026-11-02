@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { resolveToastMessage } from "@/lib/action-messages";
 import { randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 
@@ -18,7 +19,7 @@ import { MAX_ATTACHMENT_ROWS } from "@/lib/files/attachment-constants";
 import { createJobCardFromForm } from "@/lib/backend/work-orders/job-card-creation";
 import { lockJobCardActivity } from "@/lib/backend/work-orders/repository";
 import { supersedeRequirementConfirmation } from "@/lib/backend/work-orders/closure-requirements";
-import { formatKuwaitDateTime } from "@/lib/format/kuwait-time";
+import { formatKuwaitDateTime, toKuwaitInputValue } from "@/lib/format/kuwait-time";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import {
   diffJobCardEdit,
@@ -26,6 +27,7 @@ import {
   isJobCardEditable,
   lineItemsUnchanged,
   type JobCardEditSnapshot,
+  jobCardOpenedAt,
 } from "@/lib/work-orders/job-card-edit";
 import type { Prisma } from "@prisma/client";
 import {
@@ -402,6 +404,7 @@ const JOB_CARD_EDIT_SNAPSHOT_SELECT = {
   plate_number: true,
   date_of_order: true,
   job_card_start_date: true,
+  job_card_opened_at: true,
   job_card_end_date: true,
   job_location: true,
   starting_datetime: true,
@@ -433,6 +436,7 @@ function jobCardEditSnapshot(row: Prisma.work_ordersGetPayload<{ select: typeof 
     plate_number: row.plate_number,
     date_of_order: formatJobCardDate(row.date_of_order, ""),
     job_card_start_date: formatJobCardDate(row.job_card_start_date, ""),
+    job_card_open_time: row.job_card_opened_at ? toKuwaitInputValue(row.job_card_opened_at).slice(11) : null,
     job_card_end_date: formatJobCardDate(row.job_card_end_date, ""),
     job_location: row.job_location,
     starting_datetime: formatKuwaitDateTime(row.starting_datetime, ""),
@@ -492,6 +496,30 @@ export async function upsertWorkOrderAction(formData: FormData) {
     );
   }
 
+  const outcome = await saveJobCardEdit(context, formData, rawId, formBackHref);
+  if (outcome.ok) redirect(outcome.href);
+  const problem = outcome.problem ?? "save-failed";
+  // Message codes ("save-failed") pass as they are; a sentence is encoded.
+  redirect(outcome.redirectTo ?? `${formBackHref}?error=${/^[a-z-]+$/.test(problem) ? problem : encodeURIComponent(problem)}`);
+}
+
+type JobCardEditOutcome =
+  | { ok: true; href: string }
+  | { ok: false; redirectTo: string; problem?: never; field?: never }
+  | { ok: false; redirectTo?: undefined; problem: string; field: string | null };
+
+function editProblem(problem: string, field: string | null): JobCardEditOutcome {
+  return { ok: false, problem, field };
+}
+
+// Saves an existing Job Card from the edit form. Returns what went wrong
+// instead of redirecting, so the form can keep what the user typed.
+async function saveJobCardEdit(
+  context: Awaited<ReturnType<typeof requirePermission>>,
+  formData: FormData,
+  rawId: string,
+  formBackHref: string
+): Promise<JobCardEditOutcome> {
   const parsed = workOrderSchema.safeParse(Object.fromEntries(formData));
 
   if (!parsed.success) {
@@ -499,11 +527,10 @@ export async function upsertWorkOrderAction(formData: FormData) {
     const firstField = String(firstIssue?.path?.[0] ?? "");
     // Job Card Start / End Date: the range rule's own message ("End Date
     // cannot be earlier than the Start Date", ...) shown as the toast.
-    if (firstField === "job_card_start_date" || firstField === "job_card_end_date") {
-      redirect(`${formBackHref}?error=${encodeURIComponent(firstIssue?.message ?? "Please check the Job Card dates.")}`);
+    if (firstField === "job_card_start_date" || firstField === "job_card_end_date" || firstField === "job_card_open_time") {
+      return editProblem(firstIssue?.message ?? "Please check the Job Card dates.", firstField);
     }
-    const errKey = WO_FIELD_ERROR_KEYS[firstField] ?? "invalid-input";
-    redirect(`${formBackHref}?error=${errKey}`);
+    return editProblem(WO_FIELD_ERROR_KEYS[firstField] ?? "invalid-input", firstField || null);
   }
 
   // Status transitions must happen through dedicated workflow actions only.
@@ -529,11 +556,11 @@ export async function upsertWorkOrderAction(formData: FormData) {
   try {
     existing = await prisma.work_orders.findFirst({ where: { AND: [{ id, deleted_at: null }, visibilityFilter] }, select: { status: true } });
   } catch {
-    redirect("/maintenance/work-orders?error=not-found");
+    return { ok: false, redirectTo: "/maintenance/work-orders?error=not-found" };
   }
-  if (!existing) redirect("/maintenance/work-orders?error=not-found");
+  if (!existing) return { ok: false, redirectTo: "/maintenance/work-orders?error=not-found" };
   if (!isJobCardEditable(existing.status)) {
-    redirect(`/maintenance/work-orders/${id}?error=not-editable`);
+    return { ok: false, redirectTo: `/maintenance/work-orders/${id}?error=not-editable` };
   }
   const existingStatus = existing.status;
 
@@ -544,7 +571,7 @@ export async function upsertWorkOrderAction(formData: FormData) {
   try {
     requiredPartRows = await parseRequiredPartRows(formData);
   } catch (error) {
-    if (error instanceof RequiredPartRowError) redirect(`${formBackHref}?error=${encodeURIComponent(error.message)}`);
+    if (error instanceof RequiredPartRowError) return editProblem(error.message, null);
     throw error;
   }
   // The whole-number quantity rule applies only when required materials are
@@ -559,11 +586,13 @@ export async function upsertWorkOrderAction(formData: FormData) {
   // overwritten with the editor, which misattributed the Job Card).
   // total_labor_cost / total_material_cost are set in the transaction from
   // the line-item rows the Job Card actually keeps.
+  const { job_card_open_time: jobCardOpenTime, ...savedValues } = values;
   const basePayload = cleanPayload({
-    ...values,
+    ...savedValues,
     starting_datetime: values.starting_datetime || null,
     ending_datetime: values.ending_datetime || null,
     job_card_start_date: values.job_card_start_date ?? null,
+    job_card_opened_at: jobCardOpenedAt(values.job_card_start_date, jobCardOpenTime),
     job_card_end_date: values.job_card_end_date ?? null,
     updated_by: context.userId
   });
@@ -621,10 +650,12 @@ export async function upsertWorkOrderAction(formData: FormData) {
       const attachmentKey = (r: { attachment_type: string; file_name: string; file_path: string }) => [r.attachment_type, r.file_name, r.file_path];
       const requiredKey = (r: { description: string; part_number: string | null; quantity_required: unknown; unit_of_measure: string; notes: string | null }) =>
         [r.description, r.part_number || null, Number(r.quantity_required), r.unit_of_measure, r.notes || null];
-      const replaceLabor = !lineItemsUnchanged(laborRows.map((r) => laborKey(r!)), oldLabor.map(laborKey), 3);
-      const replaceMaterials = !lineItemsUnchanged(materialRows.map((r) => materialKey(r!)), oldMaterials.map(materialKey), 3);
-      const replaceAttachments = !lineItemsUnchanged(attachmentRows.map((r) => attachmentKey(r!)), oldAttachments.map(attachmentKey), 2);
-      const replaceRequired = !lineItemsUnchanged(requiredPartRows.map(requiredKey), oldRequired.map(requiredKey), 8);
+      // A section the form did not post (shown read-only, or not shown at all)
+      // is kept as it is: an absent section is not an empty one.
+      const replaceLabor = formData.has("labor_name_0") && !lineItemsUnchanged(laborRows.map((r) => laborKey(r!)), oldLabor.map(laborKey), 3);
+      const replaceMaterials = formData.has("material_name_0") && !lineItemsUnchanged(materialRows.map((r) => materialKey(r!)), oldMaterials.map(materialKey), 3);
+      const replaceAttachments = formData.has("attachment_type_0") && !lineItemsUnchanged(attachmentRows.map((r) => attachmentKey(r!)), oldAttachments.map(attachmentKey), 2);
+      const replaceRequired = formData.has("req_part_description_0") && !lineItemsUnchanged(requiredPartRows.map(requiredKey), oldRequired.map(requiredKey), 8);
       if (replaceRequired && requiredPartRows.some((row) => !Number.isInteger(row.quantity_required) || row.quantity_required <= 0)) {
         refused = "invalid-quantity";
         return null;
@@ -723,12 +754,12 @@ export async function upsertWorkOrderAction(formData: FormData) {
         isEdit: true,
       },
     });
-    redirect(`${formBackHref}?error=save-failed`);
+    return editProblem("save-failed", null);
   }
-  if (refused === "not-found") redirect("/maintenance/work-orders?error=not-found");
-  if (refused === "not-editable") redirect(`/maintenance/work-orders/${id}?error=not-editable`);
-  if (refused === "invalid-quantity") redirect(`${formBackHref}?error=${encodeURIComponent(requiredPartQuantityError)}`);
-  if (!data) redirect(`${formBackHref}?error=save-failed`);
+  if (refused === "not-found") return { ok: false, redirectTo: "/maintenance/work-orders?error=not-found" };
+  if (refused === "not-editable") return { ok: false, redirectTo: `/maintenance/work-orders/${id}?error=not-editable` };
+  if (refused === "invalid-quantity") return editProblem(requiredPartQuantityError, null);
+  if (!data) return editProblem("save-failed", null);
 
   // Attachments posted with the edit — a partial or total upload failure
   // never rolls back the saved edit itself.
@@ -782,9 +813,27 @@ export async function upsertWorkOrderAction(formData: FormData) {
   revalidatePath("/dashboard");
   revalidatePath("/technician/jobs");
 
-  redirect(
-    `/maintenance/work-orders/${data.id}?success=work-order-saved${attachmentUploadFailed ? "&warning=attachments-failed" : ""}`
-  );
+  return {
+    ok: true,
+    href: `/maintenance/work-orders/${data.id}?success=work-order-saved${attachmentUploadFailed ? "&warning=attachments-failed" : ""}`,
+  };
+}
+
+export type JobCardEditState = { error: string; field: string | null } | null;
+
+/** Edit Job Card form: same save as upsertWorkOrderAction, problems shown in the form. */
+export async function saveJobCardEditAction(_prev: JobCardEditState, formData: FormData): Promise<JobCardEditState> {
+  const context = await requirePermission("work_orders.manage");
+  const rawId = String(formData.get("id") ?? "").trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawId)) {
+    return { error: "This Job Card could not be found.", field: null };
+  }
+  const outcome = await saveJobCardEdit(context, formData, rawId, `/maintenance/work-orders/${rawId}/edit`);
+  if (outcome.ok) redirect(outcome.href);
+  if (outcome.redirectTo) redirect(outcome.redirectTo);
+  const problem = outcome.problem ?? "save-failed";
+  const message = resolveToastMessage({ error: problem });
+  return { error: message ? [message.title, message.description].filter(Boolean).join(". ") : problem, field: outcome.field ?? null };
 }
 
 // ── Record a material / part used on an existing work order ───────────────────

@@ -20,6 +20,7 @@ import {
   type MaterialEditFieldErrors,
   type MaterialEditValues,
   type MaterialIdentityFacts,
+  newCategoryProblem,
 } from "@/lib/store/material-edit";
 import { withBackendTransaction, type BackendTransaction } from "@/lib/backend/shared/transaction";
 import { emitOfflineInventoryRealtimeEvent, REALTIME_EVENTS } from "@/lib/realtime/events";
@@ -399,6 +400,17 @@ function parseSheet(workbook: ExcelJS.Workbook, options: MaterialImportOptions):
   const unmappedColumns = columns.filter((c) => !usedColumns.has(c.column) && nonEmptyRows.some((r) => r.cells[c.column - 1].trim()));
 
   return { sheetNames, sheetName: ws.name, hasHeaderRow, headerDetected: detected !== null, mapping, columns, unmappedColumns, needsConfirmation, rawRows };
+}
+
+/**
+ * Every category in use, for category lists: the fixed list in its own order,
+ * then any custom category saved on a material, A to Z. No material details.
+ */
+export async function listInventoryCategories(db: Db = prisma): Promise<string[]> {
+  const known = await loadKnownCategories(db);
+  const fixed = new Set<string>(MATERIAL_CATEGORIES);
+  const custom = [...known.values()].filter((c) => !fixed.has(c)).sort((a, b) => a.localeCompare(b));
+  return [...MATERIAL_CATEGORIES, ...custom];
 }
 
 // Categories in use: the fixed list plus any custom text saved on a material.
@@ -789,6 +801,8 @@ export type MaterialEditData = {
   version: string;
   nameLockedReason: string | null;
   unitLockedReason: string | null;
+  // The shared category list the Category field chooses from.
+  categories: string[];
 };
 
 const EDIT_FORBIDDEN = "You do not have permission to edit materials.";
@@ -847,6 +861,7 @@ export async function getMaterialForEdit(context: CurrentUserContext, key: strin
     version: materialEditVersion(loaded.values),
     nameLockedReason: identityLockReason(loaded.facts),
     unitLockedReason: unitLockReason(loaded.facts),
+    categories: await listInventoryCategories(),
   };
 }
 
@@ -864,12 +879,12 @@ function editValidationError(fieldErrors: MaterialEditFieldErrors): AppError {
 // from or written to the request.
 export async function saveMaterialEdit(
   context: CurrentUserContext,
-  input: { key: string; version: string; values: MaterialEditValues }
+  input: { key: string; version: string; values: MaterialEditValues; newCategory?: boolean }
 ): Promise<MaterialEditResult> {
   if (!canEditMaterialMaster(context)) throw new AppError(EDIT_FORBIDDEN, { code: "FORBIDDEN" });
   const parsed = parseMaterialKey(input.key);
   if (!parsed) throw new AppError("Material not found in Inventory.", { code: "NOT_FOUND" });
-  const next = normalizeMaterialEdit(input.values);
+  let next = normalizeMaterialEdit(input.values);
   const fieldErrors = validateMaterialEdit(next);
   if (Object.keys(fieldErrors).length > 0) throw editValidationError(fieldErrors);
 
@@ -887,6 +902,23 @@ export async function saveMaterialEdit(
       if (c.facts.isArchived) throw new AppError("This material is archived. Restore it before editing.", { code: "CONFLICT" });
       if (materialEditVersion(current) !== input.version) {
         throw new AppError("Someone else changed this material while you were editing. Close this form and open it again to see the latest details.", { code: "CONFLICT" });
+      }
+
+      // Category: an existing one is saved in its existing spelling; a new
+      // one only when added with "+ Add New Category". Checked here, under the
+      // same lock as the Excel import, so two saves or a save and an import
+      // can never create two spellings of one new category.
+      if (next.category !== current.category) {
+        const known = await loadKnownCategories(tx);
+        const existing = known.get(categoryKey(next.category));
+        if (existing) {
+          next = { ...next, category: existing };
+        } else if (!input.newCategory) {
+          throw editValidationError({ category: ["Choose a category from the list, or use + Add New Category."] });
+        } else {
+          const problem = newCategoryProblem(next.category);
+          if (problem) throw editValidationError({ category: [problem] });
+        }
       }
 
       const changed = changedMaterialFields(current, next);

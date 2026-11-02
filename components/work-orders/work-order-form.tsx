@@ -471,6 +471,10 @@ export function WorkOrderForm({
           <p className="mt-1 text-xs text-[#6B7280]">The date this Job Card is opened. You can add or change it later.</p>
         </div>
         <div>
+          <Field label="Job Card Open Time (optional)" name="job_card_open_time" type="time" defaultValue={workOrder?.job_card_open_time ?? undefined} />
+          <p className="mt-1 text-xs text-[#6B7280]">Kuwait time. Needed to work out the Job Card Duration.</p>
+        </div>
+        <div>
           <Field label="Job Card Closed Date (optional)" name="job_card_end_date" type="date" defaultValue={workOrder?.job_card_end_date ?? ""} />
           <p className="mt-1 text-xs text-[#6B7280]">The date recorded for closing this Job Card. It cannot be before the Open Date.</p>
         </div>
@@ -523,7 +527,7 @@ export function WorkOrderForm({
             into the label itself (Field has no separate hint slot) rather
             than risk misplacing a standalone paragraph in this grid. */}
         <Field
-          label="Estimated total work hours (approximate total time expected)"
+          label="Estimated Worker Hours (combined hours of all workers)"
           name="estimated_labor_hours"
           type="number"
           min="0"

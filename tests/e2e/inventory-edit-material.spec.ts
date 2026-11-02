@@ -59,6 +59,13 @@ async function openDetails(page: Page, code: string) {
   await expect(page.getByRole("dialog").getByText("Material Details")).toBeVisible();
 }
 
+// The Category field is a searchable list.
+async function pickCategory(page: Page, category: string) {
+  await page.locator("#me-category").click();
+  await page.getByRole("combobox", { name: "Search categories" }).fill(category);
+  await page.getByRole("option", { name: category, exact: true }).click();
+}
+
 test("Super Admin: footer actions, unsaved check, edit everything, double click, refresh", async ({ page }) => {
   test.setTimeout(150_000);
   await signIn(page, process.env.E2E_ADMIN_EMAIL ?? "", process.env.E2E_ADMIN_PASSWORD ?? "");
@@ -85,7 +92,7 @@ test("Super Admin: footer actions, unsaved check, edit everything, double click,
   await expect(name).toHaveValue(FIRST);
   await expect(page.locator("#me-unit")).toHaveValue("Nos");
   await expect(page.locator("#me-code")).toHaveValue(`${CODE}A`);
-  await expect(page.locator("#me-category")).toHaveValue("Other");
+  await expect(page.locator("#me-category")).toContainText("Other");
 
   // Unsaved changes are confirmed; Escape must not close the popup behind.
   await name.fill(RENAMED);
@@ -101,7 +108,7 @@ test("Super Admin: footer actions, unsaved check, edit everything, double click,
 
   await page.locator("#me-unit").fill("Set of 4");
   await page.locator("#me-code").fill(`${CODE}A2`);
-  await page.locator("#me-category").fill("Hardware / Fasteners");
+  await pickCategory(page, "Hardware / Fasteners");
   await page.locator("#me-part").fill("PN-1");
   await page.locator("#me-ss").fill("SS-1");
   await page.locator("#me-location").fill("Rack 7");
@@ -178,7 +185,7 @@ test("Data Entry: edits, no Delete, no cost; a Job Card locks identity but keeps
   await expect(page.locator("#me-name")).toBeDisabled();
   await expect(page.locator("#me-unit")).toBeDisabled();
   await expect(page.getByText(/used on a Job Card or Materials Request/).first()).toBeVisible();
-  await page.locator("#me-category").fill("Mechanical Materials");
+  await pickCategory(page, "Mechanical Materials");
   await page.getByRole("button", { name: "Save Changes" }).click();
   await expect(page.getByText("Material Updated Successfully")).toBeVisible({ timeout: 15_000 });
 
