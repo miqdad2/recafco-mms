@@ -110,19 +110,28 @@ export function OpeningStockBatchPanel({ batchReference, onClose }: { batchRefer
 
           {held.length > 0 && (
             <div className="overflow-hidden rounded-md border border-amber-300 bg-white shadow-sm">
-              <div className="border-b border-amber-200 bg-amber-50 px-4 py-3">
-                <p className="text-xs font-black uppercase text-amber-900">Held for review — {held.length} row{held.length !== 1 ? "s" : ""}, no stock recorded</p>
-                {!batch.canResolve && <p className="mt-1 text-xs font-semibold text-amber-800">Only the System Administrator or Maintenance Manager can resolve held rows.</p>}
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-3">
+                <div>
+                  <p className="text-xs font-black uppercase text-amber-900">Held for review — {held.length} row{held.length !== 1 ? "s" : ""}, no stock recorded</p>
+                  {!batch.canResolve && <p className="mt-1 text-xs font-semibold text-amber-800">Only the System Administrator or Maintenance Manager can resolve held rows.</p>}
+                </div>
+                {/* Re-checks every held row against Inventory as it is now, e.g. after a unit was corrected. */}
+                <button type="button" onClick={() => void load()} disabled={loading} className="min-h-11 rounded-md border border-amber-300 bg-white px-3 text-xs font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-50">
+                  {loading ? "Checking…" : "Check again"}
+                </button>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-240 text-left text-sm">
+                <table className="w-full min-w-300 text-left text-sm">
                   <thead className="bg-gray-50 text-xs uppercase text-[#4B5563]">
                     <tr>
                       <th className="px-3 py-2">Row</th>
-                      <th className="px-3 py-2">Material Name (file)</th>
+                      <th className="px-3 py-2">Submitted material</th>
                       <th className="px-3 py-2">Qty</th>
-                      <th className="px-3 py-2">Why it is held</th>
-                      <th className="px-3 py-2">Decision</th>
+                      <th className="px-3 py-2">Suggested existing material</th>
+                      <th className="px-3 py-2">Item Code</th>
+                      <th className="px-3 py-2">Existing unit</th>
+                      <th className="px-3 py-2">Reason</th>
+                      <th className="px-3 py-2">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E5E7EB]">
@@ -198,14 +207,50 @@ function HeldRow({
   const candidates = current?.candidates ?? [];
   const pickedKey = choice.value.startsWith("use:") && !candidates.some((c) => `use:${c.key}` === choice.value) ? choice.value.slice(4) : null;
   const sameRef = candidates.find((c) => c.exactReference);
+  const top = candidates[0] ?? null;
+  // A unit conflict on the suggested material is fixed at its source, never
+  // converted here.
+  const unitConflict = top && top.unitCompatibility === "incompatible" ? top : null;
   return (
     <>
       <tr className="bg-amber-50/40">
         <td className="whitespace-nowrap px-3 py-2 align-top text-[#9CA3AF]">{row.rowNumber}</td>
         <td className="min-w-48 max-w-64 px-3 py-2 align-top font-semibold text-[#111827]">{row.sourceName}</td>
         <td className="whitespace-nowrap px-3 py-2 align-top font-semibold text-[#111827]">{row.sourceQuantity} {row.sourceUnit}</td>
-        <td className="min-w-72 px-3 py-2 align-top text-xs text-[#4B5563]">{current?.message ?? row.message}</td>
-        <td className="min-w-80 px-3 py-2 align-top">
+        <td className="min-w-56 max-w-72 px-3 py-2 align-top text-xs text-[#111827]">
+          {top ? (
+            <>
+              <span className="font-semibold">{top.name}</span>
+              {candidates.length > 1 && <span className="block text-[#4B5563]">+{candidates.length - 1} other possible material{candidates.length > 2 ? "s" : ""} (in Action)</span>}
+            </>
+          ) : (
+            <span className="text-[#9CA3AF]">None found</span>
+          )}
+        </td>
+        <td className="whitespace-nowrap px-3 py-2 align-top font-mono text-xs text-[#111827]">{top?.itemCode ?? "—"}</td>
+        <td className="whitespace-nowrap px-3 py-2 align-top text-xs">
+          {top ? (
+            <span className={`font-bold ${top.unitCompatibility === "incompatible" ? "text-[#ED1C24]" : "text-[#111827]"}`}>
+              {top.unit}
+              {top.unitCompatibility === "counting_equivalent" && <span className="block font-normal text-[#4B5563]">same as {row.sourceUnit}</span>}
+              {top.unitCompatibility === "incompatible" && <span className="block font-normal">file: {row.sourceUnit}</span>}
+            </span>
+          ) : "—"}
+        </td>
+        <td className="min-w-64 px-3 py-2 align-top text-xs text-[#4B5563]">
+          {current?.message ?? row.message}
+          {unitConflict && (
+            <span className="mt-1 block font-semibold text-amber-900">
+              Units are never converted. {`If MMS records ${unitConflict.itemCode ?? "this material"} in the wrong unit`}, correct it with Edit Material (only
+              possible while it has no stock movements), then press Check again. If the file&apos;s unit is the wrong one, keep the row on hold — approved
+              quantities and units are not changed here.{" "}
+              <a href={`/store/offline-inventory?material=${encodeURIComponent(unitConflict.key)}`} target="_blank" rel="noreferrer" className="underline">
+                Open {unitConflict.itemCode ?? unitConflict.name} in Inventory Control
+              </a>
+            </span>
+          )}
+        </td>
+        <td className="min-w-72 px-3 py-2 align-top">
           <select
             aria-label={`Decision for row ${row.rowNumber}`}
             value={choice.value}
@@ -213,7 +258,7 @@ function HeldRow({
             onChange={(e) => onChoice({ value: e.target.value, reason: choice.reason })}
             className="min-h-11 w-full rounded-md border border-[#E5E7EB] bg-white px-2 text-sm font-semibold text-[#111827] focus:outline-none focus:ring-1 focus:ring-[#ED1C24] disabled:bg-gray-50 disabled:text-[#9CA3AF]"
           >
-            <option value="hold">Keep on hold</option>
+            <option value="hold">Keep on Hold</option>
             {candidates.map((c) => {
               const blocked = c.unitCompatibility === "incompatible" || c.archived || c.openingStockQuantity > 0 || c.postedByImport;
               const why =
@@ -224,20 +269,19 @@ function HeldRow({
                         : "";
               return (
                 <option key={c.key} value={`use:${c.key}`} disabled={blocked}>
-                  Use existing: {c.name}{c.itemCode ? ` [${c.itemCode}]` : ""}{why}
+                  Use Existing: {c.itemCode ? `${c.itemCode} — ` : ""}{c.name}{why}
                 </option>
               );
             })}
-            {pickedKey && picked[pickedKey] && <option value={`use:${pickedKey}`}>Use existing: {picked[pickedKey].name} ({picked[pickedKey].unit})</option>}
+            {pickedKey && picked[pickedKey] && <option value={`use:${pickedKey}`}>Use Existing: {picked[pickedKey].itemCode ? `${picked[pickedKey].itemCode} — ` : ""}{picked[pickedKey].name} ({picked[pickedKey].unit})</option>}
             {/* A material already carrying this exact part number is never registered again. */}
-            {!sameRef && <option value="register_new">Register as new material</option>}
+            {!sameRef && <option value="register_new">Register New (new AMSOS Item Code)</option>}
             <option value="exclude">Do not import (give a reason)</option>
             <option value="search">Search Inventory…</option>
           </select>
-          {sameRef && sameRef.unitCompatibility === "incompatible" && (
-            <p className="mt-1 text-xs font-semibold text-amber-800">
-              {sameRef.itemCode ?? sameRef.name} has this part number but is stocked in {sameRef.unit}. Correct the unit first (file or Edit Material) — a
-              duplicate material is not created.
+          {sameRef && (
+            <p className="mt-1 text-xs text-[#4B5563]">
+              Register New is not offered: {sameRef.itemCode ?? sameRef.name} already has this part number, so a new record would be a duplicate.
             </p>
           )}
           {choice.value === "exclude" && (
@@ -254,7 +298,7 @@ function HeldRow({
       </tr>
       {searching && (
         <tr className="bg-white">
-          <td colSpan={5} className="px-3 py-3">
+          <td colSpan={8} className="px-3 py-3">
             <MaterialSearch sourceUnit={row.sourceUnit} onPick={onPick} onClose={onCloseSearch} />
           </td>
         </tr>

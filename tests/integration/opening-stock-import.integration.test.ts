@@ -334,6 +334,41 @@ describe("Opening Stock import — partial import with held rows (disposable DB 
     assert.equal(await prisma.audit_logs.count({ where: { action: "offline_inventory.opening_stock_held_resolved", entity_id: batch.id } }), 1);
   });
 
+  it("a unit conflict is fixed at its source (Edit Material), never converted; then Use Existing posts", async () => {
+    const mm = await import("@/lib/backend/store/material-master");
+    const view = await svc.getOpeningStockBatch(admin, mainBatch);
+    const row4 = view.rows.find((r) => r.rowNumber === 4)!;
+    assert.equal(row4.outcome, "held");
+    assert.equal(row4.current?.candidates[0]?.key, setMaterial2.key);
+    assert.equal(row4.current?.candidates[0]?.unitCompatibility, "incompatible");
+    await assert.rejects(svc.resolveHeldOpeningStockRows(admin, mainBatch, { 4: { action: "use_existing", materialKey: setMaterial2.key } }), /never converted/);
+
+    // A material that already has stock cannot have its unit changed by a field edit.
+    const stocked = await mm.getMaterialForEdit(admin, nosMaterial.key);
+    await assert.rejects(
+      mm.saveMaterialEdit(admin, { key: nosMaterial.key, version: stocked.version, values: { ...stocked.values, unit: "Set" } }),
+      (e: { fieldErrors?: Record<string, string[]> }) => /stock movements/.test(String(e.fieldErrors?.unit)) // refused on the Unit field
+    );
+
+    // The suggested material has only its zero-quantity registration: its unit may be corrected (here Set → Nos).
+    const codeBefore = (await prisma.inventory_material_settings.findFirstOrThrow({ where: { manual_material_name: setMaterial2.name, unit: "Set" } })).item_code;
+    const editable = await mm.getMaterialForEdit(admin, setMaterial2.key);
+    const edited = await mm.saveMaterialEdit(admin, { key: setMaterial2.key, version: editable.version, values: { ...editable.values, unit: "Nos" } });
+    const newKey = data.buildBalanceKey({ part_id: null, manual_material_name: setMaterial2.name, unit: "Nos" });
+    assert.equal(edited.key, newKey);
+    assert.equal((await prisma.inventory_material_settings.findFirstOrThrow({ where: { manual_material_name: setMaterial2.name, unit: "Nos" } })).item_code, codeBefore, "Item Code kept");
+
+    // "Check again": the row is now a confirmed match; Use Existing posts the approved quantity in the corrected unit.
+    const again = (await svc.getOpeningStockBatch(admin, mainBatch)).rows.find((r) => r.rowNumber === 4)!;
+    assert.equal(again.current?.classification, "existing");
+    const res = await svc.resolveHeldOpeningStockRows(admin, mainBatch, { 4: { action: "use_existing", materialKey: newKey } });
+    assert.deepEqual(res.resolved.map((r) => [r.rowNumber, r.outcome, r.quantity, r.unit, r.itemCode]), [[4, "posted_existing", 3, "Nos", codeBefore]]);
+    const { byRow } = await batchRows(mainBatch);
+    assert.equal(byRow.get(4)!.source_unit, "PCS", "approved source unit unchanged");
+    assert.equal(byRow.get(4)!.source_quantity, "3", "approved source quantity unchanged");
+    assert.equal((await balances()).get(newKey)!.balance, 3);
+  });
+
   it("a retried or concurrent resolution never posts a row twice", async () => {
     const c0 = await prisma.offline_inventory_movements.count({ where: { reference_number: mainBatch } });
     const retry = await svc.resolveHeldOpeningStockRows(manager, mainBatch, { 11: { action: "use_existing", materialKey: heldRef.key }, 7: { action: "register_new" } });
