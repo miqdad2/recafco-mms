@@ -826,13 +826,27 @@ export function classifyOpeningStockRows(rows: OpeningStockSourceRow[], index: M
 export type RowDecision =
   | { action: "use_existing"; materialKey: string }
   | { action: "register_new" }
+  // Exception (approvers only): register a NEW material although an existing
+  // material has the same exact part number, because the approver confirmed
+  // the two are physically different. `comparedKeys` must name every such
+  // existing material — the approver has compared the row with each one.
+  | {
+      action: "register_different";
+      confirmedDifferent: boolean;
+      reason: string;
+      comparedKeys: string[];
+      // Required only when the row is an EXACT match to an existing material
+      // (see exactMatchMaterials): a separate exceptional approval with the
+      // documented distinguishing specification or physical evidence.
+      exactMatchOverride?: ExactMatchOverride;
+    }
   | { action: "hold" }
   // Close a held row without stock (e.g. a duplicate line), with a reason.
   | { action: "exclude"; reason: string };
 
 export type RowOutcome =
   | { outcome: "post_existing"; material: ExistingInventoryMaterial; approvedDecision: boolean; unitCompatibility: UnitCompatibility }
-  | { outcome: "register_new"; approvedDecision: boolean }
+  | { outcome: "register_new"; approvedDecision: boolean; exception?: RegisterDifferentException }
   | { outcome: "hold"; approvedDecision: boolean }
   | { outcome: "exclude"; reason: string }
   | { outcome: "not_imported" };
@@ -847,6 +861,109 @@ export class DecisionError extends Error {
 }
 
 export const EXCLUDE_REASON_MIN = 5;
+
+// ── Register as Different Material (exception) ──────────────────────────────
+
+export const DIFFERENT_REASON_MIN = 15;
+
+export type DifferentFromMaterial = { key: string; name: string; unit: string; itemCode: string | null };
+
+// Existing materials whose part reference appears in the row only split by a
+// space or punctuation ("FF 5488", "ff-5488" for FF5488) — which the matcher
+// does not read as the same reference. Spacing and punctuation are never
+// evidence of a different material, so a new material is not registered
+// until the row's part number is written properly and compared again.
+// Checked only when a decision registers a material; the classification of a
+// row (and so the import itself) is unchanged.
+export function spacedReferenceMaterials(row: ClassifiedOpeningStockRow, index: MaterialIndex): { ref: string; material: ExistingInventoryMaterial }[] {
+  const text = `${row.materialName} ${row.partNumber} ${row.ssRecCode}`.toUpperCase();
+  const parts = text.split(/[^A-Z0-9]+/).filter(Boolean);
+  const known = new Set(extractReferences(text));
+  const exactKeys = new Set(row.candidates.filter((c) => c.exactReference).map((c) => c.key));
+  const out = new Map<string, { ref: string; material: ExistingInventoryMaterial }>();
+  for (let i = 0; i < parts.length; i++) {
+    for (const len of [2, 3]) {
+      if (i + len > parts.length) continue;
+      const joined = parts.slice(i, i + len).join("");
+      if (joined.length < 6 || !isReference(joined) || known.has(joined)) continue;
+      for (const m of index.byRef.get(joined) ?? []) {
+        if (!exactKeys.has(m.material.key) && !m.material.archived) out.set(m.material.key, { ref: joined, material: m.material });
+      }
+    }
+  }
+  return [...out.values()];
+}
+
+function spacedReferenceMessage(found: { ref: string; material: ExistingInventoryMaterial }[]): string {
+  const f = found[0];
+  return `${f.material.itemCode ?? f.material.name} has part number ${f.ref}, written in this row with a space or punctuation — that is not a difference. Correct the row's part number to ${f.ref} (Edit Details) so it is compared with ${f.material.itemCode ?? "that material"}, then decide.`;
+}
+
+export const EXACT_MATCH_EVIDENCE_MIN = 30;
+
+export type ExactMatchEvidenceType = "specification" | "physical_evidence";
+
+export type ExactMatchOverride = { confirmed: boolean; evidenceType: ExactMatchEvidenceType; evidence: string };
+
+export type RegisterDifferentException = {
+  reason: string;
+  differentFrom: DifferentFromMaterial[];
+  // Present when the row was an exact match and the approver gave the
+  // separate exceptional approval.
+  exactMatchOverride?: { evidenceType: ExactMatchEvidenceType; evidence: string; exactMatchTo: DifferentFromMaterial[] };
+};
+
+// Existing materials this row matches EXACTLY: the same complete part
+// reference, the same unit (PCS = Nos counts as the same), and no detected
+// difference in item type, make / equipment or specification. Spelling and
+// punctuation of the description are deliberately not compared — they are
+// never evidence that two materials differ. Register as Different Material
+// is blocked for these unless a separate exceptional approval documents the
+// distinguishing specification or physical evidence.
+export function exactMatchMaterials(row: ClassifiedOpeningStockRow): CandidateMatch[] {
+  return sameReferenceMaterials(row).filter((c) => c.unitCompatibility !== "incompatible" && !c.typeConflict && !c.makeConflict && !c.specConflict);
+}
+
+// The existing materials that carry this row's exact part number — the only
+// thing the exception can set aside.
+export function sameReferenceMaterials(row: ClassifiedOpeningStockRow): CandidateMatch[] {
+  return row.candidates.filter((c) => c.exactReference);
+}
+
+// Why "Register as Different Material" is NOT possible for this row (null when
+// it is possible). Independent of who asks and of the explanation; those are
+// checked in resolveRowOutcome. Never decides that two materials are the
+// same or different — it only refuses cases the exception is not for:
+//  - no existing material has the exact part number (use Register New);
+//  - the only difference found is the unit (correct the unit instead);
+//  - the same material is already in Inventory or already registered.
+export function registerDifferentBlock(row: ClassifiedOpeningStockRow, index: MaterialIndex): string | null {
+  if (row.classification === "invalid" || row.classification === "already_imported") {
+    return `${CLASSIFICATION_LABELS[row.classification]} rows cannot be imported.`;
+  }
+  if (!row.normalizedUnit || row.quantity === null) return "The row's unit or quantity is not valid. Correct it first.";
+  const spaced = spacedReferenceMaterials(row, index);
+  if (spaced.length > 0) return spacedReferenceMessage(spaced);
+  const sameRef = sameReferenceMaterials(row);
+  if (sameRef.length === 0) return "No existing material has this exact part number, so no exception is needed — use Register New.";
+  const unitOnly = sameRef.find((c) => c.unitCompatibility === "incompatible" && !c.typeConflict && !c.makeConflict && !c.specConflict);
+  if (unitOnly) {
+    return `The only difference found from ${unitOnly.itemCode ?? unitOnly.name} is the unit (${row.unit.trim()} vs ${unitOnly.unit}). A unit mismatch is not a reason to create a second material — correct the unit (or the material's unit with Edit Material), then Use Existing.`;
+  }
+  const sameName = [
+    ...(index.byNameKey.get(nameKey(row.materialName)) ?? []),
+    ...(index.byCompactName.get(compact(row.materialName)) ?? []),
+  ][0];
+  if (sameName) {
+    return `${sameName.material.itemCode ?? sameName.material.name} already has this exact description. The same material is never registered twice — use it or correct the description.`;
+  }
+  const sameNameCandidate = row.candidates.find((c) => c.strength === "same_name");
+  if (sameNameCandidate) return `${sameNameCandidate.itemCode ?? sameNameCandidate.name} has the same name. Use it or correct the description.`;
+  if (index.postedImportKeys.has(manualMaterialKey(row.materialName, row.normalizedUnit))) {
+    return "An earlier opening-stock import already registered this material.";
+  }
+  return null;
+}
 
 // What happens to one row, given a decision (or none: the proposed action).
 // Throws DecisionError for any decision that is not allowed, so a bad
@@ -878,6 +995,59 @@ export function resolveRowOutcome(
 
   if (decision.action === "hold") return { outcome: "hold", approvedDecision: false };
 
+  if (decision.action === "register_different") {
+    if (!canApproveUncertain) {
+      throw new DecisionError(row.rowNumber, "Only the System Administrator or Maintenance Manager can register a material as different.");
+    }
+    const blocked = registerDifferentBlock(row, index);
+    if (blocked) throw new DecisionError(row.rowNumber, blocked);
+    if (decision.confirmedDifferent !== true) {
+      throw new DecisionError(row.rowNumber, "Confirm that the submitted material is physically different from the existing material.");
+    }
+    const reason = decision.reason.trim();
+    if (reason.length < DIFFERENT_REASON_MIN) {
+      throw new DecisionError(row.rowNumber, `Explain how the materials differ (at least ${DIFFERENT_REASON_MIN} characters).`);
+    }
+    const sameRef = sameReferenceMaterials(row);
+    const compared = new Set(decision.comparedKeys);
+    const notCompared = sameRef.filter((c) => !compared.has(c.key));
+    if (notCompared.length > 0) {
+      throw new DecisionError(
+        row.rowNumber,
+        `Compare the row with ${notCompared.map((c) => c.itemCode ?? c.name).join(", ")} first — the existing materials changed since the comparison was shown.`
+      );
+    }
+    const asRef = (c: CandidateMatch): DifferentFromMaterial => ({ key: c.key, name: c.name, unit: c.unit, itemCode: c.itemCode });
+    const exact = exactMatchMaterials(row);
+    let exactMatchOverride: RegisterDifferentException["exactMatchOverride"];
+    if (exact.length > 0) {
+      const codes = exact.map((c) => c.itemCode ?? c.name).join(", ");
+      const o = decision.exactMatchOverride;
+      if (!o || o.confirmed !== true) {
+        throw new DecisionError(
+          row.rowNumber,
+          `This row is an exact match to ${codes}: same part number, unit, item type, make and equipment — only the spelling or punctuation differs, which is not evidence of a different material. Register as Different Material is blocked unless a separate exceptional approval documents the distinguishing specification or physical evidence.`
+        );
+      }
+      if (o.evidenceType !== "specification" && o.evidenceType !== "physical_evidence") {
+        throw new DecisionError(row.rowNumber, "Choose whether the evidence is a distinguishing specification or physical evidence.");
+      }
+      const evidence = o.evidence.trim();
+      if (evidence.length < EXACT_MATCH_EVIDENCE_MIN) {
+        throw new DecisionError(row.rowNumber, `Document the distinguishing specification or physical evidence (at least ${EXACT_MATCH_EVIDENCE_MIN} characters).`);
+      }
+      if (compact(evidence) === compact(reason)) {
+        throw new DecisionError(row.rowNumber, "The exceptional approval needs its own evidence — not a repeat of the explanation.");
+      }
+      exactMatchOverride = { evidenceType: o.evidenceType, evidence: evidence.slice(0, 1000), exactMatchTo: exact.map(asRef) };
+    }
+    return {
+      outcome: "register_new",
+      approvedDecision: true,
+      exception: { reason: reason.slice(0, 1000), differentFrom: sameRef.map(asRef), ...(exactMatchOverride ? { exactMatchOverride } : {}) },
+    };
+  }
+
   const isProposed =
     (decision.action === "register_new" && row.classification === "new") ||
     (decision.action === "use_existing" && row.classification === "existing" && row.match?.key === decision.materialKey);
@@ -899,9 +1069,11 @@ export function resolveRowOutcome(
     if (sameRef) {
       throw new DecisionError(
         row.rowNumber,
-        `${sameRef.name}${sameRef.itemCode ? ` (${sameRef.itemCode})` : ""} already has this part number. Use that material (once its unit agrees) or do not import the row — a duplicate material is not created.`
+        `${sameRef.name}${sameRef.itemCode ? ` (${sameRef.itemCode})` : ""} already has this part number. Use that material (once its unit agrees) or do not import the row — a duplicate material is not created. If the Manager confirms the two are physically different, use Register as Different Material.`
       );
     }
+    const spaced = spacedReferenceMaterials(row, index);
+    if (spaced.length > 0) throw new DecisionError(row.rowNumber, spacedReferenceMessage(spaced));
     if (row.normalizedUnit && index.postedImportKeys.has(manualMaterialKey(row.materialName, row.normalizedUnit))) {
       throw new DecisionError(row.rowNumber, "An earlier opening-stock import already registered this material.");
     }

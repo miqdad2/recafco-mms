@@ -281,7 +281,7 @@ function HeldRow({
           </select>
           {sameRef && (
             <p className="mt-1 text-xs text-[#4B5563]">
-              Register New is not offered: {sameRef.itemCode ?? sameRef.name} already has this part number, so a new record would be a duplicate.
+              Register New is not offered: {sameRef.itemCode ?? sameRef.name} already has this part number, so a new record would be a duplicate. If the Manager confirms the two are physically different, use Needs Verification → Register as Different Material.
             </p>
           )}
           {choice.value === "exclude" && (

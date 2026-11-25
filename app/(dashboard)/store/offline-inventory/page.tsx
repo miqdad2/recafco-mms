@@ -5,6 +5,7 @@ import { StoreBalanceView } from "@/components/store/store-balance-view";
 import { prisma } from "@/lib/db/prisma";
 import { canViewCosts as canViewCostsPermission } from "@/lib/security/permissions";
 import { canEditMaterialMaster } from "@/lib/backend/store/material-master";
+import { countPendingVerification } from "@/lib/backend/store/opening-stock-verification";
 import {
   canManageOfflineInventory,
   getOfflineInventoryBalance,
@@ -62,7 +63,7 @@ export default async function StoreBalancePage({
   // Inventory Dashboard Spending and Simple Low Stock Rules Unit 10G.63,
   // Task 4/5/6/7 — depends on balanceItems (for the category stock-value
   // roll-up), so it runs after the Promise.all above rather than inside it.
-  const spendingSummary = await getInventorySpendingSummary(balanceItems);
+  const [spendingSummary, verificationPending] = await Promise.all([getInventorySpendingSummary(balanceItems), countPendingVerification()]);
 
   // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 5 — strip
   // cost fields from the data itself for a viewer without cost permission,
@@ -129,6 +130,7 @@ export default async function StoreBalancePage({
         balance={balance}
         canManage={canManage}
         isSuperAdmin={isSuperAdmin}
+        verificationPending={verificationPending}
         canEditMaterial={canEditMaterialMaster(context)}
         canViewCosts={canViewCosts}
         totalStockValue={canViewCosts ? totalStockValue : 0}

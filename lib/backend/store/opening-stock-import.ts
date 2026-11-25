@@ -37,6 +37,12 @@ import {
   type OpeningStockSummary,
   type RowDecision,
 } from "@/lib/store/opening-stock-matching";
+import {
+  deriveVerificationStatus,
+  effectiveSourceRow,
+  hasCorrection,
+  type CorrectionValues,
+} from "@/lib/store/opening-stock-verification-rules";
 
 // Opening Stock Excel import — preview (read-only), import and held-row
 // resolution. The rules live in lib/store/opening-stock-matching.ts; this
@@ -178,7 +184,7 @@ function masterValue(edited: string | null | undefined, fromMovements: string | 
 
 // Every material identity in the ledger, the same way Inventory Control
 // builds its list (getOfflineInventoryBalance), archived ones included.
-async function loadInventory(db: Db): Promise<LoadedInventory> {
+export async function loadInventory(db: Db): Promise<LoadedInventory> {
   const [grouped, latestRows, settings, posted] = await Promise.all([
     db.offline_inventory_movements.groupBy({
       by: ["part_id", "manual_material_name", "unit", "movement_type"],
@@ -270,7 +276,7 @@ export type OpeningStockPreview = {
   previousBatch: { batchReference: string; fileName: string; importedAt: string } | null;
 };
 
-function withLabels(rows: ClassifiedOpeningStockRow[]): OpeningStockPreviewRow[] {
+export function withLabels(rows: ClassifiedOpeningStockRow[]): OpeningStockPreviewRow[] {
   return rows.map((r) => ({ ...r, label: CLASSIFICATION_LABELS[r.classification] }));
 }
 
@@ -327,7 +333,9 @@ async function writePostings(
   context: CurrentUserContext,
   plans: PostPlan[],
   batchReference: string,
-  note: string
+  note: string,
+  // Per row: the original Excel values, when the posted values were corrected.
+  originals: Map<number, string> = new Map()
 ): Promise<Map<number, Posting>> {
   const posting = plans.filter((p) => p.outcome.outcome === "post_existing" || p.outcome.outcome === "register_new");
   const result = new Map<number, Posting>();
@@ -366,7 +374,8 @@ async function writePostings(
   let codeIndex = 0;
   for (const { row, outcome } of posting) {
     const movementId = randomUUID();
-    const remarks = `${note} ${batchReference}, Excel row ${row.rowNumber}: "${row.materialName}" ${row.quantityText} ${row.unit}${row.remarks ? ` — ${row.remarks}` : ""}`;
+    const original = originals.get(row.rowNumber);
+    const remarks = `${note} ${batchReference}, Excel row ${row.rowNumber}: "${row.materialName}" ${row.quantityText} ${row.unit}${original ? ` (corrected; Excel: ${original})` : ""}${row.remarks ? ` — ${row.remarks}` : ""}`;
     if (outcome.outcome === "post_existing") {
       const m = outcome.material;
       const last = inventory.latest.get(m.key);
@@ -473,6 +482,8 @@ export type OpeningStockRowResult = {
   quantity: number | null;
   itemCode: string | null;
   message: string;
+  // Register as Different Material: the existing Item Codes it differs from.
+  differentFrom?: string[];
 };
 
 export type OpeningStockImportResult = {
@@ -530,7 +541,7 @@ async function resultForBatch(db: Db, batchId: string, alreadyProcessed: boolean
   };
 }
 
-async function takeImportLocks(tx: Prisma.TransactionClient) {
+export async function takeImportLocks(tx: Prisma.TransactionClient) {
   // One opening-stock write at a time, and never at the same time as a
   // Material Master import (both register materials and Item Codes).
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${IMPORT_LOCK_KEY}, 0))`;
@@ -697,7 +708,34 @@ export type OpeningStockBatchView = {
   rows: OpeningStockBatchRow[];
 };
 
-function sourceRowOf(r: { row_number: number; source_material_name: string; source_category: string; source_part_number: string; source_ss_rec_code: string; source_quantity: string; source_unit: string; source_location: string; source_remarks: string }): OpeningStockSourceRow {
+type SourceRecord = { row_number: number; source_material_name: string; source_category: string; source_part_number: string; source_ss_rec_code: string; source_quantity: string; source_unit: string; source_location: string; source_remarks: string };
+type CorrectedRecord = SourceRecord & {
+  corrected_material_name?: string | null;
+  corrected_part_number?: string | null;
+  corrected_category?: string | null;
+  corrected_unit?: string | null;
+  corrected_quantity?: Prisma.Decimal | number | null;
+  correction_remarks?: string | null;
+};
+
+export function correctionOf(r: CorrectedRecord): CorrectionValues {
+  return {
+    materialName: r.corrected_material_name ?? null,
+    partNumber: r.corrected_part_number ?? null,
+    category: r.corrected_category ?? null,
+    unit: r.corrected_unit ?? null,
+    quantity: r.corrected_quantity !== null && r.corrected_quantity !== undefined ? Number(r.corrected_quantity) : null,
+    remarks: r.correction_remarks ?? null,
+  };
+}
+
+// The row as matching and posting see it: the original Excel values with
+// any verified corrections laid over them (the originals are never changed).
+export function effectiveRowOf(r: CorrectedRecord): OpeningStockSourceRow {
+  return effectiveSourceRow(sourceRowOf(r), correctionOf(r));
+}
+
+export function sourceRowOf(r: SourceRecord): OpeningStockSourceRow {
   return {
     rowNumber: r.row_number,
     materialName: r.source_material_name,
@@ -723,7 +761,7 @@ export async function getOpeningStockBatch(context: CurrentUserContext, batchRef
     loadInventory(prisma),
     prisma.profiles.findUnique({ where: { id: batch.created_by }, select: { full_name: true } }),
   ]);
-  const classified = new Map(withLabels(classifyOpeningStockRows(records.map(sourceRowOf), buildMaterialIndex(inventory.materials, inventory.postedImportKeys))).map((r) => [r.rowNumber, r]));
+  const classified = new Map(withLabels(classifyOpeningStockRows(records.map(effectiveRowOf), buildMaterialIndex(inventory.materials, inventory.postedImportKeys))).map((r) => [r.rowNumber, r]));
   const summary = await resultForBatch(prisma, batch.id, false);
   return {
     batchReference: batch.batch_reference,
@@ -764,7 +802,10 @@ export type OpeningStockResolveResult = {
 export async function resolveHeldOpeningStockRows(
   context: CurrentUserContext,
   batchReference: string,
-  decisions: Record<number, RowDecision>
+  decisions: Record<number, RowDecision>,
+  // Needs Verification: the row version each decision was made against; a
+  // row changed since then is refused rather than posted on stale details.
+  options: { expectedVersions?: Record<number, number>; note?: string } = {}
 ): Promise<OpeningStockResolveResult> {
   requireManage(context);
   if (!canApproveOpeningStockDecisions(context)) {
@@ -787,12 +828,18 @@ export async function resolveHeldOpeningStockRows(
       const rec = byRow.get(Number(n));
       if (!rec) throw new AppError(`Row ${n} is not in batch ${batchReference}.`, { code: "VALIDATION_ERROR" });
       if (rec.outcome !== "held") alreadyResolved.push(rec.row_number);
-      else pending[rec.row_number] = d;
+      else {
+        const expected = options.expectedVersions?.[rec.row_number];
+        if (expected !== undefined && expected !== rec.row_version) {
+          throw new AppError(`Row ${rec.row_number} was changed by someone else. Reload and check it again.`, { code: "CONFLICT" });
+        }
+        pending[rec.row_number] = d;
+      }
     }
 
     const inventory = await loadInventory(tx);
     const index = buildMaterialIndex(inventory.materials, inventory.postedImportKeys);
-    const classified = classifyOpeningStockRows(records.map(sourceRowOf), index);
+    const classified = classifyOpeningStockRows(records.map(effectiveRowOf), index);
     const targets = classified.filter((r) => pending[r.rowNumber]);
     let resolved: ResolvedOpeningStockRow[];
     try {
@@ -802,7 +849,12 @@ export async function resolveHeldOpeningStockRows(
       throw error;
     }
 
-    const postings = await writePostings(tx, context, resolved, batch.batch_reference, "Opening stock import (held row resolved)");
+    const originals = new Map<number, string>();
+    for (const { row } of resolved) {
+      const rec = byRow.get(row.rowNumber)!;
+      if (hasCorrection(correctionOf(rec))) originals.set(row.rowNumber, `"${rec.source_material_name}" ${rec.source_quantity} ${rec.source_unit}`);
+    }
+    const postings = await writePostings(tx, context, resolved, batch.batch_reference, "Opening stock import (held row resolved)", originals);
     const now = new Date();
     const results: OpeningStockRowResult[] = [];
     for (const { row, outcome: o } of resolved) {
@@ -810,7 +862,11 @@ export async function resolveHeldOpeningStockRows(
       const p = postings.get(row.rowNumber);
       const name = outcomeName(o);
       if (name === "held") continue;
-      const message = rowMessage(name, row, true, o.outcome === "exclude" ? o.reason : undefined);
+      const exception = o.outcome === "register_new" ? o.exception : undefined;
+      const differentCodes = exception ? exception.differentFrom.map((m) => m.itemCode ?? m.name).join(", ") : "";
+      const message = exception
+        ? `Registered as a different material from ${differentCodes} (exception approved).`
+        : rowMessage(name, row, true, o.outcome === "exclude" ? o.reason : undefined);
       await tx.opening_stock_import_rows.update({
         where: { id: rec.id },
         data: {
@@ -818,7 +874,7 @@ export async function resolveHeldOpeningStockRows(
           message,
           decided_by: context.userId,
           resolved_at: now,
-          resolution_note: o.outcome === "exclude" ? o.reason : null,
+          resolution_note: o.outcome === "exclude" ? o.reason : exception ? `Different from ${differentCodes}: ${exception.reason}` : null,
           candidate_keys: row.candidates.map((c) => c.key) as unknown as Prisma.InputJsonValue,
           material_key: p?.materialKey ?? null,
           material_name: p?.materialName ?? null,
@@ -827,8 +883,88 @@ export async function resolveHeldOpeningStockRows(
           quantity: p?.quantity ?? null,
           movement_id: p?.movementId ?? null,
           updated_at: now,
+          row_version: { increment: 1 },
         },
       });
+      // Verification history: the decision, and the approved versus the
+      // submitted quantity.
+      const submittedQty = Number(rec.source_quantity);
+      await tx.opening_stock_row_events.create({
+        data: {
+          row_id: rec.id,
+          batch_id: batch.id,
+          action: name === "excluded" ? "excluded" : exception ? "registered_different" : name === "registered_new" ? "registered_new" : "posted_existing",
+          from_status: deriveVerificationStatus(rec.outcome, rec.verification_status),
+          to_status: deriveVerificationStatus(name, rec.verification_status),
+          actor_id: context.userId,
+          note: o.outcome === "exclude" ? o.reason : exception ? exception.reason : options.note ?? null,
+          details: {
+            materialName: p?.materialName ?? null,
+            itemCode: p?.itemCode ?? null,
+            unit: p?.materialUnit ?? null,
+            submittedQuantity: Number.isFinite(submittedQty) ? submittedQty : rec.source_quantity,
+            approvedQuantity: p?.quantity ?? null,
+            quantityDifference: p && Number.isFinite(submittedQty) ? p.quantity - submittedQty : null,
+            corrected: hasCorrection(correctionOf(rec)),
+            ...(exception
+              ? {
+                  exception: "register_as_different_material",
+                  confirmedDifferent: true,
+                  differentFrom: exception.differentFrom,
+                  proposedByDataEntry: rec.different_material_proposed,
+                  ...(exception.exactMatchOverride ? { exactMatchOverride: exception.exactMatchOverride } : {}),
+                }
+              : {}),
+          } as Prisma.InputJsonValue,
+        },
+      });
+      if (exception) {
+        await tx.audit_logs.create({
+          data: {
+            actor_id: context.userId,
+            action: "offline_inventory.opening_stock_registered_different",
+            entity_type: "opening_stock_import_row",
+            entity_id: rec.id,
+            summary: `Opening stock row ${row.rowNumber}: registered as ${p?.itemCode ?? "a new material"}, a material different from ${differentCodes} (same part number) — exception approved`,
+            metadata: {
+              batchReference: batch.batch_reference,
+              rowNumber: row.rowNumber,
+              newItemCode: p?.itemCode ?? null,
+              newMaterialName: p?.materialName ?? null,
+              existingMaterials: exception.differentFrom,
+              confirmedDifferent: true,
+              reason: exception.reason,
+              submittedName: rec.source_material_name,
+              submittedQuantity: rec.source_quantity,
+              submittedUnit: rec.source_unit,
+              exactMatchOverride: exception.exactMatchOverride ?? null,
+            } as Prisma.InputJsonValue,
+          },
+        });
+        // The exact-match override is a separate exceptional approval with
+        // its own audit record.
+        if (exception.exactMatchOverride) {
+          const o = exception.exactMatchOverride;
+          await tx.audit_logs.create({
+            data: {
+              actor_id: context.userId,
+              action: "offline_inventory.opening_stock_exact_match_override",
+              entity_type: "opening_stock_import_row",
+              entity_id: rec.id,
+              summary: `Opening stock row ${row.rowNumber}: exceptional approval — registered although it exactly matches ${o.exactMatchTo.map((m) => m.itemCode ?? m.name).join(", ")} (${o.evidenceType === "specification" ? "distinguishing specification" : "physical evidence"} documented)`,
+              metadata: {
+                batchReference: batch.batch_reference,
+                rowNumber: row.rowNumber,
+                newItemCode: p?.itemCode ?? null,
+                exactMatchTo: o.exactMatchTo,
+                evidenceType: o.evidenceType,
+                evidence: o.evidence,
+                reason: exception.reason,
+              } as Prisma.InputJsonValue,
+            },
+          });
+        }
+      }
       results.push({
         rowNumber: row.rowNumber,
         sourceName: rec.source_material_name,
@@ -840,6 +976,7 @@ export async function resolveHeldOpeningStockRows(
         quantity: p?.quantity ?? null,
         itemCode: p?.itemCode ?? null,
         message,
+        ...(exception ? { differentFrom: exception.differentFrom.map((m) => m.itemCode ?? m.name) } : {}),
       });
     }
     const updated = await refreshBatchCounts(tx, batch.id);

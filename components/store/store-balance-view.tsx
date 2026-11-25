@@ -11,6 +11,7 @@ import {
   FileSpreadsheet,
   Trash2,
   CheckCircle2,
+  ClipboardCheck,
   History,
   ChevronDown,
   ChevronRight,
@@ -58,6 +59,8 @@ export interface StoreBalanceViewProps {
   balance: number;
   canManage: boolean;
   isSuperAdmin: boolean;
+  // Opening stock rows held for verification (Needs Verification page).
+  verificationPending?: number;
   // Edit Material: Super Admin and Maintenance Data Entry.
   canEditMaterial: boolean;
   // Inventory Cost and Stock Value Foundation Unit 10G.61, Task 5/6 —
@@ -298,6 +301,7 @@ export function StoreBalanceView({
   balance,
   canManage,
   isSuperAdmin,
+  verificationPending = 0,
   canEditMaterial,
   canViewCosts,
   totalStockValue,
@@ -735,6 +739,16 @@ export function StoreBalanceView({
                 Import from Excel
               </Link>
             )}
+            {/* Needs Verification: held opening stock rows; every Inventory
+                Control user can see them (correcting and deciding are role
+                checked on that page). */}
+            <Link
+              href="/store/offline-inventory/needs-verification"
+              className={verificationPending > 0 ? headerSecondaryBtn.replace("border-[#D1D5DB] bg-white text-[#111827]", "border-amber-400 bg-amber-50 text-amber-900") : headerSecondaryBtn}
+            >
+              <ClipboardCheck className="h-4 w-4" aria-hidden />
+              Needs Verification{verificationPending > 0 ? ` (${verificationPending})` : ""}
+            </Link>
             <Link href="/store/offline-inventory/movements" className={headerSecondaryBtn}>
               <Activity className="h-4 w-4" aria-hidden />
               View Movement History
