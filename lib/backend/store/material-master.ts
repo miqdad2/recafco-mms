@@ -276,7 +276,8 @@ function columnLetter(n: number): string {
 
 // The cell as the user sees it. A whole number stored with a "0000"-style
 // format keeps its leading zeros (Excel shows 0001, the stored value is 1).
-function cellText(cell: ExcelJS.Cell): string {
+// Also used by the Opening Stock import (lib/backend/store/opening-stock-import.ts).
+export function cellText(cell: ExcelJS.Cell): string {
   const v = cell.value;
   if (v === null || v === undefined) return "";
   if (typeof v === "number") {
@@ -494,7 +495,10 @@ function newBatchReference(): string {
   return `MATERIAL-IMPORT-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}-${suffix}`;
 }
 
-const IMPORT_LOCK_KEY = "inventory_material_master_import";
+// Also taken by the Opening Stock import, so the two never register
+// materials or allocate Item Codes at the same time.
+export const MATERIAL_MASTER_IMPORT_LOCK_KEY = "inventory_material_master_import";
+const IMPORT_LOCK_KEY = MATERIAL_MASTER_IMPORT_LOCK_KEY;
 
 // Confirm: re-reads the same file with the same options, re-checks every
 // row against the database under a global import lock, and registers only

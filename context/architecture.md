@@ -147,6 +147,16 @@ A future decision must define whether the workflow engine remains tracking-only 
 - Assignment can be blocked while parts are unchecked.
 - Feature flag: `inventory_check_enabled`, currently false.
 
+### Inventory Control materials and Opening Stock import
+
+- A material is a ledger identity in `offline_inventory_movements`, keyed by `buildBalanceKey()`: `part:<id>` or `manual:<lower(trim(name))>|<lower(trim(unit))>`. `inventory_material_settings` is its optional master row (Item Code, archive, master category / part number / location). There is no material table. The 1,523 registered materials are manual identities from the Material Master import (zero-quantity Opening Stock row + settings row with Item Code).
+- Import Opening Stock (`/store/offline-inventory/import-opening-stock`): rules in `lib/store/opening-stock-matching.ts` (pure), service `lib/backend/store/opening-stock-import.ts`, actions `app/actions/opening-stock-import.ts`. Preview never writes; confirm re-reads the file and writes everything in one `withBackendTransaction` under a global advisory lock plus the per-material Issue locks.
+- Stock for an existing material is always posted with its exact stored name and unit. Units are never converted; PCS and Nos are the same counting unit only for a confirmed material.
+- Partial import (business decision 2026-11-25): clear rows post at import time — Existing only for one candidate by same name or exact part reference with agreeing type, make, ratings and unit; New only when no candidate or weak evidence exists. Every uncertain row is held with no stock (Needs Review, Duplicate in File); invalid / already-imported rows fail; neither blocks the rest of the batch.
+- Held rows are resolved later from the stored batch (`resolveHeldOpeningStockRows`, approvers only): Use existing / Register as new / Do not import (reason) — one transaction, batch rows locked, rows no longer held never re-posted. Register as new is refused when an existing material has the same name or the row's exact part number. Uncertain matches are never merged automatically.
+- Every source row is stored in `opening_stock_import_rows` (verbatim source values, classification, outcome, approver, resolution time and note, movement). Batches in `opening_stock_import_batches` are unique by submission id, file SHA-256 and row-content SHA-256; a unique index allows one posted opening-stock row per material across all batches.
+- New materials from this import get Item Codes in the AMSOS series (`allocateItemCodes`), after the highest AMSOS code in settings (archived included) or ever issued by an import; the import holds the Material Master import lock, and the case-insensitive unique index is the final guard.
+
 ## Notification Architecture
 
 - Active: in-app notifications and SSE.

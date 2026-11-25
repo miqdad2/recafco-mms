@@ -4,9 +4,11 @@ import { ArrowLeft, Download } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { OpeningStockImportForm } from "@/components/store/opening-stock-import-form";
 import { requireOfflineInventoryManage } from "@/lib/store/offline-inventory-data";
+import { canApproveOpeningStockDecisions, getRecentOpeningStockImports } from "@/lib/backend/store/opening-stock-import";
 
 export default async function ImportOpeningStockPage() {
-  await requireOfflineInventoryManage();
+  const context = await requireOfflineInventoryManage();
+  const recentBatches = await getRecentOpeningStockImports(10);
 
   return (
     <>
@@ -33,7 +35,7 @@ export default async function ImportOpeningStockPage() {
         }
       />
       <div className="p-4 lg:p-6">
-        <OpeningStockImportForm />
+        <OpeningStockImportForm recentBatches={recentBatches} canApprove={canApproveOpeningStockDecisions(context)} />
       </div>
     </>
   );
