@@ -20,13 +20,13 @@ export async function GET(): Promise<NextResponse> {
   const startMs = Date.now();
 
   let dbStatus: "connected" | "error" = "error";
-  let dbError: string | undefined;
+
 
   try {
     await prisma.$queryRaw`SELECT 1`;
     dbStatus = "connected";
-  } catch (err) {
-    dbError = err instanceof Error ? err.message : "Unknown database error";
+  } catch {
+    console.error("MMS health check: database unavailable");
   }
 
   const responseTimeMs = Date.now() - startMs;
@@ -37,12 +37,12 @@ export async function GET(): Promise<NextResponse> {
     {
       status: appStatus,
       database: dbStatus,
-      ...(dbError ? { databaseError: dbError } : {}),
+
       timestamp: new Date().toISOString(),
       environment: process.env.NODE_ENV ?? "unknown",
       responseTimeMs,
       version: "0.1.0"
     },
-    { status: httpStatus }
+    { status: httpStatus, headers: { "Cache-Control": "no-store" } }
   );
 }
