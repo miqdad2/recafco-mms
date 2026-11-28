@@ -11,6 +11,7 @@ import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { displaySimplifiedStatus } from "@/lib/work-orders/simplified-status-display";
 import { deriveSimpleWorkerState } from "@/lib/work-orders/hours-variance";
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete } from "@/lib/work-orders/material-fulfillment";
+import { MANUAL_ENTRY_TYPE } from "@/lib/work-orders/manual-requirements";
 import { getJobCardCostSummary } from "@/lib/work-orders/job-card-cost-summary";
 import { getJobCardTiming } from "@/lib/work-orders/job-card-dates-data";
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
@@ -346,8 +347,18 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
   // lines, the same lines Closure Review prices. A free-form "Record
   // Material Used" row has no cost entry: Closure Review does not cost that
   // log either, so pricing it here would make the two totals disagree.
+  // Manual materials / outside services typed on the Job Card: printed with
+  // their own description, quantity and unit (no Part No., SS Rec or cost —
+  // they are not Inventory items).
+  const manualRequirements = await prisma.workOrderRequiredPart.findMany({
+    where: { work_order_id: id, entry_type: MANUAL_ENTRY_TYPE },
+    orderBy: [{ created_at: "asc" }, { id: "asc" }],
+    select: { id: true, description: true, quantity_required: true, unit_of_measure: true },
+  });
+
   type MaterialRow = {
     id: string;
+    manual?: boolean;
     name: string;
     partNo: string | null;
     ssRecCode: string | null;
@@ -377,9 +388,22 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
         unit: null,
         cost: null
       })
+    ),
+    ...manualRequirements.map(
+      (row): MaterialRow => ({
+        id: row.id,
+        manual: true,
+        name: row.description,
+        partNo: null,
+        ssRecCode: null,
+        qty: row.quantity_required.toFixed(2),
+        unit: row.unit_of_measure,
+        cost: null
+      })
     )
   ];
   const hasUncostedLoggedMaterial = costSummary !== null && rawMaterials.length > 0;
+  const hasManualRequirement = manualRequirements.length > 0;
   const materialHeaders = costSummary
     ? ["Material", "Part No.", "SS Rec Code", "Qty", "Unit", "Unit Cost", "Total Cost", "Status"]
     : ["Material", "Part No.", "SS Rec Code", "Qty", "Unit"];
@@ -631,7 +655,10 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
                 <tbody>
                   {materials.map((row) => (
                     <tr key={row.id}>
-                      <td className="border border-[#E5E7EB] p-1 font-semibold">{row.name}</td>
+                      <td className="border border-[#E5E7EB] p-1 font-semibold">
+                        {row.name}
+                        {row.manual ? <span className="font-normal text-[#6B7280]"> (requested — manual entry)</span> : null}
+                      </td>
                       <td className="border border-[#E5E7EB] p-1">{row.partNo ?? "-"}</td>
                       <td className="border border-[#E5E7EB] p-1">{row.ssRecCode ?? "-"}</td>
                       <td className="border border-[#E5E7EB] p-1">{row.qty}</td>
@@ -644,7 +671,7 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
                           <td className="border border-[#E5E7EB] p-1">
                             {row.cost ? (row.cost.totalCost !== null ? formatKwd(row.cost.totalCost) : "Unpriced") : "-"}
                           </td>
-                          <td className="border border-[#E5E7EB] p-1">{row.cost ? row.cost.status : "Logged"}</td>
+                          <td className="border border-[#E5E7EB] p-1">{row.cost ? row.cost.status : row.manual ? "Requested" : "Logged"}</td>
                         </>
                       ) : null}
                     </tr>
@@ -669,6 +696,11 @@ export default async function PrintWorkOrderPage({ params }: { params: Promise<{
               {hasUncostedLoggedMaterial ? (
                 <p className="mt-1 text-[10px] text-[#6B7280]">
                   Lines marked Logged were recorded manually, not issued from inventory, and are not included in the material total.
+                </p>
+              ) : null}
+              {hasManualRequirement ? (
+                <p className="mt-1 text-[10px] text-[#6B7280]">
+                  Lines marked requested are outside services or materials entered on the Job Card as requirements — not Inventory items, not issued from stock, not recorded as used, and not included in the material total.
                 </p>
               ) : null}
               {materialsPartiallyPending ? (

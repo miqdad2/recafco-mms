@@ -34,12 +34,15 @@ import {
   cleanPayload,
   parseAttachmentRows,
   parseLaborRows,
+  parseManualRequirementEdits,
   parseMaterialRows,
   parseRequiredPartRows,
   RequiredPartRowError,
   workOrderSchema,
+  type ManualRequirementEdit,
   type ParsedRequiredPartRow,
 } from "@/lib/work-orders/job-card-form";
+import { MANUAL_AVAILABILITY_STATUS, MANUAL_ENTRY_TYPE, planManualRequirementEdits } from "@/lib/work-orders/manual-requirements";
 import { extractBrand, resolveModelAndYear, CODE_TOKEN, NEEDS_REVIEW_LEAF } from "@/lib/assets/asset-excel-mapping";
 
 const optionalString = z.preprocess((value) => {
@@ -568,8 +571,17 @@ async function saveJobCardEdit(
   const materialRows = parseMaterialRows(formData);
   const attachmentRows = parseAttachmentRows(formData);
   let requiredPartRows: ParsedRequiredPartRow[];
+  // Manual materials / outside services edited on Edit Job Card (posted only
+  // when the form has that section).
+  let manualEdits: { posted: boolean; rows: ManualRequirementEdit[] };
   try {
     requiredPartRows = await parseRequiredPartRows(formData);
+    // The older required-materials fields carry Inventory lines only; manual
+    // lines are edited through their own list (manual_req_*), never here.
+    if (requiredPartRows.some((row) => row.entry_type === MANUAL_ENTRY_TYPE)) {
+      return editProblem("Manual materials / outside services are edited in their own list on this page.", null);
+    }
+    manualEdits = parseManualRequirementEdits(formData);
   } catch (error) {
     if (error instanceof RequiredPartRowError) return editProblem(error.message, null);
     throw error;
@@ -608,7 +620,7 @@ async function saveJobCardEdit(
 
   let data: { id: string; work_order_number: string | null } | null = null;
   // Set inside the transaction callback (a cast so TS doesn't narrow it to null).
-  let refused = null as "not-found" | "not-editable" | "invalid-quantity" | null;
+  let refused = null as "not-found" | "not-editable" | "invalid-quantity" | "manual-stale" | null;
   try {
     // Backend Reliability Fix Unit 1, Task 2: the Job Card update and its
     // line-item replacement (deleteMany old rows + createMany new rows for
@@ -655,7 +667,23 @@ async function saveJobCardEdit(
       const replaceLabor = formData.has("labor_name_0") && !lineItemsUnchanged(laborRows.map((r) => laborKey(r!)), oldLabor.map(laborKey), 3);
       const replaceMaterials = formData.has("material_name_0") && !lineItemsUnchanged(materialRows.map((r) => materialKey(r!)), oldMaterials.map(materialKey), 3);
       const replaceAttachments = formData.has("attachment_type_0") && !lineItemsUnchanged(attachmentRows.map((r) => attachmentKey(r!)), oldAttachments.map(attachmentKey), 2);
-      const replaceRequired = formData.has("req_part_description_0") && !lineItemsUnchanged(requiredPartRows.map(requiredKey), oldRequired.map(requiredKey), 8);
+      // The older full form's required-materials table covers Inventory
+      // requirements only; manual materials / outside services have their
+      // own list (manualEdits) and are never replaced by it.
+      const oldInventoryRequired = oldRequired.filter((r) => r.entry_type !== MANUAL_ENTRY_TYPE);
+      const replaceRequired = formData.has("req_part_description_0") && !lineItemsUnchanged(requiredPartRows.map(requiredKey), oldInventoryRequired.map(requiredKey), 8);
+      const manualPlan = manualEdits.posted
+        ? planManualRequirementEdits(
+            oldRequired
+              .filter((r) => r.entry_type === MANUAL_ENTRY_TYPE)
+              .map((r) => ({ id: r.id, description: r.description, quantity_required: Number(r.quantity_required), unit_of_measure: r.unit_of_measure, notes: r.notes })),
+            manualEdits.rows
+          )
+        : null;
+      if (manualPlan && manualPlan.unknownIds.length > 0) {
+        refused = "manual-stale";
+        return null;
+      }
       if (replaceRequired && requiredPartRows.some((row) => !Number.isInteger(row.quantity_required) || row.quantity_required <= 0)) {
         refused = "invalid-quantity";
         return null;
@@ -680,9 +708,10 @@ async function saveJobCardEdit(
           action: "work_order.update",
           entity_type: "work_order",
           entity_id: id,
-          summary: changes.length
-            ? `Edited Job Card ${wo.work_order_number ?? ""}: ${changes.map((c) => c.label).join(", ")}`.slice(0, 500)
-            : `Saved Job Card ${wo.work_order_number ?? ""} (no request details changed)`,
+          summary:
+            changes.length || manualPlan?.changed
+              ? `Edited Job Card ${wo.work_order_number ?? ""}: ${[...changes.map((c) => c.label), ...(manualPlan?.changed ? ["Manual materials / outside services"] : [])].join(", ")}`.slice(0, 500)
+              : `Saved Job Card ${wo.work_order_number ?? ""} (no request details changed)`,
           metadata: {
             status: before.status === "Rejected" ? "Rejected→Under Review" : "(preserved)",
             worker_type: parsed.data.worker_type,
@@ -692,7 +721,17 @@ async function saveJobCardEdit(
               ...(replaceMaterials ? ["materials"] : []),
               ...(replaceAttachments ? ["attachments"] : []),
               ...(replaceRequired ? ["required_materials"] : []),
+              ...(manualPlan?.changed ? ["manual_requirements"] : []),
             ],
+            ...(manualPlan?.changed
+              ? {
+                  manualRequirements: {
+                    added: manualPlan.add,
+                    updated: manualPlan.update.map((u) => ({ id: u.id, before: { description: u.before.description, quantity: u.before.quantity_required, unit: u.before.unit_of_measure, notes: u.before.notes }, after: u.line })),
+                    removed: manualPlan.remove.map((r) => ({ id: r.id, description: r.description, quantity: r.quantity_required, unit: r.unit_of_measure, notes: r.notes })),
+                  },
+                }
+              : {}),
           },
         },
       });
@@ -716,14 +755,57 @@ async function saveJobCardEdit(
         }
       }
       if (replaceRequired) {
-        await tx.workOrderRequiredPart.deleteMany({ where: { work_order_id: id } });
+        await tx.workOrderRequiredPart.deleteMany({ where: { work_order_id: id, entry_type: { not: MANUAL_ENTRY_TYPE } } });
         if (requiredPartRows.length) {
           await tx.workOrderRequiredPart.createMany({ data: requiredPartRows.map((row) => ({ ...row!, work_order_id: id, created_by: context.userId })) });
         }
       }
+      // Manual materials / outside services: descriptive Job Card lines only —
+      // no Inventory identity, no stock, no Materials Request.
+      if (manualPlan?.changed) {
+        if (manualPlan.remove.length) {
+          await tx.workOrderRequiredPart.deleteMany({
+            where: { id: { in: manualPlan.remove.map((r) => r.id) }, work_order_id: id, entry_type: MANUAL_ENTRY_TYPE },
+          });
+        }
+        for (const u of manualPlan.update) {
+          await tx.workOrderRequiredPart.updateMany({
+            where: { id: u.id, work_order_id: id, entry_type: MANUAL_ENTRY_TYPE },
+            data: {
+              description: u.line.description,
+              quantity_required: u.line.quantity_required,
+              unit_of_measure: u.line.unit_of_measure,
+              entered_quantity: u.line.quantity_required,
+              entered_unit: u.line.unit_of_measure,
+              notes: u.line.notes,
+              updated_at: new Date(),
+            },
+          });
+        }
+        if (manualPlan.add.length) {
+          const base = Date.now();
+          await tx.workOrderRequiredPart.createMany({
+            data: manualPlan.add.map((line, index) => ({
+              // In the order entered, after the existing lines.
+              created_at: new Date(base + index),
+              work_order_id: id,
+              entry_type: MANUAL_ENTRY_TYPE,
+              description: line.description,
+              part_number: null,
+              quantity_required: line.quantity_required,
+              unit_of_measure: line.unit_of_measure,
+              entered_quantity: line.quantity_required,
+              entered_unit: line.unit_of_measure,
+              notes: line.notes,
+              availability_status: MANUAL_AVAILABILITY_STATUS,
+              created_by: context.userId,
+            })),
+          });
+        }
+      }
       // Materials now on the Job Card: a "No Materials Required"
       // confirmation (if any) is superseded, never deleted.
-      if ((replaceRequired && requiredPartRows.length) || (replaceMaterials && materialRows.length)) {
+      if ((replaceRequired && requiredPartRows.length) || (replaceMaterials && materialRows.length) || (manualPlan?.add.length ?? 0) > 0) {
         await supersedeRequirementConfirmation(tx, id, "materials", context.userId, "Materials added on Edit Job Card");
       }
 
@@ -759,6 +841,7 @@ async function saveJobCardEdit(
   if (refused === "not-found") return { ok: false, redirectTo: "/maintenance/work-orders?error=not-found" };
   if (refused === "not-editable") return { ok: false, redirectTo: `/maintenance/work-orders/${id}?error=not-editable` };
   if (refused === "invalid-quantity") return editProblem(requiredPartQuantityError, null);
+  if (refused === "manual-stale") return editProblem("This Job Card's manual materials changed since you opened it. Reload the page and try again.", null);
   if (!data) return editProblem("save-failed", null);
 
   // Attachments posted with the edit — a partial or total upload failure

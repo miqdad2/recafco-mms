@@ -416,6 +416,18 @@ export default async function DailyActivityPage({
   const jobCardRows = [...activeRows, ...closedTodayRows];
 
   const jobCardIds = jobCardRows.map((w) => w.id);
+  // Manual materials / outside services per Job Card: not part of the
+  // Inventory issue summary below, only counted so a Job Card that has just
+  // manual lines does not read "No materials added".
+  const manualRequirementCounts = new Map(
+    (
+      await prisma.workOrderRequiredPart.groupBy({
+        by: ["work_order_id"],
+        where: { work_order_id: { in: jobCardIds }, entry_type: "manual" },
+        _count: { _all: true },
+      })
+    ).map((g) => [g.work_order_id, g._count._all])
+  );
   const [fulfillmentMap, laborMap, timeSourceMap, datesMap, requirementFactsMap] = await Promise.all([
     getMaterialFulfillmentForWorkOrders(prisma, jobCardIds),
     getWorkOrderLaborSummariesBulk(prisma, jobCardIds),
@@ -873,6 +885,7 @@ export default async function DailyActivityPage({
       materialsActionHref: c.materialsActionHref,
       showProcessMaterials: c.showProcessMaterials,
       materialsTotals: c.materialsTotals,
+      manualRequirementCount: manualRequirementCounts.get(c.wo.id) ?? 0,
       // Unit 10G.14, Task 4 — per-line fulfillment rows, so the selected
       // Job Card panel can show each required material's own Required /
       // Available / Issued / Status, not just the job-card-wide totals sum.

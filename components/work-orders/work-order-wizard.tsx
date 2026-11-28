@@ -33,6 +33,7 @@ import type { WorkerProfileRow } from "@/lib/backend/workers/service";
 import { stockStatusLabel, stockStatusTone } from "@/components/store/offline-inventory-types";
 import { InventoryPickerModal } from "@/components/store/inventory-picker-modal";
 import { isInventoryPickerShortcut } from "@/lib/store/inventory-picker";
+import { MANUAL_DESCRIPTION_MAX, MANUAL_REQUIREMENT_UNITS, manualRequirementProblem } from "@/lib/work-orders/manual-requirements";
 
 // Required Materials Inventory Matching Unit 5 — Required Materials row
 // state. New Job Card Required Materials Inventory Selection and Smart Unit
@@ -44,6 +45,10 @@ import { isInventoryPickerShortcut } from "@/lib/store/inventory-picker";
 // setup has one, its Purchase Unit (converted to stock units for
 // availability and on save).
 type RequiredMaterialRowState = {
+  // "inventory" (default): chosen from Inventory, as before. "manual": a
+  // typed material / outside service with its own quantity and unit — no
+  // Inventory identity, stock or Item Code (lib/work-orders/manual-requirements.ts).
+  entryType: "inventory" | "manual";
   description: string;
   partNumber: string;
   ssRecCode: string;
@@ -72,6 +77,7 @@ type RequiredMaterialRowState = {
 
 function emptyMaterialRow(): RequiredMaterialRowState {
   return {
+    entryType: "inventory",
     description: "",
     partNumber: "",
     ssRecCode: "",
@@ -422,6 +428,7 @@ type RequestFields = {
 
 type StoredMaterialRow = Pick<
   RequiredMaterialRowState,
+  | "entryType"
   | "description"
   | "partNumber"
   | "ssRecCode"
@@ -825,7 +832,45 @@ function WizardBody({
     focusRowField(row, "quantity");
   }
 
-  function handleMaterialNameChange(index: number, value: string) {
+  // Inventory → manual: the selected Inventory identity and everything taken
+  // from it (part number, units, stock, cost) is cleared. A name the user
+  // typed but never chose from Inventory is kept as the manual description; a
+  // name that came from a selected Inventory material is not.
+  function switchToManualEntry(index: number) {
+    const row = partRows[index];
+    if (!row) return;
+    if (searchTimers.current[index]) clearTimeout(searchTimers.current[index]);
+    searchSeq.current[index] = (searchSeq.current[index] ?? 0) + 1;
+    updateRow(index, {
+      ...emptyMaterialRow(),
+      entryType: "manual",
+      description: row.materialKey === null ? row.description : "",
+      qty: row.materialKey === null ? row.qty : "",
+      notes: row.notes,
+    });
+    setDirty(true);
+    focusRowField(index, "description");
+  }
+
+  // Manual → Inventory: the typed unit and quantity are cleared; the typed
+  // text is searched in Inventory, so the row is only linked once a material
+  // is actually chosen.
+  function switchToInventoryEntry(index: number) {
+    const row = partRows[index];
+    if (!row) return;
+    updateRow(index, { ...emptyMaterialRow(), notes: row.notes });
+    if (row.description.trim()) handleMaterialNameChange(index, row.description, true);
+    setDirty(true);
+    focusRowField(index, "description");
+  }
+
+  function handleMaterialNameChange(index: number, value: string, forceInventory = false) {
+    // A manual line is free text: no Inventory search, no link.
+    if (!forceInventory && partRows[index]?.entryType === "manual") {
+      updateRow(index, { description: value });
+      setDirty(true);
+      return;
+    }
     if (isInventoryPickerShortcut(value)) {
       const held = shortcutHeld.current[index];
       delete shortcutHeld.current[index];
@@ -856,6 +901,7 @@ function WizardBody({
     // Typing unlinks the row: it is "not in Inventory" until a suggestion
     // is selected, and its units/part number are cleared with the link.
     updateRow(index, {
+      entryType: "inventory",
       description: value,
       partNumber: "",
       ssRecCode: "",
@@ -1023,6 +1069,7 @@ function WizardBody({
         assignment,
         numPartRows,
         partRows: partRows.map((r) => ({
+          entryType: r.entryType,
           description: r.description,
           partNumber: r.partNumber,
           ssRecCode: r.ssRecCode,
@@ -1155,6 +1202,11 @@ function WizardBody({
         const row = partRows[i];
         if (!row || !row.description.trim()) continue;
         const name = row.description.trim();
+        if (row.entryType === "manual") {
+          const problem = manualRequirementProblem({ description: row.description, quantity: row.qty, unit: row.unit, notes: row.notes });
+          if (problem) errs[`req_row_${i}`] = problem;
+          continue;
+        }
         if (row.materialKey === null) {
           errs[`req_row_${i}`] = `"${name}" is not chosen from Inventory. Pick it from the list, or add it to Inventory first.`;
           continue;
@@ -1334,7 +1386,9 @@ function WizardBody({
           : assignment.type === "FREELANCER"
             ? Boolean(assignment.freelancerName.trim())
             : Boolean(assignment.companyName.trim())),
-      materials: partRows.slice(0, numPartRows).filter((p) => p.description.trim() && p.materialKey !== null).length,
+      // Inventory lines only: these are the lines that must produce a
+      // Materials Request (manual materials / outside services never do).
+      materials: partRows.slice(0, numPartRows).filter((p) => p.description.trim() && p.materialKey !== null && p.entryType !== "manual").length,
       attachments: Array.from(form.querySelectorAll<HTMLInputElement>('input[type="file"]')).filter((i) => (i.files?.length ?? 0) > 0).length,
     };
     setPhase({ kind: "saving", intent, slow: false, upload: null });
@@ -1522,7 +1576,7 @@ function WizardBody({
   }
   const fieldCls = (name: string) => (errors[name] ? ` ${invalidCls}` : "");
 
-  const reviewParts = partRows.slice(0, numPartRows).filter((p) => p.description.trim() && p.materialKey !== null);
+  const reviewParts = partRows.slice(0, numPartRows).filter((p) => p.description.trim() && (p.materialKey !== null || p.entryType === "manual"));
 
   // Job Card Estimated Hours UX Simplification Unit 10G.22, Task 3/5: the
   // Job Card total is never typed — it's the sum of whatever the currently
@@ -2103,16 +2157,23 @@ function WizardBody({
                     return null;
                   }
                   const linked = row.materialKey !== null;
+                  // Manual material / outside service: typed description,
+                  // own quantity and unit; never linked to Inventory.
+                  const manual = row.entryType === "manual";
                   const hasName = row.description.trim().length > 0;
                   const required = rowStockQty(row);
                   const availability = computeRowAvailability(row);
                   const options = unitOptionsFor(row);
                   const listId = `req-part-${i}-options`;
-                  const open = row.showSuggestions && (row.loading || row.suggestions.length > 0 || row.searched);
+                  const open = !manual && row.showSuggestions && (row.loading || row.suggestions.length > 0 || row.searched);
                   const activeIdx = activeSuggestion.row === i ? Math.min(activeSuggestion.index, row.suggestions.length - 1) : 0;
                   const rowError = errors[`req_row_${i}`];
-                  const qtyProblem = Boolean(rowError) && linked;
-                  const nameProblem = Boolean(rowError) && !linked;
+                  const qtyProblem = Boolean(rowError) && (linked || manual);
+                  const nameProblem = Boolean(rowError) && !linked && !manual;
+                  // Small text button in the hint line under the name field.
+                  // Inline on desktop so the hint stays one line (row height
+                  // unchanged); a full 44px touch target on phones / tablets.
+                  const modeLink = "focus-ring ml-1 inline rounded font-semibold text-[#ED1C24] underline-offset-2 hover:underline max-lg:inline-flex max-lg:min-h-11 max-lg:items-center";
                   const last = i === numPartRows - 1;
                   const canRemove = numPartRows > 1 || hasName;
                   const removeButton = (
@@ -2152,22 +2213,28 @@ function WizardBody({
                             <span className={mobileLabel}>Material Name / Description</span>
                             <input
                               name={`req_part_description_${i}`}
-                              data-field={!linked ? `req_row_${i}` : undefined}
-                              role="combobox"
-                              aria-label={`Material ${i + 1}`}
-                              aria-expanded={Boolean(open)}
-                              aria-controls={listId}
-                              aria-autocomplete="list"
+                              data-field={!linked && !manual ? `req_row_${i}` : undefined}
+                              role={manual ? undefined : "combobox"}
+                              aria-label={manual ? `Material or service ${i + 1} (manual entry)` : `Material ${i + 1}`}
+                              aria-expanded={manual ? undefined : Boolean(open)}
+                              aria-controls={manual ? undefined : listId}
+                              aria-autocomplete={manual ? undefined : "list"}
                               aria-invalid={nameProblem}
                               aria-activedescendant={open && row.suggestions[activeIdx] ? `${listId}-${activeIdx}` : undefined}
+                              maxLength={manual ? MANUAL_DESCRIPTION_MAX : undefined}
                               value={row.description}
                               onChange={(e) => {
                                 setActiveSuggestion({ row: i, index: 0 });
                                 handleMaterialNameChange(i, e.target.value);
                               }}
-                              onFocus={() => updateRow(i, { showSuggestions: true })}
-                              onBlur={() => updateRow(i, { showSuggestions: false })}
+                              onFocus={() => {
+                                if (!manual) updateRow(i, { showSuggestions: true });
+                              }}
+                              onBlur={() => {
+                                if (!manual) updateRow(i, { showSuggestions: false });
+                              }}
                               onKeyDown={(e) => {
+                                if (manual) return;
                                 if (e.key === "ArrowDown") {
                                   e.preventDefault();
                                   setActiveSuggestion({ row: i, index: Math.min(activeIdx + 1, row.suggestions.length - 1) });
@@ -2186,11 +2253,27 @@ function WizardBody({
                               }}
                               autoComplete="off"
                               className={`${ctrl} ${nameProblem ? invalidCls : "border-[#D1D5DB]"} ${linked ? "font-semibold text-[#111827]" : ""}`}
-                              placeholder="Search Inventory... e.g. oil filter"
+                              placeholder={manual ? "Type the material, repair or service" : "Search Inventory... e.g. oil filter"}
                             />
                           </label>
-                          <input type="hidden" name={`req_part_material_key_${i}`} value={row.materialKey ?? ""} />
-                          <p className="mt-1 text-xs text-[#6B7280]">Search materials or type */ to view all Inventory items.</p>
+                          <input type="hidden" name={`req_part_entry_type_${i}`} value={row.entryType} />
+                          {/* Never posted for a manual line: it has no Inventory identity. */}
+                          <input type="hidden" name={`req_part_material_key_${i}`} value={manual ? "" : row.materialKey ?? ""} />
+                          {manual ? (
+                            <p className="mt-1 text-xs text-[#6B7280]">
+                              Not from Inventory.
+                              <button type="button" onClick={() => switchToInventoryEntry(i)} className={modeLink}>
+                                Search Inventory instead
+                              </button>
+                            </p>
+                          ) : (
+                            <p className="mt-1 text-xs text-[#6B7280]">
+                              Search, or type */ to view all items.
+                              <button type="button" onClick={() => switchToManualEntry(i)} className={modeLink}>
+                                Use manual entry
+                              </button>
+                            </p>
+                          )}
 
                           {open && (
                             <div className="absolute left-0 top-full z-30 mt-1 w-[min(32rem,calc(100vw-3rem))] rounded-md border border-[#E5E7EB] bg-white shadow-lg max-lg:right-0 max-lg:w-auto">
@@ -2267,16 +2350,16 @@ function WizardBody({
                             <span className={mobileLabel}>Qty</span>
                             <input
                               name={`req_part_quantity_${i}`}
-                              data-field={linked ? `req_row_${i}` : undefined}
+                              data-field={linked || manual ? `req_row_${i}` : undefined}
                               aria-label={`Quantity for material ${i + 1}`}
                               aria-invalid={qtyProblem}
                               type="text"
                               inputMode="decimal"
                               autoComplete="off"
-                              value={linked ? row.qty : ""}
+                              value={linked || manual ? row.qty : ""}
                               onChange={(e) => updateRow(i, { qty: e.target.value })}
-                              disabled={!linked}
-                              placeholder={linked ? "" : "—"}
+                              disabled={!linked && !manual}
+                              placeholder={linked || manual ? "" : "—"}
                               className={`${ctrl} text-right ${qtyProblem ? invalidCls : "border-[#D1D5DB]"} disabled:border-[#E5E7EB] disabled:bg-[#F9FAFB] disabled:text-[#9CA3AF]`}
                             />
                           </label>
@@ -2288,7 +2371,23 @@ function WizardBody({
                               one, its Purchase Unit. */}
                           <label className="block">
                             <span className={mobileLabel}>Unit</span>
-                            {linked ? (
+                            {manual ? (
+                              // Manual line: any of the standard units (JOB
+                              // and SERVICE for outside work).
+                              <select
+                                aria-label={`Unit for material ${i + 1}`}
+                                value={row.unit}
+                                onChange={(e) => updateRow(i, { unit: e.target.value })}
+                                className={`${ctrl} border-[#D1D5DB] px-2`}
+                              >
+                                <option value="">Unit</option>
+                                {MANUAL_REQUIREMENT_UNITS.map((u) => (
+                                  <option key={u} value={u}>
+                                    {u}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : linked ? (
                               <select
                                 aria-label={`Unit for material ${i + 1}`}
                                 value={row.unit}
@@ -2306,7 +2405,7 @@ function WizardBody({
                             )}
                           </label>
                           <input type="hidden" name={`req_part_entered_unit_${i}`} value={row.unit} />
-                          <input type="hidden" name={`req_part_uom_${i}`} value={row.inventoryUnit ?? ""} />
+                          <input type="hidden" name={`req_part_uom_${i}`} value={manual ? row.unit : row.inventoryUnit ?? ""} />
                         </td>
 
                         <td className={`${cell} max-lg:col-span-2 sm:max-lg:col-span-3`} aria-live="polite">
@@ -2339,13 +2438,14 @@ function WizardBody({
                               )}
                             </div>
                           ) : (
-                            <span className={`flex min-h-11 items-center max-lg:min-h-0 ${hasName ? "text-sm font-semibold text-[#B91C1C]" : "text-[#9CA3AF]"}`}>
-                              {hasName ? "Not chosen from Inventory" : "—"}
+                            <span className={`flex min-h-11 items-center max-lg:min-h-0 ${hasName && !manual ? "text-sm font-semibold text-[#B91C1C]" : "text-[#9CA3AF]"}`}>
+                              {/* A manual line is not an Inventory item: no stock figure. */}
+                              {hasName && !manual ? "Not chosen from Inventory" : "—"}
                             </span>
                           )}
                         </td>
 
-                        <td className={`${cell} border-r max-lg:col-span-2 sm:max-lg:col-span-3 ${last && !rowError && !(hasName && !linked && !row.showSuggestions) ? "lg:rounded-br-md" : ""}`}>
+                        <td className={`${cell} border-r max-lg:col-span-2 sm:max-lg:col-span-3 ${last && !rowError && !(hasName && !linked && !manual && !row.showSuggestions) ? "lg:rounded-br-md" : ""}`}>
                           <label className="block">
                             <span className={mobileLabel}>Notes (optional)</span>
                             <span className="flex items-center gap-1">
@@ -2405,11 +2505,11 @@ function WizardBody({
                       )}
 
                       {/* Typed but not chosen: offer the two ways forward. */}
-                      {hasName && !linked && !row.showSuggestions && (
+                      {hasName && !linked && !manual && !row.showSuggestions && (
                         <tr className="max-lg:block">
                           <td colSpan={7} className="border-x border-b border-[#E5E7EB] bg-[#FFFBEB] px-3 py-2 max-lg:block max-lg:rounded-lg max-lg:border">
                             <div className="flex flex-wrap items-center gap-2 text-sm text-amber-900">
-                              <span>Choose it from the Inventory list, or add it to Inventory first.</span>
+                              <span>Choose it from the Inventory list, add it to Inventory first, or enter it manually.</span>
                               <button
                                 type="button"
                                 onClick={() => handleMaterialNameChange(i, row.description)}
@@ -2425,6 +2525,13 @@ function WizardBody({
                               >
                                 Add New Material (new tab)
                               </a>
+                              <button
+                                type="button"
+                                onClick={() => switchToManualEntry(i)}
+                                className="focus-ring inline-flex min-h-11 items-center rounded-md border border-[#D1D5DB] bg-white px-3 text-sm font-bold text-[#111827] hover:bg-gray-50"
+                              >
+                                Use manual entry
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -2659,6 +2766,20 @@ function WizardBody({
                 {reviewParts.length > 0 ? (
                   <ul className="divide-y divide-[#F3F4F6]">
                     {reviewParts.map((p, i) => {
+                      if (p.entryType === "manual") {
+                        return (
+                          <li key={i} className="py-2 text-sm first:pt-0 last:pb-0">
+                            <p className="font-semibold text-[#111827]">
+                              {p.description}
+                              <span className="font-normal text-[#6B7280]"> · Manual entry</span>
+                            </p>
+                            <p className="text-[#4B5563]">
+                              {p.qty} {p.unit}
+                              {p.notes.trim() ? <> · {p.notes.trim()}</> : null}
+                            </p>
+                          </li>
+                        );
+                      }
                       const required = rowStockQty(p);
                       const availability = computeRowAvailability(p);
                       return (

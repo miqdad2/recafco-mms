@@ -11,6 +11,7 @@ import { getJobCardTiming } from "@/lib/work-orders/job-card-dates-data";
 import { isJobCardEditable, toIsoDateOnly } from "@/lib/work-orders/job-card-edit";
 import { getMaterialFulfillmentForWorkOrder } from "@/lib/work-orders/material-fulfillment";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
+import { MANUAL_ENTRY_TYPE } from "@/lib/work-orders/manual-requirements";
 import { notFound, redirect } from "next/navigation";
 
 export default async function EditWorkOrderPage({
@@ -110,6 +111,13 @@ export default async function EditWorkOrderPage({
     hasPendingCorrection: pendingClarification !== null,
     hasActiveMaterialsRequest: partsRequests.some((r) => (ACTIVE_MATERIALS_REQUEST_STATUSES as readonly string[]).includes(r.status)),
   });
+  // Manual materials / outside services: edited here (Inventory materials
+  // keep their own Materials Request workflow).
+  const manualRows = await prisma.workOrderRequiredPart.findMany({
+    where: { work_order_id: id, entry_type: MANUAL_ENTRY_TYPE },
+    orderBy: [{ created_at: "asc" }, { id: "asc" }],
+    select: { id: true, description: true, quantity_required: true, unit_of_measure: true, notes: true },
+  });
   const related: JobCardEditRelated = {
     detailHref: `/maintenance/work-orders/${id}`,
     team: { supervisor: names("Supervisor"), technicians: names("Technician"), helpers: names("Helper/Labor"), external },
@@ -120,6 +128,13 @@ export default async function EditWorkOrderPage({
       ? { number: activeRequest.parts_request_number, status: activeRequest.status, href: `/store/parts-requests/${activeRequest.id}` }
       : null,
     attachmentsCount,
+    manualRequirements: manualRows.map((r) => ({
+      id: r.id,
+      description: r.description,
+      quantity: String(Number(r.quantity_required)),
+      unit: r.unit_of_measure,
+      notes: r.notes ?? "",
+    })),
   };
 
   return (

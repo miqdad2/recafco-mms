@@ -1,8 +1,8 @@
 "use client";
 
-import { startTransition, useActionState, useEffect, useRef, type FormEvent, type ReactNode } from "react";
+import { startTransition, useActionState, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
-import { AlertCircle, ArrowRight, Loader2 } from "lucide-react";
+import { AlertCircle, ArrowRight, Loader2, Plus, X } from "lucide-react";
 
 import { saveJobCardEditAction, type JobCardEditState } from "@/app/actions/maintenance";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Field } from "@/components/ui/field";
 import { FormSection } from "@/components/ui/form-section";
 import { CancelEditButton } from "@/components/work-orders/cancel-edit-button";
 import { DEFAULT_MAINTENANCE_TYPE, MAINTENANCE_TYPES } from "@/lib/work-orders/maintenance-types";
+import { MANUAL_DESCRIPTION_MAX, MANUAL_NOTES_MAX, MANUAL_REQUIREMENT_UNITS } from "@/lib/work-orders/manual-requirements";
 
 // Edit Job Card. Edits the Job Card's own details only. Workers, worker time,
 // required materials, stock, attachments and closure each have their own
@@ -32,7 +33,124 @@ export type JobCardEditRelated = {
   requiredMaterials: Array<{ name: string; partNumber: string | null; quantity: number; unit: string; issued: number }>;
   materialsRequest: { number: string | null; status: string; href: string } | null;
   attachmentsCount: number;
+  // Manual materials / outside services (not Inventory items) — editable here.
+  manualRequirements: ManualRequirementRow[];
 };
+
+type ManualRequirementRow = { id: string | null; description: string; quantity: string; unit: string; notes: string };
+
+// Same limit as MAX_MANUAL_EDIT_ROWS in lib/work-orders/job-card-form.ts.
+const MAX_MANUAL_ROWS = 8;
+
+// Edit Job Card — manual materials / outside services typed on the Job Card.
+// Posts the whole list; the save updates, adds and removes lines in the same
+// transaction as the rest of the edit. They are never Inventory materials and
+// never change stock.
+function ManualRequirementsEditor({ initial }: { initial: ManualRequirementRow[] }) {
+  const [rows, setRows] = useState<ManualRequirementRow[]>(initial);
+  const update = (index: number, patch: Partial<ManualRequirementRow>) => setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+  const ctrl = "focus-ring min-h-11 w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2 text-sm";
+  const grid = "md:grid-cols-[minmax(0,3fr)_6rem_8rem_minmax(0,2fr)_2.75rem]";
+  return (
+    <div className="mt-4">
+      <input type="hidden" name="manual_req_present" value="1" />
+      <p className="text-sm font-semibold text-[#111827]">Manual materials / outside services</p>
+      <p className={help}>Lines typed on the Job Card that are not Inventory items — for example an outside repair. They never change stock.</p>
+      {rows.length ? (
+        <div className="mt-1 rounded-md border border-[#E5E7EB]">
+          <div className={`hidden gap-2 bg-[#F9FAFB] px-3 py-2 text-xs font-bold text-[#6B7280] md:grid ${grid}`}>
+            <span>Material / service</span>
+            <span>Qty</span>
+            <span>Unit</span>
+            <span>Notes</span>
+            <span className="sr-only">Remove</span>
+          </div>
+          <ul className="divide-y divide-[#F3F4F6]">
+            {rows.map((row, i) => (
+              <li key={row.id ?? `new-${i}`} className={`grid grid-cols-2 gap-2 px-3 py-2 md:items-center ${grid}`}>
+                <input type="hidden" name={`manual_req_id_${i}`} value={row.id ?? ""} />
+                <label className="col-span-2 md:col-span-1">
+                  <span className="mb-1 block text-xs font-semibold text-[#4B5563] md:sr-only">Material / service</span>
+                  <input
+                    name={`manual_req_description_${i}`}
+                    value={row.description}
+                    onChange={(e) => update(i, { description: e.target.value })}
+                    maxLength={MANUAL_DESCRIPTION_MAX}
+                    placeholder="e.g. Starter Motor Repairing"
+                    className={ctrl}
+                  />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs font-semibold text-[#4B5563] md:sr-only">Qty</span>
+                  <input
+                    name={`manual_req_quantity_${i}`}
+                    value={row.quantity}
+                    onChange={(e) => update(i, { quantity: e.target.value })}
+                    inputMode="decimal"
+                    autoComplete="off"
+                    aria-label={`Quantity for manual entry ${i + 1}`}
+                    className={`${ctrl} text-right`}
+                  />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs font-semibold text-[#4B5563] md:sr-only">Unit</span>
+                  <select
+                    name={`manual_req_unit_${i}`}
+                    value={row.unit}
+                    onChange={(e) => update(i, { unit: e.target.value })}
+                    aria-label={`Unit for manual entry ${i + 1}`}
+                    className={ctrl}
+                  >
+                    <option value="">Unit…</option>
+                    {MANUAL_REQUIREMENT_UNITS.map((u) => (
+                      <option key={u} value={u}>{u}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="col-span-2 md:col-span-1">
+                  <span className="mb-1 block text-xs font-semibold text-[#4B5563] md:sr-only">Notes (optional)</span>
+                  <input
+                    name={`manual_req_notes_${i}`}
+                    value={row.notes}
+                    onChange={(e) => update(i, { notes: e.target.value })}
+                    maxLength={MANUAL_NOTES_MAX}
+                    placeholder="Optional"
+                    aria-label={`Notes for manual entry ${i + 1}`}
+                    className={ctrl}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setRows((prev) => prev.filter((_, k) => k !== i))}
+                  className="focus-ring col-span-2 inline-flex h-11 items-center justify-center gap-1 rounded-md text-sm font-semibold text-[#6B7280] hover:bg-red-50 hover:text-[#DC2626] md:col-span-1 md:w-11"
+                  aria-label={`Remove manual entry ${i + 1}`}
+                  title="Remove this line"
+                >
+                  <X className="h-4 w-4" aria-hidden="true" />
+                  <span className="md:sr-only">Remove</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="mt-1 text-sm text-[#6B7280]">No manual entries.</p>
+      )}
+      {rows.length < MAX_MANUAL_ROWS ? (
+        <button
+          type="button"
+          onClick={() => setRows((prev) => [...prev, { id: null, description: "", quantity: "1", unit: "", notes: "" }])}
+          className="focus-ring mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-md border border-[#E5E7EB] bg-white px-3 text-sm font-bold text-[#111827] hover:bg-gray-50"
+        >
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          Add manual entry
+        </button>
+      ) : (
+        <p className="mt-2 text-sm text-[#6B7280]">Up to {MAX_MANUAL_ROWS} manual entries.</p>
+      )}
+    </div>
+  );
+}
 
 const select = "focus-ring mt-1 min-h-11 w-full rounded-md border border-[#E5E7EB] bg-white px-3 py-2";
 const help = "mt-1 text-xs leading-relaxed text-[#6B7280]";
@@ -260,6 +378,7 @@ export function JobCardEditForm({
           ) : (
             <p className="mt-1 text-sm text-[#6B7280]">No required materials.</p>
           )}
+          <ManualRequirementsEditor initial={related.manualRequirements} />
           <div className="mt-1 flex flex-wrap gap-x-5">
             {related.materialsRequest ? (
               <ElsewhereLink href={related.materialsRequest.href}>

@@ -38,6 +38,7 @@ import { canViewCosts as canViewCostsForContext, hasPermission } from "@/lib/sec
 import { canViewEntityFile } from "@/lib/security/file-access";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { getMaterialFulfillmentForWorkOrder, anyMaterialsIncomplete, summarizeMaterialAvailability } from "@/lib/work-orders/material-fulfillment";
+import { isManualEntry } from "@/lib/work-orders/manual-requirements";
 import { buildBalanceKey, canManageOfflineInventory } from "@/lib/store/offline-inventory-data";
 import { getWorkOrderLaborSummary } from "@/lib/work-orders/work-session-totals";
 import { resolveEstimatedTotalHours } from "@/lib/work-orders/hours-variance";
@@ -575,9 +576,12 @@ export default async function WorkOrderDetailPage({
   const assignmentChip: { label: string; tone: BadgeTone } = hasAssignment
     ? { label: "Assigned", tone: "green" }
     : { label: "Not assigned", tone: "gray" };
+  const manualRequirementCount = wo.work_order_required_parts.filter((row) => isManualEntry(row.entry_type)).length;
   const materialsChip: { label: string; tone: BadgeTone } =
     wo.parts_requests.length === 0 && materialFulfillment.length === 0
-      ? { label: "No materials", tone: "gray" }
+      ? manualRequirementCount > 0
+        ? { label: "Manual entries", tone: "gray" }
+        : { label: "No materials", tone: "gray" }
       : materialsFullyIssued
         ? { label: "Completed", tone: "green" }
         : materialsAvailability === "issuable" || materialsAvailability === "partial"
@@ -1581,6 +1585,27 @@ export default async function WorkOrderDetailPage({
                   <Table
                     columns={["Material", "Required", "Issued", "Remaining", "Available now", "Status", "Action"]}
                     rows={wo.work_order_required_parts.map((row) => {
+                      // Manual material / outside service: typed on the Job
+                      // Card, not an Inventory item — no stock figures and no
+                      // Issue / Receive / Request action.
+                      if (isManualEntry(row.entry_type)) {
+                        return [
+                          <div key="mat">
+                            <p className="font-semibold text-[#111827]">{row.description}</p>
+                            <p className="text-xs text-[#9CA3AF]">-</p>
+                            {row.notes ? <p className="text-xs text-[#6B7280]">{row.notes}</p> : null}
+                          </div>,
+                          `${Number(row.quantity_required)} ${row.unit_of_measure}`,
+                          "—",
+                          "—",
+                          "—",
+                          <div key="status" className="space-y-1">
+                            <StatusBadge label="Manual entry" tone="gray" />
+                            <p className="text-[11px] text-[#6B7280]">Not an Inventory item</p>
+                          </div>,
+                          <span key="action" className="text-[#9CA3AF]">—</span>,
+                        ];
+                      }
                       const f = fulfillmentByRowId.get(row.id) ?? null;
                       const unit = row.unit_of_measure;
                       const requiredQty = f?.required_qty ?? Number(row.quantity_required);

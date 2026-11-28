@@ -20,6 +20,7 @@ import { getFileSecuritySettings } from "@/lib/files/settings";
 import { checkFileContent, validatePrivateFileWithOptions } from "@/lib/files/validation";
 import { getWorkOrderVisibilityFilter } from "@/lib/work-orders/visibility";
 import { JOB_CARD_DATE_MESSAGES, jobCardOpenedAt } from "@/lib/work-orders/job-card-edit";
+import { isManualEntry } from "@/lib/work-orders/manual-requirements";
 import {
   cleanPayload,
   parseAttachmentRows,
@@ -63,13 +64,15 @@ import type {
 //    carrying the reference shown to the user.
 
 export class JobCardValidationError extends Error {
-  constructor(
-    readonly step: JobCardWizardStep,
-    readonly field: string,
-    message: string
-  ) {
+  // Plain fields (not constructor parameter properties) so the module also
+  // loads in Node's type-stripping test runner; behaviour is unchanged.
+  readonly step: JobCardWizardStep;
+  readonly field: string;
+  constructor(step: JobCardWizardStep, field: string, message: string) {
     super(message);
     this.name = "JobCardValidationError";
+    this.step = step;
+    this.field = field;
   }
 }
 
@@ -178,7 +181,9 @@ async function prepareJobCard(formData: FormData, intent: Intent, canAssign: boo
     if (error instanceof RequiredPartRowError) throw new JobCardValidationError(4, "required_parts", error.message);
     throw error;
   }
-  if (requiredPartRows.some((row) => !Number.isInteger(row.quantity_required) || row.quantity_required <= 0)) {
+  // Whole stock units apply to Inventory materials only; a manual material /
+  // outside service line was already checked by its own rules (e.g. 1.5 MTR).
+  if (requiredPartRows.some((row) => !isManualEntry(row.entry_type) && (!Number.isInteger(row.quantity_required) || row.quantity_required <= 0))) {
     throw new JobCardValidationError(
       4,
       "required_parts",
@@ -512,7 +517,12 @@ export async function createJobCardFromForm(
         await tx.work_order_attachments.createMany({ data: p.attachmentRows.map((row) => ({ ...row!, work_order_id, uploaded_by: context.userId })) });
       }
       if (p.requiredPartRows.length) {
-        await tx.workOrderRequiredPart.createMany({ data: p.requiredPartRows.map((row) => ({ ...row, work_order_id, created_by: context.userId })) });
+        // One millisecond apart, in the order entered: the lines are listed
+        // by created_at, and one shared timestamp would show them in any order.
+        const base = Date.now();
+        await tx.workOrderRequiredPart.createMany({
+          data: p.requiredPartRows.map((row, index) => ({ ...row, work_order_id, created_by: context.userId, created_at: new Date(base + index) })),
+        });
       }
       return { id: wo.id, number: wo.work_order_number, replayed: false };
     });
@@ -610,12 +620,16 @@ async function runAfterCommit(
   // notifications, audit identical to a manual request). It opens its own
   // transaction, so it runs after the Job Card commits; a failure leaves the
   // Job Card as is and the user adds the request from the Job Card.
-  if (p.requiredPartRows.length > 0) {
+  // Manual materials / outside services are descriptive Job Card lines, not
+  // Inventory materials: they never go into the Materials Request (which
+  // receives and issues stock).
+  const inventoryRows = p.requiredPartRows.filter((row) => !isManualEntry(row.entry_type));
+  if (inventoryRows.length > 0) {
     try {
       await createPartsRequest(context, {
         workOrderId: work_order_id,
         remarks: "Auto-created from the Job Card's Required Parts list at creation.",
-        items: p.requiredPartRows.map((row) => ({
+        items: inventoryRows.map((row) => ({
           part_id: null,
           description: row.description,
           part_number: row.part_number,

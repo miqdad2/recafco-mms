@@ -99,6 +99,9 @@ export type DailyActivityCardData = {
   // "Materials Completed").
   showProcessMaterials: boolean;
   materialsTotals: { required: number; issued: number; remaining: number };
+  // Manual materials / outside services on the Job Card (not Inventory
+  // items, so not in the totals or lines below — only used for wording).
+  manualRequirementCount?: number;
   // Unit 10G.14, Task 4 — per-line Required/Available/Issued/Status, shown
   // under the totals line so each material's own state is clear (e.g. one
   // line "Ready to Issue" and another "Needs Receiving" on the same Job
@@ -430,11 +433,14 @@ function summarizeMaterials(card: DailyActivityCardData) {
     card.materialsChip.label === "No Materials" ? "none" : card.materialsChip.label === "Materials Completed" ? "completed" : "pending";
   // "No materials required" only once that is actually confirmed — an empty
   // list on its own is "No materials added".
+  const manualCount = card.manualRequirementCount ?? 0;
   const value =
     state === "none"
       ? card.requirements.materials === "not_required"
         ? "No materials required"
-        : "No materials added"
+        : manualCount > 0
+          ? "Manual entries only"
+          : "No materials added"
       : state === "completed"
         ? "Materials Completed"
         : "Materials Pending";
@@ -444,7 +450,9 @@ function summarizeMaterials(card: DailyActivityCardData) {
   const detail =
     card.materialsTotals.required > 0
       ? `Required ${card.materialsTotals.required} items · Issued ${card.materialsTotals.issued} · Remaining ${card.materialsTotals.remaining}`
-      : null;
+      : state === "none" && manualCount > 0
+        ? `${manualCount} manual ${manualCount === 1 ? "entry" : "entries"} — not from Inventory`
+        : null;
   const icon = state === "pending" ? PackageX : PackageSearch;
   return { state, value, detail, tone: card.materialsChip.tone as SummaryTone, icon };
 }

@@ -665,7 +665,9 @@ export async function issueMaterials(context: CurrentUserContext, input: IssueMa
       ? new Map(
           (
             await tx.workOrderRequiredPart.findMany({
-              where: { work_order_id: request.work_order_id },
+              // Inventory requirements only: a manual material / outside
+              // service line is never received into Inventory.
+              where: { work_order_id: request.work_order_id, entry_type: "inventory" },
               select: { description: true, unit_of_measure: true }
             })
           ).map((r) => [r.description.toLowerCase(), r.unit_of_measure])

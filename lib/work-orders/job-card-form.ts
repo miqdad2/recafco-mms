@@ -9,6 +9,16 @@ import {
   getOfflineInventoryMaterialByKey,
   resolveMaterialMatchByKey,
 } from "@/lib/store/offline-inventory-data";
+import {
+  INVENTORY_ENTRY_TYPE,
+  MANUAL_AVAILABILITY_STATUS,
+  MANUAL_ENTRY_TYPE,
+  manualRequirementProblem,
+  normalizeManualDescription,
+  normalizeManualUnit,
+  parseManualQuantity,
+  type RequirementEntryType,
+} from "@/lib/work-orders/manual-requirements";
 
 // Job Card form parsing shared by the New Job Card create service
 // (lib/backend/work-orders/job-card-creation.ts) and the Job Card edit
@@ -192,11 +202,46 @@ export type ParsedRequiredPartRow = {
   entered_unit?: string | null;
   purchase_unit?: string | null;
   conversion_quantity?: number | null;
+  // 'manual' for a typed material / outside service (see
+  // lib/work-orders/manual-requirements.ts); omitted = 'inventory' (the
+  // column default), so every existing caller is unchanged.
+  entry_type?: RequirementEntryType;
 };
 
 export class RequiredPartRowError extends Error {}
 
+// A manual material / outside service line from the New Job Card wizard
+// (req_part_entry_type_<i> = "manual"). Saved from what was typed only: any
+// Inventory key, part number or unit setup posted with it is ignored, so a
+// manual line can never carry (or be mistaken for) an Inventory identity.
+function parseManualRequiredPartRow(formData: FormData, index: number): ParsedRequiredPartRow | null {
+  const description = normalizeManualDescription(rowValue(formData, "req_part_description", index));
+  if (!description) return null;
+  const quantity = rowValue(formData, "req_part_quantity", index);
+  const unit = rowValue(formData, "req_part_entered_unit", index);
+  const notes = rowValue(formData, "req_part_notes", index);
+  const problem = manualRequirementProblem({ description, quantity, unit, notes });
+  if (problem) throw new RequiredPartRowError(problem);
+  return {
+    description,
+    part_number: null,
+    quantity_required: parseManualQuantity(quantity)!,
+    unit_of_measure: normalizeManualUnit(unit),
+    notes: notes || null,
+    availability_status: MANUAL_AVAILABILITY_STATUS,
+    part_id: null,
+    inventory_material_key: null,
+    ss_rec_code: null,
+    entered_quantity: parseManualQuantity(quantity)!,
+    entered_unit: normalizeManualUnit(unit),
+    purchase_unit: null,
+    conversion_quantity: null,
+    entry_type: MANUAL_ENTRY_TYPE,
+  };
+}
+
 async function parseInventoryFirstRequiredPartRow(formData: FormData, index: number): Promise<ParsedRequiredPartRow | null> {
+  if (rowValue(formData, "req_part_entry_type", index) === MANUAL_ENTRY_TYPE) return parseManualRequiredPartRow(formData, index);
   const typedName = rowValue(formData, "req_part_description", index);
   if (!typedName) return null;
   const matchedKey = rowValue(formData, "req_part_material_key", index) || null;
@@ -241,6 +286,7 @@ async function parseInventoryFirstRequiredPartRow(formData: FormData, index: num
     entered_unit: isPurchaseUnit ? setup.purchase_unit : material.unit,
     purchase_unit: setup.purchase_unit,
     conversion_quantity: setup.conversion_quantity,
+    entry_type: INVENTORY_ENTRY_TYPE,
   };
 }
 
@@ -281,6 +327,47 @@ export async function parseRequiredPartRows(formData: FormData): Promise<ParsedR
     })
   );
   return rows.filter((row): row is ParsedRequiredPartRow => row !== null);
+}
+
+// Edit Job Card — manual materials / outside services. The form posts its
+// whole manual list (manual_req_present=1 plus manual_req_*_<i>); an existing
+// line carries its id. Returns posted=false when the form did not include the
+// section, so the save leaves manual lines exactly as they are. Inventory
+// requirements are never part of this list.
+export const MAX_MANUAL_EDIT_ROWS = 8;
+
+export type ManualRequirementEdit = {
+  id: string | null;
+  description: string;
+  quantity_required: number;
+  unit_of_measure: string;
+  notes: string | null;
+};
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function parseManualRequirementEdits(formData: FormData): { posted: boolean; rows: ManualRequirementEdit[] } {
+  if (formData.get("manual_req_present") !== "1") return { posted: false, rows: [] };
+  const rows: ManualRequirementEdit[] = [];
+  for (let index = 0; index < MAX_MANUAL_EDIT_ROWS; index++) {
+    const description = normalizeManualDescription(rowValue(formData, "manual_req_description", index));
+    const quantity = rowValue(formData, "manual_req_quantity", index);
+    const unit = rowValue(formData, "manual_req_unit", index);
+    const notes = rowValue(formData, "manual_req_notes", index);
+    if (!description && !quantity && !notes) continue;
+    const problem = manualRequirementProblem({ description, quantity, unit, notes });
+    if (problem) throw new RequiredPartRowError(problem);
+    const id = rowValue(formData, "manual_req_id", index);
+    if (id && !UUID_PATTERN.test(id)) throw new RequiredPartRowError("This page is out of date. Reload it and try again.");
+    rows.push({
+      id: id || null,
+      description,
+      quantity_required: parseManualQuantity(quantity)!,
+      unit_of_measure: normalizeManualUnit(unit),
+      notes: notes || null,
+    });
+  }
+  return { posted: true, rows };
 }
 
 // Optional Work Assignment During Job Card Creation Unit 7C, Task 2/6.

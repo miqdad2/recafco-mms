@@ -38,6 +38,13 @@ import type { BackendTransaction } from "@/lib/backend/shared/transaction";
 
 type DbClient = typeof prisma | BackendTransaction;
 
+// Only Inventory requirements are tracked here. A manual material / outside
+// service line (entry_type 'manual', lib/work-orders/manual-requirements.ts)
+// has no Inventory identity: it is never issued, received or processed, does
+// not block closure as "pending materials", and is listed separately where
+// Job Card requirements are shown.
+const INVENTORY_REQUIREMENTS = { entry_type: "inventory" } as const;
+
 export type MaterialFulfillmentStatus = "fulfilled" | "ready_to_issue" | "partial_available" | "needs_receiving";
 
 function deriveStatus(remaining_qty: number, available_now: number): MaterialFulfillmentStatus {
@@ -87,7 +94,7 @@ export async function getMaterialFulfillmentForWorkOrder(
   workOrderId: string
 ): Promise<MaterialFulfillment[]> {
   const rows = await db.workOrderRequiredPart.findMany({
-    where: { work_order_id: workOrderId },
+    where: { work_order_id: workOrderId, ...INVENTORY_REQUIREMENTS },
     orderBy: { created_at: "asc" },
     select: { id: true, description: true, part_number: true, part_id: true, unit_of_measure: true, quantity_required: true },
   });
@@ -171,7 +178,7 @@ export async function getMaterialFulfillmentForWorkOrders(
   if (workOrderIds.length === 0) return result;
 
   const rows = await db.workOrderRequiredPart.findMany({
-    where: { work_order_id: { in: workOrderIds } },
+    where: { work_order_id: { in: workOrderIds }, ...INVENTORY_REQUIREMENTS },
     orderBy: { created_at: "asc" },
     select: { id: true, work_order_id: true, description: true, part_number: true, part_id: true, unit_of_measure: true, quantity_required: true },
   });

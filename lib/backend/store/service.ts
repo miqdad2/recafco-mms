@@ -53,11 +53,17 @@ export async function confirmRequiredPartAvailability(
           work_order_id: true,
           description: true,
           availability_status: true,
+          entry_type: true,
           work_orders: { select: { status: true, work_order_number: true, assigned_supervisor_id: true } }
         }
       });
 
       if (!reqPart) throw new AppError("Required part not found.", { code: "NOT_FOUND" });
+      // A manual material / outside service is not an Inventory item: there
+      // is no stock to confirm for it.
+      if (reqPart.entry_type !== "inventory") {
+        throw new AppError("This line is a manual entry, not an Inventory material — it has no stock to check.", { code: "WORKFLOW_ERROR" });
+      }
       if (reqPart.work_orders.status !== "Approved") {
         throw new AppError(
           `Work order is not in Approved status (current: ${reqPart.work_orders.status}).`,

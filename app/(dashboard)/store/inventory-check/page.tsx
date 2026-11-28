@@ -68,7 +68,9 @@ export default async function InventoryCheckPage({
       priority: true,
       departments: { select: { name: true } },
       assets: { select: { asset_name: true } },
-      work_order_required_parts: { orderBy: { created_at: "asc" } }
+      // Inventory materials only — a manual material / outside service line
+      // has no stock to check.
+      work_order_required_parts: { where: { entry_type: "inventory" }, orderBy: { created_at: "asc" } }
     },
     orderBy: { created_at: "asc" }
   });
